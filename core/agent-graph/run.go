@@ -58,8 +58,11 @@ type Run struct {
 	startedAt time.Time
 	deadline  time.Time
 	step      int
-	routed    int
-	state     agent.TaskState
+	// stepMarker is the frontier record the next save writes first: it names the
+	// step every fact after it belongs to.
+	stepMarker *agent.Record
+	routed     int
+	state      agent.TaskState
 	// answer is the reply to a suspended question; it is handed to the nodes of
 	// the resumed step only.
 	answer message.Content
@@ -307,6 +310,7 @@ func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool)
 		return frontierFailed, errdefs.BudgetExceededf("graph: exceeded limits.max_nodes %d", max)
 	}
 
+	r.markFrontier()
 	suspended, question, err := r.runStep(ctx, yield)
 	if errors.Is(err, errConsumerStopped) {
 		// The caller stopped reading. Side effects cannot be undone, so the
@@ -469,6 +473,11 @@ func (r *Run) runStepInline(
 		return nil, message.Content{}, err
 	}
 	_ = r.persist(ctx, result.State, result.Records)
+	if event, ok := graphStateEvent(r.step+1, result.State); ok {
+		if !yield(event, nil) {
+			return nil, message.Content{}, errConsumerStopped
+		}
+	}
 	return nil, message.Content{}, nil
 }
 
@@ -677,6 +686,11 @@ func (r *Run) runStep(
 		return nil, message.Content{}, err
 	}
 	_ = r.persist(ctx, updates, records)
+	if event, ok := graphStateEvent(r.step+1, updates); ok {
+		if !yield(event, nil) {
+			return nil, message.Content{}, errConsumerStopped
+		}
+	}
 	return suspended, question, nil
 }
 

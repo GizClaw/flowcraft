@@ -24,6 +24,10 @@ type RunRecord struct {
 	Ref string `json:"ref"`
 	// Version is the source version the invocation compiled.
 	Version string `json:"version"`
+	// Replayed reports that the invocation answered its tool calls from the task's
+	// records instead of dispatching them: the same inputs produced the same
+	// answers, and no model was called.
+	Replayed bool `json:"replayed,omitempty"`
 }
 
 // ToolRecord is the payload of [RecordTool].

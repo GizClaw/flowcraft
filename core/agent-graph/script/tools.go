@@ -166,8 +166,13 @@ func (h *scriptHost) record(value any) {
 
 // start records the invocation itself, which is what a pinned node reads back to
 // know which version its state was produced under.
+//
+// It records even under replay: a replay answers the tool calls from the task's
+// own records and writes none, so this line is the only trace that a step was
+// answered rather than run, and a log that cannot say so reads like a live call.
 func (h *scriptHost) start(ref, version string) {
-	h.record(RunRecord{Ref: ref, Version: version})
+	value := RunRecord{Ref: ref, Version: version, Replayed: h.replay}
+	h.records = append(h.records, agent.Record{Kind: RecordRun, Payload: payload(value)})
 }
 
 // hashArguments is the canonical identity of one call's arguments.

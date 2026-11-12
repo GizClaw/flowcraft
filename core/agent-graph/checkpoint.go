@@ -22,10 +22,14 @@ import (
 const (
 	sectionGraph    = "graph"
 	sectionManifest = "manifest"
-	eventState      = "graph.state"
-	eventBase       = "graph.base"
-	eventLLMCall    = "llm.call"
-	eventEffect     = "graph.effect"
+	// RecordState is the kind of one key's state write: the fact a timeline reads
+	// to reconstruct the state a step left behind.
+	RecordState = "graph.state"
+
+	eventState   = RecordState
+	eventBase    = "graph.base"
+	eventLLMCall = "llm.call"
+	eventEffect  = "graph.effect"
 )
 
 // Record kinds a host needs when it prunes a trace: they are the records that
@@ -68,6 +72,24 @@ type stateEvent struct {
 	Step  int          `json:"step"`
 	Key   string       `json:"key"`
 	Value encodedValue `json:"value"`
+}
+
+// RecordFrontier names one step's frontier: which nodes the engine ran, in which
+// step, and whether the step answered from records instead of calling models.
+//
+// Without it a reader has to infer a record's step from the nearest preceding state
+// write, and a replay is indistinguishable from a live call in the log. Both are
+// exactly the questions an operator asks of a checkpoint.
+const RecordFrontier = "graph.frontier"
+
+// frontierEvent is the payload of [RecordFrontier].
+type frontierEvent struct {
+	// Step is the 1-based step ordinal, the same one a state record carries.
+	Step int `json:"step"`
+	// Nodes are the frontier's node ids, in declaration order.
+	Nodes []string `json:"nodes"`
+	// Replay reports that the step answered from records: no model was called.
+	Replay bool `json:"replay,omitempty"`
 }
 
 // baseEvent names a blob holding the whole state as of one step. A checkpoint
@@ -169,6 +191,8 @@ type runOptions struct {
 	manifest    agent.Manifest
 	trace       telemetry.TraceLevel
 	replay      bool
+	// stepMarker is the frontier record the next save writes first.
+	stepMarker *agent.Record
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
@@ -217,7 +241,17 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	// save at a time keeps the base bookkeeping consistent.
 	r.persistMu.Lock()
 	defer r.persistMu.Unlock()
-	events := make([]agent.EventRecord, 0, len(updates)+1)
+	events := make([]agent.EventRecord, 0, len(updates)+2)
+	// The step marker leads the step's records: every fact after it belongs to the
+	// same frontier, which is what makes a checkpoint readable as a timeline.
+	if r.stepMarker != nil {
+		events = append(events, agent.EventRecord{
+			Kind:    r.stepMarker.Kind,
+			Payload: r.stepMarker.Payload,
+		})
+		// One line per step: a later save of the same step must not repeat it.
+		r.stepMarker = nil
+	}
 	// A base is written when a delta would be missing, and every N steps so a
 	// restart never replays more than the interval.
 	due := r.g.baseEvery > 0 && r.step > 0 && r.step%r.g.baseEvery == 0
@@ -252,7 +286,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			r.needBase = true
 			continue
 		}
-		payload, err := json.Marshal(stateEvent{Step: r.step, Key: update.Key, Value: encoded})
+		payload, err := json.Marshal(stateEvent{Step: r.step + 1, Key: update.Key, Value: encoded})
 		if err != nil {
 			r.needBase = true
 			continue
@@ -657,4 +691,17 @@ func (g *Graph) carryInto(ctx context.Context, opts runOptions, target *stateSto
 		target.values[key] = restored.values[key]
 	}
 	return nil
+}
+
+// markFrontier records what this step is about to run.
+//
+// It is a marker rather than a field on every record: one line per step answers
+// "which nodes, which step, replayed or live" for every fact that follows it.
+func (r *Run) markFrontier() {
+	nodes := append([]string(nil), r.active...)
+	raw, err := json.Marshal(frontierEvent{Step: r.step + 1, Nodes: nodes, Replay: r.replay})
+	if err != nil {
+		return
+	}
+	r.stepMarker = &agent.Record{Kind: RecordFrontier, Payload: raw}
 }

@@ -101,8 +101,22 @@ def run(state):
 	if got, _ := updates["answer"].Text(); got != "from the record" {
 		t.Fatalf("answer = %q, want the recorded text", got)
 	}
-	if len(result.Records) != 0 {
-		t.Fatalf("replay recorded %d facts, want none", len(result.Records))
+	// A replay writes no tool fact: the answers it used are already in the task. It
+	// does write the invocation line, marked as a replay, so a log can tell the two
+	// apart - without it a replayed step reads exactly like a live one.
+	if len(result.Records) != 1 {
+		t.Fatalf("replay recorded %d facts, want the invocation line alone", len(result.Records))
+	}
+	record := result.Records[0]
+	if record.Kind != script.RecordRun {
+		t.Fatalf("record kind = %q, want %q", record.Kind, script.RecordRun)
+	}
+	var run script.RunRecord
+	if err := json.Unmarshal(record.Payload, &run); err != nil {
+		t.Fatalf("decode run record: %v", err)
+	}
+	if !run.Replayed {
+		t.Fatalf("run record does not say it replayed: %s", record.Payload)
 	}
 }
 

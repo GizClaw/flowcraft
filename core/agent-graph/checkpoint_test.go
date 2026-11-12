@@ -292,9 +292,17 @@ func TestCheckpointWritesABaseEveryNSteps(t *testing.T) {
 		t.Fatalf("bases = %d, want only the newest: the ones it superseded are truncated", bases)
 	}
 	// Compaction is the point of the interval: the log holds the newest base and
-	// the deltas after it, not every step since the beginning.
-	if len(events) >= steps {
-		t.Fatalf("events = %d for %d steps, want the log compacted", len(events), steps)
+	// the deltas after it, not every step since the beginning. The step markers are
+	// counted out: they are one line per step by construction, and the question here
+	// is whether the state log got compacted.
+	stateEvents := 0
+	for _, event := range events {
+		if event.Kind != RecordFrontier {
+			stateEvents++
+		}
+	}
+	if stateEvents >= steps {
+		t.Fatalf("events = %d for %d steps, want the log compacted", stateEvents, steps)
 	}
 	restored, err := g.Start(context.Background(), nil, WithStore(store, "run-1"))
 	if err != nil {
@@ -376,5 +384,58 @@ edges:
 	}
 	if stored.ID() != manifest.ID() || stored.ID() == "" {
 		t.Errorf("manifest id = %q, want %q", stored.ID(), manifest.ID())
+	}
+}
+
+// TestEachStepNamesItsFrontier pins the marker a timeline reads: the step's nodes,
+// the same 1-based ordinal a state record carries, and whether the step replayed.
+func TestEachStepNamesItsFrontier(t *testing.T) {
+	g := build(t, `
+version: 1
+entry: first
+state:
+  count: {type: json}
+nodes:
+  - {id: first, kind: bump, config: {key: count}}
+  - {id: second, kind: bump, config: {key: count}}
+edges:
+  - {from: first, to: second}
+  - {from: second, to: end}
+`, bumpKind{})
+	store := agenttest.NewMemStore()
+	run, err := g.Start(context.Background(), nil, WithStore(store, "run-1"))
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := drainRun(t, run); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	events, err := store.Events(context.Background(), "run-1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	type marker struct {
+		Step  int      `json:"step"`
+		Nodes []string `json:"nodes"`
+	}
+	var marks []marker
+	for _, event := range events {
+		if event.Kind != RecordFrontier {
+			continue
+		}
+		var mark marker
+		if err := json.Unmarshal(event.Payload, &mark); err != nil {
+			t.Fatalf("decode marker: %v", err)
+		}
+		marks = append(marks, mark)
+	}
+	if len(marks) != 2 {
+		t.Fatalf("markers = %d, want one per step", len(marks))
+	}
+	if marks[0].Step != 1 || len(marks[0].Nodes) != 1 || marks[0].Nodes[0] != "first" {
+		t.Fatalf("first marker = %+v", marks[0])
+	}
+	if marks[1].Step != 2 || marks[1].Nodes[0] != "second" {
+		t.Fatalf("second marker = %+v", marks[1])
 	}
 }
