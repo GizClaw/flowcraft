@@ -95,6 +95,11 @@ type modelConfig struct {
 }
 
 type requestConfig struct {
+	// Stream says how the call reaches the provider: the incremental events a
+	// spoken turn wants, or one finished response. Nil streams, so an existing
+	// deployment keeps the live text a reader watches; a call whose answer is data
+	// (a scheduler, a judge) sets false and pays for no deltas.
+	Stream     *bool                      `json:"stream"`
 	Model      *modelRef                  `json:"model"`
 	Hint       string                     `json:"hint"`
 	Output     string                     `json:"output"`
@@ -178,12 +183,25 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		}, nil
 	}
 	started := time.Now()
-	stream, err := m.open(ctx, request)
-	if err != nil {
-		return nil, err
+	var (
+		stream   inference.Stream
+		finished *inference.GenerateResponse
+	)
+	if config.Request.Stream != nil && !*config.Request.Stream {
+		response, err := m.generate(ctx, request)
+		if err != nil {
+			return nil, err
+		}
+		finished = &response
+	} else {
+		stream, err = m.open(ctx, request)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &modelStream{
 		stream:      stream,
+		finished:    finished,
 		view:        view,
 		transcript:  transcript,
 		messagesKey: config.Messages,
@@ -391,8 +409,11 @@ type modelStream struct {
 	pending agent.Event
 	// replay answers from a recorded call instead of the provider.
 	replay *agent.LLMCallRecord
-	result graph.Result
-	done   bool
+	// finished is a call that arrived whole: a non-streaming request results in one
+	// response, not a sequence of deltas.
+	finished *inference.GenerateResponse
+	result   graph.Result
+	done     bool
 }
 
 func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
@@ -405,6 +426,15 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 	}
 	if s.done {
 		return nil, io.EOF
+	}
+	if s.finished != nil {
+		if !s.announced {
+			return s.open(), nil
+		}
+		// A call asked for a finished response still advances the discovery pool:
+		// it is a live call, it just did not arrive in pieces.
+		s.view.AdvanceRound()
+		return s.answer(*s.finished)
 	}
 	if s.replay != nil {
 		if !s.announced {
@@ -420,24 +450,14 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 		if err := json.Unmarshal(s.replay.Response, &msg); err != nil {
 			return nil, fmt.Errorf("model: replay response: %w", err)
 		}
-		response := inference.GenerateResponse{
+		return s.answer(inference.GenerateResponse{
 			Message:      msg,
 			Usage:        s.replay.Usage,
 			FinishReason: inference.FinishReason(s.replay.StopReason),
 			// A replayed round reports the identity the original one reported, so
 			// a log cannot tell the two apart by what the answer claims to be.
 			Metadata: s.replay.Metadata,
-		}
-		result, err := s.finish(response)
-		if err != nil {
-			return nil, err
-		}
-		s.result = result
-		s.done = true
-		if text := msg.Content.Text(); text != "" {
-			return agent.Text{Text: text}, nil
-		}
-		return nil, io.EOF
+		})
 	}
 	for {
 		event, err := s.stream.Next(ctx)
@@ -590,6 +610,36 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 		}
 	}
 	return result, nil
+}
+
+// answer finishes a call that arrived whole: one response, one text event.
+func (s *modelStream) answer(response inference.GenerateResponse) (agent.Event, error) {
+	result, err := s.finish(response)
+	if err != nil {
+		return nil, err
+	}
+	s.result = result
+	s.done = true
+	if text := response.Message.Content.Text(); text != "" {
+		return agent.Text{Text: text}, nil
+	}
+	return nil, io.EOF
+}
+
+// generate performs one non-streaming call, through the router when the runtime
+// declared models and through the single provider otherwise.
+func (m *modelKind) generate(
+	ctx context.Context,
+	request inference.GenerateRequest,
+) (inference.GenerateResponse, error) {
+	if router := m.rt.Router(); router != nil {
+		return router.Generate(ctx, request)
+	}
+	generator := m.rt.Provider().Generator
+	if generator == nil {
+		return inference.GenerateResponse{}, fmt.Errorf("model: the runtime declares no generator")
+	}
+	return generator.Generate(ctx, request)
 }
 
 // open starts the call through the router when the runtime declared models, and
