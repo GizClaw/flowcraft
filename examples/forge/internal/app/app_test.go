@@ -383,3 +383,49 @@ func TestStateReportsCarryThePhase(t *testing.T) {
 		t.Fatalf("phase after an unrelated step = %q", got)
 	}
 }
+
+// TestInspectDescribesWhoTheWorkspaceIs pins what a reader needs from a C3
+// workspace without a credential: which agent directs, what each speaker is called,
+// who may be delegated to, and what each one runs on. A multi-agent workspace whose
+// inspect shows one anonymous agent is not inspectable at all.
+func TestInspectDescribesWhoTheWorkspaceIs(t *testing.T) {
+	dir := copyScenario(t, "raids", "../../scenarios/raids/werewolf")
+	unsetEnv(t, "OPENAI_API_KEY")
+	infos, _, err := Inspect(dir)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	byAgent := make(map[string]Info, len(infos))
+	for _, info := range infos {
+		byAgent[info.Agent] = info
+	}
+	referee, ok := byAgent["referee"]
+	if !ok {
+		t.Fatalf("no referee among %d agents", len(infos))
+	}
+	if !referee.Director || referee.Label != "referee" {
+		t.Fatalf("referee = %+v", referee)
+	}
+	if len(referee.Delegates) != 8 {
+		t.Fatalf("delegates = %v, want the eight seats", referee.Delegates)
+	}
+	if !strings.HasSuffix(referee.Graph, "graphs/referee.yaml") {
+		t.Fatalf("graph = %q", referee.Graph)
+	}
+	if len(referee.Models) != 1 || len(referee.Tools) == 0 {
+		t.Fatalf("models = %v tools = %v", referee.Models, referee.Tools)
+	}
+	seat, ok := byAgent["seat_1"]
+	if !ok {
+		t.Fatal("no seat_1")
+	}
+	if seat.Director || seat.Label != "1号林知" {
+		t.Fatalf("seat_1 = %+v", seat)
+	}
+	if len(seat.Hooks) != 1 || seat.Hooks[0] != "seat-memory" {
+		t.Fatalf("hooks = %v", seat.Hooks)
+	}
+	if len(seat.Delegates) != 0 {
+		t.Fatalf("a seat delegates to nobody: %v", seat.Delegates)
+	}
+}

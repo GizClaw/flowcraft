@@ -109,3 +109,39 @@ func requiredEnvironment(doc deploy.Document, dir string) ([]string, error) {
 	}
 	return env, nil
 }
+
+// layerFacts reads what an agent's layer stack declares about models and tools.
+//
+// It reads the files instead of expanding the stack: Inspect reports structure, and
+// a workspace whose key is unset is exactly the workspace an operator is inspecting.
+// A layer that cannot be read is skipped - the report is a description, not a gate.
+func layerFacts(dir string, doc *deploy.RuntimeDocument) (models, tools []string) {
+	if doc == nil {
+		return nil, nil
+	}
+	for _, layer := range doc.Layers {
+		body, err := os.ReadFile(expandWorkspace(layer.Path, dir))
+		if err != nil {
+			continue
+		}
+		var layerDoc struct {
+			Inference struct {
+				Models []struct {
+					Provider string `json:"provider"`
+					Model    string `json:"model"`
+				} `json:"models"`
+			} `json:"inference"`
+			Tools struct {
+				Enable []string `json:"enable"`
+			} `json:"tools"`
+		}
+		if yaml.Unmarshal(body, &layerDoc) != nil {
+			continue
+		}
+		for _, model := range layerDoc.Inference.Models {
+			models = append(models, model.Provider+":"+model.Model)
+		}
+		tools = append(tools, layerDoc.Tools.Enable...)
+	}
+	return models, tools
+}

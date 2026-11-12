@@ -77,11 +77,22 @@ type App struct {
 type Info struct {
 	Workspace string
 	Agent     string
-	Runtime   string
-	Engine    string
-	Session   string
-	Models    []string
-	Tools     []string
+	// Label is the user-facing name the workspace's cast gives this agent.
+	Label string
+	// Director reports that the agent plans or referees: it does not speak, and a
+	// surface has no label to show for it.
+	Director bool
+	// Graph is the graph document the engine runs, from the engine's settings.
+	Graph   string
+	Runtime string
+	Engine  string
+	Session string
+	Models  []string
+	Tools   []string
+	// Delegates are the agents this one may reach through the delegate tool.
+	Delegates []string
+	// Hooks are the hook kinds attached to the agent, in declaration order.
+	Hooks []string
 }
 
 // Open builds every agent a workspace's deploy.yaml declares.
@@ -293,6 +304,18 @@ func (a *App) Agents() []string {
 	return append([]string(nil), a.agents...)
 }
 
+// enginePath is the document an engine's settings name, when it names one: the
+// graph a graph engine runs is the fact a reader asks for first.
+func enginePath(settings json.RawMessage) string {
+	var value struct {
+		Path string `json:"path"`
+	}
+	if len(settings) == 0 || json.Unmarshal(settings, &value) != nil {
+		return ""
+	}
+	return value.Path
+}
+
 // Info returns the metadata of the first agent: the one a single-agent workspace
 // and the TUI address.
 func (a *App) Info() Info {
@@ -407,16 +430,30 @@ func Inspect(dir string) ([]Info, []string, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	cast, err := story.Load(abs)
+	if err != nil {
+		return nil, nil, err
+	}
 	infos := make([]Info, 0, len(doc.Agents))
 	for _, agent := range doc.Agents {
 		info := Info{
 			Workspace: abs,
 			Agent:     agent.Name,
+			Label:     cast.Label(agent.Name),
+			Director:  cast.Director == agent.Name,
 			Engine:    agent.Engine.Kind,
+			Graph:     expandWorkspace(enginePath(agent.Engine.Settings), abs),
 			Session:   SessionID,
 		}
-		if agent.Runtime != nil {
+		if agent.Runtime != nil && len(agent.Runtime.Layers) > 0 {
 			info.Runtime = filepath.Base(agent.Runtime.Layers[0].Path)
+		}
+		info.Models, info.Tools = layerFacts(abs, agent.Runtime)
+		if agent.Delegation != nil {
+			info.Delegates = append(info.Delegates, agent.Delegation.Targets...)
+		}
+		for _, hook := range agent.Hooks {
+			info.Hooks = append(info.Hooks, hook.Kind)
 		}
 		infos = append(infos, info)
 	}
@@ -453,6 +490,13 @@ func describe(dir string, spec deploy.Spec, sim *simtools.Source) Info {
 	}
 	for _, model := range spec.Runtime.Inference.Models {
 		info.Models = append(info.Models, model.Provider+":"+model.Model)
+	}
+	info.Graph = expandWorkspace(enginePath(spec.Engine.Settings), dir)
+	if spec.Delegation != nil {
+		info.Delegates = append(info.Delegates, spec.Delegation.Targets...)
+	}
+	for _, hook := range spec.Hooks {
+		info.Hooks = append(info.Hooks, hook.Kind)
 	}
 	if len(spec.Runtime.Tools.Enable) == 0 {
 		info.Tools = append(info.Tools, "files", "exec", "skills")
