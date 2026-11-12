@@ -719,11 +719,13 @@ func TestPostgameAnnouncesThenAsksASeat(t *testing.T) {
 		"brief":  graph.Text(""),
 	})
 	game = decodeGame(t, second["game"])
-	if game["brief_kind"] != "postgame" || game["brief_seat"] == nil {
-		t.Fatalf("the question was not handed to a seat: %v %v", game["brief_kind"], game["brief_seat"])
+	if seat, _ := game["brief_seat"].(float64); seat != 0 {
+		t.Fatalf("a recap decides nothing, so it asks no seat: %v", game["brief_seat"])
 	}
-	brief, _ := second["brief"].Text()
-	if !strings.Contains(brief, "狼队到底是谁") {
-		t.Fatalf("brief = %q, want the question", brief)
+	answer, _ := second["prompt"].Text()
+	for _, want := range []string{"复盘", "狼人是", "狼队到底是谁", "座位与身份"} {
+		if !strings.Contains(answer, want) {
+			t.Fatalf("answer = %q, want %q", answer, want)
+		}
 	}
 }

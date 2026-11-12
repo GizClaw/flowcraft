@@ -156,8 +156,9 @@ def run(state):
                 alive.append(str(id))
             again = tool("delegate", {
                 "target": "seat_" + str(seat),
-                "input": "game=" + str(game.get("seed") or "")
-                         + "\n你上一轮的回答没有给出投票。只回复一行：vote=<座号|0>（0=弃票）。"
+                "input": ("game=" + str(game.get("seed") or "") + "\n"
+                          + "kind=" + str(kind) + "\n"
+                          + "你上一轮的回答没有给出投票。只回复一行：vote=<座号|0>（0=弃票）。")
                          + "\n候选座号：" + "、".join(alive)
                          + "\n你上一轮的回答：" + said,
             })

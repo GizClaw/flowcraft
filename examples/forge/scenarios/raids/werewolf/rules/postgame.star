@@ -11,6 +11,19 @@ def _role_label(role):
     return _ROLE_LABELS.get(role, role)
 
 
+def _recap(game, question):
+    winner = "好人阵营" if game.get("winner") == "good" else "狼人阵营"
+    wolves = []
+    for seat in game["seats"]:
+        if seat["role"] == "werewolf":
+            wolves.append(str(seat["id"]) + "号" + seat["name"])
+    lines = ["复盘：" + winner + "获胜。狼人是" + "、".join(wolves) + "。"]
+    if question.strip() != "":
+        lines.append("你问的是：" + question.strip())
+    lines.append(_facts(game))
+    return "\n".join(lines)
+
+
 def _facts(game):
     # The game is over, so nothing here is a secret: a recap that hides the roles is
     # a recap no one asked for. The seat still phrases the answer; the rules hand it
@@ -51,17 +64,9 @@ def run(state):
         game["post_game_announced"] = True
         game["post_game_turn"] = 0
         return {"game": game, "brief": "", "prompt": label + "获胜。可以继续提问复盘，或换一局。"}
-    alive = game["alive"]
-    if len(alive) == 0:
-        return {"game": game, "brief": "", "prompt": ""}
-    turn = game.get("post_game_turn") or 0
-    seat = alive[turn % len(alive)]
-    if seat == game["player_seat"] and len(alive) > 1:
-        seat = alive[(turn + 1) % len(alive)]
-    game["post_game_turn"] = turn + 1
-    game["brief_seat"] = seat
-    game["brief_kind"] = "postgame"
-    brief = ("游戏已经结束，你现在在复盘桌上。这不是夜晚，不要给出刀人、查验或用药的决定；"
-             + "请只依据下面的事实，用两三句话回答用户的复盘问题，不要编造没发生过的事。\n"
-             + _facts(game) + "\n\n用户的复盘问题：" + _last_user(state["speech"]))
-    return {"game": game, "brief": brief, "prompt": ""}
+    # The recap is answered here, not delegated. There is nothing left to decide, the
+    # answer is a restatement of facts the rules already hold, and a seat asked a
+    # question about a game it has been playing answers as a player - which is how a
+    # recap used to come back as "tonight I will check seat 6".
+    question = _last_user(state["speech"])
+    return {"game": game, "brief": "", "prompt": _recap(game, question)}
