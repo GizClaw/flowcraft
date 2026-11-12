@@ -12,11 +12,11 @@ func FuzzStateEvent(f *testing.F) {
 	f.Add([]byte(`{"step":2,"key":"m","value":{"kind":"messages","messages":[]}}`))
 	f.Add([]byte(`{"step":0,"key":"","value":{"kind":"unknown"}}`))
 	f.Fuzz(func(t *testing.T, payload []byte) {
-		var event stateEvent
+		var event StateWrite
 		if err := json.Unmarshal(payload, &event); err != nil {
 			return
 		}
-		if _, err := decodeValue(event.Value); err != nil {
+		if _, err := DecodeValue(event.Value); err != nil {
 			return
 		}
 	})

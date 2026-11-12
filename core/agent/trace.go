@@ -30,10 +30,14 @@ type RunRecord struct {
 	Usage     usage.Usage `json:"usage,omitzero"`
 }
 
-// addUsage folds one call's accounting into the run's totals. Token counts,
-// cache counters and cost are summed; counters a provider reports only in
-// aggregate stay on the last event.
-func addUsage(total *usage.Usage, add usage.Usage) {
+// AddUsage folds one call's accounting into a total. Token counts, cache
+// counters and cost are summed; counters a provider reports only in aggregate
+// stay on the last event.
+//
+// It is exported because a reader that totals a task from its records needs the
+// same rule the run record uses: two sums of the same events that disagree by a
+// cached-token column are worse than no sum at all.
+func AddUsage(total *usage.Usage, add usage.Usage) {
 	*total = total.AddMeter(add)
 	if add.Billing == nil || add.Billing.Cost == nil {
 		return
