@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // The rules are scripts under the scenario, so these tests are what pins them: a
@@ -148,4 +150,186 @@ func TestSeedIsReproducible(t *testing.T) {
 	if string(other) == string(first) {
 		t.Fatal("two seeds dealt the same table; the shuffle is not using the seed")
 	}
+}
+
+// gameFrom re-encodes the dealt game so a test can pose a position without going
+// through the phases that would produce it. It starts from the rule's own JSON, so
+// every field the rules read stays present.
+func gameFrom(t *testing.T, raw []byte, extra map[string]any) graph.Value {
+	t.Helper()
+	var game map[string]any
+	if err := json.Unmarshal(raw, &game); err != nil {
+		t.Fatalf("decode game: %v", err)
+	}
+	for key, value := range extra {
+		game[key] = value
+	}
+	return jsonValue(t, game)
+}
+
+// wolvesAsVillagers rewrites a table so no wolf is left.
+func wolvesAsVillagers(t *testing.T, raw []byte) graph.Value {
+	t.Helper()
+	var game map[string]any
+	if err := json.Unmarshal(raw, &game); err != nil {
+		t.Fatalf("decode game: %v", err)
+	}
+	seats, _ := game["seats"].([]any)
+	for _, item := range seats {
+		seat, ok := item.(map[string]any)
+		if ok && seat["role"] == "werewolf" {
+			seat["role"] = "villager"
+		}
+	}
+	return jsonValue(t, game)
+}
+
+func jsonValue(t *testing.T, value any) graph.Value {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return graph.JSON(raw)
+}
+
+// speechValue builds a channel holding the human's last line.
+func speechValue(text string) graph.Value {
+	return graph.MessagesValue(graph.MessagesFromSlice([]message.Message{
+		message.NewTextMessage(message.RoleUser, text),
+	}))
+}
+
+const nightConfig = `{"backend":"starlark","path":"rules/night.star","reads":["game","speech"],"writes":["game","prompt"]}`
+const dawnConfig = `{"backend":"starlark","path":"rules/dawn.star","reads":["game"],"writes":["game","prompt"]}`
+
+func TestNightAsksTheWolfForATarget(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	if decodeTable(t, raw).PlayerRole != "werewolf" {
+		t.Fatalf("this seed makes the player a villager; the test needs a wolf")
+	}
+	values := map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{"night": map[string]any{
+			"started": true, "wolf_slot": 1, "wolf_proposals": []any{},
+			"wolf_discussion": []any{}, "wolf_decided": false, "wolf_target": 0,
+			"witch_save": 0, "witch_poison": 0, "witch_decided": false,
+			"seer_target": 0, "seer_decided": false,
+		}}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+	}
+	first := runRule(t, "rules/night.star", nightConfig, values)
+	prompt, _ := first["prompt"].Text()
+	if !strings.Contains(prompt, "刀5号") {
+		t.Fatalf("prompt = %q, want the target question", prompt)
+	}
+	game := decodeGame(t, first["game"])
+	if game["waiting_for"] != "wolf_target" {
+		t.Fatalf("waiting_for = %v", game["waiting_for"])
+	}
+
+	// The human answers: the proposal is recorded and the slot advances.
+	values["game"] = first["game"]
+	values["speech"] = speechValue("刀5号")
+	game = decodeGame(t, runRule(t, "rules/night.star", nightConfig, values)["game"])
+	night, _ := game["night"].(map[string]any)
+	proposals, _ := night["wolf_proposals"].([]any)
+	if len(proposals) != 1 {
+		t.Fatalf("proposals = %v", night["wolf_proposals"])
+	}
+	// The human was on slot 1; answering advances the round.
+	if night["wolf_slot"] != float64(2) {
+		t.Fatalf("wolf_slot = %v, want 2", night["wolf_slot"])
+	}
+}
+
+func TestNightRejectsAnImpossibleTarget(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	values := map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{"night": map[string]any{
+			"started": true, "wolf_slot": 1, "wolf_proposals": []any{},
+			"wolf_discussion": []any{}, "wolf_decided": false, "wolf_target": 0,
+			"witch_save": 0, "witch_poison": 0, "witch_decided": false,
+			"seer_target": 0, "seer_decided": false,
+		}}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+	}
+	first := runRule(t, "rules/night.star", nightConfig, values)
+	values["game"] = first["game"]
+	values["speech"] = speechValue("刀9号")
+	game := decodeGame(t, runRule(t, "rules/night.star", nightConfig, values)["game"])
+	if game["waiting_for"] != "wolf_target" {
+		t.Fatalf("waiting_for = %v, an out-of-range seat must not be accepted", game["waiting_for"])
+	}
+	night, _ := game["night"].(map[string]any)
+	proposals, _ := night["wolf_proposals"].([]any)
+	if len(proposals) != 0 {
+		t.Fatalf("proposals = %v, want none", night["wolf_proposals"])
+	}
+}
+
+func TestDawnKillsAndAdvances(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	game := decodeGame(t, runRule(t, "rules/dawn.star", dawnConfig, map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{"night": map[string]any{
+			"wolf_target": 5, "witch_save": 0, "witch_poison": 0,
+		}}),
+		"prompt": graph.Text(""),
+	})["game"])
+	alive, _ := game["alive"].([]any)
+	for _, id := range alive {
+		if id == float64(5) {
+			t.Fatal("seat 5 was knifed and must not be alive")
+		}
+	}
+	if game["phase"] != "day" {
+		t.Fatalf("phase = %v, want day", game["phase"])
+	}
+}
+
+func TestDawnHonoursTheWitchSave(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	game := decodeGame(t, runRule(t, "rules/dawn.star", dawnConfig, map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{"night": map[string]any{
+			"wolf_target": 5, "witch_save": 5, "witch_poison": 0,
+		}}),
+		"prompt": graph.Text(""),
+	})["game"])
+	alive, _ := game["alive"].([]any)
+	if len(alive) != 8 {
+		t.Fatalf("alive = %v, a saved victim must not die", alive)
+	}
+}
+
+func TestDawnEndsTheGameWhenTheWolvesAreGone(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	game := decodeGame(t, runRule(t, "rules/dawn.star", dawnConfig, map[string]graph.Value{
+		"game":   gameFrom(t, raw, nil),
+		"prompt": graph.Text(""),
+	})["game"])
+	if game["winner"] != "" {
+		t.Fatalf("winner = %v, a fresh deal has wolves", game["winner"])
+	}
+
+	game = decodeGame(t, runRule(t, "rules/dawn.star", dawnConfig, map[string]graph.Value{
+		"game":   wolvesAsVillagers(t, raw),
+		"prompt": graph.Text(""),
+	})["game"])
+	if game["winner"] != "good" || game["phase"] != "ended" {
+		t.Fatalf("winner = %v phase = %v, want good and ended", game["winner"], game["phase"])
+	}
+}
+
+func decodeGame(t *testing.T, value graph.Value) map[string]any {
+	t.Helper()
+	raw, err := value.JSON()
+	if err != nil {
+		t.Fatalf("game: %v", err)
+	}
+	var game map[string]any
+	if err := json.Unmarshal(raw, &game); err != nil {
+		t.Fatalf("decode game: %v", err)
+	}
+	return game
 }
