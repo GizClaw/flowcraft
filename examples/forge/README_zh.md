@@ -78,6 +78,41 @@ input → route → night|dawn|day|vote|exile|hunter|postgame → perform → ro
 brief 第一行里的对局 id。只有引擎知道一回合何时开始、何时结束；只有部署知道一个座位
 能记住什么 —— 钩子类型存在的意义就是这个分工。
 
+## 两种导演
+
+一个副本 = 一个导演 + 一个班子。目录里的两个副本只差一个维度：**导演说不说话**。
+
+| | werewolf（裁判型） | storyteller（讲述型） |
+|---|---|---|
+| 导演 | `referee`：只有规则，**自己不做模型调用** | `narrator`：两个模型节点 `schedule` / `narrate` |
+| 班子 | 八个玩家，其中一个是人 | 四个角色，没有人 |
+| 真相在哪 | 牌桌状态（`game`） | 蓝图与进度（`story`） |
+| 何时结束 | 牌桌等人，或某一方获胜 | 弧线交还给读者，最后收束 |
+
+讲述型副本是**数据**而不只是代码：`rules/seed.star` 铺开十个阶段的蓝图，每段有目标、
+边界、允许发言的人、以及交给读者前跑几拍。规则决定候选名单，调度模型在其中选一位，
+规则拒绝名单之外的选择 —— 模型只负责措辞，不决定流程。
+
+支撑它的两个引擎事实：
+
+- **`graph.node`**：引擎在事件流上把每次节点调用括起来（start/end），所以界面知道
+  "现在这段字是谁说的"。单节点步精确；宽 frontier 只能做时间线，不能做归属。
+- **`request.stream: false`**：回答是数据（控制行、裁决）的模型调用，可以要一整段回答
+  而不是 delta。
+
+哪些节点的话不上台面，由部署声明，界面负责过滤：
+
+```yaml
+# story.yaml
+internal: [schedule]        # 调度控制行不进正文
+until: "故事收束"            # 自动对局停在这句
+```
+
+```bash
+go run . test -test storyteller/opening --timeout 300s
+go run . test-auto --raid storyteller --rounds 12
+```
+
 ## 规则即脚本
 
 一条规则是一段 Starlark，由 `core/agent-graph/script` 在进程内执行：

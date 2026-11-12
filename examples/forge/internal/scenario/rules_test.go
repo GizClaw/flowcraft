@@ -20,12 +20,18 @@ import (
 // reproducible.
 const werewolf = "../../scenarios/raids/werewolf"
 
-// ruleKind builds the script node over the scenario's rules directory.
+// ruleKind builds the script node over a scenario's rules directory.
 func ruleKind(t *testing.T) graph.NodeKind {
+	t.Helper()
+	return ruleKindIn(t, werewolf)
+}
+
+// ruleKindIn builds the script node over one scenario's rules directory.
+func ruleKindIn(t *testing.T, dir string) graph.NodeKind {
 	t.Helper()
 	kind, err := script.New(
 		script.WithBackends(starlark.New()),
-		script.WithSource(&script.FileSource{BaseDir: werewolf}),
+		script.WithSource(&script.FileSource{BaseDir: dir}),
 	)
 	if err != nil {
 		t.Fatalf("script.New: %v", err)
@@ -36,7 +42,13 @@ func ruleKind(t *testing.T) graph.NodeKind {
 // runRule invokes one rule file and returns the writes it produced.
 func runRule(t *testing.T, path, config string, values map[string]graph.Value) map[string]graph.Value {
 	t.Helper()
-	kind := ruleKind(t)
+	return runRuleIn(t, werewolf, path, config, values)
+}
+
+// runRuleIn invokes one rule of one scenario.
+func runRuleIn(t *testing.T, dir, path, config string, values map[string]graph.Value) map[string]graph.Value {
+	t.Helper()
+	kind := ruleKindIn(t, dir)
 	in := graph.Invoke{
 		Node:     path,
 		Config:   json.RawMessage(config),

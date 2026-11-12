@@ -26,7 +26,7 @@ func testAutoCmd(args []string) error {
 	raidSource := flags.String("raid", "", "raid scenario name or path")
 	opening := flags.String("opening", "开始狼人杀", "the table's first line")
 	player := flags.String("player", "", "the agent that plays the human seat (default: the cast's player)")
-	until := flags.String("until", "获胜", "stop when the referee's answer contains this")
+	until := flags.String("until", "", "stop when the director's answer contains this (default: the cast's ending)")
 	timeout := flags.Duration("timeout", 4*time.Minute, "maximum duration per turn")
 	rounds := flags.Int("rounds", 24, "maximum turns before the run stops")
 	if err := flags.Parse(args); err != nil {
@@ -54,6 +54,13 @@ func testAutoCmd(args []string) error {
 	cast, err := story.Load(workspacePath)
 	if err != nil {
 		return err
+	}
+	marker := strings.TrimSpace(*until)
+	if marker == "" {
+		marker = cast.Ending()
+	}
+	if marker == "" {
+		marker = "获胜"
 	}
 	playerAgent := strings.TrimSpace(*player)
 	if playerAgent == "" {
@@ -94,7 +101,7 @@ func testAutoCmd(args []string) error {
 		}
 		fmt.Printf("--- round %d: table ---\n%s\n\n", round, rendered)
 		fmt.Fprintf(&transcript, "=== Round %d (referee) ===\n%s\n\n", round, rendered)
-		if strings.Contains(said, *until) {
+		if strings.Contains(said, marker) {
 			fmt.Printf("--- the referee ended the game after %d rounds: %s\n", round, lastLine(said))
 			break
 		}

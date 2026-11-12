@@ -37,6 +37,9 @@ def run(state):
         # that cannot grow must still hand back rather than spin.
         due = True
     if story["phase"] == "epilogue":
+        # The arc is over: say so once, and stop asking. The next line from the
+        # reader still gets answered - a told story is open to questions.
+        story["completed"] = True
         due = True
     prompt = ""
     if due:
@@ -46,4 +49,8 @@ def run(state):
         story["phase_turn"] = 0
         prompt = ("（旁白暂停。你可以接话，或让某个角色行动；下一拍会进入"
                   + story["next_phase"] + "。）")
+    if story.get("completed"):
+        # The last word wins: the arc is over, so the pause says so instead of
+        # promising a next phase there is none of.
+        prompt = "（旁白收束了这一段。故事收束。）"
     return {"story": story, "prompt": prompt}

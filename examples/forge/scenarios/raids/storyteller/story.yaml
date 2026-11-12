@@ -7,7 +7,9 @@ labels:
   seat_tangseng: 唐僧
   seat_bajie: 猪八戒
   seat_monster: 门外货郎
-# Nodes whose text is the engine's own: the scheduler picks a speaker, and the table
-# never hears the control line. The engine brackets every invocation, so a surface
-# can tell one node's words from another's.
+# Nodes whose text is the engine's own: the scheduler picks a speaker, and
+# the table never hears the control line. The engine brackets every
+# invocation, so a surface can tell one node's words from another's.
 internal: [schedule]
+# How an autoplay knows the arc is over: the director says this at the end.
+until: "故事收束"

@@ -32,6 +32,10 @@ type Cast struct {
 	// Player is the seat a person plays, when a scenario has one. The rest are
 	// played by the engine, and an autoplay has to know which line is its own.
 	Player string `json:"player"`
+	// Until is the phrase the director says when the arc is over, when the scenario
+	// has one. An autoplay stops there instead of running out its round budget - a
+	// story has no winner to announce, and a game has no epilogue.
+	Until string `json:"until"`
 	// Internal names graph nodes whose text is the engine's own business: a
 	// scheduler's control line, a judge's verdict. The table sees what the nodes
 	// that speak produce.
@@ -72,6 +76,9 @@ func (c Cast) Silent(node string) bool {
 	}
 	return false
 }
+
+// Ending is the phrase that ends the arc, or "" when the scenario has none.
+func (c Cast) Ending() string { return strings.TrimSpace(c.Until) }
 
 // Seat is the agent a person plays, or "" for a cast with no human seat.
 func (c Cast) Seat() string { return strings.TrimSpace(c.Player) }

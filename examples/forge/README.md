@@ -83,6 +83,45 @@ game named on the brief's first line. Only the engine knows when a turn starts a
 ends; only the deployment knows what a seat may remember. That is the split the hook
 kind exists for.
 
+## Two shapes of director
+
+A raid is one director and a cast. The two raids in this directory differ in one
+axis: whether the director speaks.
+
+| | werewolf (refereed) | storyteller (narrated) |
+|---|---|---|
+| director | `referee`: rules only, **no model call of its own** | `narrator`: two model nodes, `schedule` and `narrate` |
+| cast | eight players, one of them a person | four characters, nobody |
+| truth | the game state (`game`) | the blueprint and the progress (`story`) |
+| ends when | the table waits for a person, or a side wins | the arc hands back to the reader, then closes |
+
+The narrated raid is data as much as code: `rules/seed.star` deals a blueprint of ten
+phases, each with a goal, a boundary, the speakers it allows and how many beats it
+runs before handing back. A rule picks the candidate list, the scheduler model picks
+one within it, and the rules reject anything outside it — the model phrases, it does
+not decide the flow.
+
+Two engine facts make that work:
+
+- **`graph.node`** — the engine brackets every node invocation (start and end) on the
+  event stream, so a surface knows whose words it is watching. A one-node step is
+  attributable exactly; a wider frontier is a timeline, not an attribution.
+- **`request.stream: false`** — a model call whose answer is data (a control line, a
+  verdict) can ask for one finished response instead of deltas.
+
+A deployment says which nodes do not speak for the reader, and a surface filters them:
+
+```yaml
+# story.yaml
+internal: [schedule]        # the control line stays off the table
+until: "故事收束"            # what an autoplay stops on
+```
+
+```bash
+go run . test -test storyteller/opening --timeout 300s
+go run . test-auto --raid storyteller --rounds 12
+```
+
 ## Rules are scripts
 
 A rule is a Starlark source, run in-process by `core/agent-graph/script`:
