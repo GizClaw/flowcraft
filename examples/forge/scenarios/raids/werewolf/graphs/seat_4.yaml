@@ -1,6 +1,7 @@
 # Seat 4 (小满). A seat is a persona and a transcript: it answers what the
 # referee asks, in the voice its prompt fixes.
 version: 1
+stream: {state: true}
 name: seat_4
 entry: speak
 input: messages

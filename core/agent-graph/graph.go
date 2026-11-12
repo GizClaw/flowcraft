@@ -25,10 +25,24 @@ type Document struct {
 	Input      string                   `json:"input"`
 	Limits     LimitsDocument           `json:"limits"`
 	Checkpoint CheckpointDocument       `json:"checkpoint"`
+	Stream     StreamDocument           `json:"stream"`
 	State      map[string]StateDocument `json:"state"`
 	Nodes      []NodeDocument           `json:"nodes"`
 	Edges      []EdgeDocument           `json:"edges"`
 	Output     *OutputDocument          `json:"output"`
+}
+
+// StreamDocument is what a run puts on the live event stream beside the events
+// every run emits (text, reasoning, tool calls, usage).
+//
+// These are for an observer that renders the run as it happens — a UI showing
+// which keys a step changed — and they cost a JSON projection per step, which is
+// why nothing is emitted unless the document asks.
+type StreamDocument struct {
+	// State reports each step's state writes as a GraphState event. Default
+	// false: a run nobody is watching should not pay for a projection nobody
+	// reads.
+	State bool `json:"state"`
 }
 
 // CheckpointDocument is how a durable run is written.
@@ -160,6 +174,7 @@ type Graph struct {
 	timeout     time.Duration
 	concurrency int
 	baseEvery   int
+	stateEvents bool
 	nodes       map[string]nodeSpec
 	order       []string
 	edges       map[string][]edge
@@ -234,6 +249,7 @@ func Build(doc Document, registry *Registry, opts ...BuildOption) (*Graph, error
 		timeout:     limits.timeout,
 		concurrency: limits.concurrency,
 		baseEvery:   doc.Checkpoint.Every,
+		stateEvents: doc.Stream.State,
 		nodes:       make(map[string]nodeSpec, len(doc.Nodes)),
 		order:       make([]string, 0, len(doc.Nodes)),
 		edges:       make(map[string][]edge, len(doc.Nodes)),

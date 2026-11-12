@@ -315,7 +315,11 @@ func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool)
 		return frontierFailed, errdefs.BudgetExceededf("graph: exceeded limits.max_nodes %d", max)
 	}
 
-	r.markFrontier()
+	// A step marker outlives nothing here: it is the first record of the step's
+	// save, so a run without a store has no reader for it.
+	if r.store != nil {
+		r.markFrontier()
+	}
 	suspended, question, err := r.runStep(ctx, yield)
 	if errors.Is(err, errConsumerStopped) {
 		// The caller stopped reading. Side effects cannot be undone, so the
@@ -478,7 +482,7 @@ func (r *Run) runStepInline(
 		return nil, message.Content{}, err
 	}
 	_ = r.persist(ctx, result.State, result.Records)
-	if event, ok := graphStateEvent(r.step+1, result.State); ok {
+	if event, ok := r.stateEvent(result.State); ok {
 		if !yield(event, nil) {
 			return nil, message.Content{}, errConsumerStopped
 		}
@@ -692,7 +696,7 @@ func (r *Run) runStep(
 		return nil, message.Content{}, err
 	}
 	_ = r.persist(ctx, updates, records)
-	if event, ok := graphStateEvent(r.step+1, updates); ok {
+	if event, ok := r.stateEvent(updates); ok {
 		if !yield(event, nil) {
 			return nil, message.Content{}, errConsumerStopped
 		}

@@ -1,5 +1,6 @@
 # One model call per turn: a persona is a framing, not a loop.
 version: 1
+stream: {state: true}
 name: persona
 entry: model
 input: messages

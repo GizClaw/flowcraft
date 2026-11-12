@@ -4,6 +4,7 @@
 # delegate tool by the perform rule. Routing is a condition over the game state,
 # so the document reads like the phase machine it is.
 version: 1
+stream: {state: true}
 name: referee
 entry: input
 input: speech

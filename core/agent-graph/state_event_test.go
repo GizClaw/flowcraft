@@ -15,6 +15,7 @@ import (
 func TestStateChangesReachTheStream(t *testing.T) {
 	g := build(t, `
 version: 1
+stream: {state: true}
 entry: write
 state:
   text: {type: text}
@@ -55,6 +56,37 @@ edges:
 	}
 }
 
+// A run nobody asked to watch pays nothing: the projection is a JSON encoding of
+// every value the step wrote, and a document that says nothing gets none of it.
+func TestStateEventsAreOffByDefault(t *testing.T) {
+	g := build(t, `
+version: 1
+entry: write
+state:
+  text: {type: text}
+nodes:
+  - {id: write, kind: const, config: {key: text, value: hello}}
+edges:
+  - {from: write, to: end}
+`)
+	run, err := g.Start(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	var states int
+	for event, runErr := range run.Events(context.Background()) {
+		if runErr != nil {
+			t.Fatalf("run: %v", runErr)
+		}
+		if _, ok := event.(agent.EventExtension[GraphState]); ok {
+			states++
+		}
+	}
+	if states != 0 {
+		t.Fatalf("state events = %d, want none without stream.state", states)
+	}
+}
+
 // TestStateEventsStayOffTheCheckpoint is the other half: the stream is for
 // observers, and the store must not grow a second copy of what it already holds.
 func TestStateEventsStayOffTheCheckpoint(t *testing.T) {
@@ -85,5 +117,30 @@ edges:
 		if record.Kind == string(agent.KindExtension) {
 			t.Fatalf("the checkpoint holds an extension event: %s", record.Kind)
 		}
+	}
+}
+
+// A step marker is the first record of a step's save, so a run with no store has
+// no reader for one: nothing is built for it.
+func TestInMemoryRunWritesNoStepMarker(t *testing.T) {
+	g := build(t, `
+version: 1
+entry: write
+state:
+  text: {type: text}
+nodes:
+  - {id: write, kind: const, config: {key: text, value: hello}}
+edges:
+  - {from: write, to: end}
+`)
+	run, err := g.Start(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, err := drainRun(t, run); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if run.stepMarker != nil {
+		t.Fatalf("an in-memory run built a step marker: %s", run.stepMarker.Payload)
 	}
 }

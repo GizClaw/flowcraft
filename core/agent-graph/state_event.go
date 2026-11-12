@@ -26,6 +26,9 @@ const StateName = "graph.step"
 
 // GraphState is what one step changed.
 //
+// It is emitted only when the document sets `stream.state`, because building one
+// costs a JSON projection of every value the step wrote.
+//
 // It is a delta, not a snapshot: the keys this step wrote, in the encoding the
 // graph promises - text is a JSON string, json is its document, bool is a bool, and
 // messages is the run the step appended, not the whole transcript. A consumer that
@@ -38,6 +41,18 @@ type GraphState struct {
 	Step int
 	// Values are the changed keys, in the state's own JSON domain.
 	Values map[string]json.RawMessage
+}
+
+// stateEvent renders one step's writes for the live stream, when the document
+// asked for them, or reports that there is nothing to send.
+//
+// The projection costs a JSON encoding per written value, which is the whole
+// reason it is opt-in: a run nobody is watching should not pay for it.
+func (r *Run) stateEvent(updates []StateUpdate) (agent.Event, bool) {
+	if !r.g.stateEvents {
+		return nil, false
+	}
+	return graphStateEvent(r.step+1, updates)
 }
 
 // graphStateEvent renders one step's writes as the extension event the host sees,

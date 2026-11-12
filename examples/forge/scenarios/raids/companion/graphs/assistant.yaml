@@ -4,6 +4,7 @@
 # A graph is state, nodes and edges. Nodes share nothing but state; an edge
 # carries a condition over that state, not a value.
 version: 1
+stream: {state: true}
 name: assistant
 
 # The first node of a run, and the state key the run's message is seeded into.
