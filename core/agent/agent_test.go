@@ -42,6 +42,14 @@ func newFakeFactory(pause bool) (func(context.Context, string, string) (agent.Ru
 	return factory, &built
 }
 
+// closes reports how many times the runner was closed. It takes the lock because
+// a close can happen on the sweeper's goroutine, not the test's.
+func (f *fakeRunner) closes() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeCalls
+}
+
 // calls reports how many runs the fake has started.
 func (f *fakeRunner) calls() int {
 	f.mu.Lock()

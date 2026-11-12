@@ -9,6 +9,7 @@ import (
 	"iter"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -105,6 +107,10 @@ type AgentOptions struct {
 	// OnEvict is called when a session leaves the table: idle timeout or
 	// MaxSessions. A finished task rolling over to the next one is the same
 	// session and does not fire it. Optional.
+	//
+	// It may be called on any goroutine — the background sweep is where most
+	// evictions happen — never while holding a table lock, and it must be short
+	// and safe for concurrent use. A hook that blocks slows the sweep, not a run.
 	OnEvict func(sessionID string)
 }
 
@@ -130,6 +136,25 @@ type Agent struct {
 	// taskPrefix is drawn once per agent; each shard appends its own counter, so
 	// minting an id never touches a shared cache line.
 	taskPrefix string
+	// sweeper drops idle sessions in the background. The table is a cache, and
+	// looking at it on the message path made every run pay for the whole table.
+	sweeper sweeper
+}
+
+// sweeper is the background idle eviction: its goroutine, how often it looks, and
+// how Close waits for it.
+//
+// It exists because the scan is O(sessions) and the message path is O(1): a table
+// with ten thousand sessions spent a hundred microseconds per message looking for
+// sessions nothing had asked about.
+type sweeper struct {
+	// stop is closed by Close; nil when the table has no limit to enforce.
+	stop chan struct{}
+	// done is waited on before Close touches the table, so a sweep cannot close a
+	// runner the shutdown is closing.
+	done sync.WaitGroup
+	// interval is how often the loop runs; zero means no loop.
+	interval time.Duration
 }
 
 // session is one session's runner and whether a run owns it.
@@ -170,11 +195,96 @@ func NewAgent(opts AgentOptions) (*Agent, error) {
 	if opts.NewRunner == nil {
 		return nil, errors.New("agent: NewRunner is required")
 	}
-	return &Agent{
+	built := &Agent{
 		opts:       opts,
 		table:      newTable(tableShards),
 		taskPrefix: newTaskPrefix(),
-	}, nil
+	}
+	built.sweeper.interval = sweepInterval(opts)
+	built.startSweeper()
+	return built, nil
+}
+
+// sweepInterval is how often idle sessions are looked at, or zero when there is
+// no limit to enforce.
+//
+// The cadence follows the timeout it enforces: evicting a session four times more
+// often than its timeout is pointless, and a minute of slack on a cache costs
+// nothing. The floor keeps a pathologically short timeout from spinning, and the
+// ceiling keeps a long one from letting the table grow for hours.
+func sweepInterval(opts AgentOptions) time.Duration {
+	if opts.IdleTimeout <= 0 && opts.MaxSessions <= 0 {
+		return 0
+	}
+	if opts.IdleTimeout <= 0 {
+		// The cap is enforced on the message path; this pass only trims drift.
+		return time.Minute
+	}
+	interval := opts.IdleTimeout / 4
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	return interval
+}
+
+// startSweeper runs the idle eviction loop when the table has a limit.
+func (a *Agent) startSweeper() {
+	if a.sweeper.interval <= 0 {
+		return
+	}
+	stop := make(chan struct{})
+	a.sweeper.stop = stop
+	a.sweeper.done.Add(1)
+	go a.runSweeper(stop, a.sweeper.interval)
+}
+
+func (a *Agent) runSweeper(stop <-chan struct{}, interval time.Duration) {
+	defer a.sweeper.done.Done()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case now := <-ticker.C:
+			// A host hook that panics must not take the eviction with it: the
+			// table would then grow for the life of the process.
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						telemetry.Warn(context.Background(),
+							"agent: a sweep panicked; the table will be swept again",
+							attribute.String("panic", fmt.Sprint(recovered)))
+					}
+				}()
+				a.evict(a.sweep(now))
+			}()
+		}
+	}
+}
+
+// stopSweeper stops the loop and waits for it, so nothing sweeps while Close is
+// closing what the sweep would have closed.
+func (a *Agent) stopSweeper() {
+	if a.sweeper.stop == nil {
+		return
+	}
+	close(a.sweeper.stop)
+	a.sweeper.done.Wait()
+	a.sweeper.stop = nil
+}
+
+// evict closes what a sweep dropped, outside every lock. The run path does this
+// for its own evictions; the background loop has no caller to defer it to.
+func (a *Agent) evict(evicted []*session) {
+	for _, gone := range evicted {
+		if gone.runner != nil {
+			_ = gone.runner.Close()
+		}
+	}
 }
 
 // RunnerFactory builds one session's engine. It is what an engine kind
@@ -468,6 +578,9 @@ func (a *Agent) Close() error {
 	if a.closed.Swap(true) {
 		return nil
 	}
+	// Before anything else: a sweep that runs during the shutdown would close a
+	// runner this is about to close, and the second close is the host's problem.
+	a.stopSweeper()
 	var entries []*session
 	var stops []context.CancelFunc
 	for _, shard := range a.table.shards {
@@ -496,12 +609,14 @@ func (a *Agent) Close() error {
 		}
 	}
 	// Drop the table: a closed agent answers no reads, so the entries would only
-	// keep every session's runner reachable.
+	// keep every session's runner reachable. The counter goes with it, so a late
+	// cap check sees an empty table rather than the one that just went away.
 	for _, shard := range a.table.shards {
 		shard.mu.Lock()
 		shard.entries = make(map[string]*session)
 		shard.mu.Unlock()
 	}
+	a.table.sessions.Store(0)
 	return first
 }
 
@@ -598,9 +713,11 @@ func (a *Agent) acquire(ctx context.Context, sessionID, taskID string) (*session
 			entry.lastUsed = time.Now()
 			shard.begin()
 			shard.mu.Unlock()
-			// Sweep after the slot is taken: the entry in hand is running, so no
-			// pass can evict what this call is about to use.
-			evicted = append(evicted, a.sweep(time.Now())...)
+			// Only the cap is enforced here: it is a memory bound, and a bound
+			// checked once a minute is not a bound. Scanning for idle sessions is
+			// the background sweeper's work, and this call no longer pays for it.
+			// The slot is taken first, so no trim can evict the entry in hand.
+			evicted = append(evicted, a.trim()...)
 			return entry, runCtx, cancel, nil
 		}
 	}
@@ -822,31 +939,54 @@ func (a *Agent) runningIDs() []string {
 	return ids
 }
 
-// sweep evicts idle sessions and trims the table to MaxSessions. It runs
-// only when a limit is configured, so an unbounded table costs nothing per run.
+// sweep evicts idle sessions and then enforces the cap. It is the background
+// loop's whole pass, and it costs nothing when no limit is configured.
 func (a *Agent) sweep(now time.Time) []*session {
 	if a.opts.IdleTimeout <= 0 && a.opts.MaxSessions <= 0 {
 		return nil
 	}
+	evicted := a.evictIdle(now)
+	return append(evicted, a.trim()...)
+}
+
+// evictIdle drops the sessions whose idle timeout has passed.
+func (a *Agent) evictIdle(now time.Time) []*session {
+	if a.opts.IdleTimeout <= 0 {
+		return nil
+	}
 	var evicted []*session
 	var evictedIDs []string
-	total := 0
 	for _, shard := range a.table.shards {
 		shard.mu.Lock()
-		if a.opts.IdleTimeout > 0 {
-			for id, entry := range shard.entries {
-				if entry.running || entry.opening != nil || now.Sub(entry.lastUsed) < a.opts.IdleTimeout {
-					continue
-				}
-				shard.remove(id)
+		for id, entry := range shard.entries {
+			if entry.running || entry.opening != nil || now.Sub(entry.lastUsed) < a.opts.IdleTimeout {
+				continue
+			}
+			if shard.remove(id) != nil {
 				evicted = append(evicted, entry)
 				evictedIDs = append(evictedIDs, id)
 			}
 		}
-		total += len(shard.entries)
 		shard.mu.Unlock()
 	}
-	for a.opts.MaxSessions > 0 && total > a.opts.MaxSessions {
+	a.fireEvict(evictedIDs)
+	return evicted
+}
+
+// trim evicts least-recently-used idle sessions until the table is within
+// MaxSessions.
+//
+// It is the one limit the message path enforces, because a cap is a memory
+// bound and a bound checked once a minute is not a bound. Within the cap it
+// costs one atomic load.
+func (a *Agent) trim() []*session {
+	max := int64(a.opts.MaxSessions)
+	if max <= 0 || a.table.count() <= max {
+		return nil
+	}
+	var evicted []*session
+	var evictedIDs []string
+	for a.table.count() > max {
 		victim := a.oldestIdle()
 		if victim == nil {
 			break
@@ -855,18 +995,24 @@ func (a *Agent) sweep(now time.Time) []*session {
 		where.mu.Lock()
 		if where.entries[victim.id] == victim {
 			where.remove(victim.id)
-			total--
 			evicted = append(evicted, victim)
 			evictedIDs = append(evictedIDs, victim.id)
 		}
 		where.mu.Unlock()
 	}
-	if a.opts.OnEvict != nil {
-		for _, id := range evictedIDs {
-			a.opts.OnEvict(id)
-		}
-	}
+	a.fireEvict(evictedIDs)
 	return evicted
+}
+
+// fireEvict reports every session a pass dropped. It runs outside the table
+// locks: a hook is host code and may call back into the agent.
+func (a *Agent) fireEvict(ids []string) {
+	if a.opts.OnEvict == nil {
+		return
+	}
+	for _, id := range ids {
+		a.opts.OnEvict(id)
+	}
 }
 
 // oldestIdle finds the least recently used session that is not running.

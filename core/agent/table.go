@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 // tableShards is how many independent indexes the session table is split
@@ -19,7 +20,16 @@ const tableShards = 32
 // owns only where a session lives and how many runs a shard has in flight.
 type table struct {
 	shards []*shard
+	// sessions is how many entries the whole table holds.
+	//
+	// It exists so a cap check costs one atomic load instead of a scan: the scan
+	// is the work a background sweep exists to keep off the message path, and the
+	// cap has to be enforced there anyway.
+	sessions atomic.Int64
 }
+
+// count reports how many sessions the table holds.
+func (t *table) count() int64 { return t.sessions.Load() }
 
 type shard struct {
 	index   int
@@ -32,6 +42,9 @@ type shard struct {
 	// seq mints task ids inside this shard; the shard index is part of the id,
 	// so the sequences never have to agree.
 	seq uint64
+	// total is the table's counter. A shard keeps it up to date under its own
+	// lock, which is free: insert and remove already hold it.
+	total *atomic.Int64
 }
 
 func newTable(size int) *table {
@@ -40,7 +53,7 @@ func newTable(size int) *table {
 	}
 	t := &table{shards: make([]*shard, size)}
 	for i := range t.shards {
-		t.shards[i] = &shard{index: i, entries: make(map[string]*session)}
+		t.shards[i] = &shard{index: i, entries: make(map[string]*session), total: &t.sessions}
 	}
 	return t
 }
@@ -69,11 +82,20 @@ func (s *shard) lookup(sessionID string) (*session, bool) {
 	return entry, found
 }
 
-func (s *shard) insert(entry *session) { s.entries[entry.id] = entry }
+func (s *shard) insert(entry *session) {
+	if _, replaced := s.entries[entry.id]; !replaced {
+		s.total.Add(1)
+	}
+	s.entries[entry.id] = entry
+}
 
 func (s *shard) remove(sessionID string) *session {
-	entry := s.entries[sessionID]
+	entry, found := s.entries[sessionID]
+	if !found {
+		return nil
+	}
 	delete(s.entries, sessionID)
+	s.total.Add(-1)
 	return entry
 }
 
