@@ -42,8 +42,13 @@ type Invoke struct {
 	// out. A miss is an error, not a silent live call.
 	Replay bool
 	// Trace is how much of the run is traced. A node that computes input
-	// digests only does so when this allows TraceNode or Replay is on.
+	// digests for the checkpoint only does so when this allows TraceNode or
+	// Replay is on.
 	Trace telemetry.TraceLevel
+	// Bodies keeps the bytes of a recorded response. It is a retention decision,
+	// not a level: a recorded call without them is a call that can be attributed
+	// but not replayed.
+	Bodies bool
 	// Records returns the durable facts earlier steps of this task recorded under
 	// one kind, oldest first. A node that replays reads its own record kind: an
 	// empty slice means nothing was recorded, which is a first run rather than an

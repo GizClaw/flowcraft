@@ -37,8 +37,12 @@ type EngineDeps struct {
 	Fingerprint agent.Fingerprint
 	// Manifest is the version combination this deployment records.
 	Manifest agent.Manifest
-	// Trace is the host's tracing policy for runs of this engine.
+	// Trace is how much of a run this engine traces: its spans, and at the node
+	// tier the per-call evidence it keeps.
 	Trace telemetry.TraceLevel
+	// Bodies keeps the bytes of recorded model responses, which is what a replay
+	// answers from.
+	Bodies bool
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment

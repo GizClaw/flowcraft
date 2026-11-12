@@ -77,8 +77,12 @@ type Run struct {
 	// save writes it into the checkpoint.
 	manifest        agent.Manifest
 	manifestWritten bool
-	// trace is how much of the run is traced.
+	// trace is how much of the run is traced: spans, and the per-call evidence
+	// the tier carries.
 	trace telemetry.TraceLevel
+	// bodies keeps each recorded model response's bytes, which is what a replay
+	// answers from.
+	bodies bool
 	// calls indexes the model calls this run recorded, by request hash. Replay
 	// answers from it; a live run only grows it.
 	calls map[string]agent.LLMCallRecord
@@ -157,6 +161,7 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 		fingerprint: settings.fingerprint,
 		manifest:    settings.manifest,
 		trace:       settings.trace,
+		bodies:      settings.bodies,
 		replay:      settings.replay,
 		active:      []string{g.entry},
 		state:       agent.StateSubmitted,
@@ -547,6 +552,7 @@ func (r *Run) runStep(
 			},
 			Replay: r.replay,
 			Trace:  r.trace,
+			Bodies: r.bodies,
 			Checkpoint: func(records []agent.Record) error {
 				return r.persist(ctx, nil, records)
 			},

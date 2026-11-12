@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // Document is the deployment file: which agents exist and what each is made of.
@@ -30,9 +31,27 @@ type AgentDocument struct {
 	// Delegation is the policy this agent's delegate tools use. Nil means the
 	// agent gets no delegation tools at all.
 	Delegation *DelegationDocument `json:"delegation"`
+	// Observability is how much of this agent's runs is traced and recorded.
+	// Nil keeps the host's defaults for both.
+	Observability *ObservabilityDocument `json:"observability"`
 	// Hooks are the host policies attached to this agent's lifecycle, in
 	// declaration order.
 	Hooks []HookDocument `json:"hooks"`
+}
+
+// ObservabilityDocument is the written form of the run's observation policy.
+//
+// Trace is one ladder because spans and the per-call records answer the same
+// question at different resolutions: a run somebody wants to inspect node by
+// node is also a run whose prompt digests are worth keeping. Bodies is not a
+// level: whether the response's bytes are stored is a retention decision about
+// the user's own content, so it is asked separately.
+type ObservabilityDocument struct {
+	// Trace is off (default), run, step or node.
+	Trace string `json:"trace"`
+	// Bodies keeps the bytes of recorded model responses. Nil means the host's
+	// default.
+	Bodies *bool `json:"bodies"`
 }
 
 // HookDocument selects one host hook kind and carries its settings.
@@ -241,13 +260,18 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if err != nil {
 		return Spec{}, err
 	}
+	observability, err := buildObservability(agent.Observability, where)
+	if err != nil {
+		return Spec{}, err
+	}
 	spec := Spec{
-		Name:       agent.Name,
-		Catalog:    catalog,
-		Hooks:      hooks,
-		Engine:     engineSpec,
-		Protocol:   protocolSpec,
-		Delegation: delegationSpec,
+		Name:          agent.Name,
+		Catalog:       catalog,
+		Hooks:         hooks,
+		Engine:        engineSpec,
+		Protocol:      protocolSpec,
+		Delegation:    delegationSpec,
+		Observability: observability,
 	}
 	if agent.Runtime != nil {
 		layers, err := l.layers(agent.Name, agent.Runtime)
@@ -292,6 +316,20 @@ func (l Loader) engine(name string) (EngineKind, bool) {
 func (l Loader) protocol(name string) (ProtocolKind, bool) {
 	kind, found := l.Kinds.Protocols[name]
 	return kind, found
+}
+
+// buildObservability validates the written level. It is checked here rather
+// than at build time so a typo fails before an agent exists, and the error names
+// what may be written instead — the reader's question is "which values are
+// there", not "which field is wrong".
+func buildObservability(doc *ObservabilityDocument, where func(string) string) (ObservabilitySpec, error) {
+	if doc == nil {
+		return ObservabilitySpec{}, nil
+	}
+	if _, err := telemetry.ParseTraceLevel(doc.Trace); err != nil {
+		return ObservabilitySpec{}, errdefs.Validationf("%s: %v", where("observability"), err)
+	}
+	return ObservabilitySpec{Trace: doc.Trace, Bodies: doc.Bodies}, nil
 }
 
 // buildDelegation validates and converts the written policy.

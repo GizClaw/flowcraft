@@ -49,6 +49,7 @@ func GraphEngine(options ...nodes.Option) EngineKind {
 					TaskID:    taskID,
 					Manifest:  deps.Manifest,
 					Trace:     deps.Trace,
+					Bodies:    deps.Bodies,
 				}), nil
 			}, nil
 		},

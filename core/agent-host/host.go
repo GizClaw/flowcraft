@@ -44,9 +44,12 @@ type Bindings struct {
 	// ArtifactURL turns a blob reference into a URL a client can fetch. Nil keeps
 	// the reference in a data part.
 	ArtifactURL func(ref string) string
-	// Trace controls the spans every run of every deployment emits. Zero emits
-	// none; a durable host usually asks for TraceNode.
+	// Trace controls how much of a run leaves a trace behind, for the agents
+	// whose document is silent. Zero emits and records nothing.
 	Trace telemetry.TraceLevel
+	// Bodies keeps the bytes of recorded model responses, for the agents whose
+	// document is silent. It only means anything at TraceNode.
+	Bodies bool
 	// Harness is the host's build identity (version or git SHA), recorded in
 	// each deployment's manifest.
 	Harness string
@@ -147,6 +150,14 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	if err := deploy.ValidateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
 		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
 	}
+	// The document wins when it states a level; the host's bindings are the
+	// default for the fields it leaves out. A host that must be able to force a
+	// level downward would need a different rule, and there is none because
+	// observing more of a run cannot widen what the run is allowed to do.
+	trace, bodies, err := spec.Observability.Validated(m.bindings.Trace, m.bindings.Bodies)
+	if err != nil {
+		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
+	}
 
 	runtimeOptions := append([]runtime.Option(nil), m.bindings.RuntimeOptions...)
 	var delegationService *delegation.Service
@@ -212,7 +223,8 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Store:       m.bindings.Store,
 		Fingerprint: deployed.fingerprint,
 		Manifest:    deployed.manifest,
-		Trace:       m.bindings.Trace,
+		Trace:       trace,
+		Bodies:      bodies,
 	})
 	if err != nil {
 		if rt != nil {
@@ -227,7 +239,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Identity:   deployed.fingerprint,
 		NewRunner:  factory,
 		RunContext: deployed.runContext,
-		Trace:      m.bindings.Trace,
+		Trace:      trace,
 		OnRun: func(record agent.RunRecord) {
 			if m.bindings.OnRun != nil {
 				m.bindings.OnRun(spec.Name, record)

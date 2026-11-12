@@ -20,8 +20,13 @@ type RunnerConfig struct {
 	TaskID    string
 	// Manifest is the version combination the run records.
 	Manifest agent.Manifest
-	// Trace controls the spans the graph emits.
+	// Trace controls the spans the graph emits, and — at TraceNode — the
+	// per-call evidence it keeps.
 	Trace telemetry.TraceLevel
+	// Bodies keeps the bytes of each recorded model response, which is what a
+	// replay answers from. It is a retention decision rather than a level: the
+	// answer is the user's content.
+	Bodies bool
 	// Replay answers model calls from this task's records instead of calling
 	// out. A miss is an error.
 	Replay bool
@@ -87,6 +92,7 @@ func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.E
 				WithFingerprint(r.cfg.Identity),
 				WithManifest(r.cfg.Manifest),
 				WithTrace(r.cfg.Trace),
+				WithBodies(r.cfg.Bodies),
 				WithReplay(r.cfg.Replay),
 			)
 			if err != nil {

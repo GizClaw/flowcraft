@@ -2,10 +2,12 @@ package deploy
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // CatalogSpec scopes the tool projection a local engine reads.
@@ -71,9 +73,46 @@ type Spec struct {
 	MaxSessions int
 	// Delegation is the policy its delegate tools use. Nil means no tools.
 	Delegation *DelegationSpec
+	// Observability is how much of this agent's runs is traced and recorded.
+	// Absent fields fall back to the host's bindings.
+	Observability ObservabilitySpec
 	// Hooks are the host policies attached to this agent's lifecycle, in
 	// declaration order.
 	Hooks []HookSpec
+}
+
+// ObservabilitySpec is the validated form of the written observability block.
+//
+// Trace is kept as a string rather than a parsed level because the empty string
+// is meaningful: it says "the document is silent, use the host's default", which
+// no level value can express. Bodies is a pointer for the same reason — the
+// default is a policy, and "unset" is not "false".
+type ObservabilitySpec struct {
+	// Trace is the level: off, run, step or node.
+	Trace string
+	// Bodies keeps the bytes of recorded model responses. Nil uses the host's
+	// default.
+	Bodies *bool
+}
+
+// Validated returns the level and the retention flag, applying the given
+// defaults for the fields the document left out.
+func (o ObservabilitySpec) Validated(
+	hostTrace telemetry.TraceLevel,
+	hostBodies bool,
+) (telemetry.TraceLevel, bool, error) {
+	trace, bodies := hostTrace, hostBodies
+	if strings.TrimSpace(o.Trace) != "" {
+		parsed, err := telemetry.ParseTraceLevel(o.Trace)
+		if err != nil {
+			return 0, false, errdefs.Validationf("manage: observability: %v", err)
+		}
+		trace = parsed
+	}
+	if o.Bodies != nil {
+		bodies = *o.Bodies
+	}
+	return trace, bodies, nil
 }
 
 // DelegationSpec is the validated, typed form of the written policy.

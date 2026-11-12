@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -143,6 +144,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		return nil, fmt.Errorf("model: %w", err)
 	}
 	record := in.Trace.Allows(telemetry.TraceNode) || in.Replay
+	bodies := in.Bodies || in.Replay
 	var digests []agent.MessageDigest
 	var segments []agent.PromptSegment
 	var requestHash string
@@ -187,6 +189,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		model:       request.Model,
 		started:     started,
 		record:      record,
+		bodies:      bodies,
 		digests:     digests,
 		segments:    segments,
 		requestHash: requestHash,
@@ -360,7 +363,11 @@ type modelStream struct {
 	started     time.Time
 	// record says this call's identity is kept: the input digests and the
 	// assembled response ride the step's checkpoint.
-	record      bool
+	record bool
+	// bodies says the response's bytes are kept too, which is what a replay
+	// answers from. It is narrower than record on purpose: a deployment may want
+	// to attribute a prompt without paying for the answers.
+	bodies      bool
 	requestHash string
 	digests     []agent.MessageDigest
 	segments    []agent.PromptSegment
@@ -374,6 +381,11 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 	if s.replay != nil {
 		if s.done {
 			return nil, io.EOF
+		}
+		if len(s.replay.Response) == 0 {
+			return nil, errdefs.NotAvailablef(
+				"model: replay %s: this task recorded no response body (bodies is off)",
+				s.requestHash)
 		}
 		var msg message.Message
 		if err := json.Unmarshal(s.replay.Response, &msg); err != nil {
@@ -484,7 +496,7 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 			Messages:    s.digests,
 			Segments:    s.segments,
 		}
-		if body, err := json.Marshal(response.Message); err == nil {
+		if body, err := json.Marshal(response.Message); err == nil && s.bodies {
 			record.Response = body
 		}
 		if payload, err := json.Marshal(record); err == nil {

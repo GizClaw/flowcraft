@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // testLoader registers one local fake kind beside the built-in a2a engine.
@@ -199,5 +201,102 @@ agents:
 `))
 	if err == nil {
 		t.Fatal("a placeholder with no resolver was accepted")
+	}
+}
+
+// The observability block is one ladder plus one retention flag: the level is
+// validated at load, and the flag is a pointer so a document that says nothing
+// keeps the host's policy.
+func TestLoadObservability(t *testing.T) {
+	specs, err := testLoader(t).Load(context.Background(), []byte(`
+version: 1
+agents:
+  - name: quiet
+    engine: {kind: local}
+    runtime:
+      layers:
+        - {priority: 0, path: `+writeLayer(t)+`}
+  - name: loud
+    engine: {kind: local}
+    runtime:
+      layers:
+        - {priority: 0, path: `+writeLayer(t)+`}
+    observability: {trace: node, bodies: true}
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	quiet, loud := specs[0].Observability, specs[1].Observability
+	if quiet.Trace != "" || quiet.Bodies != nil {
+		t.Errorf("a silent block parsed as %+v, want both unset", quiet)
+	}
+	if loud.Trace != "node" {
+		t.Errorf("trace = %q, want node", loud.Trace)
+	}
+	if loud.Bodies == nil || !*loud.Bodies {
+		t.Errorf("bodies = %v, want true", loud.Bodies)
+	}
+	trace, bodies, err := loud.Validated(telemetry.TraceOff, false)
+	if err != nil {
+		t.Fatalf("Validated: %v", err)
+	}
+	if trace != telemetry.TraceNode || !bodies {
+		t.Errorf("resolved to %s/%v, want node/true", trace, bodies)
+	}
+}
+
+// A typo names the values that exist: "which levels are there" is the reader's
+// question, not "which field is wrong".
+func TestLoadRejectsAnUnknownTraceLevel(t *testing.T) {
+	_, err := testLoader(t).Load(context.Background(), []byte(`
+version: 1
+agents:
+  - name: loud
+    engine: {kind: local}
+    runtime:
+      layers:
+        - {priority: 0, path: `+writeLayer(t)+`}
+    observability: {trace: everything}
+`))
+	if err == nil {
+		t.Fatal("an unknown trace level was accepted")
+	}
+	for _, want := range []string{"off", "run", "step", "node"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A field the document leaves out keeps the host's default; the ones it states
+// win. Observing more of a run cannot widen what the run may do, so there is no
+// second rule.
+func TestObservabilityDefaultsComeFromTheHost(t *testing.T) {
+	host := func(trace string, bodies *bool) ObservabilitySpec {
+		return ObservabilitySpec{Trace: trace, Bodies: bodies}
+	}
+	yes := true
+	cases := []struct {
+		name       string
+		spec       ObservabilitySpec
+		hostTrace  telemetry.TraceLevel
+		hostBodies bool
+		wantTrace  telemetry.TraceLevel
+		wantBodies bool
+	}{
+		{"silent", host("", nil), telemetry.TraceStep, true, telemetry.TraceStep, true},
+		{"only level", host("node", nil), telemetry.TraceOff, true, telemetry.TraceNode, true},
+		{"only flag", host("", &yes), telemetry.TraceRun, false, telemetry.TraceRun, true},
+		{"both", host("off", &yes), telemetry.TraceNode, true, telemetry.TraceOff, true},
+	}
+	for _, tc := range cases {
+		trace, bodies, err := tc.spec.Validated(tc.hostTrace, tc.hostBodies)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if trace != tc.wantTrace || bodies != tc.wantBodies {
+			t.Errorf("%s: resolved %s/%v, want %s/%v",
+				tc.name, trace, bodies, tc.wantTrace, tc.wantBodies)
+		}
 	}
 }

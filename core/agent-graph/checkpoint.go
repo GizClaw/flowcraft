@@ -190,6 +190,7 @@ type runOptions struct {
 	fingerprint agent.Fingerprint
 	manifest    agent.Manifest
 	trace       telemetry.TraceLevel
+	bodies      bool
 	replay      bool
 	// stepMarker is the frontier record the next save writes first.
 	stepMarker *agent.Record
@@ -221,6 +222,13 @@ func WithManifest(manifest agent.Manifest) RunOption {
 // WithTrace sets how much of the run is traced.
 func WithTrace(trace telemetry.TraceLevel) RunOption {
 	return func(o *runOptions) { o.trace = trace }
+}
+
+// WithBodies keeps the bytes of each recorded model response, which is what a
+// replay answers from. Without it a recorded call keeps its identity — the
+// request hash and the prompt digests — and not the answer.
+func WithBodies(bodies bool) RunOption {
+	return func(o *runOptions) { o.bodies = bodies }
 }
 
 // WithReplay answers model calls from the run's records instead of calling out.
@@ -314,6 +322,9 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 		r.needBase = true
 		return err
 	}
+	// The projection's identity is evidence, so it follows the trace level: a
+	// deployment that keeps no per-call records has no use for a hash of a
+	// decision point nobody can look up.
 	if r.trace != telemetry.TraceOff {
 		sum := sha256.Sum256(body)
 		proj.ContextHash = "sha256:" + hex.EncodeToString(sum[:])
