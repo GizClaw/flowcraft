@@ -1,163 +1,232 @@
-# Forge — Runnable Local Workspace Demo
+# Forge — a werewolf table on the FlowCraft stack
 
-Forge is the runnable local demo for the FlowCraft stack. It turns a workspace
-directory into deployed agents, drives one session from a terminal UI or a
-scripted test, and keeps every scenario fact in plain files under `scenarios/`.
+Forge is the runnable local demo for FlowCraft. It deploys a workspace directory
+into a small cast of agents and plays a game of werewolf: one referee that owns the
+rules, eight seats that speak, one of them played by you.
 
-It is written against the current core layering on purpose: it is the smallest
-complete host, so it shows what an application actually has to write.
+It is a host, not a framework: everything it does with the stack is what an
+application has to write — open a workspace, deploy agents, drive a session, read
+the events back out.
 
 中文版见 [README_zh.md](README_zh.md)。
 
 ## Quickstart
 
-Prerequisites: Go 1.26+ and an OpenAI credential.
+Go 1.26+ and an OpenAI credential.
 
 ```bash
 cd examples/forge
-cp .env.example .env         # then set OPENAI_API_KEY=...
+cp .env.example .env          # then set OPENAI_API_KEY=...
 go run . help
-go run . tui new             # pick "companion" and start chatting
-go run . test -test companion/opening
+go run . tui new              # pick "werewolf" and start the table
+go run . test -test werewolf/opening
+go run . test-auto --raid werewolf --rounds 8     # let it play itself
 ```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `forge workspace create --config <raid> --workspace <dir>` | copy a raid scenario into a workspace |
-| `forge workspace inspect --workspace <dir>` | print the agents, engines and missing environment |
-| `forge config raid\|persona\|test list` | list available scenarios and tests |
-| `forge tui new` / `forge tui resume` | open the interactive TUI over a new or an existing workspace |
-| `forge test -test <raid>/<name> [--timeout 2m]` | run one scripted test, writing `.out/<run>/` |
-| `forge test-auto --raid <raid> --persona <persona> [--turns 3]` | simulate a dialogue between two deployed agents |
+| `forge workspace create --config <raid> --workspace <dir>` | copy a raid into a workspace |
+| `forge workspace inspect --workspace <dir>` | every agent: director or speaker, label, graph, models, tools, delegates, hooks |
+| `forge inspect <workspace> [--task <id>] [--kind <kind>]` | one run's timeline, read back from the store |
+| `forge config raid\|persona\|test list` | list scenarios and tests |
+| `forge tui new` / `forge tui resume` | the interactive table |
+| `forge test -test <raid>/<name> [--timeout 2m]` | one scripted test, written to `.out/<run>/` |
+| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | play a whole game, the human seat answered by its own agent |
 
-Scenario files are resolved in priority order from `--scenarios`, `FORGE_SCENARIOS`,
-the executable's directory, the working directory, and the per-user config
-directory.
+Scenarios resolve from `--scenarios`, `FORGE_SCENARIOS`, the executable's
+directory, the working directory and the per-user config directory, in that order.
 
-## How a workspace is put together
+## The table: one graph, eight agents
 
+A raid is a **C3** deployment: three kinds of participant, no more.
+
+```text
+referee      owns the rules and the table; makes no model call of its own
+seat_1..8    one agent per seat, reached through the delegate tool
+you          seat_3, answered by a person (or by seat_3's own agent in test-auto)
 ```
-scenarios/raids/companion/
-  deploy.yaml            # which agents exist, and how each is built
-  runtime.yaml           # the substrate: boundary, files, models, tools
-  graphs/assistant.yaml  # one graph: state, nodes, edges
-scenarios/personas/tom/  # the same three files, one agent, no tools
-scenarios/tests/companion/opening.yaml
-```
 
-`deploy.yaml` names the agents. It does not describe resources: there is no
-resource graph, no assembly step and no dependency injection in the document:
+`deploy.yaml` is the cast:
 
 ```yaml
-version: 1
 agents:
-  - name: assistant
-    engine:
-      kind: graph
-      settings:
-        path: ${workspace:root}/graphs/assistant.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
-    catalog: {scope: session}
+  - name: referee
+    engine: {kind: graph, settings: {path: ${workspace:root}/graphs/referee.yaml}}
+    delegation:                       # sync: a rule asks a seat and waits
+      targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
+      modes: [sync]
+      timeout: 2m
+  - name: seat_1
+    engine: {kind: graph, settings: {path: ${workspace:root}/graphs/seat_1.yaml}}
+    hooks:
+      - kind: seat-memory             # the seat's own memory across turns
+        settings: {dir: .forge/memory, keep: 12}
 ```
 
-`${workspace:root}` is a placeholder scheme forge registers for the directory it
-is opening (`internal/app/document.go`), so a scenario stays relocatable.
+The referee's graph is the game: eleven script nodes (`seed`, `input`, `route`,
+`night`, `dawn`, `day`, `vote`, `exile`, `hunter`, `postgame`, `perform`) over state
+that holds the table. It is the only node that acts — `perform` calls `delegate` —
+so the graph decides *who* and the rule decides *what to ask*.
 
-`runtime.yaml` is one `runtime.Config`: the sandbox backend, the writable roots,
-the models (a driver ships no line-up), and which built-in tool sets are wired.
-The simulated device tools are *not* here — they are a `tool.Source` the host
-mounts (`internal/simtools`), which is how an application adds its own tools.
+```text
+input → route → night|dawn|day|vote|exile|hunter|postgame → perform → route
+                    ↑                                            │
+                    └──────────── end when the table waits for you ┘
+```
 
-`graphs/assistant.yaml` is the agent itself: declared state keys with merge
-rules, nodes, and edges whose conditions are expressions over that state:
+**Why seats need a hook.** Delegation gives a seat a fresh child session per call.
+Without a fact of its own a seat would meet the table anew every night, so
+`seat-memory` reads and writes the seat's file under `.forge/memory`, keyed by the
+game named on the brief's first line. Only the engine knows when a turn starts and
+ends; only the deployment knows what a seat may remember. That is the split the hook
+kind exists for.
+
+## Rules are scripts
+
+A rule is a Starlark source, run in-process by `core/agent-graph/script`:
 
 ```yaml
-state:
-  messages: {type: messages, merge: append}
-  pending:  {type: json}
-nodes:
-  - {id: model, kind: model, config: {messages: messages, pending: pending, output: answer}}
-  - {id: tools, kind: tool,  config: {messages: messages, pending: pending}}
-edges:
-  - {from: model, to: tools, when: len(state.pending) > 0}
-  - {from: tools, to: model}
-  - {from: model, to: end}
-output: {key: answer}
+- id: perform
+  kind: script
+  config:
+    backend: starlark
+    path: rules/perform.star
+    reads: [game, brief]
+    writes: [game, brief, spoken]
+    allow: [tool:delegate]        # the one rule that acts
 ```
+
+- **Declared, not ambient**: `reads`/`writes` are the rule's whole surface, and
+  `allow` is every tool it may reach. A rule cannot touch a key or a tool the
+  document did not name.
+- **No suspend**: a script runs to completion. `allow` non-empty forbids suspending
+  inside it, so a rule that acts is a rule that finishes.
+- **`version: pinned`** keeps a resumed task on the version it recorded; if that
+  version is gone the run fails loudly instead of quietly changing rules mid-game.
+- Termination is by construction: no IO, no clock, budgets on steps and output
+  size. Memory is an explicit non-goal — the language is chosen for determinism,
+  not for a hostile sandbox.
+
+The backend is language-neutral: `backend: starlark` ships first because it is
+deterministic and has no IO; a Lua worker pool is the intended sibling, not a
+replacement.
+
+## Hooks: what the host owns
+
+Three moments, declared per agent in `deploy.yaml`:
+
+| Hook | When | Failure |
+|---|---|---|
+| `OnSession` | after a session opens or is restored, before its turn | stops the turn |
+| `BeforeTurn` | before the engine sees the turn; may rewrite the message | stops the turn |
+| `AfterTurn` | after the run ends, with state and result | **logged, not fatal** |
+
+`AfterTurn` is the one that must not fail: the work is done and side effects cannot
+be undone, so a memory write that loses a race is a log line, not a failed game.
+
+## `carry`: state across the turns of a session
+
+A graph's state can be declared `carry: true`, which starts the next task from the
+previous one instead of from a zero value. The referee uses it for the table, and
+`day.star` uses the speech channel to know a human answered.
+
+It is for **bounded state** — a game, a form, a running total — not for transcripts.
+Measured on an M2 Max (`core/agent-graph/carry_bench_test.go`): starting a task with
+a fresh state costs ~14.7µs; carrying a 200-message transcript costs ~667µs and
+~5k allocations per turn. A conversation belongs in one task, not in carried state.
+
+## Reading a run
+
+`forge inspect` folds the checkpoint store into a timeline, which is the difference
+between "the seats abstained" and "the seats said 我投六号, and the parser read a
+byte":
+
+```text
+step 4  perform  (live)
+  script.run       rules/perform.star  v=sha256:aa471…  live
+  script.tool      delegate#0 ok  我想先救1号，毒药留一晚。  args=sha256:e1dba49…
+  script.tool      delegate#1 ok  我这票先弃了。  args=sha256:89c7b63…
+  state game     brief_kind= brief_seat=0 current_votes=3 items vote_index=3
+```
+
+- one marker per step: the nodes that ran, and whether the step **replayed**;
+- the state fields the step **changed**, not the whole document;
+- each rule with its version, each tool call with its answer and argument hash.
+
+`delegate#0` and `delegate#1` are the original answer and the re-ask: the rules
+re-ask a seat whose vote they could not read, once, before recording an abstention.
 
 ## Where the code is
 
 | Path | Job |
 |---|---|
-| `internal/app/app.go` | opens a workspace: manager, store, session, run iterator |
-| `internal/app/document.go` | reads `deploy.yaml`, resolves `${workspace:root}`, reports missing env |
-| `internal/app/drivers.go` | the driver table this binary compiles in (`openai`, `anthropic`) |
-| `internal/app/usage.go` | folds a turn's usage events into one report |
-| `internal/simtools` | the demo's own tools, as a `tool.Source` |
-| `internal/chatfmt` | event stream → speech / tool blocks, shared by TUI and test logs |
+| `internal/app` | opens a workspace: manager, store, sessions, one turn |
+| `internal/app/document.go` | reads `deploy.yaml`, `${workspace:root}`, missing env |
+| `internal/app/drivers.go` | the driver table this binary compiles in |
+| `internal/hooks/memory` | the `seat-memory` hook kind |
+| `internal/story` | who the table is: director, speakers, labels, player seat |
+| `internal/simtools` | the scenario's own tools, as a `tool.Source` |
+| `internal/chatfmt` | events → speech/tool blocks, shared by TUI and test logs |
 | `internal/tui` | the bubbletea interface |
-| `internal/commands` | the CLI surface |
-| `internal/scenario` | file resolution and copying, nothing about agents |
+| `internal/commands` | the CLI surface, including `inspect` |
+| `internal/scenario` | file resolution and copying; nothing about agents |
 
-The whole host is `host.New(...)` + `Loader.Load` + `Manager.Deploy`:
+The whole host is `host.New` + `Loader.Load` + `Deploy`:
 
 ```go
-mgr := host.New(deploy.BuiltinKinds(), host.Bindings{
-    Store:          store,                                             // resume
-    RuntimeOptions: []runtime.Option{drivers, simtools.New()},         // wiring
-    LoadOptions:    workspaceOptions(dir),                             // ${workspace:root}
+mgr := host.New(graphKinds(abs), host.Bindings{
+    Store:       store,                                       // resume
+    LoadOptions: workspaceOptions(abs),                       // ${workspace:root}
+    OnEvent:     a.forwardSeat,                               // seats' streams
 })
 specs, err := mgr.Loader().Load(ctx, body)
 _, err = mgr.Deploy(ctx, specs...)
 
-session, _ := mgr.Session("assistant", app.SessionID)
+session, _ := mgr.Session("referee", "referee/"+app.SessionID)   // a session belongs to one agent
 for event, err := range session.Run(ctx, message.NewTextMessage(message.RoleUser, text)) { ... }
-result, err := session.Result(ctx)
 ```
+
+## Workspace layout
+
+```text
+scenarios/raids/werewolf/
+  deploy.yaml              # nine agents: referee + eight seats
+  runtime.yaml             # substrate: sandbox, files, models, tools
+  story.yaml               # director, speakers, labels, player seat
+  graphs/referee.yaml      # the game: state, eleven nodes, edges
+  graphs/seat_1..8.yaml    # one persona graph per seat
+  rules/*.star             # eleven rules
+scenarios/tests/werewolf/opening.yaml, full_game.yaml
+```
+
+`${workspace:root}` is a placeholder scheme forge binds to the directory it opens, so
+a scenario stays relocatable. A workspace keeps its durable side in
+`.forge/sessions.db`; `tui resume` therefore resumes the conversation, not just the
+directory.
 
 ## Differences from the previous forge
 
-The previous version was written against `core` v0.10.0 and no longer compiles
-against the current layering. This rewrite follows it:
+The previous version was written against `core` v0.10.0 and no longer compiles. This
+one follows the current layering:
 
-- **No resource document.** `resources:` / `deps:` / `kind: …impl: …` are gone;
-  a deployment is agents plus engine settings plus runtime layers.
-- **No JS script runtime.** The graph's built-in node kinds are `model`, `tool`
-  and `condition`. The old `werewolf` and `multi_role_storyteller` scenarios were
-  driven by ~2.3k lines of JavaScript and are kept in `../forge-tmp` for
-  reference only; nothing in core executes scripts now.
+- **No resource document.** A deployment is agents plus engine settings plus runtime
+  layers; there is no assembly step in the document.
+- **Scripts are back, but not JavaScript.** The werewolf rules are Starlark, run
+  in-process by a script node the graph engine owns. The old JS runtime stays
+  retired; the old scenarios are kept in `../forge-tmp` for reference only.
 - **No board.** Graph state replaces board variables, and conditions read
-  `state.<key>`. A turn therefore cannot override the model: the model node's
-  request is configuration, so `/model` and `/think` are gone from the TUI and
-  the model is chosen in `runtime.yaml`.
-- **No per-node speaker labels.** Events say what the model said and which tool
-  ran, not which node produced it. A deployment that needs attribution gives each
-  speaker its own agent — one session per speaker — and labels by agent name.
-- **Tool counters and usage come from the event stream**, not from a decorator
-  around a host factory.
-- **Sessions are durable.** Each workspace keeps a SQLite store under
-  `.forge/sessions.db`, so `tui resume` resumes the conversation, not just the
-  directory.
+  `state.<key>`; the model is chosen in `runtime.yaml`, not by a TUI command.
+- **Attribution is by agent.** Events say what was said and which tool ran, not
+  which node produced it, so a deployment that needs per-speaker attribution gives
+  each speaker its own agent — which is exactly what the seats are.
+- **Usage and tool counts come from the event stream.**
 
 ## Development notes
 
-The core revision this example needs is not tagged yet: `core` is at `v0.10.0`,
-which predates `core/agent-host` and `core/agent-graph/nodes`. The module
-therefore resolves through the repository's `go.work` — it carries no `replace`
-directives of its own. Bump the `core` requirement when the next release is
-tagged; `make tidy` and `make check-consumers` (which build with `GOWORK=off`
-against released modules) only pass from that point on.
+`core` is not tagged at the revision this example needs, so the module resolves
+through the repository's `go.work` and carries no `replace` of its own.
 
-Gates, from this directory (workspace mode):
-
-```bash
-gofmt -l .
-go build ./... && go vet ./... && go test ./...
-```
-
-and `make ci` from the repository root.
+Gates, from this directory: `gofmt -l .`, `go build ./... && go vet ./... && go test ./...`.
+From the repository root: `make ci` (and `make lint` for the CI-gated modules).
