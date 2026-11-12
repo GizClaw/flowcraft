@@ -121,8 +121,12 @@ def run(state):
     brief = state["brief"]
     game["brief_seat"] = 0
     game["brief_kind"] = ""
+    # What the turn answers with. A rule that asks a seat for a line keeps the line
+    # in its own record; the one case where the seat's words *are* the answer is the
+    # recap, because there is no rule left to phrase one.
+    prompt = ""
     if seat == 0 or brief == "":
-        return {"game": game, "brief": "", "spoken": ""}
+        return {"game": game, "brief": "", "spoken": "", "prompt": prompt}
 
     # The seat's turn: the game id rides the brief so its memory hook can key on it.
     answer = tool("delegate", {
@@ -196,6 +200,7 @@ def run(state):
         rows.append({"seat": seat, "day": game["day"], "text": said})
         game["public_speeches"] = rows
         _event(game, "复盘：" + str(seat) + "号" + _name(game, seat) + "：" + said)
+        prompt = str(seat) + "号" + _name(game, seat) + "：" + said
     if kind == "seer":
         night = game.get("night") or {}
         target = _target(said)
@@ -206,7 +211,7 @@ def run(state):
         night["seer_decided"] = True
         game["night"] = night
         game["phase"] = "dawn"
-    return {"game": game, "brief": "", "spoken": said}
+    return {"game": game, "brief": "", "spoken": said, "prompt": prompt}
 
 
 def _role(game, id):

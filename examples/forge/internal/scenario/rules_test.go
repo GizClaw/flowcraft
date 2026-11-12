@@ -673,3 +673,57 @@ func TestHumanVoteReadsHowPeopleWrite(t *testing.T) {
 		}
 	}
 }
+
+const postgameConfig = `{"backend":"starlark","path":"rules/postgame.star","reads":["game","speech"],"writes":["game","brief","prompt"]}`
+
+// TestPostgameAnnouncesThenAsksASeat: the ending is announced once, and a later
+// question is handed to a living seat instead of stopping at the announcement. The
+// rules no longer phrase a recap themselves, because only the table knows what it
+// saw - the seat does.
+func TestPostgameAnnouncesThenAsksASeat(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	ended := func(extra map[string]any) graph.Value {
+		base := map[string]any{
+			"phase":               "ended",
+			"winner":              "werewolf",
+			"post_game_announced": false,
+			"post_game_turn":      0,
+		}
+		for key, value := range extra {
+			base[key] = value
+		}
+		return gameFrom(t, raw, base)
+	}
+	first := runRule(t, "rules/postgame.star", postgameConfig, map[string]graph.Value{
+		"game":   ended(nil),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	})
+	prompt, _ := first["prompt"].Text()
+	if !strings.Contains(prompt, "获胜") {
+		t.Fatalf("prompt = %q, want the announcement", prompt)
+	}
+	game := decodeGame(t, first["game"])
+	if game["post_game_announced"] != true {
+		t.Fatalf("the ending must be announced once: %v", game["post_game_announced"])
+	}
+
+	second := runRule(t, "rules/postgame.star", postgameConfig, map[string]graph.Value{
+		"game": ended(map[string]any{
+			"post_game_announced": true,
+			"alive":               []any{7, 8},
+		}),
+		"speech": speechValue("狼队到底是谁？"),
+		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
+	})
+	game = decodeGame(t, second["game"])
+	if game["brief_kind"] != "postgame" || game["brief_seat"] == nil {
+		t.Fatalf("the question was not handed to a seat: %v %v", game["brief_kind"], game["brief_seat"])
+	}
+	brief, _ := second["brief"].Text()
+	if !strings.Contains(brief, "狼队到底是谁") {
+		t.Fatalf("brief = %q, want the question", brief)
+	}
+}

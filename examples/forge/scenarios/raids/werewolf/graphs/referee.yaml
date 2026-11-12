@@ -121,7 +121,7 @@ nodes:
       backend: starlark
       path: rules/perform.star
       reads: [game, brief]
-      writes: [game, brief, spoken]
+      writes: [game, brief, spoken, prompt]
       # The one rule that acts: it asks a seat through the delegate tool.
       allow: [tool:delegate]
 
