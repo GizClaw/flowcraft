@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -332,4 +333,152 @@ func decodeGame(t *testing.T, value graph.Value) map[string]any {
 		t.Fatalf("decode game: %v", err)
 	}
 	return game
+}
+
+const exileConfig = `{"backend":"starlark","path":"rules/exile.star","reads":["game"],"writes":["game","prompt"]}`
+
+// voteConfig and dayConfig declare all eight seat channels: a rule writes a brief
+// into exactly one of them, and a script node declares its writes statically.
+const voteConfig = `{"backend":"starlark","path":"rules/vote.star","reads":["game","speech","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"],"writes":["game","prompt","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"]}`
+
+const dayConfig = `{"backend":"starlark","path":"rules/day.star","reads":["game","speech","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"],"writes":["game","prompt","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"]}`
+
+// seatChannels is the empty channel set a rule invocation expects.
+func seatChannels(overrides map[string]graph.Value) map[string]graph.Value {
+	values := map[string]graph.Value{"prompt": graph.Text("")}
+	for id := 1; id <= 8; id++ {
+		key := "seat_" + strconv.Itoa(id)
+		values[key] = graph.MessagesValue(graph.MessagesFromSlice(nil))
+	}
+	for key, value := range overrides {
+		values[key] = value
+	}
+	return values
+}
+
+func TestDayMovesToTheVoteWhenEveryoneSpoke(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	values := seatChannels(map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{
+			"phase": "day", "speaker_order": []any{1, 2}, "speech_index": 2, "day": 1,
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+	})
+	game := decodeGame(t, runRule(t, "rules/day.star", dayConfig, values)["game"])
+	if game["phase"] != "vote" {
+		t.Fatalf("phase = %v, want vote", game["phase"])
+	}
+	pending, _ := game["vote_pending"].([]any)
+	if len(pending) != len(game["alive"].([]any)) {
+		t.Fatalf("vote_pending = %v, want every living seat", pending)
+	}
+}
+
+func TestDayAsksTheHumanInTurn(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	values := seatChannels(map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{
+			"phase": "day", "speaker_order": []any{2, 3}, "speech_index": 1, "day": 1,
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+	})
+	writes := runRule(t, "rules/day.star", dayConfig, values)
+	prompt, _ := writes["prompt"].Text()
+	if !strings.Contains(prompt, "轮到你") {
+		t.Fatalf("prompt = %q, want the human's turn", prompt)
+	}
+	if game := decodeGame(t, writes["game"]); game["waiting_for"] != "day_speech" {
+		t.Fatalf("waiting_for = %v", game["waiting_for"])
+	}
+}
+
+func TestVoteTallyExilesTheMajority(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	values := seatChannels(map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{
+			"phase": "tally", "vote_index": 3, "vote_pending": []any{1, 2, 4},
+			"current_votes": []any{
+				map[string]any{"voter": 1, "target": 5},
+				map[string]any{"voter": 2, "target": 5},
+				map[string]any{"voter": 4, "target": 7},
+			},
+			"pk": map[string]any{"mode": "", "candidates": []any{}, "round": 0},
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+	})
+	game := decodeGame(t, runRule(t, "rules/vote.star", voteConfig, values)["game"])
+	if game["exile_target"] != float64(5) || game["phase"] != "exile" {
+		t.Fatalf("exile_target = %v phase = %v, want 5 and exile", game["exile_target"], game["phase"])
+	}
+}
+
+func TestVoteTallyGoesToPKOnATie(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	values := seatChannels(map[string]graph.Value{
+		"game": gameFrom(t, raw, map[string]any{
+			"phase": "tally", "vote_index": 2, "vote_pending": []any{1, 2},
+			"current_votes": []any{
+				map[string]any{"voter": 1, "target": 5},
+				map[string]any{"voter": 2, "target": 7},
+			},
+			"pk": map[string]any{"mode": "", "candidates": []any{}, "round": 0},
+		}),
+		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
+	})
+	game := decodeGame(t, runRule(t, "rules/vote.star", voteConfig, values)["game"])
+	if game["phase"] != "pk" {
+		t.Fatalf("phase = %v, want pk", game["phase"])
+	}
+	pk, _ := game["pk"].(map[string]any)
+	candidates, _ := pk["candidates"].([]any)
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %v", candidates)
+	}
+}
+
+func TestExileKillsAndStartsTheNextNight(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	game := decodeGame(t, runRule(t, "rules/exile.star", exileConfig, map[string]graph.Value{
+		"game":   gameFrom(t, raw, map[string]any{"day": 1, "exile_target": 5}),
+		"prompt": graph.Text(""),
+	})["game"])
+	alive, _ := game["alive"].([]any)
+	for _, id := range alive {
+		if id == float64(5) {
+			t.Fatal("the exiled seat must not be alive")
+		}
+	}
+	if game["phase"] != "night_wolf" || game["day"] != float64(2) {
+		t.Fatalf("phase = %v day = %v, want the next night", game["phase"], game["day"])
+	}
+}
+
+func TestExileEndsTheGameWhenTheLastWolfLeaves(t *testing.T) {
+	raw, _ := deal(t, "fixed-seed")
+	// Keep exactly one wolf (seat 1) and exile it.
+	var game map[string]any
+	if err := json.Unmarshal(raw, &game); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	seats, _ := game["seats"].([]any)
+	wolf := 0
+	for _, item := range seats {
+		seat, _ := item.(map[string]any)
+		if seat["role"] == "werewolf" {
+			if wolf == 0 {
+				wolf = int(seat["id"].(float64))
+				continue
+			}
+			seat["role"] = "villager"
+		}
+	}
+	game["day"] = 1
+	game["exile_target"] = wolf
+	state := decodeGame(t, runRule(t, "rules/exile.star", exileConfig, map[string]graph.Value{
+		"game":   jsonValue(t, game),
+		"prompt": graph.Text(""),
+	})["game"])
+	if state["winner"] != "good" || state["phase"] != "ended" {
+		t.Fatalf("winner = %v phase = %v, want good and ended", state["winner"], state["phase"])
+	}
 }
