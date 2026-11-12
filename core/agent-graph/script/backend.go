@@ -27,8 +27,10 @@ type Backend interface {
 	// the state it wants written.
 	//
 	// The state value domain matches encoding/json: nil, bool, float64, string,
-	// []any and map[string]any, with one exception: a session is projected as
-	// [Messages], which carries the sequence itself. A backend builds whatever it
+	// []any and map[string]any, with two exceptions: a JSON value arrives as
+	// json.RawMessage, and a session as [Messages]. Both are handed over in the
+	// shape they already have, so a backend decodes them with its own scanner
+	// instead of paying for an intermediate representation it would discard. A backend builds whatever it
 	// wants from Messages.Slice; the intermediate map-per-message is not paid.
 	// Run must not return a key the caller did not ask for; the node validates
 	// the result either way.

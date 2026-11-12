@@ -141,7 +141,7 @@ func (b backend) Run(
 		return nil, errdefs.Validationf(
 			"starlark: %s does not define %s(state)", compiled.name, entry)
 	}
-	argument, err := toStarlark(state)
+	argument, err := toStarlark(state, thread)
 	if err != nil {
 		return nil, errdefs.Validationf("starlark: %s: state: %w", compiled.name, err)
 	}
@@ -208,7 +208,7 @@ func builtinLog(host script.Host) *star.Builtin {
 // config allows no tools gets a refusal the first time it tries, which is a
 // clearer failure than a name that does not resolve.
 func builtinTool(ctx context.Context, host script.Host) *star.Builtin {
-	return star.NewBuiltin("tool", func(_ *star.Thread, _ *star.Builtin, args star.Tuple, kwargs []star.Tuple) (star.Value, error) {
+	return star.NewBuiltin("tool", func(thread *star.Thread, _ *star.Builtin, args star.Tuple, kwargs []star.Tuple) (star.Value, error) {
 		var name string
 		var argument star.Value = star.None
 		if err := star.UnpackArgs("tool", args, kwargs, "name", &name, "args?", &argument); err != nil {
@@ -230,7 +230,7 @@ func builtinTool(ctx context.Context, host script.Host) *star.Builtin {
 		if err != nil {
 			return nil, err
 		}
-		answer, err := toStarlark(map[string]any{"ok": result.OK, "text": result.Text})
+		answer, err := toStarlark(map[string]any{"ok": result.OK, "text": result.Text}, thread)
 		if err != nil {
 			return nil, fmt.Errorf("tool: result: %w", err)
 		}

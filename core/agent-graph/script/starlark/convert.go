@@ -1,12 +1,21 @@
 package starlark
 
 import (
+	"encoding/json"
 	"fmt"
 
+	starjson "go.starlark.net/lib/json"
 	star "go.starlark.net/starlark"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 )
+
+// decode is Starlark's own JSON reader.
+//
+// It is a hand-written scanner, not the reflective one in encoding/json, and it
+// produces Starlark values directly - which is why a JSON state value now crosses
+// the bridge as bytes.
+var decode = starjson.Module.Members["decode"]
 
 // The two keys every projected message carries. They are package values so
 // building a transcript does not allocate the same two strings 200 times.
@@ -21,7 +30,7 @@ var (
 // map[string]any — plus the integer forms a host may build by hand. Anything else
 // is refused rather than approximated: a rule that silently reads a zero for a
 // value it cannot see is worse than one that fails.
-func toStarlark(value any) (star.Value, error) {
+func toStarlark(value any, thread *star.Thread) (star.Value, error) {
 	switch typed := value.(type) {
 	case nil:
 		return star.None, nil
@@ -38,7 +47,7 @@ func toStarlark(value any) (star.Value, error) {
 	case []any:
 		list := star.NewList(make([]star.Value, 0, len(typed)))
 		for i, item := range typed {
-			converted, err := toStarlark(item)
+			converted, err := toStarlark(item, thread)
 			if err != nil {
 				return nil, fmt.Errorf("item %d: %w", i, err)
 			}
@@ -49,10 +58,12 @@ func toStarlark(value any) (star.Value, error) {
 		return list, nil
 	case script.Messages:
 		return newMessages(typed), nil
+	case json.RawMessage:
+		return decodeJSON(string(typed), thread)
 	case map[string]any:
 		dict := star.NewDict(len(typed))
 		for key, item := range typed {
-			converted, err := toStarlark(item)
+			converted, err := toStarlark(item, thread)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", key, err)
 			}
@@ -138,4 +149,16 @@ func fromStarlark(value star.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("a %s cannot be written to state", value.Type())
 	}
+}
+
+// decodeJSON parses one document into Starlark values.
+//
+// The module's decoder is a builtin, so the call needs a thread; passing the
+// invocation's own thread keeps a rule's step budget and cancellation in force
+// while a large document is parsed.
+func decodeJSON(text string, thread *star.Thread) (star.Value, error) {
+	if thread == nil {
+		thread = &star.Thread{Name: "script:json"}
+	}
+	return star.Call(thread, decode, star.Tuple{star.String(text)}, nil)
 }

@@ -39,8 +39,18 @@ func project(in graph.Invoke, reads []string) (map[string]any, error) {
 // refused: a rule computes over facts, and a blob reference is not one.
 func plainValue(value graph.Value) (any, error) {
 	switch value.Kind() {
-	case graph.KindText, graph.KindBool, graph.KindJSON:
+	case graph.KindText, graph.KindBool:
 		return graph.Plain(value), nil
+	case graph.KindJSON:
+		// The bytes are handed over as they are: a backend that speaks JSON decodes
+		// them with its own scanner, and one that speaks Starlark gets values built
+		// from them. Decoding into an `any` here only to re-encode it a layer down
+		// was the reflective half of a rule's cost.
+		raw, err := value.JSON()
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(raw), nil
 	case graph.KindMessages:
 		history, err := value.Messages()
 		if err != nil {

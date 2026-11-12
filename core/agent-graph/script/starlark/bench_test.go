@@ -28,7 +28,7 @@ func BenchmarkToStarlarkTranscript(b *testing.B) {
 	projected := script.Messages{History: collapsed}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if _, err := toStarlark(projected); err != nil {
+		if _, err := toStarlark(projected, nil); err != nil {
 			b.Fatalf("toStarlark: %v", err)
 		}
 	}

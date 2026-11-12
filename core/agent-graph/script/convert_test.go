@@ -1,6 +1,7 @@
 package script
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -28,8 +29,8 @@ func TestPlainValueProjectsEveryReadableKind(t *testing.T) {
 			}
 		}},
 		"json": {graph.JSON([]byte(`{"n":1}`)), func(t *testing.T, plain any) {
-			object, ok := plain.(map[string]any)
-			if !ok || object["n"] != float64(1) {
+			raw, ok := plain.(json.RawMessage)
+			if !ok || string(raw) != `{"n":1}` {
 				t.Fatalf("plain = %T %v", plain, plain)
 			}
 		}},

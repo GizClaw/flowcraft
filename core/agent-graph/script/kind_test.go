@@ -82,6 +82,9 @@ func (f *fakeBackend) Run(_ context.Context, program Program, state map[string]a
 // transcript becomes a list of {role, text} objects, which is what a script
 // returns when it hands one back.
 func asLanguage(value any) any {
+	if raw, ok := value.(json.RawMessage); ok {
+		return raw
+	}
 	projected, ok := value.(Messages)
 	if !ok {
 		return value
