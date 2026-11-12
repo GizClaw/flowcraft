@@ -168,6 +168,14 @@ func TestModelReplayWithoutTheBodySaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
+	// The round opens before anything else, including the failure.
+	opening, openErr := stream.Next(context.Background())
+	if openErr != nil {
+		t.Fatalf("the round did not open: %v", openErr)
+	}
+	if _, ok := opening.(agent.StreamStart); !ok {
+		t.Fatalf("first event = %T, want the round's start", opening)
+	}
 	_, nextErr := stream.Next(context.Background())
 	if nextErr == nil {
 		t.Fatal("a replay without a body was accepted")

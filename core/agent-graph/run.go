@@ -856,9 +856,13 @@ func (r *Run) invokeStream(
 func nodeMayEmit(event agent.Event) bool {
 	// Concrete types, not kinds: the engine forwards only the events a node has
 	// any business producing, and lifecycle events belong to the run.
+	//
+	// StreamStart is a node's to report: it says a model stream opened, which is
+	// what the loop resets its streamed text on, and a node that could not say so
+	// would leave a live consumer unable to name the round's model.
 	switch event.(type) {
-	case agent.Text, agent.Reasoning, agent.ToolCallStart, agent.ToolResult,
-		agent.UsageEvent, agent.ArtifactWritten:
+	case agent.StreamStart, agent.Text, agent.Reasoning, agent.ToolCallStart,
+		agent.ToolResult, agent.UsageEvent, agent.ArtifactWritten:
 		return true
 	}
 	return false

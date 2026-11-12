@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -78,13 +79,21 @@ type EffectRecord struct {
 // replaces it with ResponseRef, so the event stays small. RequestHash is the
 // key a replay looks the call up by.
 type LLMCallRecord struct {
-	RequestHash string          `json:"request_hash,omitempty"`
-	Model       model.ModelRef  `json:"model,omitempty"`
-	Usage       usage.Usage     `json:"usage,omitempty"`
-	StopReason  string          `json:"stop_reason,omitempty"`
-	LatencyMs   int64           `json:"latency_ms,omitempty"`
-	ErrorKind   string          `json:"error_kind,omitempty"`
-	Response    []byte          `json:"response,omitempty"`
+	RequestHash string         `json:"request_hash,omitempty"`
+	Model       model.ModelRef `json:"model,omitempty"`
+	// Metadata identifies what answered: the model the provider resolved (an
+	// alias may route elsewhere), and the provider's own request and response
+	// ids. Model above is what the request asked for; without this a deployment
+	// that keeps records and no spans cannot say which endpoint produced an
+	// answer. It is a few dozen bytes, so it is written even when the response's
+	// body is not.
+	Metadata   inference.Metadata `json:"metadata,omitzero"`
+	Usage      usage.Usage        `json:"usage,omitempty"`
+	StopReason string             `json:"stop_reason,omitempty"`
+	LatencyMs  int64              `json:"latency_ms,omitempty"`
+	ErrorKind  string             `json:"error_kind,omitempty"`
+	Response   []byte             `json:"response,omitempty"`
+	// ResponseRef names the blob holding Response, when the engine stored it.
 	ResponseRef string          `json:"response_ref,omitempty"`
 	Messages    []MessageDigest `json:"messages,omitempty"`
 	Segments    []PromptSegment `json:"segments,omitempty"`

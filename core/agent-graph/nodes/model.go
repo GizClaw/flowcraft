@@ -162,7 +162,10 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 			return nil, fmt.Errorf("model: replay miss for %s", requestHash)
 		}
 		return &modelStream{
-			replay:      &call,
+			replay: &call,
+			// The recorded identity is what this round answers as, so the
+			// opening names the model the original round was answered by.
+			metadata:    call.Metadata,
 			view:        view,
 			transcript:  transcript,
 			messagesKey: config.Messages,
@@ -171,6 +174,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 			outputKey:   config.Output,
 			model:       request.Model,
 			requestHash: requestHash,
+			step:        in.Step,
 		}, nil
 	}
 	started := time.Now()
@@ -193,6 +197,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 		digests:     digests,
 		segments:    segments,
 		requestHash: requestHash,
+		step:        in.Step,
 	}, nil
 }
 
@@ -371,6 +376,19 @@ type modelStream struct {
 	requestHash string
 	digests     []agent.MessageDigest
 	segments    []agent.PromptSegment
+	// step is the run's step ordinal when this node was invoked, so the stream's
+	// start event can name the round it opened.
+	step int
+	// metadata is what the provider said answered: the model it resolved, and its
+	// own request and response ids. It arrives on the stream's start event when
+	// the provider announces one and on the response otherwise, so the last value
+	// wins.
+	metadata inference.Metadata
+	// announced says the round's opening has been forwarded. It is emitted once
+	// per call, before any delta, which is what a live consumer resets on.
+	announced bool
+	// pending holds a delta that arrived before the opening went out.
+	pending agent.Event
 	// replay answers from a recorded call instead of the provider.
 	replay *agent.LLMCallRecord
 	result graph.Result
@@ -378,9 +396,20 @@ type modelStream struct {
 }
 
 func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
+	// A delta that arrived before the round opened waits here: the opening goes
+	// first, and the stream's contract is one event per call.
+	if s.pending != nil {
+		event := s.pending
+		s.pending = nil
+		return event, nil
+	}
+	if s.done {
+		return nil, io.EOF
+	}
 	if s.replay != nil {
-		if s.done {
-			return nil, io.EOF
+		if !s.announced {
+			// A replayed round has no wire to wait on: it opens at once.
+			return s.open(), nil
 		}
 		if len(s.replay.Response) == 0 {
 			return nil, errdefs.NotAvailablef(
@@ -395,6 +424,9 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 			Message:      msg,
 			Usage:        s.replay.Usage,
 			FinishReason: inference.FinishReason(s.replay.StopReason),
+			// A replayed round reports the identity the original one reported, so
+			// a log cannot tell the two apart by what the answer claims to be.
+			Metadata: s.replay.Metadata,
 		}
 		result, err := s.finish(response)
 		if err != nil {
@@ -422,22 +454,61 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 			// call that used it.
 			s.view.AdvanceRound()
 			s.done = true
+			// An answer with no text still opened a round; the opening is all a
+			// caller gets for it.
+			if !s.announced {
+				return s.open(), nil
+			}
 			return nil, io.EOF
 		}
 		if err != nil {
 			return nil, err
 		}
 		switch event.Kind {
+		case inference.StreamStart:
+			// The provider names the model it resolved here, before any delta:
+			// keep it for the record and for the opening that follows.
+			if event.Metadata != nil {
+				s.metadata = *event.Metadata
+			}
 		case inference.StreamText:
-			return agent.Text{Text: event.Text}, nil
+			return s.report(agent.Text{Text: event.Text}), nil
 		case inference.StreamReasoning:
-			return agent.Reasoning{Text: event.Text}, nil
+			return s.report(agent.Reasoning{Text: event.Text}), nil
 		case inference.StreamUsage:
 			if event.Usage != nil {
-				return agent.UsageEvent{Usage: *event.Usage}, nil
+				return s.report(agent.UsageEvent{Usage: *event.Usage}), nil
 			}
 		}
 	}
+}
+
+// report returns a delta, preceded by the round's opening the first time.
+//
+// The opening is emitted here rather than before the loop because the model it
+// names is only known once the provider has said it: an announcement made up
+// front could only repeat the request's model, which is the one fact the
+// resolved name exists to correct.
+func (s *modelStream) report(event agent.Event) agent.Event {
+	if s.announced {
+		return event
+	}
+	s.pending = event
+	return s.open()
+}
+
+// open renders the round's opening and marks it emitted.
+//
+// The event exists in the vocabulary and the engine already resets its streamed
+// text on it (graph.Run.runStep); nothing produced it until now, so a live
+// consumer could not tell which model a round was answered by.
+func (s *modelStream) open() agent.Event {
+	s.announced = true
+	name := s.model.ID.Name
+	if s.metadata.Model.Name != "" {
+		name = s.metadata.Model.Name
+	}
+	return agent.StreamStart{Round: s.step + 1, Model: name}
 }
 
 func (s *modelStream) Result() (graph.Result, error) {
@@ -487,9 +558,17 @@ func (s *modelStream) finish(response inference.GenerateResponse) (graph.Result,
 	}
 	result := graph.Result{State: updates}
 	if s.record && s.replay == nil {
+		// The response's metadata is authoritative when it has one: a driver that
+		// only learns the resolved model at the end of the stream reports it
+		// there, not on the opening event.
+		metadata := s.metadata
+		if response.Metadata.Model.Name != "" || response.Metadata.ResponseID != "" {
+			metadata = response.Metadata
+		}
 		record := agent.LLMCallRecord{
 			RequestHash: s.requestHash,
 			Model:       s.model,
+			Metadata:    metadata,
 			Usage:       response.Usage,
 			StopReason:  string(response.FinishReason),
 			LatencyMs:   time.Since(s.started).Milliseconds(),
