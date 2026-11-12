@@ -92,8 +92,8 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 	seat := seatOf(deps.Agent)
 	return agent.Hooks{
 		BeforeTurn: func(ctx context.Context, turn *agent.Turn) error {
-			game := gameOf(turn.Message)
-			if game == "" {
+			game := rootSession(turn.SessionID)
+			if gameOf(turn.Message) == "" || game == "" {
 				// A brief without a game id is not this hook's business: better to
 				// answer without memory than to read another game's page.
 				return nil
@@ -115,8 +115,8 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 			return nil
 		},
 		AfterTurn: func(ctx context.Context, turn agent.Turn, result agent.Result) error {
-			game := gameOf(turn.Message)
-			if game == "" || kindOf(turn.Message) == kindPostgame {
+			game := rootSession(turn.SessionID)
+			if gameOf(turn.Message) == "" || game == "" || kindOf(turn.Message) == kindPostgame {
 				return nil
 			}
 			said := strings.TrimSpace(result.Content.Text())
@@ -153,6 +153,24 @@ func gameOf(msg message.Message) string {
 		}
 	}
 	return ""
+}
+
+// rootSession is the session a seat's delegations belong to: the one that owns the
+// table, not the child session a single delegation mints.
+//
+// A seat's own session id is fresh per call - it is the parent's session, the
+// delegation marker and the call that asked - so keying memory by it would remember
+// nothing. Keying it by the game's seed is no better: the seed is the opening line,
+// and two games that open the same way would share a page. The root session is both:
+// stable across the delegations of one game and different for the next one.
+func rootSession(sessionID string) string {
+	root, _, _ := strings.Cut(sessionID, "/d/")
+	root = strings.TrimSpace(root)
+	if root == "" || root == sessionID {
+		// Not a delegated session: there is no table behind it to belong to.
+		return ""
+	}
+	return strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(root)
 }
 
 // kindPostgame is the brief kind that asks for a recap instead of a move.

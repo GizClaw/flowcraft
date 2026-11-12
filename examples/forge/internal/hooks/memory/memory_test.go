@@ -49,13 +49,27 @@ func brief(game, text string) message.Message {
 	return message.NewTextMessage(message.RoleUser, "game="+game+"\n"+text)
 }
 
+// seatSession is the session id a delegated seat actually sees: the table's session,
+// the delegation marker, and the call that asked.
+func seatSession(root string, call int) string {
+	return root + "/d/seat_5/script:" + string(rune('0'+call)) + ":delegate"
+}
+
+// The memory belongs to the table, not to the deal's seed: the seed is the opening
+// line, so two games that open the same way would share a page. The root session is
+// what a game actually is.
+const (
+	tableOne = "referee/main"
+	tableTwo = "referee/main-2"
+)
+
 func TestMemoryReplaysWhatTheSeatSaid(t *testing.T) {
 	rt, root := seatRuntime(t)
 	hooks := hooksFor(t, rt, "seat_5", `{}`)
 	ctx := context.Background()
 
 	// First turn: nothing remembered, so the brief is untouched.
-	turn := agent.Turn{Agent: "seat_5", SessionID: "child-1", Message: brief("abc", "请发言")}
+	turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 	if err := hooks.BeforeTurn(ctx, &turn); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}
@@ -68,13 +82,13 @@ func TestMemoryReplaysWhatTheSeatSaid(t *testing.T) {
 		t.Fatalf("AfterTurn: %v", err)
 	}
 
-	path := filepath.Join(root, ".forge", "memory", "abc", "seat_5.json")
+	path := filepath.Join(root, ".forge", "memory", "referee_main", "seat_5.json")
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("memory file: %v", err)
 	}
 
 	// Second turn, same game: the seat's own line comes back as context.
-	turn = agent.Turn{Agent: "seat_5", SessionID: "child-2", Message: brief("abc", "请投票")}
+	turn = agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 1), Message: brief("abc", "请投票")}
 	if err := hooks.BeforeTurn(ctx, &turn); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}
@@ -88,11 +102,11 @@ func TestMemoryIsPerGame(t *testing.T) {
 	hooks := hooksFor(t, rt, "seat_5", `{}`)
 	ctx := context.Background()
 
-	turn := agent.Turn{Agent: "seat_5", SessionID: "child-1", Message: brief("abc", "请发言")}
+	turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 	if err := hooks.AfterTurn(ctx, turn, agent.Result{Content: message.NewTextContent("上一局的话")}); err != nil {
 		t.Fatalf("AfterTurn: %v", err)
 	}
-	next := agent.Turn{Agent: "seat_5", SessionID: "child-2", Message: brief("xyz", "请发言")}
+	next := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableTwo, 0), Message: brief("abc", "请发言")}
 	if err := hooks.BeforeTurn(ctx, &next); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}
@@ -107,11 +121,11 @@ func TestMemoryIsPerSeat(t *testing.T) {
 	seven := hooksFor(t, rt, "seat_7", `{}`)
 	ctx := context.Background()
 
-	turn := agent.Turn{Agent: "seat_5", SessionID: "c", Message: brief("abc", "请发言")}
+	turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 	if err := five.AfterTurn(ctx, turn, agent.Result{Content: message.NewTextContent("五号的话")}); err != nil {
 		t.Fatalf("AfterTurn: %v", err)
 	}
-	other := agent.Turn{Agent: "seat_7", SessionID: "c", Message: brief("abc", "请发言")}
+	other := agent.Turn{Agent: "seat_7", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 	if err := seven.BeforeTurn(ctx, &other); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}
@@ -125,12 +139,12 @@ func TestMemoryKeepsTheLastLines(t *testing.T) {
 	hooks := hooksFor(t, rt, "seat_5", `{"keep": 2}`)
 	ctx := context.Background()
 	for _, said := range []string{"第一句", "第二句", "第三句"} {
-		turn := agent.Turn{Agent: "seat_5", SessionID: "c", Message: brief("abc", "请发言")}
+		turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 		if err := hooks.AfterTurn(ctx, turn, agent.Result{Content: message.NewTextContent(said)}); err != nil {
 			t.Fatalf("AfterTurn: %v", err)
 		}
 	}
-	turn := agent.Turn{Agent: "seat_5", SessionID: "c", Message: brief("abc", "请发言")}
+	turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: brief("abc", "请发言")}
 	if err := hooks.BeforeTurn(ctx, &turn); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}
@@ -146,7 +160,7 @@ func TestMemoryKeepsTheLastLines(t *testing.T) {
 func TestMemoryIgnoresABriefWithoutAGame(t *testing.T) {
 	rt, _ := seatRuntime(t)
 	hooks := hooksFor(t, rt, "seat_5", `{}`)
-	turn := agent.Turn{Agent: "seat_5", SessionID: "c", Message: message.NewTextMessage(message.RoleUser, "没有游戏号")}
+	turn := agent.Turn{Agent: "seat_5", SessionID: seatSession(tableOne, 0), Message: message.NewTextMessage(message.RoleUser, "没有游戏号")}
 	if err := hooks.BeforeTurn(context.Background(), &turn); err != nil {
 		t.Fatalf("BeforeTurn: %v", err)
 	}

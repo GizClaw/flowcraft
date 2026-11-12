@@ -133,37 +133,43 @@ edges:
   - from: route
     to: night
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and (state.game.phase == "night_wolf"
       or state.game.phase == "night_witch"
       or state.game.phase == "night_seer")
   - from: route
     to: dawn
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and state.game.phase == "dawn"
   - from: route
     to: day
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and state.game.phase == "day"
   - from: route
     to: vote
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and (state.game.phase == "vote"
       or state.game.phase == "pk"
       or state.game.phase == "tally")
   - from: route
     to: exile
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and state.game.phase == "exile"
   # The human's move, or the end of the game, stops the run.
   - from: route
     to: hunter
     when: >-
-      state.game != nil and state.game.started == true and (state.game.waiting_for == "" or state.game.human_ready == true)
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
       and state.game.phase == "hunter"
   - from: route
     to: postgame
@@ -179,16 +185,36 @@ edges:
   # to the router, which decides what happens next.
   - {from: input, to: route}
   - {from: seed, to: route}
-  - {from: night, to: perform, when: 'state.game != nil and state.game.brief_seat != 0'}
-  - {from: night, to: route, when: 'state.game != nil and state.game.brief_seat == 0'}
-  - {from: day, to: perform, when: 'state.game != nil and state.game.brief_seat != 0'}
-  - {from: day, to: route, when: 'state.game != nil and state.game.brief_seat == 0'}
-  - {from: vote, to: perform, when: 'state.game != nil and state.game.brief_seat != 0'}
-  - {from: vote, to: route, when: 'state.game != nil and state.game.brief_seat == 0'}
-  - {from: hunter, to: perform, when: 'state.game != nil and state.game.brief_seat != 0'}
-  - {from: hunter, to: route, when: 'state.game != nil and state.game.brief_seat == 0'}
-  - {from: postgame, to: perform, when: 'state.game != nil and state.game.brief_seat != 0'}
-  - {from: postgame, to: end, when: 'state.game != nil and state.game.brief_seat == 0'}
+  - from: night
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: night
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: day
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: day
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: vote
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: vote
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: hunter
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: hunter
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: postgame
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: postgame
+    to: end
+    when: 'state.game != nil and state.game.brief_seat == 0'
   # A seat's turn returns the run to the rules - unless the game is over, in
   # which case this turn was the answer and the run stops.
   - from: perform
