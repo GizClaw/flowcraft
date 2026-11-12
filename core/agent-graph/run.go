@@ -43,10 +43,10 @@ type Run struct {
 	sessionID   string
 	fingerprint agent.Fingerprint
 	needBase    bool
-	// namedBase is the base the Projection names; pendingBase is one this run
-	// wrote and has not confirmed in a Projection yet.
-	namedBase        *BaseRef
-	pendingBase      *BaseRef
+	// namedBase is the base the projection names; pendingBase is one this run
+	// wrote and has not confirmed in a projection yet.
+	namedBase        *baseRef
+	pendingBase      *baseRef
 	compactedThrough int64
 	active           []string
 	// pending keeps the frontier of the step that suspended. When the suspended

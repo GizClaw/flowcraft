@@ -12,11 +12,11 @@ func TestAddUsageSumsTokensCacheAndCost(t *testing.T) {
 	cache := int64(2)
 	cost := usage.Money{Currency: "USD", Units: 10, Scale: 4}
 	total := usage.Usage{}
-	AddUsage(&total, usage.Usage{
+	addUsage(&total, usage.Usage{
 		InputTokens: 5, OutputTokens: 7,
 		Input: usage.InputTokenUsage{CacheReadTokens: &cache},
 	})
-	AddUsage(&total, usage.Usage{
+	addUsage(&total, usage.Usage{
 		InputTokens: 1, OutputTokens: 2,
 		Billing: &usage.Billing{Cost: &cost},
 	})

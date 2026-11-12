@@ -3,7 +3,6 @@ package script
 import (
 	"encoding/json"
 
-	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 )
 
@@ -80,28 +79,4 @@ func recordedRun(in graph.Invoke, ref string) string {
 		}
 	}
 	return version
-}
-
-// DecodeRecord decodes one record this node kind wrote.
-//
-// It mirrors [graph.DecodeRecord] for the two kinds a script owns, so a reader
-// can render a timeline without importing this package's internals. False means
-// "not one of mine": the caller falls back to the next decoder and then to the
-// raw payload.
-func DecodeRecord(record agent.EventRecord) (any, bool) {
-	switch record.Kind {
-	case RecordRun:
-		var decoded RunRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	case RecordTool:
-		var decoded ToolRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	}
-	return nil, false
 }

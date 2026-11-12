@@ -284,7 +284,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 				return
 			}
 			if accounting, ok := event.(UsageEvent); ok && a.opts.OnRun != nil {
-				AddUsage(&runUsage, accounting.Usage)
+				addUsage(&runUsage, accounting.Usage)
 			}
 			a.record(entry, event)
 			if a.opts.OnEvent != nil {

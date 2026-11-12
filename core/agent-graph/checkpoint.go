@@ -20,13 +20,8 @@ import (
 // lifecycle, the projection rides Sections, and the state itself is an
 // append-only stream of two record kinds.
 const (
-	// SectionGraph is the checkpoint section holding the run's projection.
-	SectionGraph = "graph"
-	// SectionManifest is the checkpoint section holding the version combination.
-	SectionManifest = "manifest"
-
-	sectionGraph    = SectionGraph
-	sectionManifest = SectionManifest
+	sectionGraph    = "graph"
+	sectionManifest = "manifest"
 	// RecordState is the kind of one key's state write: the fact a timeline reads
 	// to reconstruct the state a step left behind.
 	RecordState = "graph.state"
@@ -44,66 +39,11 @@ const (
 	RecordLLMCall = eventLLMCall
 	// RecordEffect is one tool execution.
 	RecordEffect = eventEffect
-	// RecordBase names a snapshot of the whole state at one step.
-	RecordBase = eventBase
 )
 
-// DecodeRecord decodes one record this engine wrote.
-//
-// It is the read side of the record vocabulary, kept beside the constants and
-// the payload types so a field added to one has an obvious second place to go.
-// It reports false for a kind it does not own rather than failing: a reader that
-// refuses to show a run because one record came from another engine is useless
-// for the incident it is meant for.
-func DecodeRecord(record agent.EventRecord) (any, bool) {
-	switch record.Kind {
-	case RecordFrontier:
-		var decoded FrontierRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	case RecordState:
-		var decoded StateWrite
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	case RecordBase:
-		var decoded BaseRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	case RecordLLMCall:
-		var decoded agent.LLMCallRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	case RecordEffect:
-		var decoded agent.EffectRecord
-		if json.Unmarshal(record.Payload, &decoded) != nil {
-			return nil, false
-		}
-		return decoded, true
-	}
-	return nil, false
-}
-
-// DecodeProjection reads the graph section of a checkpoint: where the run stood,
-// and the hash of the decision point it stood on.
-func DecodeProjection(raw json.RawMessage) (Projection, error) {
-	var projection Projection
-	if err := json.Unmarshal(raw, &projection); err != nil {
-		return Projection{}, fmt.Errorf("graph: decode projection: %w", err)
-	}
-	return projection, nil
-}
-
-// Projection is the small, per-step part of a checkpoint: where the run is, not
+// projection is the small, per-step part of a checkpoint: where the run is, not
 // what it holds.
-type Projection struct {
+type projection struct {
 	Step     int      `json:"step"`
 	Routed   int      `json:"routed"`
 	Frontier []string `json:"frontier,omitempty"`
@@ -116,22 +56,22 @@ type Projection struct {
 	ContextHash string `json:"context_hash,omitempty"`
 	// Base names the snapshot the projection stands on: restore reads that blob
 	// and replays only the events after it.
-	Base *BaseRef `json:"base,omitempty"`
+	Base *baseRef `json:"base,omitempty"`
 }
 
-// BaseRef is a confirmed snapshot: the blob holding the state and the sequence
+// baseRef is a confirmed snapshot: the blob holding the state and the sequence
 // of the event that announced it.
-type BaseRef struct {
+type baseRef struct {
 	Seq  int64  `json:"seq"`
 	Blob string `json:"blob"`
 }
 
-// StateWrite records one write of one step, encoded so it stays small: a growing
+// stateEvent records one write of one step, encoded so it stays small: a growing
 // session contributes one message per write, not the whole transcript.
-type StateWrite struct {
+type stateEvent struct {
 	Step  int          `json:"step"`
 	Key   string       `json:"key"`
-	Value EncodedValue `json:"value"`
+	Value encodedValue `json:"value"`
 }
 
 // RecordFrontier names one step's frontier: which nodes the engine ran, in which
@@ -142,8 +82,8 @@ type StateWrite struct {
 // exactly the questions an operator asks of a checkpoint.
 const RecordFrontier = "graph.frontier"
 
-// FrontierRecord is the payload of [RecordFrontier].
-type FrontierRecord struct {
+// frontierEvent is the payload of [RecordFrontier].
+type frontierEvent struct {
 	// Step is the 1-based step ordinal, the same one a state record carries.
 	Step int `json:"step"`
 	// Nodes are the frontier's node ids, in declaration order.
@@ -152,17 +92,17 @@ type FrontierRecord struct {
 	Replay bool `json:"replay,omitempty"`
 }
 
-// BaseRecord names a blob holding the whole state as of one step. A checkpoint
+// baseEvent names a blob holding the whole state as of one step. A checkpoint
 // writes a base when deltas would be missing (a failed save) or every N steps to
 // bound replay.
-type BaseRecord struct {
+type baseEvent struct {
 	Step int    `json:"step"`
 	Blob string `json:"blob"`
 }
 
-// EncodedValue is a Value on the wire. Media crosses as a blob reference so the
+// encodedValue is a Value on the wire. Media crosses as a blob reference so the
 // checkpoint never carries bytes.
-type EncodedValue struct {
+type encodedValue struct {
 	Kind      Kind              `json:"kind"`
 	Text      string            `json:"text,omitempty"`
 	Bool      bool              `json:"bool,omitempty"`
@@ -173,49 +113,49 @@ type EncodedValue struct {
 }
 
 // encodeValue renders one value, storing inline media bytes as a blob.
-func encodeValue(ctx context.Context, blobs BlobStore, value Value) (EncodedValue, error) {
-	encoded := EncodedValue{Kind: value.Kind()}
+func encodeValue(ctx context.Context, blobs BlobStore, value Value) (encodedValue, error) {
+	encoded := encodedValue{Kind: value.Kind()}
 	switch value.Kind() {
 	case KindText:
 		text, err := value.Text()
 		if err != nil {
-			return EncodedValue{}, err
+			return encodedValue{}, err
 		}
 		encoded.Text = text
 	case KindBool:
 		flag, err := value.Bool()
 		if err != nil {
-			return EncodedValue{}, err
+			return encodedValue{}, err
 		}
 		encoded.Bool = flag
 	case KindJSON:
 		raw, err := value.JSON()
 		if err != nil {
-			return EncodedValue{}, err
+			return encodedValue{}, err
 		}
 		encoded.JSON = raw
 	case KindMessages:
 		messages, err := value.Messages()
 		if err != nil {
-			return EncodedValue{}, err
+			return encodedValue{}, err
 		}
 		encoded.Messages = messages.Slice()
 	case KindImage, KindAudio, KindFile, KindVideo:
 		media, err := value.Media()
 		if err != nil {
-			return EncodedValue{}, err
+			return encodedValue{}, err
 		}
 		encoded.MediaType = media.MediaType
 		encoded.Blob = media.Blob
 		if encoded.Blob == "" {
 			if blobs == nil {
-				return EncodedValue{}, fmt.Errorf(
+				return encodedValue{}, fmt.Errorf(
 					"checkpoint: value %q carries inline bytes and no blob store is configured",
 					value.Kind())
 			}
 			ref, err := blobs.PutBlob(ctx, media.Data)
 			if err != nil {
-				return EncodedValue{}, fmt.Errorf("checkpoint: store media: %w", err)
+				return encodedValue{}, fmt.Errorf("checkpoint: store media: %w", err)
 			}
 			encoded.Blob = ref
 		}
@@ -223,9 +163,8 @@ func encodeValue(ctx context.Context, blobs BlobStore, value Value) (EncodedValu
 	return encoded, nil
 }
 
-// DecodeValue reverses [encodeValue]. Media comes back as a reference: a reader
-// that wants the bytes resolves them through the store.
-func DecodeValue(encoded EncodedValue) (Value, error) {
+// decodeValue reverses encodeValue. Media comes back as a reference.
+func decodeValue(encoded encodedValue) (Value, error) {
 	switch encoded.Kind {
 	case KindText:
 		return Text(encoded.Text), nil
@@ -330,10 +269,10 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	// A base is written when a delta would be missing, and every N steps so a
 	// restart never replays more than the interval.
 	due := r.g.baseEvery > 0 && r.step > 0 && r.step%r.g.baseEvery == 0
-	var fresh *BaseRef
+	var fresh *baseRef
 	if r.needBase || due {
 		if ref, ok := r.writeBase(ctx, &events, saved); ok {
-			fresh = &BaseRef{Blob: ref}
+			fresh = &baseRef{Blob: ref}
 			updates = nil
 			r.needBase = false
 		} else {
@@ -365,7 +304,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			r.needBase = true
 			continue
 		}
-		payload, err := json.Marshal(StateWrite{Step: r.step + 1, Key: update.Key, Value: encoded})
+		payload, err := json.Marshal(stateEvent{Step: r.step + 1, Key: update.Key, Value: encoded})
 		if err != nil {
 			r.needBase = true
 			continue
@@ -380,7 +319,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	if r.pendingBase != nil {
 		projected = r.pendingBase
 	}
-	proj := Projection{
+	proj := projection{
 		Step:      r.step,
 		Routed:    r.routed,
 		Frontier:  r.active,
@@ -512,7 +451,7 @@ func (r *Run) writeBase(ctx context.Context, events *[]agent.EventRecord, at tim
 	if err != nil {
 		return "", false
 	}
-	payload, err := json.Marshal(BaseRecord{Step: r.step, Blob: ref})
+	payload, err := json.Marshal(baseEvent{Step: r.step, Blob: ref})
 	if err != nil {
 		telemetry.WarnErr(ctx, "graph: encode checkpoint base", err)
 		return "", false
@@ -523,7 +462,7 @@ func (r *Run) writeBase(ctx context.Context, events *[]agent.EventRecord, at tim
 
 // encodeState renders the whole state for a base snapshot.
 func (r *Run) encodeState(ctx context.Context) ([]byte, error) {
-	values := make(map[string]EncodedValue, len(r.values.values))
+	values := make(map[string]encodedValue, len(r.values.values))
 	for key, value := range r.values.values {
 		encoded, err := encodeValue(ctx, r.store, value)
 		if err != nil {
@@ -552,7 +491,7 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 			"graph: checkpoint was taken under %s, this deployment is %s",
 			checkpoint.Fingerprint, opts.fingerprint)
 	}
-	var proj Projection
+	var proj projection
 	if raw, ok := checkpoint.Sections[sectionGraph]; ok {
 		if err := json.Unmarshal(raw, &proj); err != nil {
 			return nil, false, fmt.Errorf("graph: decode projection: %w", err)
@@ -609,7 +548,7 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 
 // restoreState replays the event log from the projection's base: the blob gives
 // the state as of that sequence, and only the events after it are read.
-func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *BaseRef) (*stateStore, map[string]agent.LLMCallRecord, map[string][]agent.Record, []string, error) {
+func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *baseRef) (*stateStore, map[string]agent.LLMCallRecord, map[string][]agent.Record, []string, error) {
 	store := newStateStore(g.state)
 	calls := make(map[string]agent.LLMCallRecord)
 	// Every other durable fact is kept by kind in append order: a node that
@@ -631,7 +570,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *BaseRef
 		event := events[i]
 		switch event.Kind {
 		case eventBase:
-			var record BaseRecord
+			var record baseEvent
 			if err := json.Unmarshal(event.Payload, &record); err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("graph: decode base: %w", err)
 			}
@@ -662,13 +601,13 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *BaseRef
 		case eventState:
 			// One step is one merge: group the writes that share a step number,
 			// apply them, then continue with the next group.
-			var first StateWrite
+			var first stateEvent
 			if err := json.Unmarshal(event.Payload, &first); err != nil {
 				return nil, nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 			}
 			updates := make([]StateUpdate, 0, 4)
 			for {
-				value, err := DecodeValue(first.Value)
+				value, err := decodeValue(first.Value)
 				if err != nil {
 					return nil, nil, nil, nil, err
 				}
@@ -677,7 +616,7 @@ func (g *Graph) restoreState(ctx context.Context, opts runOptions, base *BaseRef
 				if i >= len(events) || events[i].Kind != eventState {
 					break
 				}
-				var next StateWrite
+				var next stateEvent
 				if err := json.Unmarshal(events[i].Payload, &next); err != nil {
 					return nil, nil, nil, nil, fmt.Errorf("graph: decode state event: %w", err)
 				}
@@ -711,13 +650,13 @@ func (g *Graph) loadBase(ctx context.Context, opts runOptions, target *stateStor
 	if err != nil {
 		return fmt.Errorf("graph: read base: %w", err)
 	}
-	var encoded map[string]EncodedValue
+	var encoded map[string]encodedValue
 	if err := json.Unmarshal(body, &encoded); err != nil {
 		return fmt.Errorf("graph: decode base state: %w", err)
 	}
 	clear(target.values)
 	for key, value := range encoded {
-		decoded, err := DecodeValue(value)
+		decoded, err := decodeValue(value)
 		if err != nil {
 			return err
 		}
@@ -755,7 +694,7 @@ func (g *Graph) carryInto(ctx context.Context, opts runOptions, target *stateSto
 		telemetry.WarnErr(ctx, "graph: not carrying state from another deployment's checkpoint", nil)
 		return nil
 	}
-	var proj Projection
+	var proj projection
 	if raw, ok := previous.Sections[sectionGraph]; ok {
 		if err := json.Unmarshal(raw, &proj); err != nil {
 			return fmt.Errorf("graph: decode carried projection: %w", err)
@@ -781,7 +720,7 @@ func (g *Graph) carryInto(ctx context.Context, opts runOptions, target *stateSto
 // "which nodes, which step, replayed or live" for every fact that follows it.
 func (r *Run) markFrontier() {
 	nodes := append([]string(nil), r.active...)
-	raw, err := json.Marshal(FrontierRecord{Step: r.step + 1, Nodes: nodes, Replay: r.replay})
+	raw, err := json.Marshal(frontierEvent{Step: r.step + 1, Nodes: nodes, Replay: r.replay})
 	if err != nil {
 		return
 	}
