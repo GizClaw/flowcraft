@@ -374,3 +374,41 @@ func TestReadAgreesWithALiveRun(t *testing.T) {
 		t.Error("a traced run left no context hash")
 	}
 }
+
+// A kind this engine does not own is rendered by whoever does, through the hook:
+// the vocabulary is open by design, and a renderer that could only print its own
+// records would hide a node kind it was handed.
+func TestWriteTextUsesTheCallersFormat(t *testing.T) {
+	f := timeline(t)
+	read, err := Read(context.Background(), f.store, "task-1")
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	var asked []string
+	var out bytes.Buffer
+	format := func(record agent.EventRecord) (string, bool) {
+		asked = append(asked, record.Kind)
+		if record.Kind != "host.fact" {
+			return "", false
+		}
+		return "foreign fact, rendered by its owner", true
+	}
+	if err := WriteText(&out, read, WithFormat(format)); err != nil {
+		t.Fatalf("WriteText: %v", err)
+	}
+	if !strings.Contains(out.String(), "foreign fact, rendered by its owner") {
+		t.Errorf("the hook's line is missing:\n%s", out.String())
+	}
+	if len(asked) == 0 {
+		t.Error("the hook was never asked")
+	}
+	// A hook that declines leaves the raw payload: the record is never dropped.
+	out.Reset()
+	declines := func(agent.EventRecord) (string, bool) { return "", false }
+	if err := WriteText(&out, read, WithFormat(declines)); err != nil {
+		t.Fatalf("WriteText declining: %v", err)
+	}
+	if !strings.Contains(out.String(), "host.fact") {
+		t.Errorf("a declined record disappeared:\n%s", out.String())
+	}
+}

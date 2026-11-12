@@ -162,8 +162,9 @@ func (t *Timeline) group(records []agent.EventRecord) {
 type RenderOption func(*renderConfig)
 
 type renderConfig struct {
-	width int
-	kinds map[string]struct{}
+	width  int
+	kinds  map[string]struct{}
+	format func(agent.EventRecord) (string, bool)
 }
 
 // WithWidth clips one line to n characters. Zero uses the default.
@@ -180,6 +181,17 @@ func WithKinds(kinds ...string) RenderOption {
 			c.kinds[kind] = struct{}{}
 		}
 	}
+}
+
+// WithFormat renders records whose kind this engine does not own: another node
+// kind's facts, or another engine's.
+//
+// A formatter returns false for a record it does not know, and the renderer falls
+// back to the raw payload. The hook exists because the vocabulary is open by
+// design: this package knows what it wrote, and cannot know what a node kind it
+// was handed has.
+func WithFormat(format func(agent.EventRecord) (string, bool)) RenderOption {
+	return func(c *renderConfig) { c.format = format }
 }
 
 // WriteText renders a timeline for a person: one line per record under the step
@@ -240,7 +252,7 @@ func WriteText(w io.Writer, t *Timeline, opts ...RenderOption) error {
 			if record.Kind == RecordFrontier {
 				continue
 			}
-			line := fmt.Sprintf("  %s  %s", renderedAt(record), summarizeRecord(record, settings.width))
+			line := fmt.Sprintf("  %s  %s", renderedAt(record), summarizeRecord(record, settings))
 			if _, err := fmt.Fprintln(w, clip(line, settings.width)); err != nil {
 				return err
 			}
@@ -259,7 +271,8 @@ func renderedAt(record agent.EventRecord) string {
 
 // summarizeRecord renders one record as a line: the vocabulary of the kind when
 // this build knows it, the raw bytes otherwise.
-func summarizeRecord(record agent.EventRecord, width int) string {
+func summarizeRecord(record agent.EventRecord, settings renderConfig) string {
+	width := settings.width
 	switch record.Kind {
 	case RecordLLMCall:
 		var call agent.LLMCallRecord
@@ -286,6 +299,11 @@ func summarizeRecord(record agent.EventRecord, width int) string {
 		var msg message.Message
 		if json.Unmarshal(record.Payload, &msg) == nil {
 			return fmt.Sprintf("%-12s %-9s %s", "message", msg.Role, clip(oneLine(msg.Content.Text()), width/2))
+		}
+	}
+	if settings.format != nil {
+		if line, ok := settings.format(record); ok {
+			return line
 		}
 	}
 	return fmt.Sprintf("%-12s %s", record.Kind, clip(oneLine(string(record.Payload)), width))
