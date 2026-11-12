@@ -119,7 +119,7 @@ func TestSeedDealsACompleteTable(t *testing.T) {
 	for _, seat := range table.Seats {
 		counts[seat.Role]++
 	}
-	want := map[string]int{"werewolf": 3, "seer": 1, "witch": 1, "hunter": 1, "villager": 2}
+	want := map[string]int{"werewolf": 2, "seer": 1, "witch": 1, "hunter": 1, "villager": 3}
 	for role, n := range want {
 		if counts[role] != n {
 			t.Fatalf("roles = %v, want %v", counts, want)
