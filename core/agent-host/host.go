@@ -208,6 +208,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Tools:      manifestTools(rt),
 		Harness:    m.bindings.Harness,
 	}
+	deployed.manifestID = deployed.manifest.ID()
 
 	hooks, err := m.buildHooks(ctx, spec, rt)
 	if err != nil {
@@ -440,6 +441,11 @@ type deployment struct {
 	delegation  *delegation.Service
 	fingerprint agent.Fingerprint
 	manifest    agent.Manifest
+	// manifestID is the manifest's hash, computed once. Manifest.ID marshals and
+	// hashes the whole struct, and every run stamps it onto its context, so
+	// asking again per run spent more time hashing a constant than the session
+	// table spends on the run.
+	manifestID string
 	// views holds the tool projection of a session-scoped catalog.
 	views     sync.Map
 	closeOnce sync.Once
@@ -449,16 +455,22 @@ type deployment struct {
 // runContext gives one run its execution context: the tool projection the
 // catalog scope names. The session table calls it per run.
 func (d *deployment) runContext(ctx context.Context, sessionID string) context.Context {
-	ctx = runctx.WithRun(ctx, runctx.Run{
+	run := runctx.Run{
 		SessionID: sessionID,
 		AgentName: d.name,
 		TenantID:  d.tenant,
-		Manifest:  d.manifest.ID(),
-	})
+		Manifest:  d.manifestID,
+	}
+	// The runtime's identity is part of the same fact, so it goes in the same
+	// context value: a second WithRun would merge what it already knows and
+	// allocate again for it.
+	if d.rt != nil {
+		run.RuntimeID = d.rt.ID()
+	}
+	ctx = runctx.WithRun(ctx, run)
 	if d.rt == nil {
 		return ctx
 	}
-	ctx = d.rt.Context(ctx)
 	if scope, _ := d.spec.Catalog.ValidatedScope(); scope == deploy.CatalogScopeSession {
 		view, _ := d.views.LoadOrStore(sessionID, d.rt.NewCatalogView())
 		catalog, _ := view.(toolengine.CatalogView)
