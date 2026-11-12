@@ -2,7 +2,6 @@ package commands
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -11,17 +10,80 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/utils/decode"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
+	"github.com/GizClaw/flowcraft/examples/forge/internal/chatfmt"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
+
+	"sigs.k8s.io/yaml"
 )
 
+// testFile is one scripted scenario test.
 type testFile struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Raid        string   `json:"raid"`
 	Turns       []string `json:"turns"`
+}
+
+// turnObserver folds a turn's events into what the test reports: chat blocks,
+// token accounting and timing.
+type turnObserver struct {
+	started   time.Time
+	first     time.Time
+	blocks    *chatfmt.Collector
+	usage     app.Usage
+	toolCalls int
+}
+
+func newTurnObserver() *turnObserver {
+	return &turnObserver{started: time.Now(), blocks: chatfmt.NewCollector()}
+}
+
+// observeSeat folds one seat's event in, under its label and the phase it acted in.
+func (o *turnObserver) observeSeat(a *app.App, seat app.SeatEvent) {
+	o.blocks.SetSpeaker(seat.Label)
+	o.blocks.SetPhase(seat.Phase, a.Private(seat.Phase))
+	o.blocks.Observe(seat.Event)
+}
+
+// drainSeats takes what the seats said during the turn. Delegation runs inside the
+// turn, so everything a seat produced is already buffered when the turn returns;
+// nothing here waits.
+func (o *turnObserver) drainSeats(a *app.App) {
+	for {
+		select {
+		case seat, ok := <-a.Events():
+			if !ok {
+				return
+			}
+			o.observeSeat(a, seat)
+		default:
+			return
+		}
+	}
+}
+
+func (o *turnObserver) observe(event agent.Event) {
+	switch typed := event.(type) {
+	case agent.Text:
+		if o.first.IsZero() && strings.TrimSpace(typed.Text) != "" {
+			o.first = time.Now()
+		}
+	case agent.ToolCallStart:
+		o.toolCalls++
+	case agent.UsageEvent:
+		o.usage.Add(typed.Usage)
+	}
+	o.blocks.Observe(event)
+}
+
+// firstTokenLatency is how long the turn ran before its first text increment.
+func (o *turnObserver) firstTokenLatency() time.Duration {
+	if o.first.IsZero() {
+		return 0
+	}
+	return o.first.Sub(o.started)
 }
 
 type testMetrics struct {
@@ -39,9 +101,11 @@ type testTurnMetric struct {
 	StartedAt   time.Time
 	FinishedAt  time.Time
 	Elapsed     time.Duration
+	FirstToken  time.Duration
 	TokenEvents int
 	ToolCalls   int
 	OutputChars int
+	Usage       app.Usage
 	Error       string
 }
 
@@ -96,16 +160,12 @@ func testCmd(args []string) error {
 	return nil
 }
 
-// parseTestFile decodes a scenario test document. utils converts the
-// YAML authoring form to JSON at the boundary; json.Unmarshal keeps the
-// decode permissive so test files may carry extra fields.
+// parseTestFile decodes a scenario test document. YAML and JSON are both
+// accepted: the authoring form is YAML, the decoder is the same one the
+// deployment documents use.
 func parseTestFile(data []byte) (testFile, error) {
-	jsonData, err := decode.ToJSON(data)
-	if err != nil {
-		return testFile{}, err
-	}
 	var test testFile
-	if err := json.Unmarshal(jsonData, &test); err != nil {
+	if err := yaml.Unmarshal(data, &test); err != nil {
 		return testFile{}, err
 	}
 	return test, nil
@@ -135,17 +195,14 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 	_, _ = fmt.Fprintf(logFile, "# workspace: %s\n\n", workspacePath)
 
 	for i, input := range inputs {
-		turnMetric, text, rendered, err := runOneTestTurn(ctx, a, i+1, input, timeout)
-		metrics.Turns = append(metrics.Turns, turnMetric)
+		metric, rendered, err := runOneTestTurn(ctx, a, i+1, input, timeout)
+		metrics.Turns = append(metrics.Turns, metric)
 		if err != nil {
 			return finishTestMetrics(metrics), err
 		}
 		var turn strings.Builder
 		fmt.Fprintf(&turn, "=== Turn %d ===\n", i+1)
 		fmt.Fprintf(&turn, "user: %s\n", input)
-		if rendered == "" {
-			rendered = text
-		}
 		fmt.Fprintf(&turn, "assistant:\n%s\n\n", rendered)
 		if _, err := logFile.WriteString(turn.String()); err != nil {
 			return finishTestMetrics(metrics), err
@@ -163,42 +220,30 @@ func runOneTestTurn(
 	turn int,
 	input string,
 	timeout time.Duration,
-) (testTurnMetric, string, string, error) {
-	metric := testTurnMetric{Turn: turn, Input: input, StartedAt: time.Now()}
+) (testTurnMetric, string, error) {
+	metric := testTurnMetric{Turn: turn, Input: input}
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	toolsBefore := a.ToolCalls()
-	collector := &textCollectorSink{labels: a.SpeakerLabel}
-	result, err := a.RunTurn(turnCtx, input, collector.spec(), app.TurnOptions{})
+	observer := newTurnObserver()
+	result, err := a.RunTurn(turnCtx, a.Info().Agent, input, observer.observe)
+	observer.drainSeats(a)
+	metric.StartedAt = observer.started
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
-	metric.TokenEvents = collector.tokens
-	metric.ToolCalls = int(a.ToolCalls() - toolsBefore)
-	metric.OutputChars = collector.builder.Len()
-	if err := resultFailure(result, err); err != nil {
-		metric.Error = err.Error()
-		return metric, "", "", err
+	metric.FirstToken = observer.firstTokenLatency()
+	metric.TokenEvents = observer.blocks.Tokens()
+	metric.ToolCalls = observer.toolCalls
+	metric.OutputChars = len(observer.blocks.Text())
+	metric.Usage = observer.usage
+	if failure := app.Failure(result, err); failure != nil {
+		metric.Error = failure.Error()
+		return metric, "", failure
 	}
-	return metric, collector.builder.String(), collector.rendered(), nil
-}
-
-// resultFailure turns a turn's outcome into an error. agent.Execute
-// reports domain failures (including engine errors) as a Result with
-// Status != completed and Err set, returning (result, nil); only
-// infrastructure failures return a Go error. Callers that ignore the
-// Result would silently treat a failed graph as a successful turn, so
-// both signals are checked here.
-func resultFailure(result *agent.Result, err error) error {
-	if err != nil {
-		return err
+	rendered := chatfmt.Render(observer.blocks.Blocks())
+	if text := chatfmt.ResultText(result); rendered == "" && text != "" {
+		rendered = text
 	}
-	if result != nil && result.Status != agent.StatusCompleted {
-		if result.Err != nil {
-			return result.Err
-		}
-		return fmt.Errorf("turn ended with status %q", result.Status)
-	}
-	return nil
+	return metric, rendered, nil
 }
 
 func finishTestMetrics(metrics testMetrics) testMetrics {
@@ -219,12 +264,13 @@ func writeTestStats(outputPath string, metrics testMetrics) error {
 	for _, turn := range metrics.Turns {
 		fmt.Fprintf(&out, "\n--- turn %d ---\n", turn.Turn)
 		fmt.Fprintf(&out, "input: %s\n", turn.Input)
-		fmt.Fprintf(&out, "started_at: %s\n", turn.StartedAt.Format(time.RFC3339))
-		fmt.Fprintf(&out, "finished_at: %s\n", turn.FinishedAt.Format(time.RFC3339))
 		fmt.Fprintf(&out, "elapsed: %s\n", turn.Elapsed.Round(time.Millisecond))
+		fmt.Fprintf(&out, "first_token_latency: %s\n", turn.FirstToken.Round(time.Millisecond))
 		fmt.Fprintf(&out, "token_events: %d\n", turn.TokenEvents)
 		fmt.Fprintf(&out, "tool_calls: %d\n", turn.ToolCalls)
 		fmt.Fprintf(&out, "output_chars: %d\n", turn.OutputChars)
+		fmt.Fprintf(&out, "tokens_in: %d\ntokens_out: %d\ncalls: %d\n",
+			turn.Usage.InputTokens, turn.Usage.OutputTokens, turn.Usage.Calls)
 		if turn.Error != "" {
 			fmt.Fprintf(&out, "error: %s\n", turn.Error)
 		}

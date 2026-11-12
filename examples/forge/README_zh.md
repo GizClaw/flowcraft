@@ -1,134 +1,157 @@
-# Forge — 可运行的本地工作区 Demo
+# Forge — 可运行的本地工作区示例
 
-Forge 是 FlowCraft 技术栈的可运行本地 demo。它从原生部署文档装配完整
-runtime,提供交互式 TUI、脚本化场景测试,以及 raid × persona 双智能体模拟——
-全部由 `scenarios/` 下的纯文件驱动,除了 demo 自身外不需要任何应用代码。
+Forge 是 FlowCraft 的可运行本地示例：把一个工作区目录变成部署好的 agent，用终端
+界面或脚本测试驱动一次会话，并把所有场景事实留在 `scenarios/` 下的纯文件里。
 
-English version: [README.md](README.md).
+它是照着当前 core 的分层重写的，因此也是一个"最小而完整"的宿主：应用真正要写的
+代码就这么多。
+
+English version: [README.md](README.md)。
 
 ## 快速开始
 
-前置要求:Go 1.26+ 和 provider 凭证(见[凭证](#凭证))。
+前置条件：Go 1.26+ 和一个 OpenAI 凭据。
 
 ```bash
 cd examples/forge
+cp .env.example .env         # 填入 OPENAI_API_KEY=...
 go run . help
-```
-
-运行一条脚本化测试:
-
-```bash
-go run . test -test werewolf/opening_setup
-```
-
-创建工作区并查看信息:
-
-```bash
-go run . workspace create --config werewolf --workspace ./workspace
-go run . workspace inspect --workspace ./workspace
+go run . tui new             # 选 companion 直接开聊
+go run . test -test companion/opening
 ```
 
 ## 命令
 
-- `forge workspace create --config <raid> --workspace <dir>` — 把 raid 场景复制成工作区。
-- `forge workspace inspect --workspace <dir>` — 打印工作区元信息(agent、模型、记忆设置)。
-- `forge config raid|persona|test list` — 列出可用场景和测试。
-- `forge tui new` / `forge tui resume` — 在工作区上打开交互式 TUI。
-- `forge test -test <raid>/<name> [--timeout 2m]` — 运行一条脚本化场景测试。
-- `forge test-auto --raid <raid> --persona <persona> [--turns 3]` — 模拟 persona agent 与 raid agent 之间的对话。
+| 命令 | 作用 |
+|---|---|
+| `forge workspace create --config <raid> --workspace <dir>` | 把 raid 场景复制成工作区 |
+| `forge workspace inspect --workspace <dir>` | 打印 agent、引擎和缺失的环境变量 |
+| `forge config raid\|persona\|test list` | 列出可用场景和测试 |
+| `forge tui new` / `forge tui resume` | 打开交互 TUI（新建或恢复工作区） |
+| `forge test -test <raid>/<name> [--timeout 2m]` | 跑一条脚本测试，产物写到 `.out/<run>/` |
+| `forge test-auto --raid <raid> --persona <persona> [--turns 3]` | 让两个已部署 agent 互相对话 |
 
-## 场景
+场景按优先级从 `--scenarios`、`FORGE_SCENARIOS`、可执行文件目录、当前目录、
+用户配置目录依次解析。
 
-场景文件是 `scenarios/` 下的普通目录,解析优先级依次为 `--scenarios`、
-`FORGE_SCENARIOS`、可执行文件所在目录、当前工作目录、用户配置目录。
+## 一个工作区的结构
 
-### Raid
+```
+scenarios/raids/companion/
+  deploy.yaml            # 有哪些 agent，每个怎么构建
+  runtime.yaml           # 底座：边界、文件根、模型、工具
+  graphs/assistant.yaml  # 一张图：state、nodes、edges
+scenarios/personas/tom/  # 同样三个文件，一个 agent，无工具
+scenarios/tests/companion/opening.yaml
+```
 
-每个 `scenarios/raids/<name>/` 都是一个完整的工作区模板:
-
-- `deploy.yaml` — `core/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime backends。
-- `inference.yaml` — provider 配置文件和 secret 解析器。
-- `workspace.yaml` — workspace registry 的根目录与布局。
-- `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
-- `graphs/assistant.yaml` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
-- `speakers.yaml` — 可选的每个 graph 节点的用户可见标签;TUI 和测试日志会以 `[主持人]` 这样的标签渲染每个节点的输出。
-
-### 测试
-
-`scenarios/tests/<raid>/<name>.yaml` 定义一条脚本化测试:
+`deploy.yaml` 只声明 agent，不描述资源图：没有 resource、没有装配步骤、文档里也
+没有依赖注入。
 
 ```yaml
-name: werewolf_opening_setup
-description: 开局一盘新的狼人杀,并向用户揭示其 3 号村民身份。
-raid: werewolf
-turns:
-  - 开始狼人杀
+version: 1
+agents:
+  - name: assistant
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/assistant.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    catalog: {scope: session}
 ```
 
-`forge test` 会把 raid 复制到 `.out/<raid>_<时间戳>/`,逐轮通过 session
-runtime 运行,并写出 `stats.txt`(每轮指标,包含失败信息)和 `chat_log.txt`。
+`${workspace:root}` 是 forge 为"当前打开目录"注册的占位符 scheme
+（`internal/app/document.go`），所以场景目录可以整体搬走而不用改文件。
 
-### Persona
+`runtime.yaml` 就是一个 `runtime.Config`：沙箱后端、可写目录、模型（driver 自带
+模型清单，模型由部署声明）以及启用哪些内置工具集。模拟设备工具不在这里——它是
+宿主挂载的一个 `tool.Source`（`internal/simtools`），应用加自己的工具就走这条路。
 
-`scenarios/personas/<name>/` 是完整的 workspace 模板,`forge test-auto`
-把它当作模拟中的第二个 agent。
+`graphs/assistant.yaml` 才是 agent 本身：带合并规则的 state 键、节点，以及条件为
+state 表达式的边。
 
-## 凭证
+```yaml
+state:
+  messages: {type: messages, merge: append}
+  pending:  {type: json}
+nodes:
+  - {id: model, kind: model, config: {messages: messages, pending: pending, output: answer}}
+  - {id: tools, kind: tool,  config: {messages: messages, pending: pending}}
+edges:
+  - {from: model, to: tools, when: len(state.pending) > 0}
+  - {from: tools, to: model}
+  - {from: model, to: end}
+output: {key: answer}
+```
 
-Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声明的
-环境变量。demo 启动时会加载 forge 目录下的 `.env`。只有 `DEEPSEEK_API_KEY`
-是必需的:所有场景都固定使用 `deepseek-flash`。另外还声明了三个可直接使用
-的 provider —— 在 OpenAI 端点上完整声明的 `gpt-5.6-luna`(`OPENAI_API_KEY`),
-走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`),以及走 MiniMax
-Anthropic 兼容 Messages 端点、由 anthropic driver 按部署声明提供的
-`MiniMax-M3`(`MINIMAX_API_KEY`),以及走 bytedance driver 的 Ark Responses API、
-由 profile 绑定账号内带日期部署地址的 `doubao-seed-2-0-lite`(`ARK_API_KEY`);
-它们用的是惰性引用,只有在图里真的路由过去时缺少 key 才会报错。完全没有凭证
-时应用会给出明确报错。
+注意 `len(state.pending) > 0` 而不是 `!= nil`：model 节点总会写这个列表，空列表
+也不是 nil，用 `!= nil` 会死循环。
 
-## TUI
+## 代码在哪
 
-`forge tui new` 打开两栏 TUI:
+| 路径 | 职责 |
+|---|---|
+| `internal/app/app.go` | 打开工作区：manager、store、session、run 迭代器 |
+| `internal/app/document.go` | 读 `deploy.yaml`、解析 `${workspace:root}`、报告缺失环境变量 |
+| `internal/app/drivers.go` | 本二进制编入的 driver 表（`openai`、`anthropic`） |
+| `internal/app/usage.go` | 把一轮的 usage 事件折成一份报告 |
+| `internal/simtools` | 示例自己的工具，作为 `tool.Source` |
+| `internal/chatfmt` | 事件流 → 语音/工具块，TUI 与测试日志共用 |
+| `internal/tui` | bubbletea 界面 |
+| `internal/commands` | CLI 表面 |
+| `internal/scenario` | 文件解析与复制，与 agent 无关 |
 
-- **Chat** — 发送对话并查看流式输出。
-- **Workspace** — 工作区元信息和 token 用量。
+整个宿主就是 `host.New` + `Loader.Load` + `Manager.Deploy`：
 
-`Tab` 切换焦点,`Enter` 提交,`Esc` 清空当前输入,连续按两次 `Ctrl+C`
-退出。空输入不会提交;输入 `/start` 开启新故事,`/next` 让故事继续推进。
+```go
+mgr := host.New(deploy.BuiltinKinds(), host.Bindings{
+    Store:          store,                                     // 恢复会话
+    RuntimeOptions: []runtime.Option{drivers, simtools.New()}, // 接线
+    LoadOptions:    workspaceOptions(dir),                     // ${workspace:root}
+})
+specs, err := mgr.Loader().Load(ctx, body)
+_, err = mgr.Deploy(ctx, specs...)
 
-两个宿主指令可以在 TUI 内直接配置推理:
+session, _ := mgr.Session("assistant", app.SessionID)
+for event, err := range session.Run(ctx, message.NewTextMessage(message.RoleUser, text)) { ... }
+result, err := session.Result(ctx)
+```
 
-- `/model` 选择后端 —— `auto`(走路由策略的默认 target)或部署暴露的任意
-  `provider/name`。也可以直接写 `/model auto`、`/model <target>` 跳过选择器。
-- `/think` 选择思考档位 —— `auto`(沿用图里的默认)或 canonical 五档
-  (`minimal`/`low`/`medium`/`high`/`xhigh`)。各 provider 会折叠到自己的档位,
-  折叠情况记录在编译 ledger 上。
+## 与旧版 forge 的差异
 
-这两个选择只存在于 TUI 进程内:它们作为 engine inputs 传给下一轮,不写入
-工作区或会话。状态栏会显示当前选择。场景自己定义的指令(例如 `/start`、
-`/next`)不是 TUI 命令,仍会作为普通用户文本发给 agent。
+旧版写在 `core` v0.10.0 上，已经无法在当前分层下编译。这次重写跟着新分层走：
 
-每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
-输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
-`core/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
-聚合责任仍在 runtime。
+- **没有资源文档**：`resources:` / `deps:` / `kind: …impl: …` 全部消失，
+  一次部署就是 agent + 引擎设置 + 运行时层。
+- **没有 JS 脚本运行时**：图的内置节点类型只有 `model`、`tool`、`condition`。
+  旧的 `werewolf`、`multi_role_storyteller` 由约 2300 行 JavaScript 驱动，
+  现在只保留在 `../forge-tmp` 作参考——core 里已经没有任何脚本引擎。
+- **没有 board**：图 state 取代 board 变量，条件读 `state.<key>`。因此单轮无法
+  覆盖模型：model 节点的请求是配置，TUI 的 `/model`、`/think` 已移除，模型在
+  `runtime.yaml` 里定。
+- **没有逐节点说话人标签**：事件只说明模型说了什么、哪个工具跑了，不说明是哪个
+  节点产生的。需要署名的部署给每个说话人一个 agent（一个会话一个说话人），
+  按 agent 名标注。
+- **工具计数与 usage 来自事件流**，不再用包装 host factory 的装饰器。
+- **会话可持久化**：每个工作区在 `.forge/sessions.db` 有自己的 SQLite store，
+  所以 `tui resume` 恢复的是对话，不只是目录。
 
-聊天输出按发言人分块:每个 graph 节点的流式文本显示为独立的带标签段落,
-工具调用显示为独立的 `[工具调用]` / `[工具结果]` 块,不再混进发言里。
+## 开发说明
 
-## 与技术栈的接线方式
+本示例需要的 core 修订还没有打 tag：core 当前是 `v0.10.0`，早于
+`core/agent-host` 和 `core/agent-graph/nodes`。因此这个模块通过仓库根目录的
+`go.work` 解析依赖，自身不带任何 `replace`。等下一个 core 版本发布后把 require
+提升到新版本，`make tidy` 和 `make check-consumers`（用 `GOWORK=off` 按发布版本
+构建）才会重新变绿。
 
-- `core/deploy` + `core/runtime` 从 `deploy.yaml` 装配 runtime;
-  `core/runtime/session` 驱动对话并把流增量发给 sink。
-- graph 引擎是 `core/graph`,script 节点跑在自带的 JS runtime
-  (`core/agent/scriptrt/jsrt`)上。
-- 模拟工具是 `internal/simtools` 注册的 Go 值。
-- `WithHostFactory` 包住 session host,把每次 LLM 调用的 token 用量镜像到
-  应用侧,供 TUI 展示。
-
-## 开发
+校验，在本目录下（workspace 模式）：
 
 ```bash
-go build ./...
-go vet ./...
+gofmt -l .
+go build ./... && go vet ./... && go test ./...
 ```
+
+以及仓库根目录的 `make ci`。

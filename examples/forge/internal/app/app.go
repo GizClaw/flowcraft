@@ -7,12 +7,14 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -27,7 +29,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 
+	"github.com/GizClaw/flowcraft/examples/forge/internal/hooks/memory"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
+	"github.com/GizClaw/flowcraft/examples/forge/internal/story"
 )
 
 // SessionID is the session forge drives inside one workspace. State lives in the
@@ -38,8 +42,29 @@ const SessionID = "main"
 //
 // It holds a manager, not a runtime: the runtime of each agent belongs to the
 // deployment the manager built, and the manager is what closes it.
+// SeatEvent is one event of an agent the workspace does not drive directly: a seat
+// reached through delegation, or any agent beside the primary one.
+//
+// A seat runs on its own goroutine inside the delegating tool call, so its events
+// never appear on the turn's iterator. This is the second stream a surface reads.
+type SeatEvent struct {
+	// Agent is the deployment name, Label its user-facing name.
+	Agent string
+	Label string
+	// Phase is the game phase in force when the seat spoke: the last state the
+	// delegated graph reported. A seat speaks inside the step after the rule that
+	// chose the phase, so the latest report is the phase that seat acted in.
+	Phase string
+	Event agent.Event
+}
+
 type App struct {
 	dir    string
+	cast   story.Cast
+	seats  chan SeatEvent
+	mu     sync.Mutex
+	phase  string
+	priv   map[string]bool
 	mgr    *host.Manager
 	store  *checkpoint.SQLite
 	sim    *simtools.Source
@@ -92,12 +117,23 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 	if err != nil {
 		return nil, err
 	}
+	cast, err := story.Load(abs)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	sim := simtools.New()
+	a := &App{dir: abs, store: store, sim: sim, infos: make(map[string]Info, len(doc.Agents)), cast: cast,
+		seats: make(chan SeatEvent, 256)}
 	mgr := host.New(graphKinds(abs), host.Bindings{
 		Store:          store,
 		RuntimeOptions: []runtime.Option{runtime.WithDrivers(table...), runtime.WithToolSource(sim)},
 		LoadOptions:    workspaceOptions(abs),
 		Harness:        "examples/forge",
+		// The seats' events do not reach the turn's iterator: a delegated child
+		// runs on its own goroutine. The host is told directly, which is how a
+		// surface shows a seat speaking while the referee waits for it.
+		OnEvent: a.forwardSeat,
 	})
 	specs, err := mgr.Loader().Load(ctx, body)
 	if err != nil {
@@ -108,7 +144,7 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 		_ = store.Close()
 		return nil, err
 	}
-	a := &App{dir: abs, mgr: mgr, store: store, sim: sim, infos: make(map[string]Info, len(specs))}
+	a.mgr = mgr
 	for _, spec := range specs {
 		a.agents = append(a.agents, spec.Name)
 		a.infos[spec.Name] = describe(abs, spec, sim)
@@ -123,19 +159,22 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 // the runtime's own dispatch chain; the source is rooted at the workspace, so a
 // scenario writes `rules/vote_tally.star` and means the file beside it.
 func graphKinds(workspace string) deploy.Kinds {
-	return deploy.BuiltinKinds().WithEngines(deploy.GraphEngine(
-		nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
-			kind, err := script.New(
-				script.WithBackends(starlark.New()),
-				script.WithRuntime(rt),
-				script.WithSource(&script.FileSource{BaseDir: workspace, TTL: time.Second}),
-			)
-			if err != nil {
-				return nil, err
-			}
-			return []graph.NodeKind{kind}, nil
-		}),
-	))
+	return deploy.BuiltinKinds().
+		// The one hook the demo ships: a seat's own memory, kept in the workspace.
+		WithHooks(memory.Kind()).
+		WithEngines(deploy.GraphEngine(
+			nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
+				kind, err := script.New(
+					script.WithBackends(starlark.New()),
+					script.WithRuntime(rt),
+					script.WithSource(&script.FileSource{BaseDir: workspace, TTL: time.Second}),
+				)
+				if err != nil {
+					return nil, err
+				}
+				return []graph.NodeKind{kind}, nil
+			}),
+		))
 }
 
 // Close shuts the deployments down, then the store: a session that outlives its
@@ -153,6 +192,89 @@ func (a *App) Close() error {
 		errs = append(errs, a.store.Close())
 	}
 	return errors.Join(errs...)
+}
+
+// Events is the feed of the agents beside the primary one. It is buffered and
+// non-blocking on the producing side: an observer that stops reading costs dropped
+// seat lines, never a stalled run.
+func (a *App) Events() <-chan SeatEvent {
+	if a == nil {
+		return nil
+	}
+	return a.seats
+}
+
+// forwardSeat copies one agent's events onto the feed, skipping the primary agent:
+// its stream is the turn's iterator, and showing it twice would double every line.
+// It runs on the producing agent's run goroutine, so it never blocks.
+func (a *App) forwardSeat(agentName, sessionID string, event agent.Event) {
+	if a == nil || len(a.agents) == 0 {
+		return
+	}
+	// The primary agent's stream reaches the turn's iterator, so it is not
+	// forwarded; its state reports still tell this app which phase the seats are
+	// speaking in.
+	a.observeState(event)
+	if agentName == a.agents[0] {
+		return
+	}
+	label := a.cast.Label(agentName)
+	select {
+	case a.seats <- SeatEvent{Agent: agentName, Label: label, Phase: a.Phase(), Event: event}:
+	default:
+	}
+}
+
+// observeState folds a graph's state report into the phase a surface labels a seat's
+// line with. The rules declare which phases are private, so the app holds no game
+// knowledge of its own.
+func (a *App) observeState(event agent.Event) {
+	extension, ok := event.(agent.EventExtension[graph.GraphState])
+	if !ok {
+		return
+	}
+	raw, ok := extension.Value.Values["game"]
+	if !ok {
+		return
+	}
+	var game struct {
+		Phase   string   `json:"phase"`
+		Private []string `json:"private_phases"`
+	}
+	if err := json.Unmarshal(raw, &game); err != nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if game.Phase != "" {
+		a.phase = game.Phase
+	}
+	if game.Private != nil {
+		a.priv = make(map[string]bool, len(game.Private))
+		for _, phase := range game.Private {
+			a.priv[phase] = true
+		}
+	}
+}
+
+// Phase is the last game phase the graph reported.
+func (a *App) Phase() string {
+	if a == nil {
+		return ""
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.phase
+}
+
+// Private reports whether a phase is one only the role acting in it may hear.
+func (a *App) Private(phase string) bool {
+	if a == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.priv[phase]
 }
 
 // Dir is the absolute workspace directory.

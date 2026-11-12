@@ -84,6 +84,8 @@ func tuiResumeCmd(args []string) error {
 	return runTUIWorkspace(selected.Value)
 }
 
+// listWorkspaceOptions lists the workspace directories a resume can open: a
+// directory with a deployment document is one.
 func listWorkspaceOptions() ([]string, error) {
 	entries, err := os.ReadDir("workspaces")
 	if err != nil {

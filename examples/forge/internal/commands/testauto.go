@@ -10,12 +10,13 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
+	"github.com/GizClaw/flowcraft/examples/forge/internal/chatfmt"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
 )
 
-// personaOpening is handed to the persona to start the dialogue: the
-// persona is a full second agent that generates the user-side lines.
-const personaOpening = "你正在进入一个互动故事副本，对话会像语音聊天一样一来一回。请以你的角色用一句自然中文开场，只输出会被直接朗读出来的话，不要写占位符、舞台说明或内心想法。"
+// personaOpening is handed to the persona to start the dialogue: the persona is
+// a second deployed agent that generates the user-side lines.
+const personaOpening = "你正在进入一个互动对话副本，对话会像语音聊天一样一来一回。请以你的角色用一句自然中文开场，只输出会被直接朗读出来的话，不要写占位符、舞台说明或内心想法。"
 
 func testAutoCmd(args []string) error {
 	flags := flag.NewFlagSet("test-auto", flag.ContinueOnError)
@@ -77,7 +78,8 @@ func testAutoCmd(args []string) error {
 	var transcript strings.Builder
 	nextPersonaInput := personaOpening
 	for round := 1; round <= *turns; round++ {
-		personaText, personaRendered, personaMetric, err := runAutoTurn(ctx, persona, nextPersonaInput, "persona", round, *timeout)
+		personaText, personaRendered, personaMetric, err := runAutoTurn(
+			ctx, persona, nextPersonaInput, "persona", round, *timeout)
 		metrics.Turns = append(metrics.Turns, personaMetric)
 		if err != nil {
 			return fmt.Errorf("persona round %d: %w", round, err)
@@ -87,14 +89,9 @@ func testAutoCmd(args []string) error {
 		if err != nil {
 			return fmt.Errorf("raid round %d: %w", round, err)
 		}
-		if personaRendered == "" {
-			personaRendered = personaText
-		}
-		if raidRendered == "" {
-			raidRendered = raidText
-		}
 		fmt.Printf("--- round %d ---\npersona:\n%s\nraid:\n%s\n\n", round, personaRendered, raidRendered)
-		fmt.Fprintf(&transcript, "=== Round %d ===\npersona:\n%s\nraid:\n%s\n\n", round, personaRendered, raidRendered)
+		fmt.Fprintf(&transcript, "=== Round %d ===\npersona:\n%s\nraid:\n%s\n\n",
+			round, personaRendered, raidRendered)
 		nextPersonaInput = raidText
 	}
 	metrics.FinishedAt = time.Now()
@@ -116,41 +113,44 @@ func runAutoTurn(
 	round int,
 	timeout time.Duration,
 ) (string, string, autoTurnMetric, error) {
-	metric := autoTurnMetric{Actor: actor, Round: round, Input: input, StartedAt: time.Now()}
+	metric := autoTurnMetric{Actor: actor, Round: round, Input: input}
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	toolsBefore := a.ToolCalls()
-	collector := &textCollectorSink{labels: a.SpeakerLabel}
-	result, err := a.RunTurn(turnCtx, input, collector.spec(), app.TurnOptions{})
+	observer := newTurnObserver()
+	result, err := a.RunTurn(turnCtx, a.Info().Agent, input, observer.observe)
+	observer.drainSeats(a)
+	metric.StartedAt = observer.started
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
-	metric.FirstTokenAt = collector.first
-	if !collector.first.IsZero() {
-		metric.FirstTokenLatency = collector.first.Sub(metric.StartedAt)
+	metric.FirstToken = observer.firstTokenLatency()
+	metric.TokenEvents = observer.blocks.Tokens()
+	metric.ToolCalls = observer.toolCalls
+	metric.OutputChars = len(observer.blocks.Text())
+	metric.Usage = observer.usage
+	if failure := app.Failure(result, err); failure != nil {
+		metric.Error = failure.Error()
+		return "", "", metric, failure
 	}
-	metric.TokenEvents = collector.tokens
-	metric.ToolCalls = int(a.ToolCalls() - toolsBefore)
-	metric.OutputChars = collector.builder.Len()
-	if err := resultFailure(result, err); err != nil {
-		metric.Error = err.Error()
-		return "", "", metric, err
+	rendered := chatfmt.Render(observer.blocks.Blocks())
+	if rendered == "" {
+		rendered = chatfmt.ResultText(result)
 	}
-	return collector.builder.String(), collector.rendered(), metric, nil
+	return observer.blocks.Text(), rendered, metric, nil
 }
 
 type autoTurnMetric struct {
-	Actor             string
-	Round             int
-	Input             string
-	StartedAt         time.Time
-	FinishedAt        time.Time
-	Elapsed           time.Duration
-	FirstTokenAt      time.Time
-	FirstTokenLatency time.Duration
-	TokenEvents       int
-	ToolCalls         int
-	OutputChars       int
-	Error             string
+	Actor       string
+	Round       int
+	Input       string
+	StartedAt   time.Time
+	FinishedAt  time.Time
+	Elapsed     time.Duration
+	FirstToken  time.Duration
+	TokenEvents int
+	ToolCalls   int
+	OutputChars int
+	Usage       app.Usage
+	Error       string
 }
 
 type autoMetrics struct {
@@ -176,19 +176,13 @@ func writeAutoStats(outputPath string, metrics autoMetrics) error {
 	for _, turn := range metrics.Turns {
 		fmt.Fprintf(&out, "\n--- %s round %d ---\n", turn.Actor, turn.Round)
 		fmt.Fprintf(&out, "input: %s\n", turn.Input)
-		fmt.Fprintf(&out, "started_at: %s\n", turn.StartedAt.Format(time.RFC3339))
-		fmt.Fprintf(&out, "finished_at: %s\n", turn.FinishedAt.Format(time.RFC3339))
 		fmt.Fprintf(&out, "elapsed: %s\n", turn.Elapsed.Round(time.Millisecond))
-		if turn.FirstTokenAt.IsZero() {
-			fmt.Fprintln(&out, "first_token_at: none")
-			fmt.Fprintln(&out, "first_token_latency: none")
-		} else {
-			fmt.Fprintf(&out, "first_token_at: %s\n", turn.FirstTokenAt.Format(time.RFC3339Nano))
-			fmt.Fprintf(&out, "first_token_latency: %s\n", turn.FirstTokenLatency.Round(time.Millisecond))
-		}
+		fmt.Fprintf(&out, "first_token_latency: %s\n", turn.FirstToken.Round(time.Millisecond))
 		fmt.Fprintf(&out, "token_events: %d\n", turn.TokenEvents)
 		fmt.Fprintf(&out, "tool_calls: %d\n", turn.ToolCalls)
 		fmt.Fprintf(&out, "output_chars: %d\n", turn.OutputChars)
+		fmt.Fprintf(&out, "tokens_in: %d\ntokens_out: %d\ncalls: %d\n",
+			turn.Usage.InputTokens, turn.Usage.OutputTokens, turn.Usage.Calls)
 		if turn.Error != "" {
 			fmt.Fprintf(&out, "error: %s\n", turn.Error)
 		}

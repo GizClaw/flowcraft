@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	graph "github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -271,4 +273,113 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// recordingGenerator remembers what each model call was given, so a test can see
+// what the engine assembled.
+type recordingGenerator struct {
+	mu       sync.Mutex
+	contexts []int
+}
+
+func (g *recordingGenerator) Generate(context.Context, inference.GenerateRequest) (inference.GenerateResponse, error) {
+	return inference.GenerateResponse{}, nil
+}
+
+func (g *recordingGenerator) GenerateStream(_ context.Context, request inference.GenerateRequest) (inference.Stream, error) {
+	g.mu.Lock()
+	g.contexts = append(g.contexts, len(request.Context))
+	g.mu.Unlock()
+	return &stubStream{response: inference.GenerateResponse{
+		Message: message.NewTextMessage(message.RoleAssistant, "ok"),
+	}}, nil
+}
+
+func (g *recordingGenerator) contextSizes() []int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]int(nil), g.contexts...)
+}
+
+// TestTurnsRememberTheConversation pins what a carried transcript buys: the second
+// turn's model call sees the first turn, which is what makes a chat a chat.
+func TestTurnsRememberTheConversation(t *testing.T) {
+	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	generator := &recordingGenerator{}
+	a, err := open(context.Background(), dir, stubDrivers(generator))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	for _, text := range []string{"第一句", "第二句", "第三句"} {
+		if _, err := a.RunTurn(context.Background(), a.Info().Agent, text, nil); err != nil {
+			t.Fatalf("turn %q: %v", text, err)
+		}
+	}
+	sizes := generator.contextSizes()
+	if len(sizes) != 3 {
+		t.Fatalf("model calls = %d, want one per turn", len(sizes))
+	}
+	// Context is the carried transcript minus the turn being answered, plus the
+	// system prompt: each turn adds the previous user line and answer.
+	for turn, size := range sizes {
+		if want := 2*turn + 1; size != want {
+			t.Fatalf("turn %d saw %d context messages, want %d (sizes %v)",
+				turn+1, size, want, sizes)
+		}
+	}
+}
+
+// TestOpenBuildsTheWerewolfTable is the scenario the migration is for: nine
+// deployments, one referee and eight seats, each seat carrying its memory hook.
+func TestOpenBuildsTheWerewolfTable(t *testing.T) {
+	dir := copyScenario(t, "raids", "../../scenarios/raids/werewolf")
+	t.Setenv("OPENAI_API_KEY", "sk-test")
+	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = a.Close() }()
+
+	agents := a.Agents()
+	if len(agents) != 9 {
+		t.Fatalf("agents = %v, want a referee and eight seats", agents)
+	}
+	if agents[0] != "referee" {
+		t.Fatalf("first agent = %q, want the referee", agents[0])
+	}
+	for i := 1; i <= 8; i++ {
+		if agents[i] != fmt.Sprintf("seat_%d", i) {
+			t.Fatalf("agent %d = %q", i, agents[i])
+		}
+	}
+	if info := a.Info(); info.Engine != "graph" || len(info.Models) != 1 {
+		t.Fatalf("referee info = %+v", info)
+	}
+}
+
+// TestStateReportsCarryThePhase: a seat's line is labelled with the phase the rules
+// put it in, and the privacy of a phase comes from the rules rather than the app.
+func TestStateReportsCarryThePhase(t *testing.T) {
+	a := &App{}
+	game := json.RawMessage(`{"phase":"night_wolf","private_phases":["night_wolf","night_seer"]}`)
+	a.observeState(agent.EventExtension[graph.GraphState]{
+		Name:  graph.StateName,
+		Value: graph.GraphState{Step: 7, Values: map[string]json.RawMessage{"game": game}},
+	})
+	if got := a.Phase(); got != "night_wolf" {
+		t.Fatalf("phase = %q", got)
+	}
+	if !a.Private("night_seer") || a.Private("day") {
+		t.Fatalf("privacy = %v", a.Private("night_seer"))
+	}
+	// A report that carries another key says nothing about the game.
+	a.observeState(agent.EventExtension[graph.GraphState]{
+		Value: graph.GraphState{Step: 8, Values: map[string]json.RawMessage{"brief": json.RawMessage(`"x"`)}},
+	})
+	if got := a.Phase(); got != "night_wolf" {
+		t.Fatalf("phase after an unrelated step = %q", got)
+	}
 }

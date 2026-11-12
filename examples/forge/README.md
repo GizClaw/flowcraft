@@ -1,162 +1,163 @@
 # Forge — Runnable Local Workspace Demo
 
-Forge is the runnable local demo for the FlowCraft stack. It assembles a full
-runtime from native deployment documents, opens an interactive TUI, runs
-scripted scenario tests, and drives raid × persona simulations — all driven by
-plain files under `scenarios/`, with no application code beyond the demo
-itself.
+Forge is the runnable local demo for the FlowCraft stack. It turns a workspace
+directory into deployed agents, drives one session from a terminal UI or a
+scripted test, and keeps every scenario fact in plain files under `scenarios/`.
+
+It is written against the current core layering on purpose: it is the smallest
+complete host, so it shows what an application actually has to write.
 
 中文版见 [README_zh.md](README_zh.md)。
 
 ## Quickstart
 
-Prerequisites: Go 1.26+ and a provider credential (see
-[Credentials](#credentials)).
+Prerequisites: Go 1.26+ and an OpenAI credential.
 
 ```bash
 cd examples/forge
+cp .env.example .env         # then set OPENAI_API_KEY=...
 go run . help
-```
-
-Run one scripted test:
-
-```bash
-go run . test -test werewolf/opening_setup
-```
-
-Create a workspace and inspect it:
-
-```bash
-go run . workspace create --config werewolf --workspace ./workspace
-go run . workspace inspect --workspace ./workspace
+go run . tui new             # pick "companion" and start chatting
+go run . test -test companion/opening
 ```
 
 ## Commands
 
-- `forge workspace create --config <raid> --workspace <dir>` — copy a raid
-  scenario into a workspace.
-- `forge workspace inspect --workspace <dir>` — print workspace metadata
-  (agent and workspace settings).
-- `forge config raid|persona|test list` — list available scenarios and tests.
-- `forge tui new` / `forge tui resume` — open the interactive TUI over a
-  workspace.
-- `forge test -test <raid>/<name> [--timeout 2m]` — run one scripted scenario
-  test.
-- `forge test-auto --raid <raid> --persona <persona> [--turns 3]` — simulate a
-  dialogue between a persona agent and a raid agent.
+| Command | What it does |
+|---|---|
+| `forge workspace create --config <raid> --workspace <dir>` | copy a raid scenario into a workspace |
+| `forge workspace inspect --workspace <dir>` | print the agents, engines and missing environment |
+| `forge config raid\|persona\|test list` | list available scenarios and tests |
+| `forge tui new` / `forge tui resume` | open the interactive TUI over a new or an existing workspace |
+| `forge test -test <raid>/<name> [--timeout 2m]` | run one scripted test, writing `.out/<run>/` |
+| `forge test-auto --raid <raid> --persona <persona> [--turns 3]` | simulate a dialogue between two deployed agents |
 
-## Scenarios
+Scenario files are resolved in priority order from `--scenarios`, `FORGE_SCENARIOS`,
+the executable's directory, the working directory, and the per-user config
+directory.
 
-Scenario files are plain directories under `scenarios/`, resolved in priority
-order from `--scenarios`, `FORGE_SCENARIOS`, the executable's directory, the
-working directory, and the per-user config directory.
+## How a workspace is put together
 
-### Raids
+```
+scenarios/raids/companion/
+  deploy.yaml            # which agents exist, and how each is built
+  runtime.yaml           # the substrate: boundary, files, models, tools
+  graphs/assistant.yaml  # one graph: state, nodes, edges
+scenarios/personas/tom/  # the same three files, one agent, no tools
+scenarios/tests/companion/opening.yaml
+```
 
-Each `scenarios/raids/<name>/` is a complete workspace template:
-
-- `deploy.yaml` — the `core/deploy` resource document: event bus, simulated
-  tool source, tool assembly, workspace, DeepSeek provider, inference
-  assembly, JS script runtime, and the graph agent.
-- `inference.yaml` — provider profiles and secret resolvers (still used by
-  forge's credential preflight).
-- `workspace.yaml` / `tools.yaml` — authoring references kept alongside the
-  new inline resource settings; the runtime consumes deploy.yaml directly.
-- `graphs/assistant.yaml` — the graph definition, with `scripts/` and
-  `prompts/` beside it (script sources and system prompts are referenced as
-  `{"file": ...}`).
-- `speakers.yaml` — optional user-facing labels per graph node; the TUI and
-  test logs render each node's output under its label (e.g. `[主持人]`).
-
-### Tests
-
-`scenarios/tests/<raid>/<name>.yaml` defines one scripted test:
+`deploy.yaml` names the agents. It does not describe resources: there is no
+resource graph, no assembly step and no dependency injection in the document:
 
 ```yaml
-name: werewolf_opening_setup
-description: Starts a new Werewolf game and reveals the user as seat 3 villager.
-raid: werewolf
-turns:
-  - 开始狼人杀
+version: 1
+agents:
+  - name: assistant
+    engine:
+      kind: graph
+      settings:
+        path: ${workspace:root}/graphs/assistant.yaml
+    runtime:
+      layers:
+        - priority: 0
+          path: ${workspace:root}/runtime.yaml
+    catalog: {scope: session}
 ```
 
-`forge test` copies the raid into `.out/<raid>_<timestamp>/`, runs every turn
-through the session runtime, and writes `stats.txt` (per-turn metrics,
-including failures) and `chat_log.txt`.
+`${workspace:root}` is a placeholder scheme forge registers for the directory it
+is opening (`internal/app/document.go`), so a scenario stays relocatable.
 
-### Personas
+`runtime.yaml` is one `runtime.Config`: the sandbox backend, the writable roots,
+the models (a driver ships no line-up), and which built-in tool sets are wired.
+The simulated device tools are *not* here — they are a `tool.Source` the host
+mounts (`internal/simtools`), which is how an application adds its own tools.
 
-`scenarios/personas/<name>/` are full workspace templates used by
-`forge test-auto` as the second agent in the simulation.
+`graphs/assistant.yaml` is the agent itself: declared state keys with merge
+rules, nodes, and edges whose conditions are expressions over that state:
 
-## Credentials
+```yaml
+state:
+  messages: {type: messages, merge: append}
+  pending:  {type: json}
+nodes:
+  - {id: model, kind: model, config: {messages: messages, pending: pending, output: answer}}
+  - {id: tools, kind: tool,  config: {messages: messages, pending: pending}}
+edges:
+  - {from: model, to: tools, when: len(state.pending) > 0}
+  - {from: tools, to: model}
+  - {from: model, to: end}
+output: {key: answer}
+```
 
-Provider credentials are read from environment variables declared by the
-`inference.yaml` secret resolvers (`resolver: env`). The demo loads `.env` from
-the forge directory at startup. Only `DEEPSEEK_API_KEY` is required: every
-scenario routes to `deepseek-flash`. Three more providers are declared and
-ready to use — `gpt-5.6-luna`, declared in full on the OpenAI endpoint
-(`OPENAI_API_KEY`), `glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
-(`ZHIPU_API_KEY`), `MiniMax-M3` through MiniMax's Anthropic-compatible
-Messages endpoint, which the anthropic driver serves under the deployment's
-own declaration
-(`MINIMAX_API_KEY`), and `doubao-seed-2-0-lite` on ByteDance's Ark Responses
-API through the bytedance driver, whose profile binds the account's dated
-deployment address (`ARK_API_KEY`) — and their references are lazy, so a missing key only
-surfaces if a graph actually routes to them. Without any credential the app
-fails with a clear message.
+## Where the code is
 
-## TUI
+| Path | Job |
+|---|---|
+| `internal/app/app.go` | opens a workspace: manager, store, session, run iterator |
+| `internal/app/document.go` | reads `deploy.yaml`, resolves `${workspace:root}`, reports missing env |
+| `internal/app/drivers.go` | the driver table this binary compiles in (`openai`, `anthropic`) |
+| `internal/app/usage.go` | folds a turn's usage events into one report |
+| `internal/simtools` | the demo's own tools, as a `tool.Source` |
+| `internal/chatfmt` | event stream → speech / tool blocks, shared by TUI and test logs |
+| `internal/tui` | the bubbletea interface |
+| `internal/commands` | the CLI surface |
+| `internal/scenario` | file resolution and copying, nothing about agents |
 
-`forge tui new` opens a two-panel TUI:
+The whole host is `host.New(...)` + `Loader.Load` + `Manager.Deploy`:
 
-- **Chat** — send turns and watch streamed output.
-- **Workspace** — workspace metadata and token usage.
+```go
+mgr := host.New(deploy.BuiltinKinds(), host.Bindings{
+    Store:          store,                                             // resume
+    RuntimeOptions: []runtime.Option{drivers, simtools.New()},         // wiring
+    LoadOptions:    workspaceOptions(dir),                             // ${workspace:root}
+})
+specs, err := mgr.Loader().Load(ctx, body)
+_, err = mgr.Deploy(ctx, specs...)
 
-`Tab` switches focus, `Enter` submits, `Esc` clears the focused input, and
-`Ctrl+C` twice quits. Empty input is a no-op; type `/start` to open a fresh
-story or `/next` to keep the story moving.
+session, _ := mgr.Session("assistant", app.SessionID)
+for event, err := range session.Run(ctx, message.NewTextMessage(message.RoleUser, text)) { ... }
+result, err := session.Result(ctx)
+```
 
-Two host commands configure inference without leaving the TUI:
+## Differences from the previous forge
 
-- `/model` picks the backend — `auto` (the routing policy's default target) or
-  any selectable `provider/name` the deployment exposes. `/model auto` and
-  `/model <target>` skip the picker.
-- `/think` picks the reasoning effort — `auto` (the graph's own default) or a
-  canonical level (`minimal`/`low`/`medium`/`high`/`xhigh`). Providers fold
-  these onto their own ladder and report any fold on the compile ledger.
+The previous version was written against `core` v0.10.0 and no longer compiles
+against the current layering. This rewrite follows it:
 
-Both choices live in the TUI process only: they are handed to the next turn as
-engine inputs, and nothing is written to the workspace or the session. The
-status line shows the current selection. Directives the scenario owns — such
-as `/start` and `/next` — are not TUI commands and still reach the agent as
-plain user text.
+- **No resource document.** `resources:` / `deps:` / `kind: …impl: …` are gone;
+  a deployment is agents plus engine settings plus runtime layers.
+- **No JS script runtime.** The graph's built-in node kinds are `model`, `tool`
+  and `condition`. The old `werewolf` and `multi_role_storyteller` scenarios were
+  driven by ~2.3k lines of JavaScript and are kept in `../forge-tmp` for
+  reference only; nothing in core executes scripts now.
+- **No board.** Graph state replaces board variables, and conditions read
+  `state.<key>`. A turn therefore cannot override the model: the model node's
+  request is configuration, so `/model` and `/think` are gone from the TUI and
+  the model is chosen in `runtime.yaml`.
+- **No per-node speaker labels.** Events say what the model said and which tool
+  ran, not which node produced it. A deployment that needs attribution gives each
+  speaker its own agent — one session per speaker — and labels by agent name.
+- **Tool counters and usage come from the event stream**, not from a decorator
+  around a host factory.
+- **Sessions are durable.** Each workspace keeps a SQLite store under
+  `.forge/sessions.db`, so `tui resume` resumes the conversation, not just the
+  directory.
 
-After each turn the Chat panel shows that turn's token accounting under the
-input box: input / output / total tokens, reasoning
-tokens, cache read / write tokens, and call count. Usage is mirrored from the
-runtime host through `core/runtime`'s `WithHostFactory` decorator; the runtime
-remains the owner of usage aggregation.
+## Development notes
 
-Chat output is split per speaker: every graph node's streamed text appears as
-its own labelled block, and tool invocations appear as separate
-`[工具调用]` / `[工具结果]` blocks instead of being narrated inline.
+The core revision this example needs is not tagged yet: `core` is at `v0.10.0`,
+which predates `core/agent-host` and `core/agent-graph/nodes`. The module
+therefore resolves through the repository's `go.work` — it carries no `replace`
+directives of its own. Bump the `core` requirement when the next release is
+tagged; `make tidy` and `make check-consumers` (which build with `GOWORK=off`
+against released modules) only pass from that point on.
 
-## How it wires into the stack
-
-- `core/deploy` + `core/runtime` assemble the runtime from `deploy.yaml`;
-  `core/runtime/session` drives turns and streams deltas to sinks.
-- The graph engine is `core/graph/resource`, with script nodes running on the
-  bundled JS runtime (`core/agent/scriptrt/jsrt`).
-- Simulated tools are a `tool.Source` resource registered from
-  `internal/simtools`; the DeepSeek provider is a `driver/openai` instance
-  pointed at `https://api.deepseek.com` with its model declared in full.
-- `WithHostFactory` wraps the session host so every LLM call's token usage is
-  mirrored onto the app for TUI display.
-
-## Development
+Gates, from this directory (workspace mode):
 
 ```bash
-go build ./...
-go vet ./...
+gofmt -l .
+go build ./... && go vet ./... && go test ./...
 ```
+
+and `make ci` from the repository root.

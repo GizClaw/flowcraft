@@ -3,7 +3,6 @@ package commands
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -55,14 +54,25 @@ func workspaceInspectCmd(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	info, err := app.Inspect(*workspaceDir)
+	infos, missing, err := app.Inspect(*workspaceDir)
 	if err != nil {
 		return err
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "workspace: %s\n", filepath.Clean(*workspaceDir))
-	fmt.Fprintf(&out, "agent: %s (%s)\n", info.AgentID, info.AgentName)
-	fmt.Fprintf(&out, "context: %s\n", info.ContextID)
+	for _, info := range infos {
+		fmt.Fprintf(&out, "agent: %s\n", info.Agent)
+		fmt.Fprintf(&out, "  engine: %s\n", info.Engine)
+		if info.Runtime != "" {
+			fmt.Fprintf(&out, "  runtime layer: %s\n", info.Runtime)
+		}
+		fmt.Fprintf(&out, "  session: %s\n", info.Session)
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(&out, "missing env: %s\n", strings.Join(missing, ", "))
+	} else {
+		fmt.Fprintln(&out, "missing env: none")
+	}
 	fmt.Print(out.String())
 	return nil
 }
@@ -74,5 +84,3 @@ Usage:
   forge workspace inspect --workspace <dir>
 `, "\n")
 }
-
-var _ = os.Stdout
