@@ -3,7 +3,6 @@ package script
 import (
 	"encoding/json"
 
-	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 )
 
@@ -54,11 +53,6 @@ func payload(value any) json.RawMessage {
 		return json.RawMessage(`{}`)
 	}
 	return raw
-}
-
-// runRecord is the fact every invocation records.
-func runRecord(ref, version string) agent.Record {
-	return agent.Record{Kind: RecordRun, Payload: payload(RunRecord{Ref: ref, Version: version})}
 }
 
 // recordedRun returns the version the task last ran one source under.

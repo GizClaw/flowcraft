@@ -111,3 +111,36 @@ func TestFileSourceHonoursCancellation(t *testing.T) {
 		t.Fatal("expected the cancelled context to stop the load")
 	}
 }
+
+func TestFileSourceTakesAnAbsoluteReference(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "rule.star", "abs")
+
+	// The base directory is a decoy: an absolute reference ignores it.
+	source := &FileSource{BaseDir: t.TempDir()}
+	script, err := source.Load(context.Background(), path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if script.Text != "abs" {
+		t.Fatalf("text = %q", script.Text)
+	}
+}
+
+func TestFileSourceReusesTheBodyWhenNothingChanged(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "rule.star", "same")
+
+	source := &FileSource{BaseDir: dir}
+	first, err := source.Load(context.Background(), path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	second, err := source.Load(context.Background(), path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if first != second {
+		t.Fatalf("an unchanged file changed its script: %+v vs %+v", first, second)
+	}
+}

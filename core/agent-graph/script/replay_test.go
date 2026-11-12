@@ -54,7 +54,7 @@ func invokeWith(t *testing.T, kind graph.NodeKind, config string, replay bool, r
 // argumentsHash repeats the record's identity for one argument object. It is
 // spelled out here on purpose: the hash is part of what a record means, so a test
 // that reads records should pin the format rather than call the writer.
-func argumentsHash(t *testing.T, args map[string]any) string {
+func argumentsHash(t testing.TB, args map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {

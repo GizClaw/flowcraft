@@ -19,7 +19,7 @@ import (
 // toolRuntime builds a real runtime whose only interesting part is one tool
 // source, so the script's call goes through the same dispatch chain a tool node
 // uses.
-func toolRuntime(t *testing.T) *runtime.Runtime {
+func toolRuntime(t testing.TB) *runtime.Runtime {
 	t.Helper()
 	root := t.TempDir()
 	config := runtime.Config{
