@@ -464,9 +464,21 @@ func (r *Run) runStepInline(
 		}
 		return true
 	}
-	nodeCtx, end := r.startNodeSpan(ctx, id, r.g.nodes[id].kind)
+	kind := r.g.nodes[id].kind
+	if !yield(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeStarted), nil) {
+		stopped = true
+		return nil, message.Content{}, errConsumerStopped
+	}
+	nodeCtx, end := r.startNodeSpan(ctx, id, kind)
 	result, err := r.invokeInline(nodeCtx, id, inv, emit)
 	end(err)
+	// The consumer may have stopped while the node was streaming; a stopped
+	// consumer is not offered another event.
+	if !stopped {
+		if !yield(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeDone), nil) {
+			stopped = true
+		}
+	}
 	if stopped {
 		return nil, message.Content{}, errConsumerStopped
 	}
@@ -613,9 +625,16 @@ func (r *Run) runStep(
 					return false
 				}
 			}
-			nodeCtx, end := r.startNodeSpan(stepCtx, id, r.g.nodes[id].kind)
+			kind := r.g.nodes[id].kind
+			// A consumer that stopped must not be offered another event: the end is
+			// reported only when the start was taken.
+			announced := emit(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeStarted))
+			nodeCtx, end := r.startNodeSpan(stepCtx, id, kind)
 			outcome.result, outcome.err = r.invokeOnce(nodeCtx, id, invocations[i], emit)
 			end(outcome.err)
+			if announced {
+				emit(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeDone))
+			}
 		}(i, id)
 	}
 	go func() {
