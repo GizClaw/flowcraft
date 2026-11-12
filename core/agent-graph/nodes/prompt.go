@@ -7,12 +7,10 @@ import (
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 )
-
-// recordLLMCall is the record kind a model call writes.
-const recordLLMCall = "llm.call"
 
 // describePrompt renders the request's input identity: one digest per message
 // plus the roll-up segments a dashboard reads.
@@ -142,3 +140,8 @@ func joinNames(names []string) string {
 	}
 	return string(body)
 }
+
+// recordLLMCall is the model call's record kind. The engine owns the string; the
+// node names it short, so a rename in agent-graph reaches this file instead of
+// leaving a second literal behind.
+const recordLLMCall = graph.RecordLLMCall

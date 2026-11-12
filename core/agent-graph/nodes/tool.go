@@ -129,8 +129,6 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 	}, nil
 }
 
-const recordEffect = "graph.effect"
-
 // toolStream runs the batch concurrently and reports every call: the starts are
 // emitted first, then results as they complete. The transcript keeps input order
 // regardless of completion order.
@@ -332,7 +330,7 @@ func effectRecord(effect agent.EffectRecord, at time.Time) (graph.Record, error)
 	if err != nil {
 		return graph.Record{}, err
 	}
-	return graph.Record{Kind: recordEffect, Payload: payload, At: at}, nil
+	return graph.Record{Kind: graph.RecordEffect, Payload: payload, At: at}, nil
 }
 
 // toolErrorKind classifies a result for the trace. A tool reports failure
