@@ -201,7 +201,7 @@ func speechValue(text string) graph.Value {
 	}))
 }
 
-const nightConfig = `{"backend":"starlark","path":"rules/night.star","reads":["game","speech"],"writes":["game","prompt"]}`
+const nightConfig = `{"backend":"starlark","path":"rules/night.star","reads":["game","speech"],"writes":["game","prompt","brief"]}`
 const dawnConfig = `{"backend":"starlark","path":"rules/dawn.star","reads":["game"],"writes":["game","prompt"]}`
 
 func TestNightAsksTheWolfForATarget(t *testing.T) {
@@ -218,6 +218,7 @@ func TestNightAsksTheWolfForATarget(t *testing.T) {
 		}}),
 		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
 		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
 	}
 	first := runRule(t, "rules/night.star", nightConfig, values)
 	prompt, _ := first["prompt"].Text()
@@ -255,6 +256,7 @@ func TestNightRejectsAnImpossibleTarget(t *testing.T) {
 		}}),
 		"speech": graph.MessagesValue(graph.MessagesFromSlice(nil)),
 		"prompt": graph.Text(""),
+		"brief":  graph.Text(""),
 	}
 	first := runRule(t, "rules/night.star", nightConfig, values)
 	values["game"] = first["game"]
@@ -339,13 +341,13 @@ const exileConfig = `{"backend":"starlark","path":"rules/exile.star","reads":["g
 
 // voteConfig and dayConfig declare all eight seat channels: a rule writes a brief
 // into exactly one of them, and a script node declares its writes statically.
-const voteConfig = `{"backend":"starlark","path":"rules/vote.star","reads":["game","speech","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"],"writes":["game","prompt","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"]}`
+const voteConfig = `{"backend":"starlark","path":"rules/vote.star","reads":["game","speech"],"writes":["game","prompt","brief"]}`
 
-const dayConfig = `{"backend":"starlark","path":"rules/day.star","reads":["game","speech","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"],"writes":["game","prompt","seat_1","seat_2","seat_3","seat_4","seat_5","seat_6","seat_7","seat_8"]}`
+const dayConfig = `{"backend":"starlark","path":"rules/day.star","reads":["game","speech"],"writes":["game","prompt","brief"]}`
 
 // seatChannels is the empty channel set a rule invocation expects.
 func seatChannels(overrides map[string]graph.Value) map[string]graph.Value {
-	values := map[string]graph.Value{"prompt": graph.Text("")}
+	values := map[string]graph.Value{"prompt": graph.Text(""), "brief": graph.Text("")}
 	for id := 1; id <= 8; id++ {
 		key := "seat_" + strconv.Itoa(id)
 		values[key] = graph.MessagesValue(graph.MessagesFromSlice(nil))
