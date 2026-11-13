@@ -21,9 +21,9 @@ retrieval, runtime orchestration, and voice. Source on
   and parsing, BM25 ranking over names and descriptions, and the
   per-turn `## Skills` section; lifecycle and authoring stay with the
   caller.
-- [Application Runtime](guides/runtime.md) — `core/runtime` +
-  `core/runtime/session`: process-level services and leased,
-  interruptible streaming sessions above a built deployment.
+- [Application Runtime](guides/runtime.md) — `core/runtime`: one runtime per
+  configuration document (provider, tools, sandbox, files, skills, journal)
+  and everything it built.
 - [Checkpoints](guides/checkpoint.md) — `core/agent`: the checkpoint
   store contract, incremental records, and the board write record an
   engine persists at a boundary.
@@ -46,9 +46,9 @@ retrieval, runtime orchestration, and voice. Source on
 - [Inference Runtime](guides/inference.md) — unified Generate / Embed /
   Transcription (Realtime reserved): deployment config, routing, extensions,
   streaming, media intents, hot reload.
-- [Deployment Assembly](guides/deploy.md) — `core/deploy`: one YAML
-  document + one `Build` call to wire shared resources, named agents,
-  engines, and lifecycle hooks.
+- [Deployment Assembly](guides/deploy.md) — `core/deploy`: the deployment
+  document, the engine / protocol / hook kind tables, and one `Loader` that
+  validates a deployment without building it.
 ### Delegation
 
 - [Delegation](guides/delegation.md) — `core/delegation`: backend-neutral
