@@ -41,7 +41,7 @@ func TestDeniedRecognizesRealBwrapRefusal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
-	res, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
+	res, err := engine.Exec(context.Background(), runner, "/bin/sh",
 		[]string{"-c", "echo hi > " + filepath.Join(root, "denied.txt")},
 		sandbox.ExecOptions{WorkDir: root, Permission: &permission.Policy{}})
 	if err != nil {

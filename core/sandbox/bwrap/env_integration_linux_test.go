@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // TestChildEnvReachesTheSandbox is the cross-process env assertion: the
@@ -33,7 +34,7 @@ func TestChildEnvReachesTheSandbox(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = runner.Close() })
 
-	res, err := sandbox.Exec(context.Background(), runner, envPath, nil,
+	res, err := engine.Exec(context.Background(), runner, envPath, nil,
 		sandbox.ExecOptions{
 			WorkDir: root,
 			Env: sandbox.EnvPolicy{

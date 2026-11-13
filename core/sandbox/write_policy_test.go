@@ -4,7 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -92,6 +94,7 @@ func TestWithDefaultsPermissionMerge(t *testing.T) {
 // nil network means "unrestricted".
 func TestValidateExecPolicyPermission(t *testing.T) {
 	root := filepath.Join(string(filepath.Separator), "work")
+	caps := sandbox.Enforcement{MemoryCap: true, CPUCap: true}
 
 	valid := []sandbox.ExecOptions{
 		{},
@@ -99,7 +102,7 @@ func TestValidateExecPolicyPermission(t *testing.T) {
 		{Permission: &permission.Policy{Writes: permission.Writes{Paths: []string{root}}}},
 	}
 	for i, opts := range valid {
-		if err := engine.ValidateExecPolicy(opts); err != nil {
+		if err := engine.ValidateExecPolicy(opts, caps); err != nil {
 			t.Errorf("case %d rejected: %v", i, err)
 		}
 	}
@@ -116,8 +119,70 @@ func TestValidateExecPolicyPermission(t *testing.T) {
 		}},
 	}
 	for name, opts := range invalid {
-		if err := engine.ValidateExecPolicy(opts); err == nil {
+		if err := engine.ValidateExecPolicy(opts, caps); err == nil {
 			t.Errorf("%s accepted, want a validation error", name)
+		}
+	}
+}
+
+// TestValidateExecPolicyCaps pins the resource gate on the runner's own
+// declaration: a cap the backend does not report is rejected instead of being
+// silently dropped, and reporting it accepts the request. The shared layer no
+// longer probes the platform for this, so the runner's Enforcement is the only
+// source of truth.
+func TestValidateExecPolicyCaps(t *testing.T) {
+	none := sandbox.Enforcement{}
+	full := sandbox.Enforcement{MemoryCap: true, CPUCap: true}
+
+	for name, tc := range map[string]struct {
+		opts    sandbox.ExecOptions
+		caps    sandbox.Enforcement
+		wantErr bool
+	}{
+		"memory without a cap": {
+			opts:    sandbox.ExecOptions{Resources: sandbox.ResourceLimits{MemoryBytes: 1 << 20}},
+			caps:    none,
+			wantErr: true,
+		},
+		"memory with a cap": {
+			opts: sandbox.ExecOptions{Resources: sandbox.ResourceLimits{MemoryBytes: 1 << 20}},
+			caps: full,
+		},
+		"cpu without a cap": {
+			opts: sandbox.ExecOptions{
+				Timeout:   time.Second,
+				Resources: sandbox.ResourceLimits{CPUMillicores: 500},
+			},
+			caps:    none,
+			wantErr: true,
+		},
+		"cpu with a cap": {
+			opts: sandbox.ExecOptions{
+				Timeout:   time.Second,
+				Resources: sandbox.ResourceLimits{CPUMillicores: 500},
+			},
+			caps: full,
+		},
+		"cpu without a timeout": {
+			opts:    sandbox.ExecOptions{Resources: sandbox.ResourceLimits{CPUMillicores: 500}},
+			caps:    full,
+			wantErr: true,
+		},
+		"disk": {
+			opts:    sandbox.ExecOptions{Resources: sandbox.ResourceLimits{DiskBytes: 1 << 20}},
+			caps:    full,
+			wantErr: true,
+		},
+	} {
+		err := engine.ValidateExecPolicy(tc.opts, tc.caps)
+		if tc.wantErr && err == nil {
+			t.Errorf("%s: accepted, want a rejection", name)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("%s: rejected: %v", name, err)
+		}
+		if tc.wantErr && !errdefs.IsNotAvailable(err) {
+			t.Errorf("%s: want errdefs.NotAvailable, got %v", name, err)
 		}
 	}
 }

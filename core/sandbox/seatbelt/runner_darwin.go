@@ -149,7 +149,7 @@ func (r *Runner) Exec(
 	args []string,
 	opts sandbox.ExecOptions,
 ) (*sandbox.ExecResult, error) {
-	return sandbox.Exec(ctx, r, cmd, args, opts)
+	return engine.Exec(ctx, r, cmd, args, opts)
 }
 
 // Start implements core/sandbox.Runner.
@@ -204,7 +204,7 @@ func (r *Runner) spawnProcess(
 		return nil, errdefs.NotAvailablef(
 			"seatbelt: unix socket allow-list is not supported (SBPL does not confine unix sockets)")
 	}
-	if err := engine.ValidateExecPolicy(spec.Opts); err != nil {
+	if err := engine.ValidateExecPolicy(spec.Opts, r.Capabilities().Policy); err != nil {
 		return nil, err
 	}
 

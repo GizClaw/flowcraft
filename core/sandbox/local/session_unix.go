@@ -21,7 +21,7 @@ func sessionsAvailable() bool { return true }
 // same policy surface as Exec and hands the configured command to the
 // shared session implementation.
 func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
-	if err := engine.ValidateExecPolicy(spec.Opts); err != nil {
+	if err := engine.ValidateExecPolicy(spec.Opts, r.Capabilities().Policy); err != nil {
 		return nil, err
 	}
 	if spec.Opts.Net.Mode != permission.NetDefault {

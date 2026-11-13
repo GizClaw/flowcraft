@@ -141,7 +141,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 // Exec runs cmd with args under opts. See Runner doc for which policy
 // fields are honoured vs. rejected with errdefs.NotAvailable.
 func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions) (*sandbox.ExecResult, error) {
-	return sandbox.Exec(ctx, r, cmd, args, opts)
+	return engine.Exec(ctx, r, cmd, args, opts)
 }
 
 // Start implements Runner: policy validation mirrors Exec, then the

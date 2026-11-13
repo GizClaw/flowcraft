@@ -170,7 +170,7 @@ func (r *Runner) Exec(
 	args []string,
 	opts sandbox.ExecOptions,
 ) (*sandbox.ExecResult, error) {
-	return sandbox.Exec(ctx, r, cmd, args, opts)
+	return engine.Exec(ctx, r, cmd, args, opts)
 }
 
 // Start implements core/sandbox.Runner.
@@ -223,7 +223,7 @@ func (r *Runner) spawnProcess(
 	if len(spec.Argv) == 0 {
 		return nil, errdefs.Validationf("bwrap: empty command")
 	}
-	if err := engine.ValidateExecPolicy(spec.Opts); err != nil {
+	if err := engine.ValidateExecPolicy(spec.Opts, r.Enforcement()); err != nil {
 		return nil, err
 	}
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/internal/journaltest"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 )
@@ -56,7 +57,7 @@ func buildJournalHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions
 		Shell:  journaltest.POSIX{},
 		Exec: func(t *testing.T, script string) {
 			t.Helper()
-			result, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
+			result, err := engine.Exec(context.Background(), runner, "/bin/sh",
 				[]string{"-c", script}, sandbox.ExecOptions{WorkDir: root})
 			if err != nil {
 				t.Fatalf("exec %q: %v", script, err)
@@ -97,7 +98,7 @@ func TestJournalCoversWritablePathsOutsideTheRoot(t *testing.T) {
 	// out-of-root workdir); the writable path is reachable by its own
 	// absolute path, which is where the journal has to see the write.
 	script := "printf x > " + outside + "/artifact.md"
-	result, err := sandbox.Exec(context.Background(), runner, "/bin/sh",
+	result, err := engine.Exec(context.Background(), runner, "/bin/sh",
 		[]string{"-c", script}, sandbox.ExecOptions{WorkDir: root})
 	if err != nil {
 		t.Fatalf("exec: %v", err)

@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/internal/journaltest"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/sandbox/local"
@@ -43,7 +44,7 @@ func buildHarness(t *testing.T, enabled bool, opts sandbox.JournalOptions) journ
 		Exec: func(t *testing.T, script string) {
 			t.Helper()
 			argv := shell.Argv(script)
-			result, err := sandbox.Exec(context.Background(), runner, argv[0],
+			result, err := engine.Exec(context.Background(), runner, argv[0],
 				argv[1:], sandbox.ExecOptions{WorkDir: root})
 			if err != nil {
 				t.Fatalf("exec %q: %v", script, err)
