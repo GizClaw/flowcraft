@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	goruntime "runtime"
 	"sort"
 	"strings"
 
@@ -79,11 +80,7 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	case BackendWindows:
 		runner, err = windows.New(dir)
 	case BackendRemote:
-		remoteOpts, optsErr := r.cfg.Sandbox.remoteOptions()
-		if optsErr != nil {
-			return optsErr
-		}
-		runner, err = remote.New(ctx, r.cfg.Sandbox.Remote.Endpoint, remoteOpts...)
+		runner, err = r.cfg.Sandbox.remoteRunner(ctx)
 	default:
 		// Validate rejects this earlier; the switch keeps the boundary explicit.
 		return errdefs.Validationf("sandbox.backend: unknown backend %q", r.cfg.Sandbox.Backend)
@@ -359,6 +356,38 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// remoteRunner connects to the remote boundary described by the document.
+//
+// The transport is the document's choice: an HTTP endpoint across hosts, or a unix
+// socket on this one. The client is identical either way — only where the bytes
+// travel differs — so this builds the options once and picks the constructor.
+func (c SandboxConfig) remoteRunner(ctx context.Context) (sandbox.Runner, error) {
+	opts, err := c.remoteOptions()
+	if err != nil {
+		return nil, err
+	}
+	transport, err := c.Remote.transport()
+	if err != nil {
+		return nil, err
+	}
+	if transport == remoteTransportUnix {
+		if c.Remote.Token == "" && goruntime.GOOS == "windows" {
+			// os.Chmod is advisory on Windows and the directory ACL is the real
+			// boundary, so a socket there is not a credential by itself.
+			telemetry.Warn(ctx,
+				"sandbox.remote speaks over a unix socket without a token; on Windows "+
+					"the socket's permissions are advisory, so keep a token or protect the directory",
+				attribute.String(telemetry.AttrSandboxEndpoint, c.Remote.Socket))
+		}
+		runner, err := remote.NewUnix(ctx, c.Remote.Socket, opts...)
+		if err != nil {
+			return nil, errdefs.Validationf("sandbox.remote.socket: %w", err)
+		}
+		return runner, nil
+	}
+	return remote.New(ctx, c.Remote.Endpoint, opts...)
 }
 
 // remoteOptions translates the document's remote block into client options.

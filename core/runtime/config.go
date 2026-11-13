@@ -89,8 +89,16 @@ type SandboxConfig struct {
 // the server's own configuration decides what it can enforce, and the client's
 // Capabilities report that decision verbatim.
 type RemoteConfig struct {
-	// Endpoint is the server URL ("https://sandbox.internal:8443").
+	// Transport is how the connection travels: "http" (default) or "unix" for a
+	// unix domain socket on this host. A socket needs no port and, on unix, no
+	// token: the file's permissions are the credential.
+	Transport string `json:"transport"`
+	// Endpoint is the server URL ("https://sandbox.internal:8443"). Required for
+	// transport: http, meaningless for unix.
 	Endpoint string `json:"endpoint"`
+	// Socket is the unix domain socket path ("/run/flowcraft/sandbox.sock").
+	// Required for transport: unix, meaningless otherwise.
+	Socket string `json:"socket"`
 	// Token authenticates every request. It is a credential, so prefer
 	// ${env:...} over a literal.
 	Token string `json:"token"`
@@ -330,6 +338,57 @@ func (c RemoteConfig) validate(backend string) error {
 		}
 		return nil
 	}
+	transport, err := c.transport()
+	if err != nil {
+		return err
+	}
+	if err := c.validateTransport(transport); err != nil {
+		return err
+	}
+	if _, err := c.timeout(); err != nil {
+		return err
+	}
+	_, err = c.pollHold()
+	return err
+}
+
+// transport is the written name mapped to a transport family.
+func (c RemoteConfig) transport() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(c.Transport)) {
+	case "", "http", "https", "tcp":
+		return remoteTransportHTTP, nil
+	case "unix", "socket":
+		return remoteTransportUnix, nil
+	default:
+		return "", errdefs.Validationf(
+			"sandbox.remote.transport: unknown transport %q; one of http, unix", c.Transport)
+	}
+}
+
+const (
+	remoteTransportHTTP = "http"
+	remoteTransportUnix = "unix"
+)
+
+// validateTransport requires the field the chosen transport needs and rejects the
+// one it does not use: an endpoint beside a socket path is configuration that
+// silently does nothing.
+func (c RemoteConfig) validateTransport(transport string) error {
+	if transport == remoteTransportUnix {
+		if c.Socket == "" {
+			return errdefs.Validationf(
+				"sandbox.remote.socket is required with sandbox.remote.transport: unix")
+		}
+		if c.Endpoint != "" {
+			return errdefs.Validationf(
+				"sandbox.remote.endpoint is not used with sandbox.remote.transport: unix")
+		}
+		if c.InsecureSkipVerify {
+			return errdefs.Validationf(
+				"sandbox.remote.insecure_skip_verify is meaningless over a unix socket, which carries no TLS")
+		}
+		return nil
+	}
 	if c.Endpoint == "" {
 		return errdefs.Validationf(
 			"sandbox.remote.endpoint is required with sandbox.backend: %s", BackendRemote)
@@ -339,11 +398,11 @@ func (c RemoteConfig) validate(backend string) error {
 		return errdefs.Validationf(
 			"sandbox.remote.endpoint: %q is not an http(s) URL", c.Endpoint)
 	}
-	if _, err := c.timeout(); err != nil {
-		return err
+	if c.Socket != "" {
+		return errdefs.Validationf(
+			"sandbox.remote.socket is only meaningful with sandbox.remote.transport: unix")
 	}
-	_, err = c.pollHold()
-	return err
+	return nil
 }
 
 // timeout is the per-request timeout, zero meaning the client's default.
