@@ -824,12 +824,18 @@ func (w *watcher) deliver(ev sandbox.SessionEvent) bool {
 		return true
 	default:
 	}
+	// Make room for one Lag event by dropping the oldest undelivered one, and
+	// report that event's cursor: it is the first byte the consumer will not
+	// receive, and the contract says Lag.Seq is exactly that. Reporting ev.Seq
+	// instead would skip the bytes this drain just lost.
+	firstMissed := ev.Seq
 	select {
-	case <-w.ch:
+	case dropped := <-w.ch:
+		firstMissed = dropped.Seq
 	default:
 	}
 	select {
-	case w.ch <- sandbox.SessionEvent{Seq: ev.Seq, Type: sandbox.SessionEventLag}:
+	case w.ch <- sandbox.SessionEvent{Seq: firstMissed, Type: sandbox.SessionEventLag}:
 	default:
 	}
 	w.once.Do(func() { close(w.ch) })
