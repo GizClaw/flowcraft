@@ -119,7 +119,10 @@ check-consumers:
 # different questions (statistical benchmark matches, ordering-dependent bugs,
 # parser inputs, nil paths), and a developer chooses when to pay for them.
 
-BENCH_MODULES ?= core
+# Every module that carries benchmarks. `driver` is here because its request
+# compilation is on the model-call path and had no measurement at all; a module
+# omitted from this list is a module whose benchmarks never run.
+BENCH_MODULES ?= core driver
 BENCH_LABEL ?= run
 
 .PHONY: bench
