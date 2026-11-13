@@ -125,7 +125,10 @@ func (r *SessionRegistry) Start(ctx context.Context, spec sandbox.SessionSpec) (
 func (r *SessionRegistry) track(id string, sess sandbox.Session) {
 	exit, err := sess.Wait(context.Background())
 	r.mu.Lock()
-	if rec := r.sessions[id]; rec != nil {
+	// Terminate may have recorded the same exit synchronously before this
+	// goroutine got the lock. Whoever wins keeps the record still; a second
+	// write would race with the pointer List handed out below.
+	if rec := r.sessions[id]; rec != nil && !rec.exited {
 		rec.exited = true
 		rec.exit = exit
 		rec.err = err
@@ -147,7 +150,10 @@ func (r *SessionRegistry) List(context.Context) ([]sandbox.SessionInfo, error) {
 			Running:   !rec.exited,
 		}
 		if rec.exited {
-			info.Exit = &rec.exit
+			// A copy, not &rec.exit: SessionInfo is a snapshot, and a caller
+			// holding one must not observe (or race with) a later write.
+			exit := rec.exit
+			info.Exit = &exit
 		}
 		out = append(out, info)
 	}
