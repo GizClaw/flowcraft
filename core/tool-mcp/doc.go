@@ -4,11 +4,13 @@
 //
 // # Why this is an attachment, not a tool
 //
-// MCP is not a built-in tool. The built-in set is fixed and small:
-// core/tool/askuser, core/tool/exec, and core/tool/delegation.
-// Everything else is delegated to the MCP ecosystem, which is what
-// this package exists to reach. See core/tool's package doc for the
-// boundary between the two.
+// MCP is not a built-in tool. core/tool holds no concrete tool at all:
+// the built-in set is the one the runtime wires from the configuration,
+// core/tool-builtin/files, core/tool-builtin/exec and
+// core/tool-builtin/skills, plus the delegation tools core/delegation
+// injects into a runtime. Everything else is delegated to the MCP
+// ecosystem, which is what this package exists to reach. See core/tool's
+// package doc for the boundary between the two.
 //
 // The unit of integration is therefore a [Source]: a host-owned handle
 // that connects to servers and writes their tools into the registry the
@@ -23,19 +25,35 @@
 //
 // # Wiring
 //
-//	reg := tool.NewRegistry()
-//	reg.Register(askuser.New())          // built-in
+// The source is created empty and the registry is built over it, so the
+// tools a server publishes arrive in a catalog that already exists:
 //
-//	src := mcp.NewSource(reg)
+//	src := mcp.NewSource()
 //	defer src.Close()
+//
+//	reg, err := tool.NewRegistry([]tool.Source{builtin, src})
+//	if err != nil { ... }
+//	defer reg.Close()
 //
 //	fs, err := mcp.Stdio("npx",
 //	    []string{"-y", "@modelcontextprotocol/server-filesystem", root}, nil)
 //	if err != nil { ... }
 //	if err := src.AddServer(ctx, "filesystem", fs); err != nil { ... }
 //
-//	// reg now holds askuser plus filesystem__read_file, filesystem__write_file, ...
+//	// reg now holds the built-in tools plus filesystem__read_file,
+//	// filesystem__write_file, ...
 //	exec := tool.NewExecutor(reg, mws...)
+//
+// The defers run in reverse order, so the registry closes first and
+// detaches the source before the servers shut down. A catalog that
+// outlived its servers would keep handing out tools nothing can serve.
+//
+// A deployment does not call AddServer at all: it hands this package the
+// `tools.mcp` block, and the runtime picks one of two constructors.
+// [Connect] starts every declared server at assembly; [NewLazy] publishes
+// one placeholder per server and connects it only when a tool from that
+// server is loaded, so a host with ten servers does not pay ten processes
+// for tools the model never asks for.
 //
 // AddServer never blocks on the network: it validates the
 // configuration, registers the server, and schedules the first
@@ -59,9 +77,10 @@
 // `docs__read_file` without collision. The separator is double
 // underscore because it survives the `^[a-zA-Z0-9_-]+$` name
 // restriction every major function-calling API enforces. [WithPrefix]
-// overrides it; [WithScope] additionally controls registry visibility
-// ([tool.ScopeAgent] to expose to models, [tool.ScopePlatform] to keep
-// a server's tools callable but hidden from listings).
+// overrides it for one server. Visibility is not this package's
+// decision: an MCP tool is an ordinary [tool.Tool], so whether the model
+// sees it every turn, only after a search, or never is the dynamic
+// exposure policy of core/tool/engine.
 //
 // # Discovery, caching, and refresh
 //
@@ -72,8 +91,8 @@
 //
 // This package adds no cache of its own. The go-sdk maintains a TTL
 // cache for tools/list — with the TTL advertised by the server — and
-// invalidates it on a tools/list_changed notification. Source hooks
-// The Source hooks the notification to reconcile the registry: new and
+// invalidates it on a tools/list_changed notification. The Source hooks
+// that notification to reconcile the registry: new and
 // changed tools are added, vanished ones are removed, and other
 // servers are untouched. The same reconcile runs when a background
 // reconnect brings a server back, which is what servers that were down

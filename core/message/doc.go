@@ -4,11 +4,13 @@
 // Schema helpers that build a [ToolDefinition].
 //
 // The package has no runtime: no providers, no executors, no middleware.
-// It is the canonical shape of "what travels on the wire" — the layer
-// above this package (core/inference for LLM calls, core/tool for tool
-// execution, core/memory for stored turns) operates on these types but does
-// not own them. Two consumers can therefore share a message log without
-// pulling in each other's runtime.
+// It is the canonical shape of "what travels on the wire" — the layers
+// above it operate on these types but do not own them: core/inference for
+// model calls, core/tool for tool dispatch, core/agent for the transcript
+// a task is checkpointed as, and the separate `memory` module
+// (github.com/GizClaw/flowcraft/memory) for turns kept beyond a task. Two
+// consumers can therefore share a message log without pulling in each
+// other's runtime.
 //
 // The wire format is JSON. [Content.MarshalJSON] / [Content.UnmarshalJSON]
 // tag each part with its [PartKind] so the same payload survives a
