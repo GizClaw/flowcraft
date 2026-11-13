@@ -20,6 +20,7 @@ import (
 	"github.com/GizClaw/flowcraft/driver/internal/ptr"
 
 	"github.com/goccy/go-json"
+	"github.com/tidwall/sjson"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
@@ -294,28 +295,31 @@ func generateOneImage(ctx context.Context, cls *clients, request *imageRequest) 
 		}
 		return imageRawFromResponse(response)
 	}
-	body, err := imageRequestMap(request.ark)
+	body, err := imagePayload(request.ark, request.background)
 	if err != nil {
 		return imageRaw{}, errdefs.Validation(fmt.Errorf("bytedance: image request: %w", err))
 	}
-	body["background"] = request.background
-	response, err := cls.postImagesRaw(ctx, body)
+	response, err := cls.postImagesPayload(ctx, body)
 	if err != nil {
 		return imageRaw{}, err
 	}
 	return imageRawFromResponse(response)
 }
 
-func imageRequestMap(request arkmodel.GenerateImagesRequest) (map[string]any, error) {
-	encoded, err := json.Marshal(request)
+// imagePayload serialises the SDK request and injects the background field the SDK
+// type does not model. It is one marshal plus one splice: decoding the body into a
+// map and re-encoding it would copy every byte twice for a single field, and an
+// image body carries base64 references.
+func imagePayload(request arkmodel.GenerateImagesRequest, background string) ([]byte, error) {
+	payload, err := json.Marshal(request)
 	if err != nil {
 		return nil, err
 	}
-	var body map[string]any
-	if err := json.Unmarshal(encoded, &body); err != nil {
+	value, err := json.Marshal(background)
+	if err != nil {
 		return nil, err
 	}
-	return body, nil
+	return sjson.SetRawBytes(payload, "background", value)
 }
 
 func imageRawFromResponse(response arkmodel.ImagesResponse) (imageRaw, error) {
@@ -334,11 +338,7 @@ func imageRawFromResponse(response arkmodel.ImagesResponse) (imageRaw, error) {
 	return raw, nil
 }
 
-func (c *clients) postImagesRaw(ctx context.Context, body map[string]any) (arkmodel.ImagesResponse, error) {
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return arkmodel.ImagesResponse{}, err
-	}
+func (c *clients) postImagesPayload(ctx context.Context, payload []byte) (arkmodel.ImagesResponse, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+generateImagesPath, bytes.NewReader(payload))
 	if err != nil {

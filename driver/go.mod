@@ -7,6 +7,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/goccy/go-json v0.12.0
 	github.com/openai/openai-go/v3 v3.95.0
+	github.com/tidwall/sjson v1.2.5
 	github.com/volcengine/volcengine-go-sdk v1.2.52
 	go.opentelemetry.io/otel v1.45.0
 )
@@ -34,7 +35,6 @@ require (
 	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
-	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0 // indirect

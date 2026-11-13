@@ -329,9 +329,8 @@ func TestSpeechWireFormatTokens(t *testing.T) {
 				t.Fatalf("compile: %v", err)
 			}
 			body := ttsRequest(wire)
-			audioSettings, _ := body["audio_setting"].(map[string]any)
-			if audioSettings["format"] != tc.token {
-				t.Fatalf("format = %v, want %q", audioSettings["format"], tc.token)
+			if body.AudioSetting.Format != tc.token {
+				t.Fatalf("format = %v, want %q", body.AudioSetting.Format, tc.token)
 			}
 		})
 	}
@@ -350,11 +349,10 @@ func TestSpeechDeclarationSuppliesTheFormat(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	body := ttsRequest(compiled.Wire)
-	audioSettings, _ := body["audio_setting"].(map[string]any)
-	if audioSettings["format"] != "pcm" ||
-		audioSettings["sample_rate"] != 16000 ||
-		audioSettings["channel"] != 2 {
-		t.Fatalf("audio setting = %+v", audioSettings)
+	if body.AudioSetting.Format != "pcm" ||
+		body.AudioSetting.SampleRate != 16000 ||
+		body.AudioSetting.Channel != 2 {
+		t.Fatalf("audio setting = %+v", body.AudioSetting)
 	}
 }
 
@@ -366,9 +364,9 @@ func TestSpeechSendsSpeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	voice, _ := ttsRequest(wire)["voice_setting"].(map[string]any)
-	if voice["speed"] != 1.25 {
-		t.Fatalf("speed = %v, want 1.25", voice["speed"])
+	body := ttsRequest(wire)
+	if body.VoiceSetting.Speed == nil || *body.VoiceSetting.Speed != 1.25 {
+		t.Fatalf("speed = %v, want 1.25", body.VoiceSetting.Speed)
 	}
 }
 

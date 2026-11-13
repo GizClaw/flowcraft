@@ -81,12 +81,24 @@ func compileTTS(declared ModelSpec, name string) protocol.Compiler[inference.Gen
 	}
 }
 
-func ttsRequest(wire ttsWire) map[string]any {
-	input := map[string]any{"text": wire.text, "voice": wire.voice}
-	if wire.language != "" {
-		input["language_type"] = wire.language
+// ttsBody is the speech request: the voice and text are required, and the language
+// hint disappears when the caller names none.
+type ttsBody struct {
+	Model string       `json:"model"`
+	Input ttsBodyInput `json:"input"`
+}
+
+type ttsBodyInput struct {
+	Text     string `json:"text"`
+	Voice    string `json:"voice"`
+	Language string `json:"language_type,omitempty"`
+}
+
+func ttsRequest(wire ttsWire) ttsBody {
+	return ttsBody{
+		Model: wire.model,
+		Input: ttsBodyInput{Text: wire.text, Voice: wire.voice, Language: wire.language},
 	}
-	return map[string]any{"model": wire.model, "input": input}
 }
 
 func transportTTS(client *mediaClient) protocol.Transport[inference.GenerateRequest, ttsWire, ttsRaw] {

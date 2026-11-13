@@ -23,8 +23,80 @@ type generateWire struct {
 	model    string
 	path     string
 	stream   bool
-	messages []map[string]any
-	params   map[string]any
+	messages []messageBody
+	params   generateParams
+}
+
+// generateParams is the parameters block. Presence is explicit: the dialect and the
+// shape decide which leaves are set, and an unset knob is omitted rather than sent
+// as a zero. max_tokens and max_completion_tokens are separate fields because the
+// model declaration picks one and the wire must carry only that one.
+type generateParams struct {
+	ResultFormat        string                  `json:"result_format,omitempty"`
+	IncrementalOutput   *bool                   `json:"incremental_output,omitempty"`
+	Stream              *bool                   `json:"stream,omitempty"`
+	Tools               []generateToolBody      `json:"tools,omitempty"`
+	ToolChoice          *generateToolChoiceBody `json:"tool_choice,omitempty"`
+	Temperature         *float64                `json:"temperature,omitempty"`
+	TopP                *float64                `json:"top_p,omitempty"`
+	Seed                *int64                  `json:"seed,omitempty"`
+	TopK                *int                    `json:"top_k,omitempty"`
+	RepetitionPenalty   *float64                `json:"repetition_penalty,omitempty"`
+	PresencePenalty     *float64                `json:"presence_penalty,omitempty"`
+	Stop                []string                `json:"stop,omitempty"`
+	ParallelToolCalls   *bool                   `json:"parallel_tool_calls,omitempty"`
+	EnableSearch        *bool                   `json:"enable_search,omitempty"`
+	ThinkingBudget      *int                    `json:"thinking_budget,omitempty"`
+	VLHighResImages     *bool                   `json:"vl_high_resolution_images,omitempty"`
+	MaxTokens           *int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                    `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      *generateResponseFormat `json:"response_format,omitempty"`
+}
+
+// generateToolBody is one function tool: the schema rides as raw JSON so the
+// provider receives exactly what the deployment declared.
+type generateToolBody struct {
+	Type     string               `json:"type"`
+	Function generateFunctionBody `json:"function"`
+}
+
+type generateFunctionBody struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// generateToolChoiceBody is the union the platform accepts: a mode string, or a
+// function object naming the call to force.
+type generateToolChoiceBody struct {
+	mode string
+	name string
+}
+
+func (c generateToolChoiceBody) MarshalJSON() ([]byte, error) {
+	if c.name == "" {
+		return json.Marshal(c.mode)
+	}
+	forced := struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}{Type: "function"}
+	forced.Function.Name = c.name
+	return json.Marshal(forced)
+}
+
+// generateResponseFormat is the union of a plain JSON mode and a named schema.
+type generateResponseFormat struct {
+	Type       string              `json:"type"`
+	JSONSchema *generateJSONSchema `json:"json_schema,omitempty"`
+}
+
+type generateJSONSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict"`
 }
 
 func generateRequest(wire generateWire) map[string]any {
@@ -103,17 +175,18 @@ func compileGenerate(declared ModelSpec, name string) protocol.Compiler[inferenc
 		}
 		wire := generateWire{
 			model: wireModel(name, declared), path: generatePathText,
-			stream: shape == protocol.ShapeStream, params: map[string]any{},
+			stream: shape == protocol.ShapeStream, params: generateParams{},
 		}
 		if multimodal {
 			wire.path = generatePathMultimodal
 		} else {
-			wire.params["result_format"] = "message"
+			wire.params.ResultFormat = "message"
 		}
 		if wire.stream {
-			wire.params["incremental_output"] = true
+			streaming := true
+			wire.params.IncrementalOutput = &streaming
 			if multimodal {
-				wire.params["stream"] = true
+				wire.params.Stream = &streaming
 			}
 		}
 		var warnings []inference.Warning
@@ -129,27 +202,30 @@ func compileGenerate(declared ModelSpec, name string) protocol.Compiler[inferenc
 			return protocol.Compiled[generateWire]{}, err
 		}
 		wire.messages = append(wire.messages, messages...)
-		if len(request.Tools.Definitions()) > 0 {
-			tools := make([]map[string]any, 0, len(request.Tools.Definitions()))
-			for _, definition := range request.Tools.Definitions() {
-				function := map[string]any{"name": definition.Name, "parameters": json.RawMessage(definition.InputSchema)}
-				if definition.Description != "" {
-					function["description"] = definition.Description
-				}
-				tools = append(tools, map[string]any{"type": "function", "function": function})
+		if definitions := request.Tools.Definitions(); len(definitions) > 0 {
+			tools := make([]generateToolBody, 0, len(definitions))
+			for _, definition := range definitions {
+				tools = append(tools, generateToolBody{
+					Type: "function",
+					Function: generateFunctionBody{
+						Name:        definition.Name,
+						Description: definition.Description,
+						Parameters:  definition.InputSchema,
+					},
+				})
 			}
-			wire.params["tools"] = tools
+			wire.params.Tools = tools
 		}
 		if choice := request.Tools.Choice(); choice != nil {
 			switch choice.Mode {
 			case inference.ToolChoiceFunction:
-				wire.params["tool_choice"] = map[string]any{"type": "function", "function": map[string]any{"name": choice.Name}}
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "function", name: choice.Name}
 			case inference.ToolChoiceNone:
-				wire.params["tool_choice"] = "none"
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "none"}
 			case inference.ToolChoiceRequired:
-				wire.params["tool_choice"] = "required"
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "required"}
 			default:
-				wire.params["tool_choice"] = "auto"
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "auto"}
 			}
 		}
 		options, err := generateOptions(request.Extensions)
@@ -187,58 +263,155 @@ func applyGenerateOptions(wire *generateWire, options *GenerateOptions, declared
 		return
 	}
 	if options.Temperature != nil {
-		wire.params["temperature"] = *options.Temperature
+		wire.params.Temperature = options.Temperature
 	}
 	if options.TopP != nil {
-		wire.params["top_p"] = *options.TopP
+		wire.params.TopP = options.TopP
 	}
 	if options.Seed != nil {
-		wire.params["seed"] = *options.Seed
+		wire.params.Seed = options.Seed
 	}
 	if options.TopK != nil {
-		wire.params["top_k"] = *options.TopK
+		wire.params.TopK = options.TopK
 	}
 	if options.RepetitionPenalty != nil {
-		wire.params["repetition_penalty"] = *options.RepetitionPenalty
+		wire.params.RepetitionPenalty = options.RepetitionPenalty
 	}
 	if options.PresencePenalty != nil {
-		wire.params["presence_penalty"] = *options.PresencePenalty
+		wire.params.PresencePenalty = options.PresencePenalty
 	}
 	if len(options.Stop) > 0 {
-		wire.params["stop"] = options.Stop
+		wire.params.Stop = options.Stop
 	}
 	if options.ParallelToolCalls != nil {
-		wire.params["parallel_tool_calls"] = *options.ParallelToolCalls
+		wire.params.ParallelToolCalls = options.ParallelToolCalls
 	}
 	if options.EnableSearch != nil {
-		wire.params["enable_search"] = *options.EnableSearch
+		wire.params.EnableSearch = options.EnableSearch
 	}
 	if options.ThinkingBudget != nil {
-		wire.params["thinking_budget"] = *options.ThinkingBudget
+		wire.params.ThinkingBudget = options.ThinkingBudget
 	}
 	if options.VlHighResolutionImages != nil {
-		wire.params["vl_high_resolution_images"] = *options.VlHighResolutionImages
+		wire.params.VLHighResImages = options.VlHighResolutionImages
 	}
 	if options.MaxOutputTokens != nil {
-		param := maxTokensParamMaxTokens
+		// The declaration picks which budget field the endpoint reads; exactly one
+		// goes on the wire.
 		if declared.Generate.MaxTokensParam == maxTokensParamCompletion {
-			param = maxTokensParamCompletion
+			wire.params.MaxCompletionTokens = options.MaxOutputTokens
+		} else {
+			wire.params.MaxTokens = options.MaxOutputTokens
 		}
-		wire.params[param] = *options.MaxOutputTokens
 	}
 	if options.ResponseFormat != nil {
 		switch options.ResponseFormat.Kind {
 		case "json_object":
-			wire.params["response_format"] = map[string]any{"type": "json_object"}
+			wire.params.ResponseFormat = &generateResponseFormat{Type: "json_object"}
 		case "json_schema":
-			wire.params["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{
-				"name": options.ResponseFormat.Name, "schema": json.RawMessage(options.ResponseFormat.Schema), "strict": options.ResponseFormat.Strict,
-			}}
+			wire.params.ResponseFormat = &generateResponseFormat{
+				Type: "json_schema",
+				JSONSchema: &generateJSONSchema{
+					Name:   options.ResponseFormat.Name,
+					Schema: options.ResponseFormat.Schema,
+					Strict: options.ResponseFormat.Strict,
+				},
+			}
 		}
 	}
 }
 
-func lowerTurn(turn message.Message, declared ModelSpec, multimodal bool, warnings *[]inference.Warning) ([]map[string]any, error) {
+// messageBody is one wire message. Each role gets its own type because the platform
+// accepts a different key set per role: a single struct with optional fields would let
+// an illegal combination — a tool message carrying tool_calls — compile.
+type messageBody interface{ messageRole() string }
+
+type systemMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func (systemMessage) messageRole() string { return string(message.RoleSystem) }
+
+type userMessage struct {
+	Role    string         `json:"role"`
+	Content messageContent `json:"content"`
+}
+
+func (userMessage) messageRole() string { return string(message.RoleUser) }
+
+// assistantMessage is a previous answer. Content is a pointer because a turn that
+// carries only tool calls sends no content key at all, while one that carries neither
+// content nor calls sends an explicit empty string.
+type assistantMessage struct {
+	Role             string          `json:"role"`
+	Content          *messageContent `json:"content,omitempty"`
+	ToolCalls        []toolCallBody  `json:"tool_calls,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+}
+
+func (assistantMessage) messageRole() string { return string(message.RoleAssistant) }
+
+type toolMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id"`
+}
+
+func (toolMessage) messageRole() string { return string(message.RoleTool) }
+
+// messageContent is the union the two surfaces disagree on: the text surface carries a
+// bare string and the multimodal one a typed item array. The fields are unexported so
+// the two constructors are the only way in.
+type messageContent struct {
+	text  *string
+	items []contentItemBody
+}
+
+// textContent is the string form, which is how the text surface speaks.
+func textContent(value string) messageContent { return messageContent{text: &value} }
+
+// itemsContent is the multimodal form: one entry per input part.
+func itemsContent(items []contentItemBody) messageContent { return messageContent{items: items} }
+
+func (c messageContent) MarshalJSON() ([]byte, error) {
+	if c.items != nil {
+		return json.Marshal(c.items)
+	}
+	if c.text != nil {
+		return json.Marshal(*c.text)
+	}
+	return []byte(`""`), nil
+}
+
+// contentItemBody is one multimodal input entry. This wire uses a sibling key per kind
+// rather than the nested object the OpenAI family uses.
+type contentItemBody struct {
+	Text  string `json:"text,omitempty"`
+	Image string `json:"image,omitempty"`
+	Video string `json:"video,omitempty"`
+	Audio string `json:"audio,omitempty"`
+}
+
+// toolCallBody is one call the model asked for. Arguments is the serialised JSON the
+// model produced, and this wire carries it as a string.
+type toolCallBody struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function toolCallFunctionBody `json:"function"`
+}
+
+type toolCallFunctionBody struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+func lowerTurn(
+	turn message.Message,
+	declared ModelSpec,
+	multimodal bool,
+	warnings *[]inference.Warning,
+) ([]messageBody, error) {
 	switch turn.Role {
 	case message.RoleSystem:
 		var text strings.Builder
@@ -252,23 +425,28 @@ func lowerTurn(turn message.Message, declared ModelSpec, multimodal bool, warnin
 				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContext, fmt.Errorf("dashscope: system message carries text only"))
 			}
 		}
-		return []map[string]any{{"role": "system", "content": text.String()}}, nil
+		return []messageBody{systemMessage{Role: string(message.RoleSystem), Content: text.String()}}, nil
 	case message.RoleUser:
 		content, err := lowerContent(turn.Content.Parts, declared, multimodal)
 		if err != nil {
 			return nil, err
 		}
-		return []map[string]any{{"role": "user", "content": content}}, nil
+		return []messageBody{userMessage{Role: string(message.RoleUser), Content: content}}, nil
 	case message.RoleAssistant:
-		wire := map[string]any{"role": "assistant"}
+		assistant := assistantMessage{Role: string(message.RoleAssistant)}
 		var contentParts []message.Part
-		var calls []map[string]any
 		var reasoning []string
 		for _, part := range turn.Content.Parts {
 			switch value := part.(type) {
 			case message.ToolCallPart:
-				calls = append(calls, map[string]any{"id": value.Call.ID, "type": "function",
-					"function": map[string]any{"name": value.Call.Name, "arguments": value.Call.Arguments.String()}})
+				assistant.ToolCalls = append(assistant.ToolCalls, toolCallBody{
+					ID:   value.Call.ID,
+					Type: "function",
+					Function: toolCallFunctionBody{
+						Name:      value.Call.Name,
+						Arguments: value.Call.Arguments.String(),
+					},
+				})
 			case message.ReasoningPart:
 				if declared.Generate.ReplayReasoning && value.Text != "" {
 					reasoning = append(reasoning, value.Text)
@@ -284,19 +462,20 @@ func lowerTurn(turn message.Message, declared ModelSpec, multimodal bool, warnin
 			if err != nil {
 				return nil, err
 			}
-			wire["content"] = content
-		} else if len(calls) == 0 {
-			wire["content"] = ""
-		}
-		if len(calls) > 0 {
-			wire["tool_calls"] = calls
+			assistant.Content = &content
+		} else if len(assistant.ToolCalls) == 0 {
+			// Neither content nor calls: the turn still has to say something, and the
+			// platform expects the key. This is why Content is a pointer rather than
+			// omitempty on a plain string — an empty string would vanish.
+			empty := textContent("")
+			assistant.Content = &empty
 		}
 		if len(reasoning) > 0 {
-			wire["reasoning_content"] = strings.Join(reasoning, "\n")
+			assistant.ReasoningContent = strings.Join(reasoning, "\n")
 		}
-		return []map[string]any{wire}, nil
+		return []messageBody{assistant}, nil
 	case message.RoleTool:
-		out := make([]map[string]any, 0, len(turn.Content.Parts))
+		out := make([]messageBody, 0, len(turn.Content.Parts))
 		for _, part := range turn.Content.Parts {
 			result, ok := part.(message.ToolResultPart)
 			if !ok {
@@ -313,7 +492,11 @@ func lowerTurn(turn message.Message, declared ModelSpec, multimodal bool, warnin
 					text.WriteString("[omitted " + string(item.Kind()) + "]")
 				}
 			}
-			out = append(out, map[string]any{"role": "tool", "content": text.String(), "tool_call_id": result.Result.CallID})
+			out = append(out, toolMessage{
+				Role:       string(message.RoleTool),
+				Content:    text.String(),
+				ToolCallID: result.Result.CallID,
+			})
 		}
 		return out, nil
 	default:
@@ -321,7 +504,7 @@ func lowerTurn(turn message.Message, declared ModelSpec, multimodal bool, warnin
 	}
 }
 
-func lowerContent(parts []message.Part, declared ModelSpec, multimodal bool) (any, error) {
+func lowerContent(parts []message.Part, declared ModelSpec, multimodal bool) (messageContent, error) {
 	if !multimodal {
 		var text strings.Builder
 		for _, part := range parts {
@@ -331,49 +514,49 @@ func lowerContent(parts []message.Part, declared ModelSpec, multimodal bool) (an
 			case message.DataPart:
 				text.WriteString(string(value.Value))
 			default:
-				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
 					fmt.Errorf("dashscope: text surface carries text only, not %s", part.Kind()))
 			}
 		}
-		return text.String(), nil
+		return textContent(text.String()), nil
 	}
-	items := make([]map[string]any, 0, len(parts))
+	items := make([]contentItemBody, 0, len(parts))
 	for _, part := range parts {
 		switch value := part.(type) {
 		case message.TextPart:
-			items = append(items, map[string]any{"text": value.Text})
+			items = append(items, contentItemBody{Text: value.Text})
 		case message.ImagePart:
 			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
-				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept image input"))
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept image input"))
 			}
 			uri, err := imageSourceValue(value.Source)
 			if err != nil {
-				return nil, err
+				return messageContent{}, err
 			}
-			items = append(items, map[string]any{"image": uri})
+			items = append(items, contentItemBody{Image: uri})
 		case message.VideoPart:
 			if !slices.Contains(declared.Capabilities.Inputs, message.PartVideo) {
-				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept video input"))
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept video input"))
 			}
 			uri, err := videoSourceValue(value.Source)
 			if err != nil {
-				return nil, err
+				return messageContent{}, err
 			}
-			items = append(items, map[string]any{"video": uri})
+			items = append(items, contentItemBody{Video: uri})
 		case message.AudioPart:
 			if !slices.Contains(declared.Capabilities.Inputs, message.PartAudio) {
-				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept audio input"))
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept audio input"))
 			}
 			uri, err := audioSourceValue(value.Source)
 			if err != nil {
-				return nil, err
+				return messageContent{}, err
 			}
-			items = append(items, map[string]any{"audio": uri})
+			items = append(items, contentItemBody{Audio: uri})
 		default:
-			return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: %s has no content channel", part.Kind()))
+			return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: %s has no content channel", part.Kind()))
 		}
 	}
-	return items, nil
+	return itemsContent(items), nil
 }
 
 func transportGenerate(client *mediaClient) protocol.Transport[inference.GenerateRequest, generateWire, generateRaw] {

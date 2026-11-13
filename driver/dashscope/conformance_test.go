@@ -88,16 +88,14 @@ func TestCompileVideoMediaArray(t *testing.T) {
 		t.Fatalf("wire = %+v", compiled.Wire)
 	}
 	body := videoTaskRequest(compiled.Wire)
-	input := body["input"].(map[string]any)
-	if _, ok := input["img_url"]; ok {
+	if body.Input.ImgURL != "" {
 		t.Fatal("media-array request carried img_url")
 	}
-	if _, ok := input["media"]; !ok {
+	if len(body.Input.Media) == 0 {
 		t.Fatal("media-array request omitted input.media")
 	}
-	params := body["parameters"].(map[string]any)
-	if params["duration"] != -1 {
-		t.Fatalf("duration = %v", params["duration"])
+	if body.Parameters.Duration == nil || *body.Parameters.Duration != -1 {
+		t.Fatalf("duration = %v", body.Parameters.Duration)
 	}
 }
 

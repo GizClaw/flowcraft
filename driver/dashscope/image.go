@@ -125,32 +125,53 @@ func compileImage(declared ModelSpec, name string) protocol.Compiler[inference.G
 	}
 }
 
-func imageTaskRequest(wire imageWire) map[string]any {
-	input := map[string]any{"prompt": wire.prompt}
+// imageTaskBody is the create-task request shared by the text-to-image and
+// image-to-image surfaces. The count is required; every other knob disappears when
+// the caller leaves it unset, so a zero is never mistaken for an instruction.
+type imageTaskBody struct {
+	Model      string              `json:"model"`
+	Input      imageTaskInput      `json:"input"`
+	Parameters imageTaskParameters `json:"parameters"`
+}
+
+// imageTaskInput carries the prompt and, for an edit, the reference image. The
+// surface takes exactly one reference and names it differently per path.
+type imageTaskInput struct {
+	Prompt    string `json:"prompt"`
+	BaseImage string `json:"base_image_url,omitempty"`
+	RefImage  string `json:"ref_img,omitempty"`
+}
+
+type imageTaskParameters struct {
+	Count          int    `json:"n"`
+	Size           string `json:"size,omitempty"`
+	Seed           *int64 `json:"seed,omitempty"`
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+	PromptExtend   *bool  `json:"prompt_extend,omitempty"`
+	Watermark      *bool  `json:"watermark,omitempty"`
+}
+
+func imageTaskRequest(wire imageWire) imageTaskBody {
+	input := imageTaskInput{Prompt: wire.prompt}
 	if len(wire.images) > 0 {
 		if wire.path == imagePathImage2Image {
-			input["base_image_url"] = wire.images[0]
+			input.BaseImage = wire.images[0]
 		} else {
-			input["ref_img"] = wire.images[0]
+			input.RefImage = wire.images[0]
 		}
 	}
-	parameters := map[string]any{"n": wire.count}
-	if wire.size != "" {
-		parameters["size"] = wire.size
+	return imageTaskBody{
+		Model: wire.model,
+		Input: input,
+		Parameters: imageTaskParameters{
+			Count:          wire.count,
+			Size:           wire.size,
+			Seed:           wire.seed,
+			NegativePrompt: wire.negative,
+			PromptExtend:   wire.promptExtend,
+			Watermark:      wire.watermark,
+		},
 	}
-	if wire.seed != nil {
-		parameters["seed"] = *wire.seed
-	}
-	if wire.negative != "" {
-		parameters["negative_prompt"] = wire.negative
-	}
-	if wire.promptExtend != nil {
-		parameters["prompt_extend"] = *wire.promptExtend
-	}
-	if wire.watermark != nil {
-		parameters["watermark"] = *wire.watermark
-	}
-	return map[string]any{"model": wire.model, "input": input, "parameters": parameters}
 }
 
 func transportImage(client *mediaClient) protocol.Transport[inference.GenerateRequest, imageWire, imageRaw] {

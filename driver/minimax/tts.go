@@ -224,34 +224,49 @@ func ttsCanonicalFormat(wire ttsWire) media.AudioFormat {
 	return format
 }
 
+// ttsBody is the t2a_v2 request. Presence is explicit in the type: the fields the
+// endpoint requires are always emitted, and an unset audio knob disappears instead
+// of sending a zero the platform would read as a request.
+type ttsBody struct {
+	Model         string       `json:"model"`
+	Text          string       `json:"text"`
+	Stream        bool         `json:"stream"`
+	OutputFormat  string       `json:"output_format"`
+	VoiceSetting  ttsVoiceBody `json:"voice_setting"`
+	AudioSetting  ttsAudioBody `json:"audio_setting"`
+	LanguageBoost string       `json:"language_boost"`
+}
+
+// ttsVoiceBody is the voice block: the id is required, the rate is optional.
+type ttsVoiceBody struct {
+	VoiceID string   `json:"voice_id"`
+	Speed   *float64 `json:"speed,omitempty"`
+}
+
+// ttsAudioBody carries the payload shape. Every leaf is optional, so an unset one
+// is omitted rather than sent as a zero.
+type ttsAudioBody struct {
+	Format     string `json:"format,omitempty"`
+	SampleRate int    `json:"sample_rate,omitempty"`
+	Channel    int    `json:"channel,omitempty"`
+}
+
 // ttsRequest renders the t2a_v2 payload.
-func ttsRequest(wire ttsWire) map[string]any {
-	voice := map[string]any{"voice_id": wire.voice}
-	if wire.speed != nil {
-		voice["speed"] = *wire.speed
-	}
-	audio := map[string]any{}
-	if wire.format != "" {
-		audio["format"] = wire.format
-	}
-	if wire.sample != 0 {
-		audio["sample_rate"] = wire.sample
-	}
-	if wire.channels != 0 {
-		audio["channel"] = wire.channels
-	}
+func ttsRequest(wire ttsWire) ttsBody {
 	language := wire.language
 	if language == "" {
 		language = "auto"
 	}
-	return map[string]any{
-		"model":          wire.model,
-		"text":           wire.text,
-		"stream":         wire.stream,
-		"output_format":  "hex",
-		"voice_setting":  voice,
-		"audio_setting":  audio,
-		"language_boost": language,
+	return ttsBody{
+		Model:        wire.model,
+		Text:         wire.text,
+		Stream:       wire.stream,
+		OutputFormat: "hex",
+		VoiceSetting: ttsVoiceBody{VoiceID: wire.voice, Speed: wire.speed},
+		AudioSetting: ttsAudioBody{
+			Format: wire.format, SampleRate: wire.sample, Channel: wire.channels,
+		},
+		LanguageBoost: language,
 	}
 }
 

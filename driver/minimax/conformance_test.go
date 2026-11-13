@@ -76,7 +76,7 @@ func TestCompileSpeechUnary(t *testing.T) {
 		t.Fatalf("model = %q", wire.model)
 	}
 	body := ttsRequest(wire)
-	if body["language_boost"] != "Chinese" || body["output_format"] != "hex" {
+	if body.LanguageBoost != "Chinese" || body.OutputFormat != "hex" {
 		t.Fatalf("request = %+v", body)
 	}
 }
@@ -217,12 +217,11 @@ func TestCompileVideoTextOnly(t *testing.T) {
 		t.Fatalf("ratio = %q, want the text-only default 16:9", wire.ratio)
 	}
 	body := videoTaskRequest(wire)
-	content, ok := body["content"].([]map[string]any)
-	if !ok || len(content) != 1 || content[0]["type"] != "text" {
-		t.Fatalf("content = %+v", body["content"])
+	if len(body.Content) != 1 || body.Content[0].Type != "text" {
+		t.Fatalf("content = %+v", body.Content)
 	}
-	if body["model"] != "MiniMax-H3" {
-		t.Fatalf("model = %v", body["model"])
+	if body.Model != "MiniMax-H3" {
+		t.Fatalf("model = %v", body.Model)
 	}
 }
 
@@ -363,7 +362,7 @@ func TestCompileVideoFirstLastFrames(t *testing.T) {
 	}
 	roles := []string{}
 	for _, item := range items[1:] {
-		roles = append(roles, item["role"].(string))
+		roles = append(roles, item.Role)
 	}
 	if strings.Join(roles, ",") != "first_frame,last_frame" {
 		t.Fatalf("roles = %v", roles)
@@ -531,8 +530,8 @@ func TestWireModelAliasReachesTheWire(t *testing.T) {
 	if compiled.Wire.model != "speech-2.6-hd-2026-06-01" {
 		t.Fatalf("wire model = %q", compiled.Wire.model)
 	}
-	if body := ttsRequest(compiled.Wire); body["model"] != "speech-2.6-hd-2026-06-01" {
-		t.Fatalf("request model = %v", body["model"])
+	if body := ttsRequest(compiled.Wire); body.Model != "speech-2.6-hd-2026-06-01" {
+		t.Fatalf("request model = %v", body.Model)
 	}
 }
 
@@ -620,10 +619,10 @@ func TestCompileVideoReferenceRoles(t *testing.T) {
 		t.Fatalf("content items = %d, want 4", len(items))
 	}
 	for i, item := range items[1:] {
-		if item["type"] != "image_url" || item["role"] != "reference_image" {
+		if item.Type != "image_url" || item.Role != "reference_image" {
 			t.Fatalf("item %d = %+v", i, item)
 		}
-		if _, ok := item["image_url"].(map[string]any); !ok {
+		if item.ImageURL == nil || item.ImageURL.URL == "" {
 			t.Fatalf("item %d carries no image_url object: %+v", i, item)
 		}
 	}
@@ -643,13 +642,13 @@ func TestCompileVideoReferenceRoles(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("content items = %d, want 3", len(items))
 	}
-	if items[1]["type"] != "video_url" || items[1]["role"] != "reference_video" {
+	if items[1].Type != "video_url" || items[1].Role != "reference_video" {
 		t.Fatalf("video item = %+v", items[1])
 	}
-	if _, ok := items[1]["video_url"].(map[string]any); !ok {
+	if items[1].VideoURL == nil || items[1].VideoURL.URL == "" {
 		t.Fatalf("video item carries no video_url object: %+v", items[1])
 	}
-	if items[2]["type"] != "audio_url" || items[2]["role"] != "reference_audio" {
+	if items[2].Type != "audio_url" || items[2].Role != "reference_audio" {
 		t.Fatalf("audio item = %+v", items[2])
 	}
 	// A reference task leaves the ratio to the server.

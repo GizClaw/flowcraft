@@ -56,8 +56,28 @@ func compileTranscribe(declared ModelSpec, name string) protocol.Compiler[infere
 	}
 }
 
-func transcribeRequest(wire transcribeWire) map[string]any {
-	return map[string]any{"model": wire.model, "input": map[string]any{"file_urls": []string{wire.fileURL}}, "parameters": map[string]any{}}
+// transcribeBody is the file-transcription task request. The platform requires the
+// parameters object, so it is always emitted even when empty.
+type transcribeBody struct {
+	Model      string               `json:"model"`
+	Input      transcribeBodyInput  `json:"input"`
+	Parameters transcribeBodyParams `json:"parameters"`
+}
+
+type transcribeBodyInput struct {
+	FileURLs []string `json:"file_urls"`
+}
+
+// transcribeBodyParams is empty today: the surface accepts no knob, but the block
+// is part of the schema and must stay on the wire.
+type transcribeBodyParams struct{}
+
+func transcribeRequest(wire transcribeWire) transcribeBody {
+	return transcribeBody{
+		Model:      wire.model,
+		Input:      transcribeBodyInput{FileURLs: []string{wire.fileURL}},
+		Parameters: transcribeBodyParams{},
+	}
 }
 
 func transportTranscribe(client *mediaClient) protocol.Transport[inference.GenerateRequest, transcribeWire, transcribeRaw] {

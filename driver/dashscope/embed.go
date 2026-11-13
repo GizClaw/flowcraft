@@ -130,20 +130,31 @@ func embedOptions(extensions inference.Extensions) (*EmbedOptions, error) {
 	return found, nil
 }
 
-func embedRequest(wire embedWire, batch []string) map[string]any {
-	parameters := map[string]any{}
-	if wire.dimension != nil {
-		parameters["dimension"] = *wire.dimension
+// embedBody is the text-embedding request. The parameters block is omitted
+// entirely when nothing sets it, and carries only the knobs the model serves.
+type embedBody struct {
+	Model      string           `json:"model"`
+	Input      embedBodyInput   `json:"input"`
+	Parameters *embedBodyParams `json:"parameters,omitempty"`
+}
+
+type embedBodyInput struct {
+	Texts []string `json:"texts"`
+}
+
+type embedBodyParams struct {
+	Dimension *int   `json:"dimension,omitempty"`
+	TextType  string `json:"text_type,omitempty"`
+	Instruct  string `json:"instruct,omitempty"`
+}
+
+func embedRequest(wire embedWire, batch []string) embedBody {
+	body := embedBody{Model: wire.model, Input: embedBodyInput{Texts: batch}}
+	params := embedBodyParams{
+		Dimension: wire.dimension, TextType: wire.textType, Instruct: wire.instruct,
 	}
-	if wire.textType != "" {
-		parameters["text_type"] = wire.textType
-	}
-	if wire.instruct != "" {
-		parameters["instruct"] = wire.instruct
-	}
-	body := map[string]any{"model": wire.model, "input": map[string]any{"texts": batch}}
-	if len(parameters) > 0 {
-		body["parameters"] = parameters
+	if params != (embedBodyParams{}) {
+		body.Parameters = &params
 	}
 	return body
 }

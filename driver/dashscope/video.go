@@ -35,8 +35,8 @@ type videoWire struct {
 }
 
 type mediaEntry struct {
-	Type string
-	URL  string
+	Type string `json:"type"`
+	URL  string `json:"url"`
 }
 
 func videoOptions(extensions inference.Extensions) (*VideoOptions, error) {
@@ -187,51 +187,59 @@ func countMedia(entries []mediaEntry, kind string) int {
 }
 func intPtr(v int) *int { return &v }
 
-func videoTaskRequest(wire videoWire) map[string]any {
-	input := map[string]any{"prompt": wire.prompt}
+// videoTaskBody is the create-task request for the synthesis path. The media array
+// and the single-image field are alternatives: whichever the compiler set is what
+// goes out, and the rest disappear.
+type videoTaskBody struct {
+	Model      string              `json:"model"`
+	Input      videoTaskInput      `json:"input"`
+	Parameters videoTaskParameters `json:"parameters"`
+}
+
+type videoTaskInput struct {
+	Prompt string       `json:"prompt"`
+	ImgURL string       `json:"img_url,omitempty"`
+	Media  []mediaEntry `json:"media,omitempty"`
+}
+
+type videoTaskParameters struct {
+	Resolution     string `json:"resolution,omitempty"`
+	Ratio          string `json:"ratio,omitempty"`
+	Duration       *int   `json:"duration,omitempty"`
+	Seed           *int64 `json:"seed,omitempty"`
+	Watermark      *bool  `json:"watermark,omitempty"`
+	NegativePrompt string `json:"negative_prompt,omitempty"`
+	PromptExtend   *bool  `json:"prompt_extend,omitempty"`
+	ShotType       string `json:"shot_type,omitempty"`
+	Audio          *bool  `json:"audio,omitempty"`
+	Template       string `json:"template,omitempty"`
+}
+
+func videoTaskRequest(wire videoWire) videoTaskBody {
+	input := videoTaskInput{Prompt: wire.prompt}
 	if wire.mediaMode {
-		media := make([]map[string]any, 0, len(wire.media))
-		for _, entry := range wire.media {
-			media = append(media, map[string]any{"type": entry.Type, "url": entry.URL})
-		}
-		if len(media) > 0 {
-			input["media"] = media
+		if len(wire.media) > 0 {
+			input.Media = wire.media
 		}
 	} else if wire.image != "" {
-		input["img_url"] = wire.image
+		input.ImgURL = wire.image
 	}
-	parameters := map[string]any{}
-	if wire.resolution != "" {
-		parameters["resolution"] = wire.resolution
+	return videoTaskBody{
+		Model: wire.model,
+		Input: input,
+		Parameters: videoTaskParameters{
+			Resolution:     wire.resolution,
+			Ratio:          wire.ratio,
+			Duration:       wire.duration,
+			Seed:           wire.seed,
+			Watermark:      wire.watermark,
+			NegativePrompt: wire.negative,
+			PromptExtend:   wire.promptExtend,
+			ShotType:       wire.shotType,
+			Audio:          wire.audio,
+			Template:       wire.template,
+		},
 	}
-	if wire.ratio != "" {
-		parameters["ratio"] = wire.ratio
-	}
-	if wire.duration != nil {
-		parameters["duration"] = *wire.duration
-	}
-	if wire.seed != nil {
-		parameters["seed"] = *wire.seed
-	}
-	if wire.watermark != nil {
-		parameters["watermark"] = *wire.watermark
-	}
-	if wire.negative != "" {
-		parameters["negative_prompt"] = wire.negative
-	}
-	if wire.promptExtend != nil {
-		parameters["prompt_extend"] = *wire.promptExtend
-	}
-	if wire.shotType != "" {
-		parameters["shot_type"] = wire.shotType
-	}
-	if wire.audio != nil {
-		parameters["audio"] = *wire.audio
-	}
-	if wire.template != "" {
-		parameters["template"] = wire.template
-	}
-	return map[string]any{"model": wire.model, "input": input, "parameters": parameters}
 }
 
 func transportVideo(client *mediaClient) protocol.Transport[inference.GenerateRequest, videoWire, videoRaw] {

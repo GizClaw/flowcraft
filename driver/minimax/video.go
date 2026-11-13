@@ -538,57 +538,86 @@ func transportVideo(
 	}
 }
 
+// videoTaskBody is the v2 create payload. The required facts are always emitted;
+// the optional switches disappear when unset, so a caller cannot accidentally send
+// a zero the platform would read as an instruction.
+type videoTaskBody struct {
+	Model      string             `json:"model"`
+	Content    []videoContentItem `json:"content"`
+	Resolution string             `json:"resolution"`
+	Duration   *int               `json:"duration,omitempty"`
+	Ratio      string             `json:"ratio,omitempty"`
+	Watermark  *bool              `json:"aigc_watermark,omitempty"`
+	Callback   string             `json:"callback_url,omitempty"`
+}
+
+// videoContentItem is one entry of the v2 content array. Exactly one typed payload
+// is set, and its JSON name is also the item's type, which is why the field is a
+// struct rather than a dynamic key.
+type videoContentItem struct {
+	Type     string         `json:"type"`
+	Text     string         `json:"text,omitempty"`
+	ImageURL *videoMediaURL `json:"image_url,omitempty"`
+	VideoURL *videoMediaURL `json:"video_url,omitempty"`
+	AudioURL *videoMediaURL `json:"audio_url,omitempty"`
+	Role     string         `json:"role,omitempty"`
+}
+
+// videoMediaURL is the nested url object every media item carries.
+type videoMediaURL struct {
+	URL string `json:"url"`
+}
+
 // videoTaskRequest renders the v2 create payload: the mandatory text item first,
 // then the media items with their roles.
-func videoTaskRequest(wire videoWire) map[string]any {
-	request := map[string]any{
-		"model":      wire.model,
-		"content":    videoContentItems(wire),
-		"resolution": wire.resolution,
+func videoTaskRequest(wire videoWire) videoTaskBody {
+	return videoTaskBody{
+		Model:      wire.model,
+		Content:    videoContentItems(wire),
+		Resolution: wire.resolution,
+		Duration:   wire.duration,
+		Ratio:      wire.ratio,
+		Watermark:  wire.watermark,
+		Callback:   wire.callback,
 	}
-	if wire.duration != nil {
-		request["duration"] = *wire.duration
-	}
-	if wire.ratio != "" {
-		request["ratio"] = wire.ratio
-	}
-	if wire.watermark != nil {
-		request["aigc_watermark"] = *wire.watermark
-	}
-	if wire.callback != "" {
-		request["callback_url"] = wire.callback
-	}
-	return request
 }
 
 // videoContentItems renders the official v2 content array for a task.
-func videoContentItems(wire videoWire) []map[string]any {
-	items := make([]map[string]any, 0,
+func videoContentItems(wire videoWire) []videoContentItem {
+	items := make([]videoContentItem, 0,
 		1+len(wire.referenceImages)+len(wire.referenceVideos)+len(wire.referenceAudios))
-	items = append(items, map[string]any{"type": "text", "text": wire.prompt})
-	item := func(kind, value, role string) map[string]any {
-		return map[string]any{
-			"type": kind,
-			kind:   map[string]any{"url": value},
-			"role": role,
-		}
-	}
+	items = append(items, videoContentItem{Type: "text", Text: wire.prompt})
 	if wire.firstFrame != "" {
-		items = append(items, item("image_url", wire.firstFrame, "first_frame"))
+		items = append(items, videoMediaItem("image_url", wire.firstFrame, "first_frame"))
 	}
 	if wire.lastFrame != "" {
-		items = append(items, item("image_url", wire.lastFrame, "last_frame"))
+		items = append(items, videoMediaItem("image_url", wire.lastFrame, "last_frame"))
 	}
 	for _, value := range wire.referenceImages {
-		items = append(items, item("image_url", value, "reference_image"))
+		items = append(items, videoMediaItem("image_url", value, "reference_image"))
 	}
 	for _, value := range wire.referenceVideos {
-		items = append(items, item("video_url", value, "reference_video"))
+		items = append(items, videoMediaItem("video_url", value, "reference_video"))
 	}
 	for _, value := range wire.referenceAudios {
-		items = append(items, item("audio_url", value, "reference_audio"))
+		items = append(items, videoMediaItem("audio_url", value, "reference_audio"))
 	}
 	return items
+}
+
+// videoMediaItem builds one media entry with the role the task API expects.
+func videoMediaItem(kind, value, role string) videoContentItem {
+	item := videoContentItem{Type: kind, Role: role}
+	media := &videoMediaURL{URL: value}
+	switch kind {
+	case "image_url":
+		item.ImageURL = media
+	case "video_url":
+		item.VideoURL = media
+	case "audio_url":
+		item.AudioURL = media
+	}
+	return item
 }
 
 func decodeVideo(
