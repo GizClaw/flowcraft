@@ -2,7 +2,9 @@ package tool
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strconv"
@@ -28,24 +30,44 @@ import (
 // because the error is the only thing that needs it. Every tool the builtins
 // ship decodes through here, and write_file carries a whole file body, so the
 // difference is the cost of two extra passes over the model's payload.
+//
+// The fast path is strict about the same things the slow one was: one value,
+// nothing after it. Decoder.Decode reads a single value and stops, which would
+// accept {"a":1}junk or two concatenated objects where the old first pass
+// (json.Unmarshal over the whole payload) rejected them, so the trailing read
+// below restores that guarantee for the cost of one token.
 func DecodeArgs(tool, arguments string, aliases map[string]string, out any) error {
 	if len(aliases) == 0 {
 		if trimmed := strings.TrimSpace(arguments); trimmed != "" && trimmed[0] == '{' {
 			dec := json.NewDecoder(strings.NewReader(trimmed))
 			dec.DisallowUnknownFields()
 			if err := dec.Decode(out); err == nil {
-				return nil
+				// A second Decode must report io.EOF: anything else is trailing
+				// data, which the old implementation refused.
+				var trailing any
+				if err := dec.Decode(&trailing); errors.Is(err, io.EOF) {
+					return nil
+				}
 			}
 			// Any failure is re-derived below so the caller sees the same
 			// message it always has, with the accepted keys named and aliases
 			// applied. Paying for that on the error path is the point.
 			//
-			// One degenerate case therefore differs: a target struct with no
-			// json-tagged field used to be refused before any decoding, and
-			// now decodes an empty object successfully. Every non-empty
-			// object is still rejected by DisallowUnknownFields, no builtin
-			// tool declares such a struct, and the slower path keeps the
-			// guard for the callers that reach it.
+			// Two deviations are deliberate, both asserted in args_test.go.
+			//
+			// A target struct with no json-tagged field used to be refused
+			// before any decoding; it now decodes an empty object successfully.
+			// Every non-empty object is still rejected by
+			// DisallowUnknownFields, and no builtin tool declares such a
+			// struct.
+			//
+			// A key that differs from the json tag only in case is accepted
+			// here and refused by the diagnostic path, because
+			// DisallowUnknownFields matches fields case-insensitively (the
+			// encoding/json rule) while that path compares raw keys against the
+			// tags literally. The value still lands in the right field, and
+			// narrowing it would mean rebuilding the accepted-key set on the hot
+			// path — the reflection this change removed.
 		}
 	}
 	return decodeArgsSlow(tool, arguments, aliases, out)

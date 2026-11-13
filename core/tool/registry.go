@@ -256,9 +256,17 @@ func (r *Registry) DefinitionsEpoch() uint64 { return r.defsEpoch.Load() }
 
 // invalidateDefinitions drops the cached definitions. It is safe to call while
 // holding any lock: the pointer is atomic.
+//
+// The data goes before the version, and the order is load bearing. A reader that
+// derives something from Definitions — the BM25 index tool_search keeps — reads
+// the epoch and then calls Definitions, so publishing the epoch first would let
+// it observe the new version together with the pre-mutation cached slice and
+// then cache a stale derivation under the current epoch, permanently. Clearing
+// first makes "observed epoch E+1" imply "the cache is already empty"; the
+// opposite interleaving costs one redundant rebuild at the old epoch.
 func (r *Registry) invalidateDefinitions() {
-	r.defsEpoch.Add(1)
 	r.defs.Store(nil)
+	r.defsEpoch.Add(1)
 }
 
 // Names returns the registered tool names in sorted order.

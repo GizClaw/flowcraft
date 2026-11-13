@@ -2,6 +2,7 @@ package files
 
 import (
 	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,15 @@ import (
 // referenceMatchSegments is the implementation matchPath replaced, kept here as
 // the specification: the in-place walk must agree with it on every shape a
 // pattern can take, including the ones the tool tests never reach.
+//
+// One class of inputs is outside that agreement by construction. The reference
+// split the path after trimming slashes, so an empty segment was a real segment
+// ("a//b" and "" both produce one); matchPath skips separators instead. The
+// diverging shapes — a doubled separator, or an empty relative path — cannot
+// reach the matcher: relTo strips the root prefix, filepath.Join cleans what the
+// walk builds, and the walk callback returns early for directories. The invariant
+// is pinned in TestRelToYieldsCleanRelativePaths rather than the divergence being
+// reproduced here.
 func referenceMatchSegments(pattern, segments []string) bool {
 	for len(pattern) > 0 {
 		if pattern[0] == "**" {
@@ -109,4 +119,31 @@ func BenchmarkMatchPath(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestRelToYieldsCleanRelativePaths pins the invariant matchPath relies on: the
+// relative path the walk hands it never carries a doubled or trailing separator.
+// relTo itself only strips the root prefix — the cleaning is the walker's, which
+// joins children with filepath.Join — so this test documents the input shape
+// matchPath may assume rather than a property relTo enforces.
+func TestRelToYieldsCleanRelativePaths(t *testing.T) {
+	root := string(filepath.Separator) + filepath.Join("tmp", "root")
+	cases := []struct {
+		path   string
+		want   string
+		wantOK bool
+	}{
+		{filepath.Join(root, "a", "b.go"), "a/b.go", true},
+		{filepath.Join(root, "a"), "a", true},
+		{root, "", false},
+	}
+	for _, tc := range cases {
+		got, ok := relTo(root, tc.path)
+		if ok != tc.wantOK || got != tc.want {
+			t.Errorf("relTo(%q) = %q, %v; want %q, %v", tc.path, got, ok, tc.want, tc.wantOK)
+		}
+		if ok && (got == "" || strings.Contains(got, "//") || strings.HasSuffix(got, "/")) {
+			t.Errorf("relTo(%q) = %q, which matchPath does not model", tc.path, got)
+		}
+	}
 }

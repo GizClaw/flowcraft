@@ -102,6 +102,7 @@ func BenchmarkToolSearch(b *testing.B) {
 					b.Fatal(err)
 				}
 				b.ReportAllocs()
+				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					if _, err := view.search(ctx, "search connector status filter", 8); err != nil {
 						b.Fatal(err)
@@ -122,6 +123,7 @@ func BenchmarkDefinitionsScaling(b *testing.B) {
 			view.policy.Default = ExposureAlways
 			view.policy.Budget = Budget{MaxDefinitions: 1024, MaxBytes: 4 << 20}
 			b.ReportAllocs()
+			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				if len(view.Definitions()) == 0 {
 					b.Fatal("no definitions")
@@ -136,6 +138,7 @@ func BenchmarkDefinitionsScaling(b *testing.B) {
 func BenchmarkSearchIndexBuild(b *testing.B) {
 	docs := searchDocs(benchDefinitions(200))
 	b.ReportAllocs()
+	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := buildSearchIndex(docs); err != nil {
 			b.Fatal(err)

@@ -142,3 +142,73 @@ func TestDecodeAcceptsPaddedObject(t *testing.T) {
 		t.Fatalf("command = %q", args.Command)
 	}
 }
+
+// TestDecodeArgsFastPathMatchesSlowPath is the equivalence guard for the
+// shortcut in DecodeArgs. The fast path and the diagnostic path must agree on
+// what is acceptable — not just on the happy payload, but on the shapes where
+// the primitives they use differ. Trailing data is the one that bites:
+// Decoder.Decode reads a single value and stops, while the old first pass
+// (json.Unmarshal over the whole payload) refused anything after it. A nil alias
+// map versus a non-nil one is exactly how the two paths are selected, so the
+// same payload is decoded both ways.
+//
+// The one documented exception is a case-variant key, asserted separately in
+// TestDecodeArgsKeyCaseIsInsensitiveOnTheFastPath.
+func TestDecodeArgsFastPathMatchesSlowPath(t *testing.T) {
+	for _, payload := range []string{
+		`{"command":"ls"}`,
+		`{"command":"ls"}junk`,
+		`{"command":"ls"}{"command":"rm"}`,
+		`{"command":"ls"} `,
+		`{"command":"ls","timeout_seconds":5}`,
+		`{"command":"ls","timeout_seconds":"soon"}`,
+		`{"command":null}`,
+		`{}`,
+		`{"cwd":"/tmp","command":"ls"}`,
+	} {
+		var fast, slow execArgs
+		fastErr := DecodeArgs("exec_command", payload, nil, &fast)
+		slowErr := DecodeArgs("exec_command", payload, certAliases, &slow)
+		if (fastErr == nil) != (slowErr == nil) {
+			t.Errorf("%q: fast err = %v, slow err = %v", payload, fastErr, slowErr)
+			continue
+		}
+		if fastErr != nil {
+			continue // both refused; the message is the slow path's own concern
+		}
+		if fast.Command != slow.Command || fast.Workdir != slow.Workdir {
+			t.Errorf("%q: fast decoded %+v, slow decoded %+v", payload, fast, slow)
+		}
+		if (fast.TimeoutSeconds == nil) != (slow.TimeoutSeconds == nil) {
+			t.Errorf("%q: fast timeout = %v, slow timeout = %v", payload, fast.TimeoutSeconds, slow.TimeoutSeconds)
+		}
+		if fast.TimeoutSeconds != nil && *fast.TimeoutSeconds != *slow.TimeoutSeconds {
+			t.Errorf("%q: fast timeout = %v, slow timeout = %v", payload, *fast.TimeoutSeconds, *slow.TimeoutSeconds)
+		}
+	}
+}
+
+// TestDecodeArgsKeyCaseIsInsensitiveOnTheFastPath records a deliberate
+// difference between the two paths. The fast path decodes with
+// DisallowUnknownFields, whose field matching is case-insensitive (the
+// encoding/json rule), while the diagnostic path compares the caller's raw keys
+// against the json tags literally. So {"Command":"ls"} is accepted by a tool
+// without aliases and refused by one with them.
+//
+// It is documented rather than eliminated because eliminating it means building
+// the accepted-key set on the hot path — exactly the reflection this change
+// removed. The accepted key still lands in the right field, so the tool does
+// what the model asked; the cost is a friendlier validator, not a wrong one.
+func TestDecodeArgsKeyCaseIsInsensitiveOnTheFastPath(t *testing.T) {
+	var fast execArgs
+	if err := DecodeArgs("exec_command", `{"Command":"ls"}`, nil, &fast); err != nil {
+		t.Fatalf("fast path rejected a case-variant key: %v", err)
+	}
+	if fast.Command != "ls" {
+		t.Fatalf("command = %q, want the value to land in the field", fast.Command)
+	}
+	var slow execArgs
+	if err := DecodeArgs("exec_command", `{"Command":"ls"}`, certAliases, &slow); err == nil {
+		t.Fatal("diagnostic path accepted a case-variant key; the documented difference is gone")
+	}
+}
