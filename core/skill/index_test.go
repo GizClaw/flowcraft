@@ -28,23 +28,6 @@ func TestIndexRanksAndResolves(t *testing.T) {
 	}
 }
 
-func TestMentioned(t *testing.T) {
-	index, err := NewIndex(skills())
-	if err != nil {
-		t.Fatalf("NewIndex: %v", err)
-	}
-	got := index.Mentioned("please use $alpha and then $beta, not $500")
-	if len(got) != 2 || got[0].Name != "alpha" || got[1].Name != "beta" {
-		t.Errorf("Mentioned = %+v, want alpha then beta", got)
-	}
-	if again := index.Mentioned("$alpha $alpha"); len(again) != 1 {
-		t.Errorf("Mentioned kept duplicates: %+v", again)
-	}
-	if none := index.Mentioned("$500"); len(none) != 0 {
-		t.Errorf("Mentioned($500) = %+v, want none", none)
-	}
-}
-
 // All is the catalog in discovery order, which is what an unfiltered listing
 // returns: the maps behind the index cannot provide a stable sequence.
 func TestIndexAllIsDiscoveryOrder(t *testing.T) {

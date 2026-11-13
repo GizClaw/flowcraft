@@ -1,7 +1,6 @@
 package skill
 
 import (
-	"regexp"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/internal/search"
@@ -106,26 +105,6 @@ func (ix *Index) Rank(query string, topN int, minScore float64) []Metadata {
 	out := make([]Metadata, 0, len(scored))
 	for _, sc := range scored {
 		out = append(out, sc.Skill)
-	}
-	return out
-}
-
-// mentionRe matches $name mentions that stand alone, so "$50" inside "$500" or
-// "a$skill" mid-word is not a mention.
-var mentionRe = regexp.MustCompile(`(?:^|[^a-z0-9_])[$]([a-z0-9]+(?:-[a-z0-9]+)*)`)
-
-// Mentioned resolves explicit $name mentions in text, in mention order, keeping
-// the first mention of each skill.
-func (ix *Index) Mentioned(text string) []Metadata {
-	var out []Metadata
-	seen := make(map[string]bool)
-	for _, match := range mentionRe.FindAllStringSubmatch(text, -1) {
-		skill, ok := ix.ByName(match[1])
-		if !ok || seen[skill.Path] {
-			continue
-		}
-		seen[skill.Path] = true
-		out = append(out, skill)
 	}
 	return out
 }
