@@ -2,8 +2,6 @@ go 1.26.0
 
 use (
 	./core
-	./memory
-	./memory/eval
 	./driver
 	./examples/forge
 )

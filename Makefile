@@ -15,10 +15,10 @@ SHELL := /bin/bash
 # consolidated module silently drops it from every target below.
 DRIVER_MODULES := driver
 
-MODULES_WORK := core memory memory/eval $(DRIVER_MODULES) examples/forge
+MODULES_WORK := core $(DRIVER_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core memory memory/eval $(DRIVER_MODULES)
+MODULES_LINT := core $(DRIVER_MODULES)
 
 # Modules a reader builds from their own go.mod and go.sum, without this
 # workspace: every example. They are checked with GOWORK=off (see
@@ -184,11 +184,3 @@ release-preflight-write:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
-
-# Live probes: the credentialed measurement lanes of the memory eval module.
-# They need memory/eval/.env (or a repo-root .env) and spend model
-# calls, so they are opt-in rather than part of `make ci`.
-memory-eval-probes:
-	cd memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
-		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|IngestTagsDatasetTurns|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB)' \
-		-timeout 60m

@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "memory", "memory/eval", "examples/forge"]
+              dirs = ["core", "examples/forge"]
               for base in ("backends", "driver"):
                   for path in pathlib.Path(base).rglob("go.mod"):
                       if "vendor" in path.parts or "testdata" in path.parts:
@@ -172,7 +172,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core memory driver examples/forge tools)
+          diff=$(gofmt -s -l core driver examples/forge tools)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -241,7 +241,7 @@ jobs:
       - name: go mod tidy
         run: |
           set -e
-          modules="core memory memory/eval examples/forge driver"
+          modules="core examples/forge driver"
           for d in $modules; do
             echo "==> $d"
             ( cd "$d" && go mod tidy -diff )
@@ -325,46 +325,6 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}
-
-  test-memory-postgres:
-    name: Test memory (postgres)
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: test
-          POSTGRES_PASSWORD: test
-          POSTGRES_DB: test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
-      - name: Test
-        working-directory: memory
-        env:
-          FC_PG_DSN: postgres://test:test@127.0.0.1:5432/test?sslmode=disable
-        run: go test -count=1 -race ./storage/postgres/...
-
-  test-memory-windows:
-    name: Test memory (windows)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
-      - name: Test
-        working-directory: memory
-        run: go test -count=1 ./...
 
   test-sandbox-bwrap:
     name: Integration core/sandbox/bwrap
@@ -505,8 +465,6 @@ jobs:
       - fuzz
       - test-shuffle
       - test
-      - test-memory-postgres
-      - test-memory-windows
       - test-sandbox-bwrap
       - test-core-windows
       - test-sandbox-windows
@@ -525,8 +483,6 @@ jobs:
             "${{ needs.fuzz.result }}" \
             "${{ needs.test-shuffle.result }}" \
             "${{ needs.test.result }}" \
-            "${{ needs.test-memory-postgres.result }}" \
-            "${{ needs.test-memory-windows.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
             "${{ needs.test-sandbox-windows.result }}" \
