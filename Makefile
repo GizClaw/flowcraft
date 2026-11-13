@@ -58,6 +58,7 @@ help:
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make bench       Run benchmarks for BENCH_MODULES into .bench/"
+	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
 	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
 	@echo "  make test-shuffle   Run the tests in random order, three times"
 	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"

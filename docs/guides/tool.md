@@ -240,7 +240,7 @@ see [graph.md](graph.md) for the recovery loop.
 
 See [runtime.md](runtime.md) for per-session dynamic catalogs.
 
-### Catalog index reuse
+## Catalog index reuse
 
 `tool_search` ranks with BM25 over the searchable definitions, and building that
 index means tokenizing every name and description. The assembly therefore keeps

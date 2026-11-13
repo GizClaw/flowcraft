@@ -479,6 +479,7 @@ jobs:
       - hygiene
       - fuzz
       - test-shuffle
+      - bench
       - test
       - test-sandbox-bwrap
       - test-core-windows
@@ -497,6 +498,7 @@ jobs:
             "${{ needs.hygiene.result }}" \
             "${{ needs.fuzz.result }}" \
             "${{ needs.test-shuffle.result }}" \
+            "${{ needs.bench.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
