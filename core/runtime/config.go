@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,6 +24,10 @@ const (
 	BackendSeatbelt = "seatbelt"
 	BackendBwrap    = "bwrap"
 	BackendWindows  = "windows"
+	// BackendRemote runs commands on a server that owns the boundary; the
+	// backend value in this document describes that server, not a local
+	// implementation.
+	BackendRemote = "remote"
 )
 
 // Tool names accepted by [ToolsConfig.Enable].
@@ -72,6 +77,31 @@ type SandboxConfig struct {
 	OutputMiB int `json:"output_mib"`
 	// Journal records filesystem events under the runner root.
 	Journal bool `json:"journal"`
+	// Remote is the client configuration for BackendRemote, and must be absent
+	// for every other backend: a boundary is either local or reached over a
+	// connection, and silently ignoring half of the settings is how a deployment
+	// ends up running somewhere nobody intended.
+	Remote RemoteConfig `json:"remote"`
+}
+
+// RemoteConfig is the client side of a remote sandbox: where the server is and
+// how to authenticate to it. It describes the connection, not the boundary —
+// the server's own configuration decides what it can enforce, and the client's
+// Capabilities report that decision verbatim.
+type RemoteConfig struct {
+	// Endpoint is the server URL ("https://sandbox.internal:8443").
+	Endpoint string `json:"endpoint"`
+	// Token authenticates every request. It is a credential, so prefer
+	// ${env:...} over a literal.
+	Token string `json:"token"`
+	// Timeout bounds one request ("30s"). It has to exceed poll_hold, or a long
+	// poll is cut short by the transport instead of answering.
+	Timeout string `json:"timeout"`
+	// PollHold is how long a read or a wait asks the server to hold ("20s").
+	PollHold string `json:"poll_hold"`
+	// InsecureSkipVerify disables TLS verification. Name it out loud: it is for
+	// a loopback or a test listener, never for a real boundary.
+	InsecureSkipVerify bool `json:"insecure_skip_verify"`
 }
 
 // NetConfig is the outbound posture in the words a person uses.
@@ -266,13 +296,16 @@ func (c Config) Validate() error {
 
 func (c SandboxConfig) validate() error {
 	switch c.Backend {
-	case BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows:
+	case BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows, BackendRemote:
 	case "":
 		return errdefs.Validationf(
-			"sandbox.backend is required; one of %s, %s, %s, %s",
-			BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows)
+			"sandbox.backend is required; one of %s, %s, %s, %s, %s",
+			BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows, BackendRemote)
 	default:
 		return errdefs.Validationf("sandbox.backend: unknown backend %q", c.Backend)
+	}
+	if err := c.Remote.validate(c.Backend); err != nil {
+		return err
 	}
 	if c.WorkDir != "" && !filepath.IsAbs(c.WorkDir) {
 		return errdefs.Validationf("sandbox.workdir: %q is not an absolute path", c.WorkDir)
@@ -285,6 +318,56 @@ func (c SandboxConfig) validate() error {
 			"sandbox: cpu_millicores, memory_mib and output_mib must not be negative")
 	}
 	return c.Net.validate()
+}
+
+// validate rejects a remote block that is absent where it is needed, present
+// where it is meaningless, or unparseable.
+func (c RemoteConfig) validate(backend string) error {
+	if backend != BackendRemote {
+		if c != (RemoteConfig{}) {
+			return errdefs.Validationf(
+				"sandbox.remote is only meaningful with sandbox.backend: %s", BackendRemote)
+		}
+		return nil
+	}
+	if c.Endpoint == "" {
+		return errdefs.Validationf(
+			"sandbox.remote.endpoint is required with sandbox.backend: %s", BackendRemote)
+	}
+	u, err := url.Parse(c.Endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errdefs.Validationf(
+			"sandbox.remote.endpoint: %q is not an http(s) URL", c.Endpoint)
+	}
+	if _, err := c.timeout(); err != nil {
+		return err
+	}
+	_, err = c.pollHold()
+	return err
+}
+
+// timeout is the per-request timeout, zero meaning the client's default.
+func (c RemoteConfig) timeout() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.remote.timeout", c.Timeout)
+}
+
+// pollHold is how long a read or a wait asks the server to hold.
+func (c RemoteConfig) pollHold() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.remote.poll_hold", c.PollHold)
+}
+
+func parseOptionalDuration(field, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, errdefs.Validationf("%s: %q is not a duration: %w", field, value, err)
+	}
+	if d <= 0 {
+		return 0, errdefs.Validationf("%s: %q must be positive", field, value)
+	}
+	return d, nil
 }
 
 func (n NetConfig) validate() error {

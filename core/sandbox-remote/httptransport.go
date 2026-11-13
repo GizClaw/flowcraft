@@ -63,6 +63,21 @@ func WithHTTPTLS(config *tls.Config) HTTPOption {
 	}
 }
 
+// WithHTTPInsecureTLS disables certificate verification.
+//
+// It is named for what it does so it cannot be turned on absent-mindedly: it is
+// for a loopback listener or a test server, never for a boundary that carries
+// command execution.
+func WithHTTPInsecureTLS() HTTPOption {
+	return func(t *httpTransport) {
+		t.client = httpkit.NewHTTPClient(
+			//nolint:gosec // opt-in by name, documented as loopback-only.
+			httpkit.WithTLSClientConfig(&tls.Config{InsecureSkipVerify: true}),
+			httpkit.WithoutRetry(),
+		)
+	}
+}
+
 // WithHTTPTimeout bounds one request end to end. It must stay above the longest
 // hold the client asks for, or a long poll would be cut short by the transport
 // instead of answering.

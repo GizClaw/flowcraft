@@ -184,6 +184,11 @@ const (
 	// difference between backends is visible.
 	AttrSandboxRunner = "sandbox.runner"
 
+	// AttrSandboxEndpoint is the server a remote sandbox backend talks to
+	// (scheme and host only, never a query string: the bearer token must not
+	// reach a log).
+	AttrSandboxEndpoint = "sandbox.endpoint"
+
 	// AttrSandboxTTY marks a pseudo-terminal session: it changes which
 	// streams exist and whether output is line-buffered.
 	AttrSandboxTTY = "sandbox.tty"

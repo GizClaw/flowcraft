@@ -13,15 +13,19 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox-bwrap"
 	"github.com/GizClaw/flowcraft/core/sandbox-local"
+	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-seatbelt"
 	"github.com/GizClaw/flowcraft/core/sandbox-windows"
 	"github.com/GizClaw/flowcraft/core/skill"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool-builtin/exec"
 	"github.com/GizClaw/flowcraft/core/tool-builtin/files"
 	"github.com/GizClaw/flowcraft/core/tool-builtin/skills"
 	toolmcp "github.com/GizClaw/flowcraft/core/tool-mcp"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // build creates every resource in construction order and records it for
@@ -74,6 +78,12 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 		runner, err = bwrap.New(dir, opts...)
 	case BackendWindows:
 		runner, err = windows.New(dir)
+	case BackendRemote:
+		remoteOpts, optsErr := r.cfg.Sandbox.remoteOptions()
+		if optsErr != nil {
+			return optsErr
+		}
+		runner, err = remote.New(ctx, r.cfg.Sandbox.Remote.Endpoint, remoteOpts...)
 	default:
 		// Validate rejects this earlier; the switch keeps the boundary explicit.
 		return errdefs.Validationf("sandbox.backend: unknown backend %q", r.cfg.Sandbox.Backend)
@@ -83,6 +93,16 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	}
 	r.runner = runner
 	r.closers = append(r.closers, runner)
+
+	// The file tools work on this host's filesystem; a remote backend runs the
+	// commands on another one. Say it out loud: silently having the shell write
+	// files the tools cannot see is the shape of failure nobody debugs quickly.
+	if r.cfg.Sandbox.Backend == BackendRemote && r.cfg.Tools.enabled(ToolFiles) {
+		telemetry.Warn(ctx,
+			"sandbox.backend is remote while tools.files work on this host: "+
+				"mount the same workspace on both sides, or disable tools.files",
+			attribute.String(telemetry.AttrSandboxEndpoint, r.cfg.Sandbox.Remote.Endpoint))
+	}
 
 	if !r.cfg.Sandbox.Journal {
 		return nil
@@ -339,4 +359,32 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// remoteOptions translates the document's remote block into client options.
+func (c SandboxConfig) remoteOptions() ([]remote.Option, error) {
+	var opts []remote.Option
+	if c.Remote.Token != "" {
+		opts = append(opts, remote.WithToken(c.Remote.Token))
+	}
+	var httpOpts []remote.HTTPOption
+	if c.Remote.InsecureSkipVerify {
+		httpOpts = append(httpOpts, remote.WithHTTPInsecureTLS())
+	}
+	if timeout, err := c.Remote.timeout(); err != nil {
+		return nil, err
+	} else if timeout > 0 {
+		httpOpts = append(httpOpts, remote.WithHTTPTimeout(timeout))
+	}
+	hold, err := c.Remote.pollHold()
+	if err != nil {
+		return nil, err
+	}
+	if len(httpOpts) > 0 {
+		opts = append(opts, remote.WithHTTPOptions(httpOpts...))
+	}
+	if hold > 0 {
+		opts = append(opts, remote.WithPollHold(hold))
+	}
+	return opts, nil
 }
