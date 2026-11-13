@@ -119,7 +119,7 @@ func NetNonDefault() Predicate {
 // WorkDir values always stay under the runner root and never match.
 // Note the approval flow this enables: the approver is *asked* about
 // the escape; whether the escape then actually runs is still the
-// backend's decision (sandbox/local rejects out-of-root WorkDir
+// backend's decision (sandbox-local rejects out-of-root WorkDir
 // outright).
 func WorkDirOutsideRoot(root string) Predicate {
 	real, err := filepath.Abs(root)

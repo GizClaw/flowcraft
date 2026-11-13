@@ -30,7 +30,7 @@ type EnvPolicy struct {
 // sandboxed backends may use cgroups or VM caps instead.
 //
 // CPUMillicores expresses a cpu-time budget in thousandths of a core:
-// backends derive a hard cap from it (sandbox/local: aggregate group
+// backends derive a hard cap from it (sandbox-local: aggregate group
 // cpu-time = Timeout x millicores/1000 via its sampling watcher).
 // Because the budget is derived from the wall-clock timeout,
 // The local runner requires Timeout > 0 when CPUMillicores is set and

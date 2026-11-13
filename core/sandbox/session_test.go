@@ -7,8 +7,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/internal/session"
-	"github.com/GizClaw/flowcraft/core/sandbox/local"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
+	"github.com/GizClaw/flowcraft/core/sandbox/sessionkit"
 )
 
 // drainSession reads the session's output to EOF and returns it. Read
@@ -40,13 +40,13 @@ func TestRunnerCapabilities(t *testing.T) {
 	if !caps.Policy.EnvAllowList {
 		t.Error("EnvAllowList = false, want true")
 	}
-	if caps.Policy.MemoryCap != session.GroupCapsAvailable() {
+	if caps.Policy.MemoryCap != sessionkit.GroupCapsAvailable() {
 		t.Errorf("MemoryCap = %v, want GroupCapsSupported() = %v",
-			caps.Policy.MemoryCap, session.GroupCapsAvailable())
+			caps.Policy.MemoryCap, sessionkit.GroupCapsAvailable())
 	}
-	if caps.Policy.CPUCap != session.GroupCapsAvailable() {
+	if caps.Policy.CPUCap != sessionkit.GroupCapsAvailable() {
 		t.Errorf("CPUCap = %v, want GroupCapsSupported() = %v",
-			caps.Policy.CPUCap, session.GroupCapsAvailable())
+			caps.Policy.CPUCap, sessionkit.GroupCapsAvailable())
 	}
 	// Sessions either exist on the platform with the full local feature
 	// set, or not at all — the three flags must never diverge for

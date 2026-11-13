@@ -53,13 +53,22 @@ resources:
       root: ./sandbox
 ```
 
-Platform backends are registered from core subpackages:
+Platform backends are registered from core sibling packages:
 
-- `core/sandbox/bwrap` for Linux namespace isolation.
-- `core/sandbox/seatbelt` for macOS confinement.
-- `core/sandbox/windows` for Windows Job Object lifecycle and
+- `core/sandbox-bwrap` for Linux namespace isolation.
+- `core/sandbox-seatbelt` for macOS confinement.
+- `core/sandbox-windows` for Windows Job Object lifecycle and
   resource caps, opt-in Low-integrity write confinement, and
   AppContainer / WFP network policy.
+
+The backends are siblings of `core/sandbox` rather than subpackages of it:
+`core/sandbox` is the contract, and an implementation of it is a different
+thing. What a backend shares with the others — the session registry, the spawn
+path, the group resource sampler (`core/sandbox/sessionkit`) and the journal
+contract suite (`core/sandbox/journal/journaltest`) — is public for the same reason: a
+backend in another directory tree cannot reach `core/sandbox/internal/...`.
+Run the same contract suite against a new backend with
+`core/sandbox/sandboxtest`.
 
 Every backend that watches also takes a `journal:` settings subtree; see
 [File journal](#file-journal) for what it reports and on which

@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   stress:
-    name: Stress core/sandbox/windows
+    name: Stress core/sandbox-windows
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -33,7 +33,7 @@ jobs:
         with:
           go-version: "1.26"
       - name: Race + repeat
-        working-directory: core/sandbox
+        working-directory: core
         env:
           GODEBUG: invalidptr=1,clobberfree=1
-        run: go test -race -count=3 -timeout 900s ./windows/...
+        run: go test -race -count=3 -timeout 900s ./sandbox-windows/...

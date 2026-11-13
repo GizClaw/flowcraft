@@ -11,6 +11,6 @@ import (
 func skipOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("sandbox/local sessions require a unix platform")
+		t.Skip("sandbox-local sessions require a unix platform")
 	}
 }

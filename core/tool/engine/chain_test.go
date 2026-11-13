@@ -11,8 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
-	"github.com/GizClaw/flowcraft/core/sandbox/local"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -37,7 +37,7 @@ import (
 //	└── tool.execute{deferred}     → tool.load
 func TestChainJoinsUnderOneRoot(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("sandbox/local sessions require a unix platform")
+		t.Skip("sandbox-local sessions require a unix platform")
 	}
 	recorder := telemetrytest.New(t)
 

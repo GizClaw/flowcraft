@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/sandbox/local"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/goccy/go-json"
 )
 

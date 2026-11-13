@@ -32,12 +32,12 @@ import "github.com/GizClaw/flowcraft/core/permission"
 //   - DiskCap: DiskBytes is enforced. No local backend reports this
 //     today.
 //   - FilesystemBounds: writes are confined to the runner root at the
-//     OS level (Seatbelt profile, namespace mounts). sandbox/local's
+//     OS level (Seatbelt profile, namespace mounts). sandbox-local's
 //     WorkDir check is call-time validation only — once the child is
 //     running it can chdir anywhere — so it does not qualify.
 //   - WriteConfinement: the backend can enforce a per-call file boundary,
 //     i.e. it can make exactly ExecOptions.Permission's writable paths
-//     writable and everything else read-only. sandbox/local reports false:
+//     writable and everything else read-only. sandbox-local reports false:
 //     it has no OS boundary, so it refuses such a call instead of running
 //     it unconfined.
 type Enforcement struct {

@@ -312,7 +312,8 @@ jobs:
           go build ./...
           go vet ./...
         working-directory: ${{ matrix.module }}
-      # core/sandbox carries per-GOOS files the linux lane never compiles, so
+      # core/sandbox and the backends carry per-GOOS files the linux lane
+      # never compiles, so
       # a darwin syscall or an other-unix stub can be wrong or stop building
       # without any check going red. Cross-compile them here: same runner,
       # no extra cost.
@@ -327,7 +328,7 @@ jobs:
         working-directory: ${{ matrix.module }}
 
   test-sandbox-bwrap:
-    name: Integration core/sandbox/bwrap
+    name: Integration core/sandbox-bwrap
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -401,8 +402,8 @@ jobs:
           report
           exit 1
       - name: Test
-        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
-        working-directory: core/sandbox
+        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./sandbox-bwrap/...
+        working-directory: core
 
   test-core-windows:
     name: Test core (windows)
@@ -423,7 +424,7 @@ jobs:
         run: go test -count=1 ./...
 
   test-sandbox-windows:
-    name: Integration core/sandbox/windows
+    name: Integration core/sandbox-windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -431,11 +432,11 @@ jobs:
         with:
           go-version: "1.26"
       - name: Test
-        working-directory: core/sandbox
-        run: go test -count=1 -timeout 180s ./windows/...
+        working-directory: core
+        run: go test -count=1 -timeout 180s ./sandbox-windows/...
 
   test-sandbox-macos:
-    name: Integration core/sandbox (darwin)
+    name: Integration core/sandbox + seatbelt (darwin)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -449,8 +450,8 @@ jobs:
       # that executes the kqueue source and its leaf watches. sandbox-exec
       # ships with macOS, so nothing is installed.
       - name: Test
-        working-directory: core/sandbox
-        run: go test -count=1 -race -timeout 300s ./...
+        working-directory: core
+        run: go test -count=1 -race -timeout 300s ./sandbox/... ./sandbox-seatbelt/...
 
   ci-pass:
     name: CI

@@ -36,8 +36,11 @@
 //     journal (filesystem event sources), netpolicy (proxy, MITM, SOCKS5), and
 //     sessionkit (process spawning, the session registry, the group resource
 //     sampler).
-//  4. Backends: local, bwrap, seatbelt, windows — and remote, which wraps
-//     another runner instead of spawning processes.
+//  4. Backends: core/sandbox-local, core/sandbox-bwrap, core/sandbox-seatbelt,
+//     core/sandbox-windows — and core/sandbox-remote, which wraps another runner
+//     instead of spawning processes. A backend is a sibling directory, not a
+//     subpackage, because it is an implementation of the contract rather than
+//     part of it.
 //
 // A backend is an implementation, not part of the contract. It may import
 // engine and any support package; nothing above it may import a backend except
@@ -47,10 +50,11 @@
 //
 // Go's internal rule bounds visibility by directory: core/sandbox/internal/...
 // is importable only from inside core/sandbox. Every shared mechanism a backend
-// needs therefore has to live in a public package under core/sandbox — which is
-// why sessionkit is public rather than internal/session. Keeping a mechanism in
-// internal/ is a promise that no backend will ever live outside this tree; that
-// promise is not one this package makes.
+// needs therefore has to live in a public package: sessionkit, sandboxtest and
+// journal/journaltest are public for that reason, rather than internal/session,
+// internal/sandboxtest and internal/journaltest. core/sandbox/internal is
+// reserved for things no backend may ever need — the bwrap package keeps its own
+// bridge under its own internal/.
 //
 // # Verifying a backend
 //

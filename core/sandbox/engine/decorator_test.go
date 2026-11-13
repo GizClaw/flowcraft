@@ -9,8 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
-	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
 // closingRunner records whether Close reached it, so tests can prove

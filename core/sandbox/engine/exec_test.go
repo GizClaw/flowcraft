@@ -9,8 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
-	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
 var _ sandbox.Runner = (*local.Runner)(nil)
@@ -21,13 +21,13 @@ func localRunner(t *testing.T) *local.Runner {
 }
 
 // skipOnWindows guards tests that exercise the unix-only session
-// machinery of core/sandbox/local (pty / process groups / signals).
+// machinery of core/sandbox-local (pty / process groups / signals).
 // The windows backend has its own integration coverage in
-// core/sandbox/windows.
+// core/sandbox-windows.
 func skipOnWindows(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("sandbox/local sessions require a unix platform")
+		t.Skip("sandbox-local sessions require a unix platform")
 	}
 }
 
