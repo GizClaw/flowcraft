@@ -70,6 +70,10 @@ type Registry struct {
 	// defs caches the sorted definitions; nil means rebuild. Atomic because a
 	// deferred tool invalidates it while holding its own lock.
 	defs atomic.Pointer[[]message.ToolDefinition]
+	// defsEpoch moves whenever the definition set may have changed, so a reader
+	// that caches something derived from it (a search index) can tell whether
+	// its copy is still the current one.
+	defsEpoch atomic.Uint64
 }
 
 // NewRegistry builds a registry from sources in order. With the
@@ -239,9 +243,31 @@ func cloneDefinitions(defs []message.ToolDefinition) []message.ToolDefinition {
 	return out
 }
 
+// DefinitionsEpoch reports a counter that moves whenever the definition set may
+// have changed: an Add, a Remove, or a deferred tool finishing its load.
+//
+// It is a hint for readers that cache something derived from [Definitions] — a
+// BM25 index over the catalog, say — so they can tell whether their copy is
+// still the current one. It is deliberately not a method on [Catalog]: a fixture
+// or a wrapper that cannot answer it keeps recomputing, which is what a failed
+// [tool/engine] probe falls back to. A caller still needs one Definitions call
+// after the epoch changes to see the new set; the epoch only rules out reuse.
+func (r *Registry) DefinitionsEpoch() uint64 { return r.defsEpoch.Load() }
+
 // invalidateDefinitions drops the cached definitions. It is safe to call while
 // holding any lock: the pointer is atomic.
-func (r *Registry) invalidateDefinitions() { r.defs.Store(nil) }
+//
+// The data goes before the version, and the order is load bearing. A reader that
+// derives something from Definitions — the BM25 index tool_search keeps — reads
+// the epoch and then calls Definitions, so publishing the epoch first would let
+// it observe the new version together with the pre-mutation cached slice and
+// then cache a stale derivation under the current epoch, permanently. Clearing
+// first makes "observed epoch E+1" imply "the cache is already empty"; the
+// opposite interleaving costs one redundant rebuild at the old epoch.
+func (r *Registry) invalidateDefinitions() {
+	r.defs.Store(nil)
+	r.defsEpoch.Add(1)
+}
 
 // Names returns the registered tool names in sorted order.
 func (r *Registry) Names() []string {

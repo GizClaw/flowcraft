@@ -1,6 +1,12 @@
-# shellcheck disable=SC2046
+# shellcheck disable=SC2046,SC2283,SC1036,SC1088,SC2034
 # Make expands $(...) before the shell sees it: the unquoted expansions are
 # argument lists (module names), and quoting them would pass one string.
+#
+# The same reading applies to the macro assignments below (`NAME = value` is
+# make syntax, not shell) and to the `$$(...)` escaping in recipes: shellcheck
+# parses this file as shell, so those three forms are reported and are not
+# defects. The directives are disabled here rather than per line so a new
+# recipe copying the pattern does not reintroduce the noise.
 #
 # Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
 # stable across hosts (default sh on some macOS setups treats `set -e`
@@ -52,6 +58,7 @@ help:
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make bench       Run benchmarks for BENCH_MODULES into .bench/"
+	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
 	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
 	@echo "  make test-shuffle   Run the tests in random order, three times"
 	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"
@@ -119,7 +126,10 @@ check-consumers:
 # different questions (statistical benchmark matches, ordering-dependent bugs,
 # parser inputs, nil paths), and a developer chooses when to pay for them.
 
-BENCH_MODULES ?= core
+# Every module that carries benchmarks. `driver` is here because its request
+# compilation is on the model-call path and had no measurement at all; a module
+# omitted from this list is a module whose benchmarks never run.
+BENCH_MODULES ?= core driver
 BENCH_LABEL ?= run
 
 .PHONY: bench
@@ -131,6 +141,14 @@ bench:
 		( cd $$m && go test -run '^$$' -bench . -benchmem -count=5 ./... ) \
 			> ".bench/$$label.txt"; \
 	done
+
+# bench-check is what CI runs: one iteration per benchmark, so every benchmark
+# compiles, runs and reports. Numbers are not compared — a shared runner varies
+# enough that a threshold would be noise. The allocation guards live in the
+# tests and gate through `make test`.
+.PHONY: bench-check
+bench-check:
+	@$(call GO_FOREACH,$(BENCH_MODULES),bench-check,go test -run '^$$' -bench . -benchmem -benchtime=1x ./...)
 
 .PHONY: bench-compare
 bench-compare:

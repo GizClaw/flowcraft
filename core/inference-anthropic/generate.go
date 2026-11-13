@@ -2,7 +2,6 @@ package anthropic
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
@@ -408,7 +407,7 @@ func documentBlock(part message.FilePart) (anthropicgo.ContentBlockParamUnion, e
 }
 
 func base64Encode(data []byte) string {
-	return base64.StdEncoding.EncodeToString(data)
+	return media.Base64(data)
 }
 
 func toolResultText(text string) anthropicgo.ToolResultBlockParamContentUnion {

@@ -15,6 +15,10 @@ type Assembly struct {
 	registry *tool.Registry
 	executor *tool.Executor
 	policy   *Policy // nil = dynamic injection disabled
+	// searchCache is the BM25 index every view of this assembly shares. It is
+	// keyed by the registry's definition epoch, so an MCP tool list change
+	// invalidates it without any view having to notice.
+	searchCache *searchIndexCache
 }
 
 type assemblyOptions struct {
@@ -89,9 +93,10 @@ func NewAssembly(sources []tool.Source, opts ...AssemblyOption) (*Assembly, erro
 		mws = append(append([]tool.Middleware{}, mws...), recordSessionCalls())
 	}
 	return &Assembly{
-		registry: registry,
-		executor: tool.NewExecutor(registry, mws...),
-		policy:   policy,
+		registry:    registry,
+		executor:    tool.NewExecutor(registry, mws...),
+		policy:      policy,
+		searchCache: &searchIndexCache{},
 	}, nil
 }
 
@@ -147,9 +152,10 @@ func (a *Assembly) NewCatalogView() CatalogView {
 		return &staticView{catalog: a.registry}
 	}
 	return &dynamicView{
-		catalog: a.registry,
-		policy:  *a.policy,
-		st:      *newViewState(),
+		catalog:     a.registry,
+		policy:      *a.policy,
+		st:          *newViewState(),
+		searchCache: a.searchCache,
 	}
 }
 

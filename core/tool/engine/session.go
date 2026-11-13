@@ -101,6 +101,10 @@ type dynamicView struct {
 	// defBytes caches the serialized size of each definition for the current
 	// epoch; RecordCall needs it on the hot path.
 	defBytes map[string]int64
+	// searchCache is the assembly-wide BM25 index. Nil for a view built by hand
+	// (tests, a fixture): such a view keeps no index between calls, which is the
+	// behaviour every view had before the cache existed.
+	searchCache *searchIndexCache
 }
 
 // Epoch implements CatalogView.
@@ -383,14 +387,6 @@ func (s *dynamicView) search(ctx context.Context, query string, limit int) ([]Se
 	policy := s.policy
 	s.mu.Unlock()
 
-	defs := s.catalog.Definitions()
-	docs := make([]searchDoc, 0, len(defs))
-	for _, def := range defs {
-		if !policy.exposureOf(def.Name).searchable() {
-			continue
-		}
-		docs = append(docs, searchDoc{name: def.Name, description: def.Description})
-	}
 	// Every hit is loaded and takes a discovery-pool slot, so a
 	// model-supplied limit cannot exceed the pool it would be loaded
 	// into: a larger one only churns the pool with hits that can never
@@ -401,7 +397,31 @@ func (s *dynamicView) search(ctx context.Context, query string, limit int) ([]Se
 	if pool := policy.Discovery.MaxTools; pool > 0 && limit > pool {
 		limit = pool
 	}
-	return bm25Search(docs, query, limit)
+	index, err := s.index(policy)
+	if err != nil {
+		return nil, err
+	}
+	return index.search(query, limit), nil
+}
+
+// index returns the BM25 index over the searchable definitions. Building it
+// tokenizes the whole catalog, so the assembly keeps one and reuses it until the
+// catalog's definitions change; a view without a cache rebuilds every call.
+func (s *dynamicView) index(policy Policy) (*searchIndex, error) {
+	build := func() []searchDoc {
+		defs := s.catalog.Definitions()
+		searchable := make([]message.ToolDefinition, 0, len(defs))
+		for _, def := range defs {
+			if policy.exposureOf(def.Name).searchable() {
+				searchable = append(searchable, def)
+			}
+		}
+		return searchDocs(searchable)
+	}
+	if s.searchCache == nil {
+		return buildSearchIndex(build())
+	}
+	return s.searchCache.get(s.catalog, build)
 }
 
 func (s *dynamicView) Load(ctx context.Context) error {
