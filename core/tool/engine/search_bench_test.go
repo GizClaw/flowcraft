@@ -9,30 +9,31 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// benchCatalog is a definitions-only catalog: it answers the read side the
-// search path actually uses and nothing else. A real deployment puts a
-// *tool.Registry here (which also carries DefinitionsEpoch); the fixture keeps
-// the benchmark measuring the ranking work rather than the registry.
-type benchCatalog struct {
-	defs []message.ToolDefinition
+// benchSchema is the shape a connector tool ships: a few described properties.
+const benchSchema = `{"type":"object","properties":{` +
+	`"query":{"type":"string","description":"free-text query"},` +
+	`"status":{"type":"string","enum":["open","closed"]},` +
+	`"owner":{"type":"string"},` +
+	`"cursor":{"type":"string","description":"pagination cursor"}}}`
+
+// benchTool is a definition-only tool: enough for the search path, and cheap
+// enough that a 500-tool registry stays a fixture rather than a workload.
+type benchTool struct{ def message.ToolDefinition }
+
+func (t benchTool) Definition() message.ToolDefinition { return t.def }
+
+func (t benchTool) Execute(context.Context, string) (message.Content, error) {
+	return message.NewTextContent("ok"), nil
 }
 
-func (c benchCatalog) Get(string) (tool.Tool, bool) { return nil, false }
+type benchSource struct{ tools []tool.Tool }
 
-func (c benchCatalog) Definitions() []message.ToolDefinition {
-	out := make([]message.ToolDefinition, len(c.defs))
-	copy(out, c.defs)
-	return out
-}
+func (s benchSource) Tools() []tool.Tool         { return s.tools }
+func (s benchSource) LazyTools() []tool.LazyTool { return nil }
 
-// benchCatalogSize models a deployment that exposed an MCP server's tool list:
+// benchDefinitions models a deployment that exposed an MCP server's tool list:
 // long names, real descriptions, a JSON Schema each.
-func benchCatalogOf(size int) benchCatalog {
-	schema := `{"type":"object","properties":{` +
-		`"query":{"type":"string","description":"free-text query"},` +
-		`"status":{"type":"string","enum":["open","closed"]},` +
-		`"owner":{"type":"string"},` +
-		`"cursor":{"type":"string","description":"pagination cursor"}}}`
+func benchDefinitions(size int) []message.ToolDefinition {
 	defs := make([]message.ToolDefinition, 0, size)
 	for i := 0; i < size; i++ {
 		defs = append(defs, message.ToolDefinition{
@@ -41,65 +42,83 @@ func benchCatalogOf(size int) benchCatalog {
 				"Search records in connector %d by free-text query, returning ids, titles "+
 					"and relevance scores. Supports filters for status, owner and an updated "+
 					"range; results are paginated with a cursor.", i),
-			InputSchema: []byte(schema),
+			InputSchema: []byte(benchSchema),
 		})
 	}
-	return benchCatalog{defs: defs}
+	return defs
 }
 
-func benchView(size int) *dynamicView {
+// benchRegistry is a real registry, because the index cache is keyed by the
+// registry's definition epoch: a stub catalog would not be cacheable at all.
+func benchRegistry(tb testing.TB, size int) *tool.Registry {
+	tb.Helper()
+	defs := benchDefinitions(size)
+	tools := make([]tool.Tool, 0, len(defs))
+	for _, def := range defs {
+		tools = append(tools, benchTool{def: def})
+	}
+	registry, err := tool.NewRegistry([]tool.Source{benchSource{tools: tools}})
+	if err != nil {
+		tb.Fatalf("NewRegistry: %v", err)
+	}
+	return registry
+}
+
+// benchView builds a view over a real registry. A nil cache is the
+// rebuild-per-call baseline; a shared one is what an assembly hands out.
+func benchView(tb testing.TB, size int, cache *searchIndexCache) *dynamicView {
+	tb.Helper()
+	registry := benchRegistry(tb, size)
+	tb.Cleanup(func() { _ = registry.Close() })
 	policy := DefaultPolicy()
 	policy.Default = ExposureDeferred
 	return &dynamicView{
-		catalog: benchCatalogOf(size),
-		policy:  policy,
-		st:      *newViewState(),
+		catalog:     registry,
+		policy:      policy,
+		st:          *newViewState(),
+		searchCache: cache,
 	}
 }
 
-// BenchmarkToolSearch is the cost of one tool_search call over a catalog of
-// this size. It is the whole path — definitions, doc building, index, ranking —
-// so an index cache shows up here as a step change.
+// BenchmarkToolSearch is the cost of one tool_search call over a catalog of this
+// size. The two variants differ only in whether the index is kept: "rebuild" is
+// what every call paid before the cache existed, "cached" is what a second search
+// pays now.
 func BenchmarkToolSearch(b *testing.B) {
 	for _, size := range []int{50, 200, 500} {
-		b.Run(fmt.Sprintf("tools=%d", size), func(b *testing.B) {
-			view := benchView(size)
-			ctx := context.Background()
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				if _, err := view.search(ctx, "search connector status filter", 8); err != nil {
+		for _, variant := range []struct {
+			name  string
+			cache func() *searchIndexCache
+		}{
+			{"rebuild", func() *searchIndexCache { return nil }},
+			{"cached", func() *searchIndexCache { return &searchIndexCache{} }},
+		} {
+			b.Run(fmt.Sprintf("%s/tools=%d", variant.name, size), func(b *testing.B) {
+				view := benchView(b, size, variant.cache())
+				ctx := context.Background()
+				// Warm the cache before timing so the first search is not
+				// amortized into the number.
+				if _, err := view.search(ctx, "warm", 0); err != nil {
 					b.Fatal(err)
 				}
-			}
-		})
-	}
-}
-
-// BenchmarkToolSearchRepeat is the same call twice in a row: the second one is
-// what a cached index answers, so the gap between it and BenchmarkToolSearch is
-// the rebuild cost.
-func BenchmarkToolSearchRepeat(b *testing.B) {
-	view := benchView(200)
-	ctx := context.Background()
-	// Warm whatever cache the view has before timing.
-	if _, err := view.search(ctx, "warm", 8); err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		if _, err := view.search(ctx, "search connector status filter", 8); err != nil {
-			b.Fatal(err)
+				b.ReportAllocs()
+				for i := 0; i < b.N; i++ {
+					if _, err := view.search(ctx, "search connector status filter", 8); err != nil {
+						b.Fatal(err)
+					}
+				}
+			})
 		}
 	}
 }
 
-// BenchmarkDefinitionsScaling is the per-round cost of handing the visible set
-// to the model, at a catalog size where the derivation is visible. Everything is
-// ExposureAlways so the round has a full visible set to derive.
+// BenchmarkDefinitionsScaling is the per-round cost of handing the visible set to
+// the model, at catalog sizes where the derivation is measurable. Everything is
+// ExposureAlways so the round has a full set to derive.
 func BenchmarkDefinitionsScaling(b *testing.B) {
 	for _, size := range []int{50, 200, 500} {
 		b.Run(fmt.Sprintf("tools=%d", size), func(b *testing.B) {
-			view := benchView(size)
+			view := benchView(b, size, &searchIndexCache{})
 			view.policy.Default = ExposureAlways
 			view.policy.Budget = Budget{MaxDefinitions: 1024, MaxBytes: 4 << 20}
 			b.ReportAllocs()
@@ -110,4 +129,32 @@ func BenchmarkDefinitionsScaling(b *testing.B) {
 			}
 		})
 	}
+}
+
+// BenchmarkSearchIndexBuild isolates the half the cache removes: tokenizing
+// every name and description and building the postings.
+func BenchmarkSearchIndexBuild(b *testing.B) {
+	docs := searchDocs(benchDefinitions(200))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, err := buildSearchIndex(docs); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// benchCatalog is a definitions-only catalog with no definition epoch: the shape
+// a fixture or a thin wrapper has, where the index cannot be reused safely.
+type benchCatalog struct{ defs []message.ToolDefinition }
+
+func (c benchCatalog) Get(string) (tool.Tool, bool) { return nil, false }
+
+func (c benchCatalog) Definitions() []message.ToolDefinition {
+	out := make([]message.ToolDefinition, len(c.defs))
+	copy(out, c.defs)
+	return out
+}
+
+func benchCatalogOf(size int) benchCatalog {
+	return benchCatalog{defs: benchDefinitions(size)}
 }

@@ -239,3 +239,26 @@ without writing an engine-generated turn into the conversation transcript;
 see [graph.md](graph.md) for the recovery loop.
 
 See [runtime.md](runtime.md) for per-session dynamic catalogs.
+
+### Catalog index reuse
+
+`tool_search` ranks with BM25 over the searchable definitions, and building that
+index means tokenizing every name and description. The assembly therefore keeps
+one built index and shares it across the views it hands out, rebuilding only when
+the catalog's definitions change. A catalog tells it so through an **optional**
+capability, not through the `tool.Catalog` contract:
+
+```go
+// DefinitionsEpoch reports a counter that moves whenever the definition set may
+// have changed (a tool registered, removed, or a deferred tool finishing its
+// load). It is a hint for readers that cache something derived from
+// Definitions; it is not part of Catalog.
+DefinitionsEpoch() uint64
+```
+
+`tool.Registry` implements it. A catalog that does not — a fixture, a wrapper, a
+third-party source — is still searchable; its index is simply rebuilt on every
+`tool_search` call, which is what every catalog did before the cache existed. The
+cache is per assembly, so a deployment keeps one index no matter how many
+conversations it serves, and it holds only definitions: a tool list change is
+visible on the next search rather than at the next restart.
