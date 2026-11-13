@@ -38,8 +38,12 @@ retrieval, runtime orchestration, and voice. Source on
 ### State and execution boundary
 
 - [Sandbox](guides/sandbox.md) — `core/sandbox`: agent execution
-  boundary, env / net / resources policy, runners (local /
-  seatbelt / bwrap), decorators and approval.
+  boundary, env / net / resources policy, backends (local / seatbelt /
+  bwrap / windows), per-call permission, decorators, escalation, and the
+  file journal.
+- [Remote Sandbox](guides/sandbox-remote.md) — `core/sandbox-remote`: the
+  same `Runner` across a host boundary — HTTP or unix socket, cursor reads,
+  SSE events, retry rules.
 
 ### Assembly
 
