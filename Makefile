@@ -1,6 +1,12 @@
-# shellcheck disable=SC2046
+# shellcheck disable=SC2046,SC2283,SC1036,SC1088,SC2034
 # Make expands $(...) before the shell sees it: the unquoted expansions are
 # argument lists (module names), and quoting them would pass one string.
+#
+# The same reading applies to the macro assignments below (`NAME = value` is
+# make syntax, not shell) and to the `$$(...)` escaping in recipes: shellcheck
+# parses this file as shell, so those three forms are reported and are not
+# defects. The directives are disabled here rather than per line so a new
+# recipe copying the pattern does not reintroduce the noise.
 #
 # Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
 # stable across hosts (default sh on some macOS setups treats `set -e`

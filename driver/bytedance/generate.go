@@ -2,7 +2,6 @@ package bytedance
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"slices"
 	"strings"
@@ -79,24 +78,21 @@ func sourceURI(source media.ImageSource) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
 	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
+	return media.DataURL(source.MediaType(), source.Bytes())
 }
 
 func videoSourceURI(source media.VideoSource) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
 	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
+	return media.DataURL(source.MediaType(), source.Bytes())
 }
 
 func audioSourceURI(source media.AudioSource) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
 	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
+	return media.DataURL(source.MediaType(), source.Bytes())
 }
 
 func compileGenerate(

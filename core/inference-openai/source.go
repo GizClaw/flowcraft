@@ -1,7 +1,6 @@
 package openai
 
 import (
-	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -51,7 +50,7 @@ func audioPayload(source media.AudioSource) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return base64.StdEncoding.EncodeToString(source.Bytes()), format, nil
+	return media.Base64(source.Bytes()), format, nil
 }
 
 // audioFormat maps a media type onto the wire's format token. The wire accepts a
@@ -72,7 +71,7 @@ func audioFormat(mediaType string) (string, error) {
 
 // dataURL encodes inline bytes as a media data URL.
 func dataURL(mediaType string, data []byte) string {
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+	return media.DataURL(mediaType, data)
 }
 
 // textOf concatenates the text parts of a message. It is what the wire takes

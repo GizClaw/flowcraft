@@ -1,6 +1,8 @@
 package media
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/goccy/go-json"
@@ -88,5 +90,68 @@ func TestInlineImageCopiesInput(t *testing.T) {
 	copyOut[0] = 'X'
 	if got := string(source.Bytes()); got != "secret image" {
 		t.Fatalf("source bytes mutated through returned slice: %q", got)
+	}
+}
+
+// TestDataURLIsExact pins the encoding to the concatenation it replaced. A
+// byte-level drift here changes what a provider receives, so the comparison is
+// against the reference spelling rather than against a golden the helper itself
+// produced.
+func TestDataURLIsExact(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 4, 255, 256, 4096} {
+		data := make([]byte, size)
+		for i := range data {
+			data[i] = byte(i * 7)
+		}
+		want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
+		if got := DataURL("image/png", data); got != want {
+			t.Fatalf("size %d: DataURL drifted from the reference spelling", size)
+		}
+	}
+}
+
+func TestBase64IsExact(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 4, 4096} {
+		data := make([]byte, size)
+		for i := range data {
+			data[i] = byte(i)
+		}
+		if got, want := Base64(data), base64.StdEncoding.EncodeToString(data); got != want {
+			t.Fatalf("size %d: Base64 drifted from the reference spelling", size)
+		}
+	}
+}
+
+// TestDataURLAllocations guards the reason the helper exists: one buffer for the
+// header and the payload, then one string to hand out. The old spelling allocated
+// the encoded payload, the concatenated result, and the intermediate prefix.
+func TestDataURLAllocations(t *testing.T) {
+	data := make([]byte, 64<<10)
+	if allocs := testing.AllocsPerRun(100, func() { _ = DataURL("image/png", data) }); allocs > 3 {
+		t.Fatalf("DataURL allocates %.0f times, want <= 3", allocs)
+	}
+	if allocs := testing.AllocsPerRun(100, func() { _ = Base64(data) }); allocs > 2 {
+		t.Fatalf("Base64 allocates %.0f times, want <= 2", allocs)
+	}
+}
+
+func BenchmarkDataURL(b *testing.B) {
+	for _, size := range []struct {
+		name string
+		len  int
+	}{
+		{"4KiB", 4 << 10},
+		{"1MiB", 1 << 20},
+	} {
+		data := make([]byte, size.len)
+		b.Run(size.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(size.len))
+			for i := 0; i < b.N; i++ {
+				if !strings.HasPrefix(DataURL("image/png", data), dataURLScheme) {
+					b.Fatal("missing scheme")
+				}
+			}
+		})
 	}
 }

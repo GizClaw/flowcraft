@@ -4,6 +4,8 @@ package media
 
 import (
 	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -291,11 +293,46 @@ func decodeStrict(data []byte, value any) error {
 	if err := decoder.Decode(value); err != nil {
 		return err
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return fmt.Errorf("unexpected trailing JSON value")
 		}
 		return err
 	}
 	return nil
+}
+
+// This file holds the exact-encoding helpers providers and drivers share. A
+// payload that travels inline is re-rendered on every request that carries it —
+// the same screenshot in a ten-turn conversation is encoded ten times — so the
+// rendering is written once, with the buffer sized up front, instead of once per
+// provider with the temporary string base64.Encoding.EncodeToString materializes.
+
+const (
+	dataURLScheme = "data:"
+	dataURLBase64 = ";base64,"
+)
+
+// DataURL renders inline bytes as a media data URL (RFC 2397):
+// "data:<media type>;base64,<payload>".
+//
+// The returned string is exact: it is byte-identical to concatenating the three
+// pieces with base64.StdEncoding. That matters because a provider compares what
+// it sent against what it recorded.
+func DataURL(mediaType string, data []byte) string {
+	header := len(dataURLScheme) + len(mediaType) + len(dataURLBase64)
+	buf := make([]byte, header, header+base64.StdEncoding.EncodedLen(len(data)))
+	n := copy(buf, dataURLScheme)
+	n += copy(buf[n:], mediaType)
+	copy(buf[n:], dataURLBase64)
+	buf = base64.StdEncoding.AppendEncode(buf, data)
+	return string(buf)
+}
+
+// Base64 renders inline bytes as standard base64, for the wires that take the
+// payload as its own field rather than as a data URL.
+func Base64(data []byte) string {
+	buf := make([]byte, 0, base64.StdEncoding.EncodedLen(len(data)))
+	buf = base64.StdEncoding.AppendEncode(buf, data)
+	return string(buf)
 }
