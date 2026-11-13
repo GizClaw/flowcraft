@@ -42,11 +42,13 @@ func groupCapsAvailable() bool { return groupSamplingUsable() }
 // of the process environment rather than of an individual call, and
 // Exec consults it on every invocation.
 var groupSamplingUsable = sync.OnceValue(func() bool {
-	_, _, err := sampleGroupFn(syscall.Getpgrp())
+	_, err := sampleHostFn()
 	return err == nil
 })
 
-const groupWatchInterval = 250 * time.Millisecond
+// groupWatchInterval is the sampling cadence. It is a variable so a test can
+// silence the automatic ticker and drive the sampler deterministically.
+var groupWatchInterval = 250 * time.Millisecond
 
 // maxSampleFailures is how many consecutive sampling errors the watcher
 // tolerates before declaring the caps unenforceable. One flaky ps run
@@ -57,7 +59,7 @@ const maxSampleFailures = 3
 
 // sampleGroupFn indirects the sampler so tests can simulate one that
 // stops working mid-run.
-var sampleGroupFn = sampleGroup
+var sampleHostFn = sampleHost
 
 // GroupCapsWatcher enforces MemoryBytes / cpu-time caps on a child
 // process group by sampling aggregate usage via ps and killing the
@@ -83,10 +85,13 @@ type GroupCapsWatcher struct {
 	pgid     int
 	maxRSSKB int64
 	maxCPU   time.Duration
-	stopCh   chan struct{}
 	doneCh   chan struct{}
-	stopOnce sync.Once
+	doneOnce sync.Once
 	exceeded atomic.Int32
+
+	// failures counts consecutive sampling errors. The host sampler owns the
+	// lock that guards it (observe runs under it), so no atomic is needed.
+	failures int
 
 	// killReason is captured just before SIGKILL is delivered so a
 	// failed kill can be reported in telemetry with the original
@@ -121,60 +126,52 @@ func StartGroupCapsWatcher(ctx context.Context, pgid int, res sandbox.ResourceLi
 		pgid:     pgid,
 		maxRSSKB: maxRSSKB,
 		maxCPU:   maxCPU,
-		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
 	}
-	go w.run()
+	// One sampler goroutine per process, not one per session: sampling the host
+	// is the same work whoever asked, and it is the expensive half.
+	sharedSampler.add(w)
 	return w
 }
 
-func (w *GroupCapsWatcher) run() {
-	t := time.NewTicker(groupWatchInterval)
-	defer t.Stop()
-	defer close(w.doneCh)
-	failures := 0
-	for {
-		select {
-		case <-w.stopCh:
-			return
-		case <-t.C:
-			rssKB, cpu, err := sampleGroupFn(w.pgid)
-			if err != nil {
-				// A flaky ps run must not kill an innocent group, but a
-				// sampler that stays broken means the caps the caller
-				// asked for have stopped being enforced. Polling on
-				// forever would let the child run unbounded while the
-				// watcher pretends to guard it, so fail closed once the
-				// failure looks persistent.
-				failures++
-				if failures < maxSampleFailures {
-					continue
-				}
-				wrapped := fmt.Errorf("group sampling failed %d times in a row: %w", failures, err)
-				w.sampleErr.Store(&wrapped)
-				reason := "sample_failure"
-				w.killReason.Store(&reason)
-				w.killGroup()
-				return
-			}
-			failures = 0
-			if w.maxRSSKB > 0 && rssKB >= w.maxRSSKB {
-				w.exceeded.Store(groupCapMemory)
-				reason := "memory_cap"
-				w.killReason.Store(&reason)
-				w.killGroup()
-				return
-			}
-			if w.maxCPU > 0 && cpu >= w.maxCPU {
-				w.exceeded.Store(groupCapCPU)
-				reason := "cpu_cap"
-				w.killReason.Store(&reason)
-				w.killGroup()
-				return
-			}
+// observe applies one host sample to this watcher and reports whether it tripped
+// (and should stop watching). It only touches this watcher's own state: the
+// sampler calls it while holding its lock, so it must not call back into it.
+func (w *GroupCapsWatcher) observe(usage groupUsage, sampleErr error) bool {
+	if sampleErr != nil {
+		// A flaky sample must not kill an innocent group, but a sampler that
+		// stays broken means the caps the caller asked for have stopped being
+		// enforced. Polling on forever would let the child run unbounded while
+		// the watcher pretends to guard it, so fail closed once the failure
+		// looks persistent.
+		w.failures++
+		if w.failures < maxSampleFailures {
+			return false
 		}
+		wrapped := fmt.Errorf("group sampling failed %d times in a row: %w", w.failures, sampleErr)
+		w.sampleErr.Store(&wrapped)
+		reason := "sample_failure"
+		w.killReason.Store(&reason)
+		return true
 	}
+	w.failures = 0
+	if w.maxRSSKB > 0 && usage.rssKB >= w.maxRSSKB {
+		w.exceeded.Store(groupCapMemory)
+		reason := "memory_cap"
+		w.killReason.Store(&reason)
+		return true
+	}
+	if w.maxCPU > 0 && usage.cpu >= w.maxCPU {
+		w.exceeded.Store(groupCapCPU)
+		reason := "cpu_cap"
+		w.killReason.Store(&reason)
+		return true
+	}
+	return false
 }
+
+// finish closes the watcher's done channel exactly once.
+func (w *GroupCapsWatcher) finish() { w.doneOnce.Do(func() { close(w.doneCh) }) }
 
 func (w *GroupCapsWatcher) killGroup() {
 	// The child leads its own group (Setpgid), so pid == pgid.
@@ -196,7 +193,7 @@ func (w *GroupCapsWatcher) killGroup() {
 	// A failed SIGKILL is rare but consequential: the cap we tripped
 	// then stops being enforced. Surface it as a warning so an operator
 	// can see the child was left running unconstrained.
-	if err := syscall.Kill(-w.pgid, syscall.SIGKILL); err != nil {
+	if err := killGroupFn(w.pgid); err != nil {
 		killAttrs := []attribute.KeyValue{
 			attribute.String("sandbox.pgid", strconv.Itoa(w.pgid)),
 		}
@@ -216,7 +213,7 @@ func (w *GroupCapsWatcher) Stop() {
 	if w == nil {
 		return
 	}
-	w.stopOnce.Do(func() { close(w.stopCh) })
+	sharedSampler.remove(w)
 	<-w.doneCh
 }
 
@@ -254,51 +251,151 @@ func (w *GroupCapsWatcher) Exceeded() string {
 	}
 }
 
-// sampleGroup sums RSS (KiB) and cpu-time across every live member of
-// the process group. A group with no surviving members reports zeros,
-// which never trips a cap. On Linux it reads /proc directly; elsewhere
-// it falls back to one ps invocation per sample.
-func sampleGroup(pgid int) (rssKB int64, cpu time.Duration, err error) {
-	if runtime.GOOS == "linux" {
-		return sampleGroupLinux(pgid)
-	}
-	return sampleGroupPS(pgid)
+// groupUsage is one process group's sampled footprint.
+type groupUsage struct {
+	rssKB int64
+	cpu   time.Duration
 }
 
-// sampleGroupPS is the portable fallback: one ps invocation that scans
-// the system process table.
-func sampleGroupPS(pgid int) (rssKB int64, cpu time.Duration, err error) {
+// sampleHost aggregates every process group on this host in one pass. On Linux it
+// reads /proc; elsewhere it runs one ps. It is a variable so the sampler logic can
+// be tested without a process table.
+
+// hostSampler shares one sampling pass per tick between every watcher in this
+// process.
+//
+// Sampling the host is the expensive half of enforcement — a full ps invocation
+// (tens of milliseconds on a busy machine) or a /proc walk over every process —
+// and the answer is the same for every session on that host. Running it per
+// session made the cost grow with the number of sessions for no extra
+// information.
+type hostSampler struct {
+	mu      sync.Mutex
+	entries map[*GroupCapsWatcher]struct{}
+	running bool
+	stop    chan struct{}
+	done    chan struct{}
+}
+
+var sharedSampler = &hostSampler{entries: make(map[*GroupCapsWatcher]struct{})}
+
+func (s *hostSampler) add(w *GroupCapsWatcher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries[w] = struct{}{}
+	if s.running {
+		return
+	}
+	s.running = true
+	s.stop = make(chan struct{})
+	s.done = make(chan struct{})
+	go s.run(s.stop, s.done)
+}
+
+func (s *hostSampler) remove(w *GroupCapsWatcher) {
+	s.mu.Lock()
+	delete(s.entries, w)
+	var done chan struct{}
+	if len(s.entries) == 0 && s.running {
+		s.running = false
+		close(s.stop)
+		done = s.done
+	}
+	s.mu.Unlock()
+
+	w.finish()
+	if done != nil {
+		// The sampler exited, so no observe can be in flight for a watcher that
+		// just unregistered.
+		<-done
+	}
+}
+
+func (s *hostSampler) run(stop, done chan struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(groupWatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.tick()
+		}
+	}
+}
+
+// tick runs one sampling pass and applies it to every watcher.
+func (s *hostSampler) tick() {
+	usage, sampleErr := sampleHostFn()
+
+	s.mu.Lock()
+	var tripped []*GroupCapsWatcher
+	for w := range s.entries {
+		if w.observe(usage[w.pgid], sampleErr) {
+			tripped = append(tripped, w)
+		}
+	}
+	s.mu.Unlock()
+
+	// The kill is a syscall and a telemetry record; keep it out of the lock so a
+	// slow logger cannot delay the next sample.
+	for _, w := range tripped {
+		w.killGroup()
+		s.remove(w)
+	}
+}
+
+// killGroupFn delivers the terminating signal to a process group. It is a
+// variable so a test can assert the enforcement decision without signalling a
+// real group.
+var killGroupFn = func(pgid int) error { return syscall.Kill(-pgid, syscall.SIGKILL) }
+
+// sampleHost aggregates every process group on the host in one pass.
+func sampleHost() (map[int]groupUsage, error) {
+	if runtime.GOOS == "linux" {
+		return sampleHostLinux()
+	}
+	return sampleHostPS()
+}
+
+// sampleHostPS is the portable fallback: one ps invocation that scans the system
+// process table, grouped here by pgid.
+func sampleHostPS() (map[int]groupUsage, error) {
 	out, err := exec.Command("ps", "-o", "pgid=,rss=,time=", "-ax").Output()
 	if err != nil {
-		return 0, 0, fmt.Errorf("ps: %w", err)
+		return nil, fmt.Errorf("ps: %w", err)
 	}
-	target := strconv.Itoa(pgid)
+	usage := make(map[int]groupUsage)
 	for line := range strings.SplitSeq(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) != 3 || fields[0] != target {
+		if len(fields) != 3 {
+			continue
+		}
+		pgid, perr := strconv.Atoi(fields[0])
+		if perr != nil {
 			continue
 		}
 		rss, perr := strconv.ParseInt(fields[1], 10, 64)
 		if perr != nil {
 			continue
 		}
-		rssKB += rss
-		cpu += parseProcCPUTime(fields[2])
+		u := usage[pgid]
+		u.rssKB += rss
+		u.cpu += parseProcCPUTime(fields[2])
+		usage[pgid] = u
 	}
-	return rssKB, cpu, nil
+	return usage, nil
 }
 
-// sampleGroupLinux reads /proc/<pid>/stat directly, which avoids
-// forking one ps process per watched group every 250ms. Each watcher
-// still scans the full process table, so the aggregate cost grows with
-// the number of concurrently capped groups; a single shared sampler
-// that fans out per-pgid results would remove that multiplier.
-func sampleGroupLinux(pgid int) (rssKB int64, cpu time.Duration, err error) {
+// sampleHostLinux reads /proc once and groups the result by process group.
+func sampleHostLinux() (map[int]groupUsage, error) {
 	procs, err := os.ReadDir("/proc")
 	if err != nil {
-		return 0, 0, fmt.Errorf("proc: %w", err)
+		return nil, fmt.Errorf("proc: %w", err)
 	}
 	pageSize := int64(os.Getpagesize())
+	usage := make(map[int]groupUsage)
 	for _, proc := range procs {
 		if !proc.IsDir() {
 			continue
@@ -314,13 +411,12 @@ func sampleGroupLinux(pgid int) (rssKB int64, cpu time.Duration, err error) {
 		if !ok {
 			continue
 		}
-		if fields.pgrp != pgid {
-			continue
-		}
-		rssKB += fields.rssPages * pageSize / 1024
-		cpu += time.Duration(fields.utimeTicks+fields.stimeTicks) * 10 * time.Millisecond
+		u := usage[fields.pgrp]
+		u.rssKB += fields.rssPages * pageSize / 1024
+		u.cpu += time.Duration(fields.utimeTicks+fields.stimeTicks) * 10 * time.Millisecond
+		usage[fields.pgrp] = u
 	}
-	return rssKB, cpu, nil
+	return usage, nil
 }
 
 type procStatFields struct {

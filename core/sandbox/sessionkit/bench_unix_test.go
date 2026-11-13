@@ -104,3 +104,14 @@ func BenchmarkOutputLogWatchReplay(b *testing.B) {
 		l.removeSubscriber(w)
 	}
 }
+
+// One host sampling pass. This is what an enforcement tick costs now, whatever
+// the number of sessions: the pass used to run once per session, so the cost grew
+// with the fleet while the answer stayed the same.
+func BenchmarkSampleHost(b *testing.B) {
+	for range b.N {
+		if _, err := sampleHost(); err != nil {
+			b.Fatalf("sampleHost: %v", err)
+		}
+	}
+}
