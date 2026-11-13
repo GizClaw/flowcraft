@@ -21,6 +21,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // runEcho asserts one-shot exec of `cmd /c echo token` completed with
@@ -28,7 +29,7 @@ import (
 // bleed shows up as an exact-match failure. It returns the error so
 // it can be driven from worker goroutines.
 func runEcho(r *Runner, token string, opts sandbox.ExecOptions) error {
-	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", token}, opts)
+	res, err := engine.Exec(context.Background(), r, "cmd", []string{"/c", "echo", token}, opts)
 	if err != nil {
 		return fmt.Errorf("exec %s: %w", token, err)
 	}
@@ -224,7 +225,7 @@ func TestLargeWorkspaceGrantScales(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	res, err := r.Exec(ctx, "cmd", []string{"/c", "echo", "ok"},
+	res, err := engine.Exec(ctx, r, "cmd", []string{"/c", "echo", "ok"},
 		sandbox.ExecOptions{
 			Timeout: 110 * time.Second,
 			Net:     permission.NetPolicy{Mode: permission.NetDenyAll},

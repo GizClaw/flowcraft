@@ -273,7 +273,7 @@ func quoteToken(arg string) string {
 // through Escalate, and an approved answer re-runs the whole command
 // through Unconfined exactly once.
 //
-// Escalation is deliberately not a [Runner]. The one-shot [Exec] is a
+// Escalation is deliberately not a [sandbox.Runner]. The one-shot [Exec] is a
 // derived view over Start, and a Start-level wrapper cannot see the
 // completed result a refusal is recognized in; the retry therefore
 // lives at the Exec level, next to the call that produced the result.

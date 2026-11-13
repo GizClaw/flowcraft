@@ -164,15 +164,3 @@ func TestExecTimeout(t *testing.T) {
 		t.Fatalf("Exec error = %v, want timeout", err)
 	}
 }
-
-func TestRunnerExecMethod(t *testing.T) {
-	skipOnWindows(t)
-	result, err := localRunner(t).Exec(
-		context.Background(), "echo", []string{"ok"}, sandbox.ExecOptions{})
-	if err != nil {
-		t.Fatalf("Exec: %v", err)
-	}
-	if result.Stdout != "ok\n" {
-		t.Fatalf("stdout = %q", result.Stdout)
-	}
-}

@@ -157,16 +157,10 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	}
 }
 
-// Exec runs cmd with args under opts. See Runner doc for which
-// policy fields are honoured vs. rejected with errdefs.NotAvailable.
-func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions) (*sandbox.ExecResult, error) {
-	return engine.Exec(ctx, r, cmd, args, opts)
-}
-
 // Start implements the Runner session capability of Runner.
-// Policy validation mirrors Exec (engine.ValidateExecPolicy plus the
-// NetDefault-only posture), then the command is spawned either on pipes
-// or a pty through the shared sessionkit.StartSession implementation.
+// It validates the policy first (engine.ValidateExecPolicy plus the
+// NetDefault-only posture), then spawns the command either on pipes or on a
+// pty through the shared sessionkit.StartSession implementation.
 func (r *Runner) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
 	return r.registry().Start(ctx, spec)
 }

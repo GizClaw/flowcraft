@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // requireNetIsolation probes whether the host can create AppContainer
@@ -49,7 +50,7 @@ func TestExecNetDenyAll(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
 	r := mustNewRunner(t)
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "echo", "deny-ok"},
 		sandbox.ExecOptions{Net: permission.NetPolicy{Mode: permission.NetDenyAll}})
 	if err != nil {
@@ -76,7 +77,7 @@ func TestExecNetDenyAllBlocksNetwork(t *testing.T) {
 	dial := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 
-	ctrl, err := r.Exec(ctx, "powershell", dial, sandbox.ExecOptions{Timeout: 20 * time.Second})
+	ctrl, err := engine.Exec(ctx, r, "powershell", dial, sandbox.ExecOptions{Timeout: 20 * time.Second})
 	if err != nil {
 		t.Fatalf("control Exec: %v", err)
 	}
@@ -84,7 +85,7 @@ func TestExecNetDenyAllBlocksNetwork(t *testing.T) {
 		t.Skipf("host cannot reach the internet without a policy (exit=%d out=%q); skipping", ctrl.ExitCode, ctrl.Stdout)
 	}
 
-	denied, err := r.Exec(ctx, "powershell", dial,
+	denied, err := engine.Exec(ctx, r, "powershell", dial,
 		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: permission.NetPolicy{Mode: permission.NetDenyAll}})
 	if err != nil {
 		t.Fatalf("deny-all Exec: %v", err)
@@ -113,7 +114,7 @@ func TestExecNetAllowList(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
 	r := mustNewRunner(t)
-	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "allow-ok"},
+	res, err := engine.Exec(context.Background(), r, "cmd", []string{"/c", "echo", "allow-ok"},
 		sandbox.ExecOptions{Net: permission.NetPolicy{
 			Mode:       permission.NetAllowList,
 			AllowHosts: []string{"1.1.1.1"},
@@ -140,7 +141,7 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 
 	dial := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
-	res, err := r.Exec(ctx, "powershell", dial,
+	res, err := engine.Exec(ctx, r, "powershell", dial,
 		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: permission.NetPolicy{
 			Mode:       permission.NetAllowList,
 			AllowHosts: []string{"1.1.1.1"},
@@ -172,7 +173,7 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 	sendConn := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"$u = New-Object Net.Sockets.UdpClient; try { $u.Connect('1.1.1.1',53); $n = $u.Send([byte[]](0),1); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 
-	ctrl, err := r.Exec(ctx, "powershell", send, sandbox.ExecOptions{Timeout: 20 * time.Second})
+	ctrl, err := engine.Exec(ctx, r, "powershell", send, sandbox.ExecOptions{Timeout: 20 * time.Second})
 	if err != nil {
 		t.Fatalf("control Exec: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 
 	assertBlocked := func(label string, argv []string, net permission.NetPolicy) {
 		t.Helper()
-		res, err := r.Exec(ctx, "powershell", argv,
+		res, err := engine.Exec(ctx, r, "powershell", argv,
 			sandbox.ExecOptions{Timeout: 20 * time.Second, Net: net})
 		if err != nil {
 			t.Fatalf("%s Exec: %v", label, err)
@@ -202,7 +203,7 @@ func TestExecNetProxy(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
 	r := mustNewRunner(t)
-	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "proxy-ok"},
+	res, err := engine.Exec(context.Background(), r, "cmd", []string{"/c", "echo", "proxy-ok"},
 		sandbox.ExecOptions{Net: permission.NetPolicy{
 			Mode:  permission.NetProxy,
 			Proxy: "http://127.0.0.1:1",

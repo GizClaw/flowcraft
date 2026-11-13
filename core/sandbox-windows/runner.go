@@ -139,14 +139,8 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	}
 }
 
-// Exec runs cmd with args under opts. See Runner doc for which policy
-// fields are honoured vs. rejected with errdefs.NotAvailable.
-func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions) (*sandbox.ExecResult, error) {
-	return engine.Exec(ctx, r, cmd, args, opts)
-}
-
-// Start implements Runner: policy validation mirrors Exec, then the
-// command is spawned on pipes inside a fresh job object.
+// Start implements Runner: validatePolicy runs first, then the command is
+// spawned on pipes inside a fresh job object.
 func (r *Runner) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
 	return r.registry().Start(ctx, spec)
 }

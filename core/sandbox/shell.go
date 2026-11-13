@@ -7,7 +7,7 @@ package sandbox
 // fact, the same kind of fact the backends already encode: a command line needs
 // a shell, and which shell exists depends on the host.
 //
-// Picking one — [DefaultShell] — is implementation, not contract: it probes the
+// Picking one — `engine.DefaultShell` — is implementation, not contract: it probes the
 // host with exec.LookPath, so it lives in the engine package with the rest of
 // the behavior. This package stays free of OS probing.
 type ShellSpec struct {

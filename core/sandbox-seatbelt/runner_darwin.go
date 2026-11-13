@@ -139,16 +139,6 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	}
 }
 
-// Exec runs cmd once through the session path.
-func (r *Runner) Exec(
-	ctx context.Context,
-	cmd string,
-	args []string,
-	opts sandbox.ExecOptions,
-) (*sandbox.ExecResult, error) {
-	return engine.Exec(ctx, r, cmd, args, opts)
-}
-
 // Start implements core/sandbox.Runner.
 func (r *Runner) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
 	return r.sessions.Start(ctx, spec)

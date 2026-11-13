@@ -24,7 +24,7 @@ func requireConfinement(t *testing.T, r *Runner) {
 	// Probe with a read-only permission so the probe itself does not label
 	// the runner root (which would mask write-denial assertions in the
 	// caller's test).
-	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"},
+	_, err := engine.Exec(context.Background(), r, "cmd", []string{"/c", "ver"},
 		sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if err == nil {
 		return
@@ -98,7 +98,7 @@ func TestWriteConfinementAllowsWorkspaceWrite(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	requireConfinement(t, r)
 
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "echo", "hi", ">", "out.txt"}, sandbox.ExecOptions{})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -124,7 +124,7 @@ func TestWriteConfinementReadOnlyRejectsWrite(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	requireConfinement(t, r)
 
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "echo", "hi", ">", "out.txt"},
 		sandbox.ExecOptions{Permission: &permission.Policy{}})
 	if err != nil {
@@ -160,7 +160,7 @@ func TestWriteConfinementBlocksOutsideWrite(t *testing.T) {
 	defer func() { _ = os.RemoveAll(outside) }()
 	target := filepath.Join(outside, "x.txt")
 
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "echo", "hi", ">", target}, sandbox.ExecOptions{})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -185,7 +185,7 @@ func TestWriteConfinementTempOverride(t *testing.T) {
 	defer func() { _ = r.Close() }()
 	requireConfinement(t, r)
 
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "echo", "%TEMP%"}, sandbox.ExecOptions{})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)

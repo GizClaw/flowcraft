@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 func mustNewRunner(t *testing.T) *Runner {
@@ -25,7 +26,7 @@ func mustNewRunner(t *testing.T) *Runner {
 
 func TestExecEcho(t *testing.T) {
 	r := mustNewRunner(t)
-	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "hello"}, sandbox.ExecOptions{})
+	res, err := engine.Exec(context.Background(), r, "cmd", []string{"/c", "echo", "hello"}, sandbox.ExecOptions{})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestExecEcho(t *testing.T) {
 
 func TestExecTimeout(t *testing.T) {
 	r := mustNewRunner(t)
-	_, err := r.Exec(context.Background(), "cmd",
+	_, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "ping", "-n", "10", "127.0.0.1", ">nul"},
 		sandbox.ExecOptions{Timeout: 500 * time.Millisecond})
 	if err == nil {
@@ -53,7 +54,7 @@ func TestExecTimeout(t *testing.T) {
 func TestExecTruncatesOutput(t *testing.T) {
 	r := mustNewRunner(t)
 	const cap = 1024
-	res, err := r.Exec(context.Background(), "cmd",
+	res, err := engine.Exec(context.Background(), r, "cmd",
 		[]string{"/c", "for", "/L", "%i", "in", "(1,1,200)", "do", "@echo", "xxxxxxxxxxxxxxxxxxxxxxxx"},
 		sandbox.ExecOptions{Resources: sandbox.ResourceLimits{MaxOutputBytes: cap}})
 	if err != nil {
@@ -387,7 +388,7 @@ func TestSessionTTYWithConfinementNotAvailable(t *testing.T) {
 
 func TestExecBudgetExceededMemory(t *testing.T) {
 	r := mustNewRunner(t)
-	_, err := r.Exec(context.Background(), "powershell",
+	_, err := engine.Exec(context.Background(), r, "powershell",
 		[]string{"-NoProfile", "-Command", "$a = New-Object byte[] 400MB"},
 		sandbox.ExecOptions{
 			Timeout: 20 * time.Second,
@@ -410,7 +411,7 @@ func TestExecBudgetExceededCPU(t *testing.T) {
 	// the loop exhausts in a few seconds of wall clock, well inside
 	// the 30s deadline — unlike a cmd `for /L ... do rem` loop, which
 	// can idle in kernel waits and miss a tight 10s window.
-	_, err := r.Exec(context.Background(), "powershell",
+	_, err := engine.Exec(context.Background(), r, "powershell",
 		[]string{"-NoProfile", "-Command", "$x = 0L; while ($true) { $x++ }"},
 		sandbox.ExecOptions{
 			Timeout: 30 * time.Second,
