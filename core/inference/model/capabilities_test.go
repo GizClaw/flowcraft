@@ -1,11 +1,11 @@
 package model
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func TestModelCapabilitiesValidate(t *testing.T) {

@@ -2,13 +2,13 @@ package message
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
+	"github.com/goccy/go-json"
 )
 
 type Role string

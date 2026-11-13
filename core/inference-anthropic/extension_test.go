@@ -2,12 +2,12 @@ package anthropic
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/goccy/go-json"
 )
 
 func TestGenerationOptionsApply(t *testing.T) {

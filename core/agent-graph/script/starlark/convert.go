@@ -1,13 +1,13 @@
 package starlark
 
 import (
-	"encoding/json"
 	"fmt"
 
 	starjson "go.starlark.net/lib/json"
 	star "go.starlark.net/starlark"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
+	"github.com/goccy/go-json"
 )
 
 // decode is Starlark's own JSON reader.

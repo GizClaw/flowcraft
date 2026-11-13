@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // recorder is a Generator that remembers which target served the call.

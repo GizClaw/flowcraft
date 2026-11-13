@@ -2,13 +2,13 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
 // Invoke is one node execution.

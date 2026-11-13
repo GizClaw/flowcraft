@@ -2,13 +2,13 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func testSettings(api API) Settings {

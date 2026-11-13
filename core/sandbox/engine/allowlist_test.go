@@ -2,7 +2,6 @@ package engine_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
+	"github.com/goccy/go-json"
 )
 
 func TestAllowlistRejectsInvalidRules(t *testing.T) {

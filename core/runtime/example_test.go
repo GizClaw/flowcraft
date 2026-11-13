@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
+	"github.com/goccy/go-json"
 )
 
 // stubGenerator satisfies inference.Generator; the example never generates.

@@ -2,10 +2,10 @@ package tool
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // schemaTool builds its schema per call, like every builtin tool does.

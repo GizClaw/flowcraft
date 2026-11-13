@@ -1,12 +1,11 @@
 package a2aprotocol
 
 import (
-	"encoding/json"
-
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/goccy/go-json"
 )
 
 // cardSkill is one advertised capability.

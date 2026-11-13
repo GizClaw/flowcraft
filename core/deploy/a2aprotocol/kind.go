@@ -2,11 +2,11 @@ package a2aprotocol
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/goccy/go-json"
 )
 
 // Kind is the A2A protocol registration: an agent reachable over A2A.

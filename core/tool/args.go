@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -9,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // Decode parses one tool-call argument object into out, a pointer to a

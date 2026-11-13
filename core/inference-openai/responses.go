@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/openai/openai-go/v3"
@@ -15,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // Which canonical content kinds each Responses role can carry. This surface

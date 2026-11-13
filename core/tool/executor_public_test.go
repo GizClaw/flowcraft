@@ -2,7 +2,6 @@ package tool_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 func testCatalog(t *testing.T) tool.Catalog {

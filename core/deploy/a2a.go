@@ -2,13 +2,13 @@ package deploy
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
+	"github.com/goccy/go-json"
 )
 
 // A2AEngine registers the "a2a" engine: a remote agent driven as a local one.

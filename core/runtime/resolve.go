@@ -1,9 +1,8 @@
 package runtime
 
 import (
-	"encoding/json"
-
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/goccy/go-json"
 )
 
 // DriverFunc builds a provider from a driver's settings block.

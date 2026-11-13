@@ -2,7 +2,6 @@ package a2aprotocol
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strconv"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+	"github.com/goccy/go-json"
 )
 
 // taskStore serves A2A task queries from the agent's checkpoint store.

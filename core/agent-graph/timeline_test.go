@@ -3,7 +3,6 @@ package graph
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -16,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
 // fixture writes a task the way a durable run does, and returns the store.

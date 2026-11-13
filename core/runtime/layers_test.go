@@ -2,10 +2,11 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 func loadLayers(t *testing.T, layers ...Layer) (Config, Provenance, error) {

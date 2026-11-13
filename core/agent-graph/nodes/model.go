@@ -2,7 +2,6 @@ package nodes
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
+	"github.com/goccy/go-json"
 )
 
 // Model returns the "model" node kind: one model call per invocation.
@@ -48,9 +48,22 @@ type modelKind struct {
 }
 
 // DecodeConfig parses the node's config at Build, so a run does not decode it
-// again for every call.
-func (*modelKind) DecodeConfig(raw json.RawMessage) (any, error) {
-	return decodeModelConfig(raw)
+// again for every call. The extension list is resolved here for the same reason:
+// `provider`/`id`/`fields` is config, and its typed form is what a call needs.
+func (m *modelKind) DecodeConfig(raw json.RawMessage) (any, error) {
+	config, err := decodeModelConfig(raw)
+	if err != nil {
+		return nil, err
+	}
+	// A node built without decoders refuses an extension entry here, at Build,
+	// instead of failing the first call that runs it.
+	resolved, err := inference.DecodeExtensions(
+		config.Request.Extensions, m.decoders, "request.extensions")
+	if err != nil {
+		return nil, err
+	}
+	config.Request.decoded = resolved
+	return config, nil
 }
 
 func decodeModelConfig(raw json.RawMessage) (modelConfig, error) {
@@ -106,6 +119,10 @@ type requestConfig struct {
 	System     string                     `json:"system"`
 	Tools      *toolsConfig               `json:"tools"`
 	Extensions []inference.ExtensionEntry `json:"extensions"`
+	// decoded is the resolved form of Extensions. It is built when the node's
+	// config is decoded, because the config is static: resolving it per call paid
+	// a JSON parse for a value that cannot change between calls.
+	decoded inference.Extensions `json:"-"`
 }
 
 type modelRef struct {
@@ -271,11 +288,21 @@ func (m *modelKind) request(
 			request.Tools = tools
 		}
 	}
-	extensions, err := inference.DecodeExtensions(config.Extensions, m.decoders, "request.extensions")
-	if err != nil {
-		return inference.GenerateRequest{}, err
+	extensions := config.decoded
+	if extensions == nil && len(config.Extensions) > 0 {
+		// The engine supplies the pre-decoded config; this path is the fallback
+		// for a caller that hands the node a raw config (a test, or a host that
+		// invokes the kind directly), and it must keep working.
+		resolved, err := inference.DecodeExtensions(
+			config.Extensions, m.decoders, "request.extensions")
+		if err != nil {
+			return inference.GenerateRequest{}, err
+		}
+		extensions = resolved
 	}
-	request.Extensions = extensions
+	// Clone because a request owns its extensions: the decoded value is shared by
+	// every call this node makes.
+	request.Extensions = extensions.Clone()
 	// Validate what this node built, not the transcript: every history message
 	// was checked when it entered state, and re-checking ten thousand of them per
 	// call costs more than the request it guards.

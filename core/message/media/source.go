@@ -4,12 +4,13 @@ package media
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"mime"
 	"net/url"
 	"strings"
+
+	"github.com/goccy/go-json"
 )
 
 type SourceKind string

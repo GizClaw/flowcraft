@@ -1,10 +1,10 @@
 package graph
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // Kind names the type a state slot holds.

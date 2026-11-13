@@ -2,7 +2,6 @@ package nodes_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/goccy/go-json"
 )
 
 // stubProvider answers every request with one canned response.

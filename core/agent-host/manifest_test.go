@@ -2,7 +2,6 @@ package host
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // A deployment records its version combination in the run's checkpoint, so a

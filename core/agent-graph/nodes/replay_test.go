@@ -2,7 +2,6 @@ package nodes_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -11,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // A replay answers from the record: the provider is never called, and the

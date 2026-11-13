@@ -1,12 +1,12 @@
 package inference_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // A response may only carry the modality the request asked for. These pin the

@@ -1,11 +1,11 @@
 package agent_test
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/goccy/go-json"
 )
 
 // The persisted key is part of the storage format: a store decodes the seed

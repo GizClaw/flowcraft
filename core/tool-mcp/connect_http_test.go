@@ -2,12 +2,12 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/goccy/go-json"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

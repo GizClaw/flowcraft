@@ -2,7 +2,6 @@ package a2aprotocol
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"iter"
 	"sync"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/goccy/go-json"
 )
 
 // settingsJSON turns a Go literal into the JSON a settings block now is.

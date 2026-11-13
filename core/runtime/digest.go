@@ -3,7 +3,8 @@ package runtime
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+
+	"github.com/goccy/go-json"
 )
 
 // Digest identifies the configuration a runtime was built from.

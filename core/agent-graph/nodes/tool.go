@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
+	"github.com/goccy/go-json"
 )
 
 // Tool returns the "tool" node kind: it executes the pending tool calls.

@@ -2,13 +2,13 @@ package deploy
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/goccy/go-json"
 )
 
 // a2aKind stands in for the A2A registration: these tests exercise the

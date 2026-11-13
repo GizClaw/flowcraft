@@ -2,13 +2,13 @@ package deploy_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/goccy/go-json"
 )
 
 // hookKind is a hook the tests can register: it validates and builds nothing.

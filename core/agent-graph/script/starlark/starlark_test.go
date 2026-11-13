@@ -2,7 +2,6 @@ package starlark_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -13,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/scripttest"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // The suite's sources. The state it owns is "game" (JSON) and "answer" (text).

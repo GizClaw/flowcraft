@@ -2,7 +2,6 @@ package script_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func benchKind(tb testing.TB, source string) graph.NodeKind {

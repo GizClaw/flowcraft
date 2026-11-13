@@ -2,12 +2,12 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/goccy/go-json"
 )
 
 // factKind records one durable fact and writes nothing.

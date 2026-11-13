@@ -2,13 +2,13 @@ package deploy
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
 // EngineSpec selects an engine kind and carries its settings.

@@ -1,9 +1,9 @@
 package runtime
 
 import (
-	"encoding/json"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/goccy/go-json"
 )
 
 // SelectorFactory builds a selector from its written settings.

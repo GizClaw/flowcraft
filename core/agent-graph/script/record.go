@@ -1,9 +1,8 @@
 package script
 
 import (
-	"encoding/json"
-
 	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/goccy/go-json"
 )
 
 // The record kinds one script invocation produces.

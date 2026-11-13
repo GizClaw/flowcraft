@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

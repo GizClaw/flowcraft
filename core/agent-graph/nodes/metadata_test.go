@@ -2,7 +2,6 @@ package nodes_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"testing"
@@ -12,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
 // announcingProvider stands in for a driver that names the model it resolved

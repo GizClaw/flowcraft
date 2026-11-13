@@ -2,7 +2,6 @@ package scripttest_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/scripttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // stubBackend is a backend without a language: the source is a JSON object of

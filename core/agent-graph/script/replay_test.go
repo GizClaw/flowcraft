@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // invokeWith builds the Invoke the engine passes, with the replay flags and the

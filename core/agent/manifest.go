@@ -3,7 +3,8 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+
+	"github.com/goccy/go-json"
 )
 
 // Manifest is the version combination a run executed under.

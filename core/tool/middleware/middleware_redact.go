@@ -3,12 +3,12 @@ package middleware
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"regexp"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // DefaultRedaction is the replacement applied when a rule does not

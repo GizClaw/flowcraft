@@ -2,7 +2,6 @@ package a2a_test
 
 import (
 	"context"
-	"encoding/json"
 	"iter"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +17,7 @@ import (
 
 	sdk "github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/goccy/go-json"
 )
 
 // scripted is the peer's engine: it reports a fixed sequence and remembers a

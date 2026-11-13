@@ -1,8 +1,9 @@
 package graph
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 // FuzzStateEvent: a checkpoint event is bytes from disk; decoding one must

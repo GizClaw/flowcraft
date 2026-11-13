@@ -2,12 +2,12 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // lengthKind writes how many messages one state key holds, which is the cheapest

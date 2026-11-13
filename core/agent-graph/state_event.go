@@ -1,11 +1,11 @@
 package graph
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/goccy/go-json"
 )
 
 // Errors that explain why a value stays off the event stream. Neither fails a run:

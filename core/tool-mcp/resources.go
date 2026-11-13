@@ -3,13 +3,13 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

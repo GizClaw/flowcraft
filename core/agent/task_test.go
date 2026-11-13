@@ -1,12 +1,12 @@
 package agent_test
 
 import (
-	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // Terminal is the one predicate every consumer branches on, so its table is

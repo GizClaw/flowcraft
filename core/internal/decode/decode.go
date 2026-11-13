@@ -2,7 +2,6 @@ package decode
 
 import (
 	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +11,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/goccy/go-json"
 	yamlv2 "gopkg.in/yaml.v2"
 	"sigs.k8s.io/yaml"
 )

@@ -1,8 +1,9 @@
 package message
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 // schemaMap decodes a built ToolDefinition's InputSchema (JSON) into a map

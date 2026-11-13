@@ -2,7 +2,6 @@ package script
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/goccy/go-json"
 )
 
 // programCacheLimit bounds the compiled programs one kind keeps. A host normally

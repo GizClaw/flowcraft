@@ -1,12 +1,12 @@
 package script
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func TestPlainValueProjectsEveryReadableKind(t *testing.T) {

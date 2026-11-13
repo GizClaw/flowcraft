@@ -4,13 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"hash"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // RequestHash is the canonical identity of a generation request.

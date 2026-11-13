@@ -2,7 +2,6 @@ package a2aprotocol
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+	"github.com/goccy/go-json"
 )
 
 // openStore opens a checkpoint store and the adapter over it.

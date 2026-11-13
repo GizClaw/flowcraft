@@ -2,7 +2,6 @@ package skills
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 func writeSkill(t *testing.T, dir, name, description, body string) {

@@ -2,11 +2,11 @@ package tooltest
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // FuncTool builds a simple text-returning tool whose input schema is an

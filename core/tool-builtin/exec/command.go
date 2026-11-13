@@ -9,7 +9,6 @@ package exec
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"runtime"
@@ -23,6 +22,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 const (

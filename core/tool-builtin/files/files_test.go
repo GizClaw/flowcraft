@@ -2,7 +2,6 @@ package files
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io/fs"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 func group(t *testing.T) (*Tool, *fsx.Tree) {

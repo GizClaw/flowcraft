@@ -1,11 +1,11 @@
 package message_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // A result carries parts, never a flattened string, so a payload that

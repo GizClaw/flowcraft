@@ -2,13 +2,13 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
+	"github.com/goccy/go-json"
 )
 
 // TestConnectHandshakeOverStdio is the end-to-end path the config rewrite

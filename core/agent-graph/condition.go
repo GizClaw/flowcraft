@@ -1,13 +1,13 @@
 package graph
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // CompiledCondition is a boolean expression over the state, compiled once at

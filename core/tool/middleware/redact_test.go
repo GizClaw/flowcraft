@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"regexp"
 	"strings"
 	"sync"
@@ -12,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 func TestRedact_RedactsResultKeepsArguments(t *testing.T) {

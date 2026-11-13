@@ -1,7 +1,6 @@
 package starlark
 
 import (
-	"encoding/json"
 	"testing"
 
 	star "go.starlark.net/starlark"
@@ -9,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func TestContentTextTakesTheSinglePart(t *testing.T) {

@@ -1,9 +1,10 @@
 package deploy
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 // An auth block this build cannot honour is refused instead of being dropped:

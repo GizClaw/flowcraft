@@ -8,7 +8,6 @@
 package files
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // Tool names, as the model sees them.

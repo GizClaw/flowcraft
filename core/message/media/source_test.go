@@ -1,8 +1,9 @@
 package media
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 func TestTypedSourcesRoundTripAndOwnInlineBytes(t *testing.T) {

@@ -2,10 +2,10 @@ package inference
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // ExtensionDecoder builds one typed extension from its wire-facing fields

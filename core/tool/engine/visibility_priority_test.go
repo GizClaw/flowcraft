@@ -1,11 +1,11 @@
 package engine
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // sizedDef builds a definition whose definitionBytes is exactly size.

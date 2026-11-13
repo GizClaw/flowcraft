@@ -2,12 +2,12 @@ package nodes
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/goccy/go-json"
 )
 
 // Condition returns the "condition" node kind: it evaluates an expression over

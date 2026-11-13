@@ -2,12 +2,12 @@ package checkpoint
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // syncModes is the durability choice a host makes, named for sub-benchmarks.

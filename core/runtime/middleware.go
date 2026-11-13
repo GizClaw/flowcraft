@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"sort"
 	"strings"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/middleware"
 
+	"github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 )
 

@@ -2,12 +2,12 @@ package message
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 type PartKind string

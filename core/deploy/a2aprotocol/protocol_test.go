@@ -2,7 +2,6 @@ package a2aprotocol_test
 
 import (
 	"context"
-	"encoding/json"
 	"iter"
 	"net/http/httptest"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/goccy/go-json"
 )
 
 // settingsJSON renders a settings block the way a document is parsed.

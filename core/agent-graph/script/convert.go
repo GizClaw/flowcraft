@@ -1,13 +1,13 @@
 package script
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // project reads the declared state keys into the backend's value domain.

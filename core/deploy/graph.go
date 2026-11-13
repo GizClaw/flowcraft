@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"os"
 	"strings"
 
@@ -13,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
+	"github.com/goccy/go-json"
 )
 
 // GraphEngine registers the "graph" engine: a document compiled once per

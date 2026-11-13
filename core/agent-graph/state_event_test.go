@@ -2,11 +2,11 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/goccy/go-json"
 )
 
 // TestStateChangesReachTheStream pins what a surface needs to classify what it just

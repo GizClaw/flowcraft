@@ -2,9 +2,10 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // CheckpointSchema versions the checkpoint shape. A reader that does not know

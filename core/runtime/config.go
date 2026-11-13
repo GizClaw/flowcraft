@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"encoding/json"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	toolmcp "github.com/GizClaw/flowcraft/core/tool-mcp"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
+	"github.com/goccy/go-json"
 )
 
 // Backend names accepted by [SandboxConfig.Backend].

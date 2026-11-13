@@ -2,12 +2,12 @@ package message_test
 
 import (
 	"bytes"
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // Metadata is part of the checkpointed message, so it has to round-trip and it

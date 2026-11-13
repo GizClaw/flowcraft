@@ -8,7 +8,6 @@ package wire
 
 import (
 	"encoding/gob"
-	"encoding/json"
 	"mime"
 	"strconv"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"github.com/goccy/go-json"
 )
 
 func init() {

@@ -1,13 +1,13 @@
 package anthropic
 
 import (
-	"encoding/json"
 	"fmt"
 
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/goccy/go-json"
 )
 
 // GenerationExtensionID names this driver's per-call options extension. A

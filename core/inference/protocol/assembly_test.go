@@ -1,13 +1,13 @@
 package protocol
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // assemble runs the accumulator over events and returns the finished response.

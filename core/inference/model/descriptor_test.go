@@ -1,12 +1,12 @@
 package model
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 func TestModelDescriptorValidateRejectsNonPositiveLimits(t *testing.T) {

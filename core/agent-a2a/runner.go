@@ -2,7 +2,6 @@ package a2a
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"iter"
 	"strings"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
+	"github.com/goccy/go-json"
 )
 
 // Config is one remote agent as an engine.

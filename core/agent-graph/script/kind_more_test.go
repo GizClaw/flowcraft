@@ -2,12 +2,12 @@ package script
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/goccy/go-json"
 )
 
 func TestKindIsNamedForItsJob(t *testing.T) {

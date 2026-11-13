@@ -1,11 +1,11 @@
 package script
 
 import (
-	"encoding/json"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
 // Config is one script node's written configuration.

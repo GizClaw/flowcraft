@@ -2,7 +2,6 @@ package delegation_test
 
 import (
 	"context"
-	"encoding/json"
 	"iter"
 	"testing"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 func findTool(t *testing.T, service *delegation.Service, name string) tool.Tool {

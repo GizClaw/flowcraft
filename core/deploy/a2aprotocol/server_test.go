@@ -1,11 +1,12 @@
 package a2aprotocol
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 func testServer(t *testing.T) *Server {

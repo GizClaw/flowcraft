@@ -3,9 +3,9 @@ package host
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/goccy/go-json"
 )
 
 // manifestHash renders a manifest component as a stable hash.

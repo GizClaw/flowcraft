@@ -2,7 +2,6 @@ package script_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"strings"
@@ -14,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/goccy/go-json"
 )
 
 // toolRuntime builds a real runtime whose only interesting part is one tool

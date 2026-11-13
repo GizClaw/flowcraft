@@ -1,12 +1,12 @@
 package openai
 
 import (
-	"encoding/json"
 	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/internal/ptr"
+	"github.com/goccy/go-json"
 )
 
 // GenerationExtensionID names this driver's per-call options extension. A

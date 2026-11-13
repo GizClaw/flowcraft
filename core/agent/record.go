@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // Record is one durable fact an engine writes beside its state: a model call,

@@ -1,8 +1,9 @@
 package usage
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 // The accounting vocabulary is arithmetic and validation, and both have rules a

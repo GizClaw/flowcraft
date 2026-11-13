@@ -2,8 +2,9 @@ package message
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+
+	"github.com/goccy/go-json"
 )
 
 // ToolDefinition describes a callable tool. InputSchema must be a JSON Schema

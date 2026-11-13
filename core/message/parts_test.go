@@ -1,13 +1,13 @@
 package message_test
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {

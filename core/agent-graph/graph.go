@@ -3,12 +3,12 @@ package graph
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
+	"github.com/goccy/go-json"
 )
 
 // End is the edge target that finishes a branch.

@@ -3,7 +3,6 @@ package files
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"image"
 	"image/png"
 	"path/filepath"
@@ -13,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // imageGroup builds the group with the image switch set the way a host wires it.

@@ -2,12 +2,12 @@ package engine
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // ToolName is the built-in tool_search tool name. The assembly

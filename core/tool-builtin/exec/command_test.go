@@ -2,13 +2,13 @@ package exec
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/sandbox/local"
+	"github.com/goccy/go-json"
 )
 
 func newTool(t *testing.T) *CommandTool {

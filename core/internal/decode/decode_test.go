@@ -1,10 +1,10 @@
 package decode
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/goccy/go-json"
 	yamlv2 "gopkg.in/yaml.v2"
 	"sigs.k8s.io/yaml"
 )

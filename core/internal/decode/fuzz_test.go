@@ -1,10 +1,10 @@
 package decode_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/internal/decode"
+	"github.com/goccy/go-json"
 )
 
 // FuzzToJSON: whatever the input, a successful conversion must be valid JSON.

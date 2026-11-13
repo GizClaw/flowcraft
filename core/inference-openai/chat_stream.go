@@ -2,7 +2,6 @@ package openai
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/openai/openai-go/v3"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/goccy/go-json"
 )
 
 // The chat wire carries no content-part index, so the driver assigns one by

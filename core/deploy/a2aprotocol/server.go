@@ -1,7 +1,6 @@
 package a2aprotocol
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -9,6 +8,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+	"github.com/goccy/go-json"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )

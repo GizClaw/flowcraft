@@ -1,11 +1,11 @@
 package script
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // BenchmarkProjectTranscript isolates the projection half of a chat-shaped rule,

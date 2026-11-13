@@ -3,11 +3,11 @@ package inference
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"hash"
 	"strconv"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // DigestMessage is a message's canonical identity and content size.
