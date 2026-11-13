@@ -92,17 +92,32 @@ func WithPollHold(d time.Duration) Option {
 // terminates the sessions this client started and releases its handles, and
 // leaves the server's runner alone.
 func New(ctx context.Context, url string, opts ...Option) (*Runner, error) {
+	cfg := newClientOptions(opts)
+	if cfg.transport == nil {
+		cfg.transport = NewHTTPTransport(url, cfg.httpOptions()...)
+	}
+	return newRunner(ctx, cfg)
+}
+
+// newClientOptions applies the caller's options over the defaults.
+func newClientOptions(opts []Option) clientOptions {
 	cfg := clientOptions{hold: defaultPollHold, retries: defaultRetries}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&cfg)
 		}
 	}
-	if cfg.transport == nil {
-		httpOpts := append([]HTTPOption{WithHTTPToken(cfg.token)}, cfg.http...)
-		cfg.transport = NewHTTPTransport(url, httpOpts...)
-	}
+	return cfg
+}
 
+// httpOptions is what the HTTP transport needs: the token, plus whatever the
+// caller passed through WithHTTPOptions.
+func (o clientOptions) httpOptions() []HTTPOption {
+	return append([]HTTPOption{WithHTTPToken(o.token)}, o.http...)
+}
+
+// newRunner finishes construction: build the proxy, then negotiate the version.
+func newRunner(ctx context.Context, cfg clientOptions) (*Runner, error) {
 	r := &Runner{
 		transport: cfg.transport,
 		hold:      cfg.hold,
