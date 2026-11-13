@@ -90,7 +90,7 @@ func (t *globTool) Execute(ctx context.Context, arguments string) (message.Conte
 		if !ok {
 			return nil
 		}
-		if !matchSegments(pattern, strings.Split(strings.Trim(rel, "/"), "/")) {
+		if !matchPath(pattern, rel) {
 			return nil
 		}
 		if len(matches) >= maxGlobMatches {
@@ -119,25 +119,59 @@ func relTo(root, path string) (string, bool) {
 	return filepath.ToSlash(path[len(prefix):]), true
 }
 
-func matchSegments(pattern, segments []string) bool {
+// matchPath reports whether the slash-separated relative path rel matches the
+// pre-split pattern.
+//
+// It walks rel's segments in place. The alternative — strings.Split per visited
+// entry — allocated a slice plus a string header per file, which is a per-file
+// cost on the one tool whose cost is proportional to the size of the tree.
+func matchPath(pattern []string, rel string) bool {
+	return matchPathAt(pattern, rel, 0)
+}
+
+// matchPathAt is matchPath with the path cursor at at. It is recursive only
+// through "**", and each level consumes at least one segment of rel.
+func matchPathAt(pattern []string, rel string, at int) bool {
 	for len(pattern) > 0 {
 		if pattern[0] == "**" {
-			for i := 0; i <= len(segments); i++ {
-				if matchSegments(pattern[1:], segments[i:]) {
+			for {
+				if matchPathAt(pattern[1:], rel, at) {
 					return true
 				}
+				_, next, ok := nextSegment(rel, at)
+				if !ok {
+					return false
+				}
+				at = next
 			}
+		}
+		segment, next, ok := nextSegment(rel, at)
+		if !ok {
 			return false
 		}
-		if len(segments) == 0 {
+		if matched, err := path.Match(pattern[0], segment); err != nil || !matched {
 			return false
 		}
-		if ok, err := path.Match(pattern[0], segments[0]); err != nil || !ok {
-			return false
-		}
-		pattern, segments = pattern[1:], segments[1:]
+		pattern, at = pattern[1:], next
 	}
-	return len(segments) == 0
+	_, _, ok := nextSegment(rel, at)
+	return !ok
+}
+
+// nextSegment reads the segment starting at at, skipping the separators before
+// it, and returns the offset the next call should resume from.
+func nextSegment(rel string, at int) (segment string, next int, ok bool) {
+	for at < len(rel) && rel[at] == '/' {
+		at++
+	}
+	if at >= len(rel) {
+		return "", at, false
+	}
+	end := at
+	for end < len(rel) && rel[end] != '/' {
+		end++
+	}
+	return rel[at:end], end, true
 }
 
 // validateGlob rejects a pattern a segment matcher cannot compile.
