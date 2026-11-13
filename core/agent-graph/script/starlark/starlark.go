@@ -19,6 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	star "go.starlark.net/starlark"
+	"go.starlark.net/syntax"
 )
 
 // DefaultMaxSteps is the step budget an unconfigured node gets.
@@ -60,7 +61,13 @@ func (backend) Capabilities() script.Capabilities {
 // The program is immutable, so one compiled value serves every concurrent
 // invocation; each run gets its own thread and its own globals.
 func (backend) Compile(_ context.Context, source script.Script) (script.Program, error) {
-	_, program, err := star.SourceProgram(source.Name, source.Text, isPredeclared)
+	// An explicit zero FileOptions is the strict dialect: no set(), no while,
+	// no global reassignment, no recursion, no top-level control flow. It is also
+	// exactly what SourceProgram compiled with here — the resolve.Allow*/Load*
+	// globals it read were never set — so this is the same language with the
+	// deprecated legacy-global dependency dropped.
+	_, program, err := star.SourceProgramOptions(&syntax.FileOptions{},
+		source.Name, source.Text, isPredeclared)
 	if err != nil {
 		// A syntax error or an undefined name is an authoring mistake, and the
 		// message already points at the file and line.

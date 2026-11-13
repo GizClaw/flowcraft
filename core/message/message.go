@@ -2,6 +2,7 @@ package message
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -317,7 +318,7 @@ func decodeStrict(data []byte, dst any) error {
 		return err
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return fmt.Errorf("unexpected trailing JSON value")
 		}

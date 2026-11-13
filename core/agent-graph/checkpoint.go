@@ -192,8 +192,6 @@ type runOptions struct {
 	trace       telemetry.TraceLevel
 	bodies      bool
 	replay      bool
-	// stepMarker is the frontier record the next save writes first.
-	stepMarker *agent.Record
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the

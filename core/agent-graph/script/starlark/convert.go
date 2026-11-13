@@ -17,13 +17,6 @@ import (
 // the bridge as bytes.
 var decode = starjson.Module.Members["decode"]
 
-// The two keys every projected message carries. They are package values so
-// building a transcript does not allocate the same two strings 200 times.
-var (
-	roleKey = star.String("role")
-	textKey = star.String("text")
-)
-
 // toStarlark converts the node's projection into Starlark values.
 //
 // The domain is what encoding/json produces — nil, bool, float64, string, []any,

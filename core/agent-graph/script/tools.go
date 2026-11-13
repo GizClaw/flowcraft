@@ -48,11 +48,13 @@ func (h *scriptHost) Log(level LogLevel, msg string) {
 	if h.log == nil {
 		return
 	}
+	// A host-supplied log sink that fails is not something the script can act on:
+	// the message is dropped, not the run.
 	if h.node != "" {
-		fmt.Fprintf(h.log, "[%s] script node %q: %s\n", level, h.node, msg)
+		_, _ = fmt.Fprintf(h.log, "[%s] script node %q: %s\n", level, h.node, msg)
 		return
 	}
-	fmt.Fprintf(h.log, "[%s] script: %s\n", level, msg)
+	_, _ = fmt.Fprintf(h.log, "[%s] script: %s\n", level, msg)
 }
 
 // Tool implements [Host].
