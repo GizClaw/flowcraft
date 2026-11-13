@@ -2,6 +2,7 @@ package remote_test
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -167,4 +168,95 @@ func remoteRunnerForBench(b *testing.B) sandbox.Runner {
 	}
 	b.Cleanup(func() { _ = client.Close() })
 	return client
+}
+
+// Bulk output is the case the short-command ratio says nothing about: every read
+// is a round trip, and every byte is base64 inside JSON. Both transports drain
+// the same 1 MiB child so the only difference is where the bytes travel.
+func BenchmarkReadThroughput1M(b *testing.B) {
+	cases := []struct {
+		name   string
+		runner func(*testing.B) sandbox.Runner
+	}{
+		{"local", localRunnerForBench},
+		{"remote", remoteRunnerForBench},
+	}
+	// The window is the knob that matters over a network: each Read is one round
+	// trip, so a 64 KiB window pays sixteen of them per megabyte.
+	for _, window := range []int{64 << 10, 256 << 10, 1 << 20} {
+		for _, tc := range cases {
+			b.Run(fmt.Sprintf("%s/window=%dK", tc.name, window>>10), func(b *testing.B) {
+				benchmarkDrain(b, tc.runner(b), window)
+			})
+		}
+	}
+}
+
+func benchmarkDrain(b *testing.B, runner sandbox.Runner, window int) {
+	b.Helper()
+	ctx := context.Background()
+	sess, err := runner.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"dd", "if=/dev/zero", "bs=1048576", "count=1"},
+	})
+	if err != nil {
+		b.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	// The first drain absorbs the spawn and any short read; every measured
+	// iteration re-reads a complete log from cursor 0.
+	if n := drainAll(b, ctx, sess, 0, window); n != 1<<20 {
+		b.Fatalf("first drain read %d bytes, want %d", n, 1<<20)
+	}
+
+	b.SetBytes(1 << 20)
+	b.ResetTimer()
+	for range b.N {
+		if n := drainAll(b, ctx, sess, 0, window); n != 1<<20 {
+			b.Fatalf("drain read %d bytes", n)
+		}
+	}
+}
+
+func drainAll(b *testing.B, ctx context.Context, sess sandbox.Session, after int64, window int) int {
+	b.Helper()
+	total := 0
+	for {
+		out, err := sess.Read(ctx, after, window)
+		if err != nil {
+			b.Fatalf("Read: %v", err)
+		}
+		for _, c := range out.Chunks {
+			if c.Stream == sandbox.SessionStreamStdout {
+				total += len(c.Data)
+			}
+		}
+		after = out.NextSeq
+		if out.EOF {
+			return total
+		}
+	}
+}
+
+// TestRemoteReadRatio reports the bulk-output multiplier as a number rather than
+// an opinion: a same-host command's 1.17x says nothing about streaming bytes, and
+// the read window is what decides it.
+func TestRemoteReadRatio(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns processes")
+	}
+	measure := func(build func(*testing.B) sandbox.Runner, window int) (float64, float64) {
+		result := testing.Benchmark(func(b *testing.B) { benchmarkDrain(b, build(b), window) })
+		if result.NsPerOp() <= 0 {
+			t.Fatalf("benchmark did not complete: %v", result)
+		}
+		ns := float64(result.NsPerOp())
+		return ns / 1e6, float64(result.Bytes) / ns * 1e3 // ms, MB/s
+	}
+	for _, window := range []int{64 << 10, 1 << 20} {
+		localMS, localMB := measure(localRunnerForBench, window)
+		remoteMS, remoteMB := measure(remoteRunnerForBench, window)
+		t.Logf("1 MiB drain at a %dK window: local %.2f ms (%.0f MB/s), remote %.2f ms (%.0f MB/s), slowdown %.1fx",
+			window>>10, localMS, localMB, remoteMS, remoteMB, remoteMS/localMS)
+	}
 }
