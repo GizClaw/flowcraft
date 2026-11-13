@@ -20,7 +20,9 @@ sandbox:
   cpu_millicores: 2000
   memory_mib: 2048
   output_mib: 8
-  journal: false
+  # journal:            # presence enables it; absence means no journal
+  #   exclude: [.git, node_modules]
+  #   retention: 4096
 
 files:
   roots:

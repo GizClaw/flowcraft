@@ -19,6 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox-seatbelt"
 	"github.com/GizClaw/flowcraft/core/sandbox-windows"
 	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -65,22 +66,65 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	dir := r.cfg.workDir()
 	writes := r.cfg.Sandbox.Writes
 
+	// The journal block is opt-in by presence; resolving it here means a bad
+	// exclude, retention or op name fails the build instead of producing a runner
+	// that reports nothing.
+	journalCfg, err := r.cfg.Sandbox.journalConfig(dir, writes)
+	if err != nil {
+		return err
+	}
+
 	var runner sandbox.Runner
 	switch r.cfg.Sandbox.Backend {
 	case BackendLocal:
-		opts := make([]local.Option, 0, 1)
+		opts := make([]local.Option, 0, 2)
 		if limits.MaxOutputBytes > 0 {
 			opts = append(opts, local.WithMaxOutputBytes(limits.MaxOutputBytes))
+		}
+		if journalCfg != nil {
+			opts = append(opts, local.WithFileJournalConfig(*journalCfg))
 		}
 		runner = local.New(dir, opts...)
 	case BackendSeatbelt:
 		opts := []seatbelt.RunnerOption{seatbelt.WithWritablePaths(writes...)}
+		if c := r.cfg.Sandbox.Seatbelt; c != nil {
+			if c.Binary != "" {
+				opts = append(opts, seatbelt.WithBinary(c.Binary))
+			}
+			if c.ReadOnlyRoot {
+				opts = append(opts, seatbelt.WithReadOnlyRoot())
+			}
+		}
+		if journalCfg != nil {
+			opts = append(opts, seatbelt.WithFileJournalConfig(*journalCfg))
+		}
 		runner, err = seatbelt.New(dir, opts...)
 	case BackendBwrap:
 		opts := []bwrap.RunnerOption{bwrap.WithWritablePaths(writes...)}
+		if c := r.cfg.Sandbox.Bwrap; c != nil {
+			if c.Binary != "" {
+				opts = append(opts, bwrap.WithBinary(c.Binary))
+			}
+			if len(c.ExtraFlags) > 0 {
+				opts = append(opts, bwrap.WithExtraFlags(c.ExtraFlags...))
+			}
+			if c.ReadOnlyRoot {
+				opts = append(opts, bwrap.WithReadOnlyRoot())
+			}
+		}
+		if journalCfg != nil {
+			opts = append(opts, bwrap.WithFileJournalConfig(*journalCfg))
+		}
 		runner, err = bwrap.New(dir, opts...)
 	case BackendWindows:
-		runner, err = windows.New(dir)
+		opts := []windows.Option{windows.WithWritablePaths(writes...)}
+		if c := r.cfg.Sandbox.Windows; c != nil && c.WriteConfine {
+			opts = append(opts, windows.WithWriteConfinement())
+		}
+		if journalCfg != nil {
+			opts = append(opts, windows.WithFileJournalConfig(*journalCfg))
+		}
+		runner, err = windows.New(dir, opts...)
 	case BackendRemote:
 		runner, err = r.cfg.Sandbox.remoteRunner(ctx)
 	default:
@@ -113,7 +157,7 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 			attribute.String(telemetry.AttrSandboxEndpoint, r.cfg.Sandbox.Remote.Endpoint))
 	}
 
-	if !r.cfg.Sandbox.Journal {
+	if journalCfg == nil {
 		return nil
 	}
 	journal, err := sandbox.OpenJournal(ctx, runner)
@@ -446,6 +490,20 @@ func (r *Runtime) applySandboxPolicy(ctx context.Context, runner sandbox.Runner,
 		}
 	}
 	return sandboxengine.WithDefaults(runner, defaults), nil
+}
+
+// journalConfig resolves the journal block into engine configuration, or nil when
+// the deployment did not ask for one. The block's presence is the opt-in, so its
+// zero value is a fully enabled journal with every implementation default.
+func (c SandboxConfig) journalConfig(root string, extraRoots []string) (*journal.Config, error) {
+	if c.Journal == nil {
+		return nil, nil
+	}
+	cfg, err := c.Journal.Build(root, extraRoots)
+	if err != nil {
+		return nil, errdefs.Validationf("sandbox.journal: %w", err)
+	}
+	return &cfg, nil
 }
 
 // maxSkillDiagnosticsLogged bounds how many skipped skill files one runtime logs:

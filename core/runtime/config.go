@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	toolmcp "github.com/GizClaw/flowcraft/core/tool-mcp"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
@@ -79,13 +80,53 @@ type SandboxConfig struct {
 	MemoryMiB int `json:"memory_mib"`
 	// OutputMiB caps captured output per call; zero means the backend default.
 	OutputMiB int `json:"output_mib"`
-	// Journal records filesystem events under the runner root.
-	Journal bool `json:"journal"`
+	// Journal records filesystem events under the runner root. Its presence is
+	// the opt-in; the zero settings block is a fully enabled journal with every
+	// implementation default. The shape is shared with the backends, so switching
+	// a deployment from one to another does not change its journal configuration.
+	Journal *journal.Settings `json:"journal"`
+	// Bwrap carries the bwrap backend's own construction options. It is
+	// meaningful only with backend: bwrap.
+	Bwrap *BwrapConfig `json:"bwrap"`
+	// Seatbelt carries the seatbelt backend's own construction options. It is
+	// meaningful only with backend: seatbelt.
+	Seatbelt *SeatbeltConfig `json:"seatbelt"`
+	// Windows carries the windows backend's own construction options. It is
+	// meaningful only with backend: windows.
+	Windows *WindowsConfig `json:"windows"`
 	// Remote is the client configuration for BackendRemote, and must be absent
 	// for every other backend: a boundary is either local or reached over a
 	// connection, and silently ignoring half of the settings is how a deployment
 	// ends up running somewhere nobody intended.
 	Remote RemoteConfig `json:"remote"`
+}
+
+// BwrapConfig is the bwrap backend's own surface: the binary, extra flags it
+// accepts, and whether the runner root stays read-only.
+type BwrapConfig struct {
+	// Binary overrides the bwrap executable, resolved against the runner root.
+	Binary string `json:"binary"`
+	// ExtraFlags are passed to bwrap before the command. Flags that weaken the
+	// policy are rejected by the backend at construction.
+	ExtraFlags []string `json:"extra_flags"`
+	// ReadOnlyRoot keeps the runner root read-only for every exec; explicit
+	// writable paths stay writable.
+	ReadOnlyRoot bool `json:"readonly_root"`
+}
+
+// SeatbeltConfig is the seatbelt backend's own surface.
+type SeatbeltConfig struct {
+	// Binary overrides the sandbox-exec executable, resolved against the root.
+	Binary string `json:"binary"`
+	// ReadOnlyRoot keeps the runner root read-only for every exec.
+	ReadOnlyRoot bool `json:"readonly_root"`
+}
+
+// WindowsConfig is the windows backend's own surface.
+type WindowsConfig struct {
+	// WriteConfine runs children with a Low-integrity token so only the runner
+	// root and the writable paths are writable.
+	WriteConfine bool `json:"write_confine"`
 }
 
 // RemoteConfig is the client side of a remote sandbox: where the server is and
@@ -332,6 +373,12 @@ func (c SandboxConfig) validate() error {
 	if _, err := c.timeout(); err != nil {
 		return err
 	}
+	if err := c.validateBackendOptions(); err != nil {
+		return err
+	}
+	if err := c.validateJournal(); err != nil {
+		return err
+	}
 	if c.CPU > 0 && c.Timeout == "" {
 		return errdefs.Validationf(
 			"sandbox.cpu_millicores requires sandbox.timeout: the cpu budget is derived from the deadline")
@@ -454,6 +501,51 @@ func (n NetConfig) validate() error {
 func (n NetConfig) mode0() permission.NetMode {
 	mode, _ := n.mode()
 	return mode
+}
+
+// validateBackendOptions rejects a backend's settings block on any other backend:
+// a block that does nothing is a deployment that runs somewhere its author did not
+// describe.
+func (c SandboxConfig) validateBackendOptions() error {
+	for _, option := range []struct {
+		name   string
+		set    bool
+		holder string
+	}{
+		{"bwrap", c.Bwrap != nil, BackendBwrap},
+		{"seatbelt", c.Seatbelt != nil, BackendSeatbelt},
+		{"windows", c.Windows != nil, BackendWindows},
+	} {
+		if option.set && c.Backend != option.holder {
+			return errdefs.Validationf(
+				"sandbox.%s is only meaningful with sandbox.backend: %s (got %q)",
+				option.name, option.holder, c.Backend)
+		}
+	}
+	return nil
+}
+
+// validateJournal checks the journal block's cheap invariants. Root resolution and
+// the platform's watch source are the build's business — a deployment that asks for
+// a journal on a platform without one fails at build time — but a typo has to fail
+// here, where the field is still visible.
+func (c SandboxConfig) validateJournal() error {
+	if c.Journal == nil {
+		return nil
+	}
+	if c.Journal.Retention < 0 {
+		return errdefs.Validationf("sandbox.journal.retention: %d must not be negative", c.Journal.Retention)
+	}
+	if c.Journal.MaxWatchSet < 0 {
+		return errdefs.Validationf("sandbox.journal.max_watch_set: %d must not be negative", c.Journal.MaxWatchSet)
+	}
+	for _, name := range c.Journal.Ops {
+		if _, ok := sandbox.ParseFileOp(name); !ok {
+			return errdefs.Validationf(
+				"sandbox.journal.ops: unknown op %q (want create, write, rename or remove)", name)
+		}
+	}
+	return nil
 }
 
 // timeout is the default per-call deadline, zero meaning none.
