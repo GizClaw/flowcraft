@@ -101,15 +101,26 @@ type StartResponse struct {
 	Capabilities sandbox.SessionCapabilities `json:"capabilities"`
 }
 
-// ReadRequest asks for the next slice of the output log.
+// SessionRef names a session in a request that carries nothing else. The
+// session id is in the body rather than the path because the transport addresses
+// operations, not resources: one endpoint per op keeps a transport free of
+// routing rules.
+type SessionRef struct {
+	ID string `json:"id"`
+}
+
+// JournalRequest asks for the next slice of the journal: the events after
+// AfterSeq, at most Max of them. It never waits; a journal is a log, not a
+// stream.
 //
 // HoldMS is how long the server may keep the request open waiting for output; a
 // server that reaches it answers with an empty batch and Idle set. AfterSeq is
 // exclusive, exactly like [sandbox.Session.Read].
 type ReadRequest struct {
-	AfterSeq int64 `json:"after_seq"`
-	MaxBytes int   `json:"max_bytes,omitempty"`
-	HoldMS   int   `json:"hold_ms,omitempty"`
+	ID       string `json:"id"`
+	AfterSeq int64  `json:"after_seq"`
+	MaxBytes int    `json:"max_bytes,omitempty"`
+	HoldMS   int    `json:"hold_ms,omitempty"`
 }
 
 // ReadResponse is one read result. Idle reports that the server returned because
@@ -120,8 +131,14 @@ type ReadResponse struct {
 	Idle   bool                  `json:"idle,omitempty"`
 }
 
+type JournalRequest struct {
+	AfterSeq int64 `json:"after_seq"`
+	Max      int   `json:"max,omitempty"`
+}
+
 // WriteRequest carries the bytes to send to the process.
 type WriteRequest struct {
+	ID   string `json:"id"`
 	Data []byte `json:"data"`
 }
 
@@ -133,18 +150,36 @@ type WriteResponse struct {
 
 // ResizeRequest applies to a TTY session only.
 type ResizeRequest struct {
-	Rows int `json:"rows"`
-	Cols int `json:"cols"`
+	ID   string `json:"id"`
+	Rows int    `json:"rows"`
+	Cols int    `json:"cols"`
 }
 
 // SignalRequest carries a [sandbox.SessionSignal].
 type SignalRequest struct {
-	Signal int `json:"signal"`
+	ID     string `json:"id"`
+	Signal int    `json:"signal"`
 }
 
 // WaitRequest asks for the exit, optionally holding until it happens.
 type WaitRequest struct {
-	HoldMS int `json:"hold_ms,omitempty"`
+	ID     string `json:"id"`
+	HoldMS int    `json:"hold_ms,omitempty"`
+}
+
+// CloseResponse answers a close. Close terminates and reaps, so the exit it
+// produced is the answer: a client that closed a session can still report how it
+// ended, which is what the contract promises a handle does after Close.
+type CloseResponse struct {
+	Exit *sandbox.SessionExit `json:"exit,omitempty"`
+}
+
+// WaitResponse answers a wait. Running reports that the server returned because
+// the hold elapsed, not because the process exited: the client keeps waiting.
+// Exit is set only when Running is false.
+type WaitResponse struct {
+	Exit    *sandbox.SessionExit `json:"exit,omitempty"`
+	Running bool                 `json:"running,omitempty"`
 }
 
 // FromSpec converts a contract session spec into its wire form.
