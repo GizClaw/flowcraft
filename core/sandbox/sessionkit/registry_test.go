@@ -311,6 +311,46 @@ func TestRegistryListSnapshotsExit(t *testing.T) {
 	}
 }
 
+// Attach is the re-attach seam: a caller holding an id gets a working handle, and
+// that handle keeps the Session contract (Close terminates and removes).
+func TestRegistryAttach(t *testing.T) {
+	r := NewSessionRegistry(starter(nil))
+	defer func() { _ = r.Close() }()
+
+	if _, err := r.Attach(context.Background(), "nope"); !errdefs.IsNotFound(err) {
+		t.Fatalf("Attach(unknown) = %v, want NotFound", err)
+	}
+
+	started, err := r.Start(context.Background(), sandbox.SessionSpec{ID: "live", Argv: []string{"sh"}})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	attached, err := r.Attach(context.Background(), "live")
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	if attached.ID() != started.ID() || attached.PID() != started.PID() {
+		t.Fatalf("attached = %q/%d, want %q/%d",
+			attached.ID(), attached.PID(), started.ID(), started.PID())
+	}
+	// The handle reaches the same process: Read and Wait are the inner session's.
+	if _, err := attached.Read(context.Background(), 0, 16); err != nil {
+		t.Fatalf("Read through the attached handle: %v", err)
+	}
+	if list, _ := r.List(context.Background()); len(list) != 1 {
+		t.Fatalf("List = %d entries, want 1", len(list))
+	}
+
+	// Close keeps its contract meaning: it terminates and forgets the session.
+	if err := attached.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if list, _ := r.List(context.Background()); len(list) != 0 {
+		t.Fatalf("List after Close = %d entries, want 0", len(list))
+	}
+}
+
 // Closing the handle (not the runner) is what removes a session from List.
 func TestRegistrySessionCloseRemovesIt(t *testing.T) {
 	r := NewSessionRegistry(starter(nil))

@@ -106,11 +106,10 @@ func TestUnknownSessionIsNotFound(t *testing.T) {
 		t.Fatalf("Terminate = %v, want NotFound", err)
 	}
 	// Re-attach is the server backend's capability, not the wire's: a
-	// sandbox-local server cannot hand a handle back, so the answer is
-	// NotAvailable even for an id it minted. The client still exposes the seam;
-	// what it cannot do is invent a capability the backend lacks.
-	if _, err := sandbox.Attach(context.Background(), client, "never-existed"); !errdefs.IsNotAvailable(err) {
-		t.Fatalf("Attach = %v, want NotAvailable", err)
+	// sandbox-local server can hand a handle back (its registry still holds the
+	// process), so an id it never minted is a lookup failure.
+	if _, err := sandbox.Attach(context.Background(), client, "never-existed"); !errdefs.IsNotFound(err) {
+		t.Fatalf("Attach = %v, want NotFound", err)
 	}
 }
 
@@ -250,5 +249,56 @@ func drainToEOF(t *testing.T, sess sandbox.Session) {
 		if out.EOF {
 			return
 		}
+	}
+}
+
+// Attach over the wire: the server backend holds the process, so an id is enough
+// to read the output log again — which is what a reconnecting client needs.
+func TestAttachToAStartedSession(t *testing.T) {
+	client, _ := serve(t, []remote.ServerOption{remote.WithServerToken(testToken)},
+		remote.WithToken(testToken))
+
+	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
+		Argv: []string{"sh", "-c", "echo reattached"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// Let it finish so the log is complete before anyone re-attaches.
+	drainToEOF(t, sess)
+
+	attached, err := sandbox.Attach(context.Background(), client, sess.ID())
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	defer func() { _ = attached.Close() }()
+
+	if attached.ID() != sess.ID() || attached.PID() != sess.PID() {
+		t.Fatalf("attached = %q/%d, want %q/%d",
+			attached.ID(), attached.PID(), sess.ID(), sess.PID())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out []byte
+	after := int64(0)
+	for {
+		chunk, err := attached.Read(ctx, after, 4096)
+		if err != nil {
+			t.Fatalf("Read through the attached handle: %v", err)
+		}
+		for _, c := range chunk.Chunks {
+			out = append(out, c.Data...)
+		}
+		after = chunk.NextSeq
+		if chunk.EOF {
+			break
+		}
+	}
+	if !strings.Contains(string(out), "reattached") {
+		t.Fatalf("replayed output = %q, want the session's line", out)
+	}
+	if exit, err := attached.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v", exit, err)
 	}
 }

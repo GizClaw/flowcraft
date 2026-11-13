@@ -136,6 +136,36 @@ func (r *SessionRegistry) track(id string, sess sandbox.Session) {
 	r.mu.Unlock()
 }
 
+// Attach returns a handle to a session this registry still tracks, which is what
+// lets a backend implement sandbox.SessionAttacher: a caller holding an id — a
+// reconnecting client, a supervisor adopting its own process table — reads the
+// output log again instead of starting a second process.
+//
+// The handle is an ordinary Session, so Close keeps its meaning: it terminates the
+// process, reaps it, and removes the record, exactly like the handle Start
+// returned. Attaching takes the session over; it does not peek at it.
+func (r *SessionRegistry) Attach(ctx context.Context, id string) (sandbox.Session, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, errdefs.FromContext(err)
+	}
+	r.mu.Lock()
+	rec := r.sessions[id]
+	var inner sandbox.Session
+	if rec != nil {
+		inner = rec.session
+	}
+	r.mu.Unlock()
+
+	if rec == nil {
+		return nil, errdefs.NotFoundf("sandbox: unknown session id %q", id)
+	}
+	if inner == nil {
+		// The spawn has not settled; the caller can retry once it has.
+		return nil, errdefs.NotAvailablef("sandbox: session %q is still starting", id)
+	}
+	return &registrySession{inner: inner, reg: r, id: id}, nil
+}
+
 func (r *SessionRegistry) List(context.Context) ([]sandbox.SessionInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

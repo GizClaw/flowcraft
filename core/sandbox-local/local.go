@@ -165,6 +165,14 @@ func (r *Runner) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.S
 	return r.registry().Start(ctx, spec)
 }
 
+// Attach implements sandbox.SessionAttacher: the registry still owns the process,
+// so a caller holding an id can read its output log again. It is what makes
+// sandbox.Attach usable against a local backend — and therefore against a remote
+// server whose runner is local.
+func (r *Runner) Attach(ctx context.Context, id string) (sandbox.Session, error) {
+	return r.registry().Attach(ctx, id)
+}
+
 // List implements Runner.
 func (r *Runner) List(ctx context.Context) ([]sandbox.SessionInfo, error) {
 	return r.registry().List(ctx)
@@ -209,7 +217,10 @@ func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
 	return r.journal.Open()
 }
 
-var _ sandbox.JournalProvider = (*Runner)(nil)
+var (
+	_ sandbox.JournalProvider = (*Runner)(nil)
+	_ sandbox.SessionAttacher = (*Runner)(nil)
+)
 
 // registry returns the session registry, initialising it lazily so a
 // zero-value Runner still answers with NotAvailable instead of
