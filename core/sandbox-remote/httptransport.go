@@ -148,6 +148,18 @@ func (t *httpTransport) DoBytes(ctx context.Context, op Op, req []byte) ([]byte,
 	return body, nil
 }
 
+// contentTypeFor names the encoding of one op's request body.
+//
+// The wire format is defined by the operation, not negotiated: control ops carry a
+// JSON message, and the write op carries its framed payload. This is the one place
+// that mapping lives.
+func contentTypeFor(op Op) string {
+	if op == OpWrite {
+		return "application/octet-stream"
+	}
+	return "application/json"
+}
+
 // readBody reads one response body, sizing the buffer from Content-Length when the
 // server declared it. A read response carries a megabyte often enough that the
 // doubling and copying of an unknown-length read is worth avoiding.
@@ -191,7 +203,7 @@ func (t *httpTransport) open(ctx context.Context, op Op, req []byte, accept stri
 	if err != nil {
 		return nil, errdefs.Internalf("sandbox-remote: build request: %w", err)
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Content-Type", contentTypeFor(op))
 	httpReq.Header.Set("Accept", accept)
 	if t.token != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+t.token)

@@ -178,9 +178,14 @@ func remoteRunnerForBench(b *testing.B) sandbox.Runner {
 	return client
 }
 
-// Bulk output is the case the short-command ratio says nothing about: every read
-// is a round trip, and every byte is base64 inside JSON. Both transports drain
+// Bulk output is the case the short-command ratio says nothing about: every read is
+// a round trip, and the payload used to be base64 inside JSON. Both transports drain
 // the same 1 MiB child so the only difference is where the bytes travel.
+//
+// Read the two columns differently since the read frame landed: the remote numbers
+// are bytes in flight, while the local ones are a cursor walk over a retained log —
+// a read is a view of the ring, so nothing is copied and the MB/s says how fast the
+// session can be indexed, not how fast it can move memory.
 func BenchmarkReadThroughput1M(b *testing.B) {
 	cases := []struct {
 		name   string
@@ -287,6 +292,40 @@ func BenchmarkExec1MOutput(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				result, err := engine.Exec(context.Background(), runner, argv[0], argv[1:], sandbox.ExecOptions{})
+				if err != nil {
+					b.Fatalf("Exec: %v", err)
+				}
+				if len(result.Stdout) != 1<<20 {
+					b.Fatalf("stdout is %d bytes", len(result.Stdout))
+				}
+			}
+		})
+	}
+}
+
+// The write direction has the same encoding the read direction just lost: a large
+// Stdin is base64 inside JSON on its way to the server.
+func BenchmarkExec1MStdin(b *testing.B) {
+	cases := []struct {
+		name   string
+		runner func(*testing.B) sandbox.Runner
+	}{
+		{"local", localRunnerForBench},
+		{"remote", remoteRunnerForBench},
+	}
+	stdin := make([]byte, 1<<20)
+	for i := range stdin {
+		stdin[i] = byte('a' + i%26)
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			runner := tc.runner(b)
+			b.SetBytes(1 << 20)
+			b.ResetTimer()
+			for range b.N {
+				// cat echoes stdin back: the measurement covers both directions.
+				result, err := engine.Exec(context.Background(), runner, "cat", nil,
+					sandbox.ExecOptions{Stdin: stdin})
 				if err != nil {
 					b.Fatalf("Exec: %v", err)
 				}

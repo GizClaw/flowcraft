@@ -255,20 +255,26 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
-	var req wire.WriteRequest
-	if !decodeRequest(w, r, &req) {
+	body, ok := readRequestBody(w, r)
+	if !ok {
 		return
 	}
-	session, err := s.session(req.ID)
+	id, data, err := wire.DecodeWriteRequest(body)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := session.Write(r.Context(), req.Data); err != nil {
+	session, err := s.session(id)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, wire.WriteResponse{BytesWritten: len(req.Data)})
+	// data points into body; Write sends it without a second copy.
+	if err := session.Write(r.Context(), data); err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, wire.WriteResponse{BytesWritten: len(data)})
 }
 
 func (s *Server) handleCloseInput(w http.ResponseWriter, r *http.Request) {
@@ -572,12 +578,21 @@ func (s *Server) sessionFor(w http.ResponseWriter, r *http.Request) (sandbox.Ses
 	return session, true
 }
 
-func decodeRequest(w http.ResponseWriter, r *http.Request, v any) bool {
+// readRequestBody reads one request body, reporting a read failure to the client.
+func readRequestBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 	body := http.MaxBytesReader(w, r.Body, maxRequestBytes)
 	defer func() { _ = body.Close() }()
 	raw, err := io.ReadAll(body)
 	if err != nil {
 		writeError(w, errdefs.Validationf("sandbox-remote: read request: %w", err))
+		return nil, false
+	}
+	return raw, true
+}
+
+func decodeRequest(w http.ResponseWriter, r *http.Request, v any) bool {
+	raw, ok := readRequestBody(w, r)
+	if !ok {
 		return false
 	}
 	if len(raw) == 0 {

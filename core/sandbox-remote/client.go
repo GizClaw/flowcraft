@@ -227,6 +227,15 @@ func (r *Runner) Close() error {
 	return err
 }
 
+// doEncoded sends a body the caller already framed and decodes the answer. It is
+// for the one op whose payload is not a JSON message.
+func (r *Runner) doEncoded(ctx context.Context, op Op, body []byte, res any) error {
+	if err := r.closedErr(); err != nil {
+		return err
+	}
+	return r.transport.Do(ctx, op, body, res)
+}
+
 // do sends one message and decodes the answer. A closed runner refuses
 // everything except the drain Close already performs.
 func (r *Runner) do(ctx context.Context, op Op, req any, res any) error {

@@ -405,3 +405,84 @@ func FuzzDecodeReadResponse(f *testing.F) {
 		}
 	})
 }
+
+// The write frame carries bytes in, which is the direction a large Stdin takes.
+func TestWriteFrameRoundTrip(t *testing.T) {
+	id := "session-42"
+	data := make([]byte, 1<<16)
+	for i := range data {
+		data[i] = byte(i)
+	}
+
+	body := wire.AppendWriteRequest(nil, id, data)
+	if size := wire.WriteRequestSize(id, data); size != len(body) {
+		t.Fatalf("WriteRequestSize = %d, encoded %d", size, len(body))
+	}
+
+	gotID, gotData, err := wire.DecodeWriteRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeWriteRequest: %v", err)
+	}
+	if gotID != id {
+		t.Fatalf("id = %q, want %q", gotID, id)
+	}
+	if !reflect.DeepEqual(gotData, data) {
+		t.Fatalf("payload differs (%d bytes)", len(gotData))
+	}
+	// The payload points into the body rather than copying it.
+	if len(gotData) > 0 && &gotData[0] != &body[len(body)-len(gotData)] {
+		t.Fatal("the decoded payload is a copy; the server can hand the body through")
+	}
+}
+
+func TestWriteFrameEmptyPayload(t *testing.T) {
+	body := wire.AppendWriteRequest(nil, "s", nil)
+	id, data, err := wire.DecodeWriteRequest(body)
+	if err != nil {
+		t.Fatalf("DecodeWriteRequest: %v", err)
+	}
+	if id != "s" || len(data) != 0 {
+		t.Fatalf("decoded %q with %d bytes", id, len(data))
+	}
+}
+
+func TestWriteFrameRejectsMalformed(t *testing.T) {
+	good := wire.AppendWriteRequest(nil, "s", []byte("abc"))
+	cases := map[string][]byte{
+		"empty":          nil,
+		"short header":   good[:3],
+		"wrong magic":    append([]byte("JSON"), good[4:]...),
+		"truncated data": good[:len(good)-1],
+		"trailing bytes": append(append([]byte(nil), good...), 0x00),
+		"empty session":  wire.AppendWriteRequest(nil, "", []byte("abc")),
+		"impossible id":  func() []byte { bad := append([]byte(nil), good...); bad[4], bad[5] = 0x7f, 0x00; return bad }(),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := wire.DecodeWriteRequest(body); err == nil {
+				t.Fatal("malformed write frame decoded without an error")
+			} else if !errdefs.IsInternal(err) {
+				t.Fatalf("err = %v, want an internal classification", err)
+			}
+		})
+	}
+}
+
+// FuzzDecodeWriteRequest: arbitrary bytes either decode or are refused, and a
+// decoded payload never reaches outside the body.
+func FuzzDecodeWriteRequest(f *testing.F) {
+	f.Add(wire.AppendWriteRequest(nil, "s", []byte("abc")))
+	f.Add(wire.AppendWriteRequest(nil, "session", nil))
+	f.Add([]byte("FSW1"))
+	f.Add([]byte{})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		_, data, err := wire.DecodeWriteRequest(body)
+		if err != nil {
+			return
+		}
+		if len(data) > len(body) {
+			t.Fatalf("decoded %d bytes from a %d-byte body", len(data), len(body))
+		}
+	})
+}

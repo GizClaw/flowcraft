@@ -78,7 +78,8 @@ func (s *session) Write(ctx context.Context, data []byte) error {
 	if err := s.live(); err != nil {
 		return err
 	}
-	return s.runner.do(ctx, OpWrite, wire.WriteRequest{ID: s.id, Data: data}, nil)
+	body := wire.AppendWriteRequest(make([]byte, 0, wire.WriteRequestSize(s.id, data)), s.id, data)
+	return s.runner.doEncoded(ctx, OpWrite, body, nil)
 }
 
 // CloseInput implements sandbox.Session.
