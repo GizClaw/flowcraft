@@ -1,11 +1,9 @@
 package dashscope
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -13,7 +11,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
-	"github.com/goccy/go-json"
 )
 
 // SecretAPIKey is the provider-owned secret name for the DashScope API key.
@@ -315,6 +312,12 @@ func (m ModelSpec) Validate() error {
 	}
 	if err := m.Transcribe.Validate(); err != nil {
 		return fmt.Errorf("model %q: transcribe: %w", m.Name, err)
+	}
+	// The family contract: the compiler bound by kind can only serve the output
+	// modalities it produces, so a declaration whose kind and capabilities drift
+	// apart must fail here rather than on every request.
+	if err := validateModel(m); err != nil {
+		return fmt.Errorf("model %q: %w", m.Name, err)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return fmt.Errorf("model %q: %w", m.Name, err)
@@ -830,28 +833,6 @@ func validateURL(name, value string) error {
 	return nil
 }
 
-func decodeSpec(_ context.Context, raw []byte) (Spec, error) {
-	var spec Spec
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		return Spec{}, fmt.Errorf("dashscope spec: %w", err)
-	}
-	if err := spec.Validate(); err != nil {
-		return Spec{}, fmt.Errorf("dashscope spec: %w", err)
-	}
-	return spec, nil
-}
-
-func decodeProfileSpec(_ context.Context, raw []byte) (ProfileSpec, error) {
-	var spec ProfileSpec
-	if err := json.Unmarshal(raw, &spec); err != nil {
-		return ProfileSpec{}, fmt.Errorf("dashscope profile spec: %w", err)
-	}
-	if err := spec.Validate(); err != nil {
-		return ProfileSpec{}, fmt.Errorf("dashscope profile spec: %w", err)
-	}
-	return spec, nil
-}
-
 // ParseSize reads the platform's 宽*高 size token. It accepts the "*" the
 // docs use and the "x"/"×" spellings users paste from elsewhere, because
 // the value is a declaration the deployment owns, not a wire literal.
@@ -892,154 +873,25 @@ func NormalizeResolution(tier string) string {
 
 // sizeFor resolves the concrete size a size-param model wants for a tier and
 // ratio pair.
-func (p VideoParams) sizeFor(tier, ratio string) (string, bool) {
-	ratios, ok := p.Sizes[tier]
-	if !ok {
-		return "", false
-	}
-	size, ok := ratios[ratio]
-	return size, ok
-}
-
 // declaresResolution reports whether the given tier is acceptable: inside a
 // declared list, or unconstrained when the declaration names none.
-func (p VideoParams) declaresResolution(tier string) bool {
-	return len(p.Resolutions) == 0 || slices.Contains(p.Resolutions, tier)
-}
-
 // declaresRatio reports whether the given ratio is acceptable: inside a
 // declared list, otherwise inside the ratios the size table is keyed by,
 // otherwise unconstrained because the declaration names neither. A size-table
 // model constrains its ratios through the table even when it lists none
 // separately, so the two are read in that order.
-func (p VideoParams) declaresRatio(ratio string) bool {
-	if len(p.Ratios) > 0 {
-		return slices.Contains(p.Ratios, ratio)
-	}
-	if len(p.Sizes) > 0 {
-		for _, ratios := range p.Sizes {
-			if _, ok := ratios[ratio]; ok {
-				return true
-			}
-		}
-		return false
-	}
-	return true
-}
-
 // ratioHint names the ratios a rejection message can offer: the declared list
 // when there is one, otherwise the union the size table is keyed by, in a
 // stable order.
-func (p VideoParams) ratioHint() string {
-	if len(p.Ratios) > 0 {
-		return lists(p.Ratios)
-	}
-	seen := make(map[string]struct{})
-	ratios := make([]string, 0, len(p.Sizes))
-	for _, table := range p.Sizes {
-		for ratio := range table {
-			if _, ok := seen[ratio]; ok {
-				continue
-			}
-			seen[ratio] = struct{}{}
-			ratios = append(ratios, ratio)
-		}
-	}
-	slices.Sort(ratios)
-	return lists(ratios)
-}
-
 // tierHint names the tiers a size-param model can resolve: its declared
 // resolutions when it has them, otherwise the tiers its size table covers.
-func (p VideoParams) tierHint() string {
-	if len(p.Resolutions) > 0 {
-		return lists(p.Resolutions)
-	}
-	tiers := make([]string, 0, len(p.Sizes))
-	for tier := range p.Sizes {
-		tiers = append(tiers, tier)
-	}
-	slices.Sort(tiers)
-	return lists(tiers)
-}
-
 // declaresDuration reports whether the given whole-second duration is
 // acceptable: inside the declared enum, or inside the declared range.
-func (p VideoParams) declaresDuration(seconds int) bool {
-	if len(p.Durations) > 0 && !slices.Contains(p.Durations, seconds) {
-		return false
-	}
-	if p.MinDuration > 0 && seconds < p.MinDuration {
-		return false
-	}
-	if p.MaxDuration > 0 && seconds > p.MaxDuration {
-		return false
-	}
-	return true
-}
-
 // lists renders a string list for rejection messages.
-func lists(values []string) string {
-	return strings.Join(values, ", ")
-}
-
 // sizePairs renders the declared tier/ratio sizes for rejection messages, in
 // a stable tier-then-ratio order so a message does not depend on map
 // iteration.
-func (p VideoParams) sizePairs() string {
-	tiers := make([]string, 0, len(p.Sizes))
-	for tier := range p.Sizes {
-		tiers = append(tiers, tier)
-	}
-	slices.Sort(tiers)
-	pairs := make([]string, 0, len(tiers))
-	for _, tier := range tiers {
-		ratios := make([]string, 0, len(p.Sizes[tier]))
-		for ratio := range p.Sizes[tier] {
-			ratios = append(ratios, ratio)
-		}
-		slices.Sort(ratios)
-		for _, ratio := range ratios {
-			pairs = append(pairs, tier+" "+ratio+" = "+p.Sizes[tier][ratio])
-		}
-	}
-	return lists(pairs)
-}
-
 // durationList renders the accepted durations for rejection messages: the
 // declared enum when there is one, otherwise the declared range.
-func (p VideoParams) durationList() string {
-	if len(p.Durations) > 0 {
-		values := make([]string, 0, len(p.Durations))
-		for _, seconds := range p.Durations {
-			values = append(values, fmt.Sprintf("%d s", seconds))
-		}
-		return lists(values)
-	}
-	switch {
-	case p.MinDuration > 0 && p.MaxDuration > 0:
-		return fmt.Sprintf(
-			"at least %d s and at most %d s", p.MinDuration, p.MaxDuration,
-		)
-	case p.MinDuration > 0:
-		return fmt.Sprintf("at least %d s", p.MinDuration)
-	case p.MaxDuration > 0:
-		return fmt.Sprintf("at most %d s", p.MaxDuration)
-	default:
-		return "the declared durations"
-	}
-}
-
 // durationReason phrases a rejected duration against the declaration's shape:
 // the enum the value has to be one of, or the range it has to fall inside.
-func (p VideoParams) durationReason(name string, seconds int) string {
-	if len(p.Durations) > 0 {
-		return fmt.Sprintf(
-			"%s accepts the durations %s, not %d s",
-			name, p.durationList(), seconds,
-		)
-	}
-	return fmt.Sprintf(
-		"%s takes %s, not %d s", name, p.durationList(), seconds,
-	)
-}

@@ -36,8 +36,8 @@ func TestCompileText(t *testing.T) {
 	if compiled.Wire.Model != "ep-test" {
 		t.Fatalf("model = %q", compiled.Wire.Model)
 	}
-	if compiled.Wire.Instructions == nil || *compiled.Wire.Instructions != "" {
-		// no system message, so instructions stay unset
+	if compiled.Wire.Instructions != nil && *compiled.Wire.Instructions != "" {
+		t.Fatalf("instructions = %q, want unset without a system message", *compiled.Wire.Instructions)
 	}
 	if len(compiled.Fields) == 0 {
 		t.Fatal("compiled fields are empty")

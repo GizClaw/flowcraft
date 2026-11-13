@@ -1,7 +1,6 @@
 package bytedance
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -59,11 +58,4 @@ func (c *clients) endpoint(name string) string {
 		return endpoint
 	}
 	return name
-}
-
-func (c *clients) requireArk() (*arkruntime.Client, error) {
-	if c.ark == nil {
-		return nil, fmt.Errorf("bytedance: no Ark client")
-	}
-	return c.ark, nil
 }
