@@ -2,7 +2,6 @@ package minimax
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"slices"
@@ -692,13 +691,5 @@ func inlineMediaURI(
 				"minimax: %s %s input is %d bytes, above the declared max_input_bytes of %d",
 				declared.Name, kind, len(data), *limit))
 	}
-	const prefix = "data:"
-	const marker = ";base64,"
-	header := len(prefix) + len(mediaType) + len(marker)
-	buffer := make([]byte, header, header+base64.StdEncoding.EncodedLen(len(data)))
-	copy(buffer, prefix)
-	copy(buffer[len(prefix):], mediaType)
-	copy(buffer[len(prefix)+len(mediaType):], marker)
-	buffer = base64.StdEncoding.AppendEncode(buffer, data)
-	return string(buffer), nil
+	return media.DataURL(mediaType, data), nil
 }

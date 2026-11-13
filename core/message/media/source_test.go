@@ -98,14 +98,16 @@ func TestInlineImageCopiesInput(t *testing.T) {
 // against the reference spelling rather than against a golden the helper itself
 // produced.
 func TestDataURLIsExact(t *testing.T) {
-	for _, size := range []int{0, 1, 2, 3, 4, 255, 256, 4096} {
-		data := make([]byte, size)
-		for i := range data {
-			data[i] = byte(i * 7)
-		}
-		want := "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
-		if got := DataURL("image/png", data); got != want {
-			t.Fatalf("size %d: DataURL drifted from the reference spelling", size)
+	for _, mediaType := range []string{"image/png", "text/plain; charset=utf-8", ""} {
+		for _, size := range []int{0, 1, 2, 3, 4, 255, 256, 4096} {
+			data := make([]byte, size)
+			for i := range data {
+				data[i] = byte(i * 7)
+			}
+			want := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+			if got := DataURL(mediaType, data); got != want {
+				t.Fatalf("type %q size %d: DataURL drifted from the reference spelling", mediaType, size)
+			}
 		}
 	}
 }
@@ -127,8 +129,10 @@ func TestBase64IsExact(t *testing.T) {
 // the encoded payload, the concatenated result, and the intermediate prefix.
 func TestDataURLAllocations(t *testing.T) {
 	data := make([]byte, 64<<10)
-	if allocs := testing.AllocsPerRun(100, func() { _ = DataURL("image/png", data) }); allocs > 3 {
-		t.Fatalf("DataURL allocates %.0f times, want <= 3", allocs)
+	// Two allocations: the buffer and the string handed out. The concatenation
+	// this replaced needed three, so a cap of three would let a revert pass.
+	if allocs := testing.AllocsPerRun(100, func() { _ = DataURL("image/png", data) }); allocs > 2 {
+		t.Fatalf("DataURL allocates %.0f times, want <= 2", allocs)
 	}
 	if allocs := testing.AllocsPerRun(100, func() { _ = Base64(data) }); allocs > 2 {
 		t.Fatalf("Base64 allocates %.0f times, want <= 2", allocs)
