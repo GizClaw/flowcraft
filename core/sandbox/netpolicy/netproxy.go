@@ -180,6 +180,12 @@ func Start(cfg ProxyConfig) (*Proxy, error) {
 	}
 
 	p := &Proxy{cfg: cfg}
+	// Compile the rule set now. A malformed host pattern is a configuration
+	// error, and deferring it to the first request turns it into an opaque
+	// "matcher unavailable" denial of every exec instead of a build failure.
+	if p.matcher() == nil {
+		return nil, p.matcherErr
+	}
 	if cfg.Upstream != "" {
 		u, err := url.Parse(cfg.Upstream)
 		if err != nil {
