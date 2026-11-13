@@ -47,7 +47,7 @@ func TestToolSearchReusesIndex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	view := assembly.NewCatalogView().(*dynamicView)
 	ctx := context.Background()
 
@@ -77,7 +77,7 @@ func TestToolSearchSeesAddedTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	view := assembly.NewCatalogView().(*dynamicView)
 	ctx := context.Background()
 
@@ -122,5 +122,39 @@ func TestToolSearchRebuildsWithoutEpoch(t *testing.T) {
 	}
 	if cache.built != nil {
 		t.Fatal("a catalog without DefinitionsEpoch must not populate the cache")
+	}
+}
+
+// TestToolSearchAllocationsStable guards the cache with a number rather than a
+// pointer: a cached search must be a ranking pass over the built index, so its
+// allocation count stays in the low tens no matter how large the catalog is. A
+// rebuild measures in the thousands (BM25 postings are one allocation per
+// term-document pair), so a regression that quietly stops reusing the index
+// fails here even on a machine where timings are noisy.
+func TestToolSearchAllocationsStable(t *testing.T) {
+	assembly, err := NewAssembly(
+		[]tool.Source{searchFixtureSource(
+			"read_file", "write_file", "grep", "glob", "list_dir", "edit_file",
+			"kanban_board", "calendar_list", "mail_search", "issue_search",
+		)},
+		WithDynamic(Policy{Default: ExposureDeferred}),
+	)
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	defer func() { _ = assembly.Close() }()
+	view := assembly.NewCatalogView()
+	ctx := context.Background()
+	if _, err := view.Search(ctx, "search records", 0); err != nil {
+		t.Fatalf("warm search: %v", err)
+	}
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := view.Search(ctx, "search records", 0); err != nil {
+			t.Fatalf("search: %v", err)
+		}
+	})
+	if allocs > 200 {
+		t.Fatalf("cached tool_search allocates %.0f times, want <= 200 (an index rebuild is thousands)", allocs)
 	}
 }

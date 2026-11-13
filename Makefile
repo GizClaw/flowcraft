@@ -141,6 +141,14 @@ bench:
 			> ".bench/$$label.txt"; \
 	done
 
+# bench-check is what CI runs: one iteration per benchmark, so every benchmark
+# compiles, runs and reports. Numbers are not compared — a shared runner varies
+# enough that a threshold would be noise. The allocation guards live in the
+# tests and gate through `make test`.
+.PHONY: bench-check
+bench-check:
+	@$(call GO_FOREACH,$(BENCH_MODULES),bench-check,go test -run '^$$' -bench . -benchmem -benchtime=1x ./...)
+
 .PHONY: bench-compare
 bench-compare:
 	@if [ -z "$(OLD)" ] || [ -z "$(NEW)" ]; then \

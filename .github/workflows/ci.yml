@@ -259,6 +259,21 @@ jobs:
       # input, not a real hunt (FUZZTIME extends it locally).
       - run: FUZZTIME=15s tools/fuzz.sh
 
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # One iteration per benchmark: enough to prove every benchmark compiles,
+      # runs and reports, which is exactly what a signature change or a moved
+      # fixture breaks silently. Numbers are not compared here — timings on a
+      # shared runner vary enough that a threshold would be noise; the
+      # allocation guards in the unit tests are the deterministic gate.
+      - run: make bench-check
+
   test-shuffle:
     name: Shuffle (core)
     runs-on: ubuntu-latest
