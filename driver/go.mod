@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/GizClaw/flowcraft/core v0.10.0
 	github.com/anthropics/anthropic-sdk-go v1.61.0
+	github.com/goccy/go-json v0.12.0
 	github.com/openai/openai-go/v3 v3.95.0
 	github.com/volcengine/volcengine-go-sdk v1.2.52
 	go.opentelemetry.io/otel v1.45.0

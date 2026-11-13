@@ -3,7 +3,6 @@ package bytedance
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
+	"github.com/goccy/go-json"
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 

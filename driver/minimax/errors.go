@@ -1,12 +1,12 @@
 package minimax
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/goccy/go-json"
 )
 
 // MiniMax's v1 media surfaces answer most failures with HTTP 200 and a

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // Speech synthesis runs on the t2a_v2 endpoint: one JSON request, audio back as

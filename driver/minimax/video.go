@@ -646,6 +646,10 @@ func audioSourceURI(source media.AudioSource, declared ModelSpec) (string, error
 // body holds another copy, so an oversized input costs several times its own size
 // — per part, before anything is sent. An undeclared ceiling filters nothing,
 // which is the documented meaning of an undeclared limit.
+//
+// The prefix and the encoded payload go into one buffer sized up front: encoding
+// to a string and concatenating it would hold the payload twice more on a path
+// that already pays a copy for the source bytes.
 func inlineMediaURI(
 	declared ModelSpec,
 	kind message.PartKind,
@@ -659,6 +663,13 @@ func inlineMediaURI(
 				"minimax: %s %s input is %d bytes, above the declared max_input_bytes of %d",
 				declared.Name, kind, len(data), *limit))
 	}
-	return "data:" + mediaType + ";base64," +
-		base64.StdEncoding.EncodeToString(data), nil
+	const prefix = "data:"
+	const marker = ";base64,"
+	header := len(prefix) + len(mediaType) + len(marker)
+	buffer := make([]byte, header, header+base64.StdEncoding.EncodedLen(len(data)))
+	copy(buffer, prefix)
+	copy(buffer[len(prefix):], mediaType)
+	copy(buffer[len(prefix)+len(mediaType):], marker)
+	buffer = base64.StdEncoding.AppendEncode(buffer, data)
+	return string(buffer), nil
 }

@@ -2,13 +2,13 @@ package dashscope
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/goccy/go-json"
 )
 
 type generateStreamKind int

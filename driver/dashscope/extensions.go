@@ -1,13 +1,13 @@
 package dashscope
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/driver/internal/ptr"
+	"github.com/goccy/go-json"
 )
 
 const (

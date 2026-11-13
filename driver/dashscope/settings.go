@@ -2,7 +2,6 @@ package dashscope
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // SecretAPIKey is the provider-owned secret name for the DashScope API key.

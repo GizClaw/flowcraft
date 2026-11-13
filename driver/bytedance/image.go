@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/driver/internal/ptr"
 
+	"github.com/goccy/go-json"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 

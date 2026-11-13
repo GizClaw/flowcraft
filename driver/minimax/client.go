@@ -3,7 +3,6 @@ package minimax
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/goccy/go-json"
 )
 
 // retryBackoffBase is the first wait between wire attempts; it doubles per
