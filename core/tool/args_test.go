@@ -98,3 +98,47 @@ func TestDecodeRejectsNonStructTarget(t *testing.T) {
 		t.Fatal("non-struct target accepted")
 	}
 }
+
+// TestDecodeArgsAllocations guards the single-pass path. The number is the wire
+// cost of decoding one argument object into a struct: two more passes over the
+// payload plus the accepted-key reflection is what the diagnostic path pays, and
+// it must stay off the happy path. The cap leaves room for a json decoder's
+// internal growth without masking a regression back to three passes.
+func TestDecodeArgsAllocations(t *testing.T) {
+	arguments := `{"path":"/tmp/x.txt","content":"hello","offset":10,"limit":100}`
+	var out struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+		Offset  int    `json:"offset"`
+		Limit   int    `json:"limit"`
+	}
+	if err := DecodeArgs("bench", arguments, nil, &out); err != nil {
+		t.Fatalf("DecodeArgs: %v", err)
+	}
+	allocs := testing.AllocsPerRun(1000, func() {
+		var target struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+			Offset  int    `json:"offset"`
+			Limit   int    `json:"limit"`
+		}
+		if err := DecodeArgs("bench", arguments, nil, &target); err != nil {
+			t.Fatalf("DecodeArgs: %v", err)
+		}
+	})
+	if allocs > 10 {
+		t.Fatalf("DecodeArgs allocates %.0f times per call, want <= 10", allocs)
+	}
+}
+
+// TestDecodeAcceptsPaddedObject: models emit leading whitespace around the
+// argument object, and the fast path must not treat that as a non-object.
+func TestDecodeAcceptsPaddedObject(t *testing.T) {
+	var args execArgs
+	if err := DecodeArgs("exec_command", "\n\t {\"command\":\"ls\"}\n", nil, &args); err != nil {
+		t.Fatalf("DecodeArgs: %v", err)
+	}
+	if args.Command != "ls" {
+		t.Fatalf("command = %q", args.Command)
+	}
+}
