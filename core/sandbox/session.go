@@ -94,6 +94,11 @@ func (s SessionStream) String() string {
 
 // OutputChunk is one contiguous run of bytes from one stream. Seq is
 // the sequence number of the chunk's first byte.
+//
+// Data is immutable and may alias the session's replay buffer: a read is a view of
+// the log, not a copy of it, which is what keeps a large drain from paying for the
+// bytes twice. A caller that needs to keep the bytes beyond the next read, or to
+// modify them, must copy them first. The same applies to [SessionEvent].Data.
 type OutputChunk struct {
 	Seq    int64
 	Stream SessionStream

@@ -898,10 +898,14 @@ func (l *outputLog) collectLocked(afterSeq int64, maxBytes int) (sandbox.Session
 		if n > remaining {
 			n = remaining
 		}
+		// A slice of the retained chunk, not a copy: chunk data is immutable once
+		// appended (append builds a new slice, the trim only drops whole chunks),
+		// and the caller must treat the bytes as read-only — see
+		// sandbox.OutputChunk.
 		chunks = append(chunks, sandbox.OutputChunk{
 			Seq:    next,
 			Stream: ch.stream,
-			Data:   append([]byte(nil), ch.data[start:start+n]...),
+			Data:   ch.data[start : start+n],
 		})
 		next += n
 		remaining -= n
