@@ -12,8 +12,9 @@ retrieval, runtime orchestration, and voice. Source on
 
 ### Runtime
 
-- [Graph Runtime](guides/graph.md) — `core/graph`: declarative DAG
-  engine, node I/O roles, parallel branches, custom node types.
+- [Graph Engine](guides/graph.md) — `core/agent-graph`: an agent as a
+  frontier loop over nodes — declared state with merge rules, conditions
+  compiled at build, node kinds, checkpoints and replay.
 - [Tool System](guides/tool.md) — `core/tool`: LLM function-calling
   contract, Registry / Catalog / Executor split, middleware chain,
   built-in tool adapters and the MCP bridge.
@@ -27,9 +28,9 @@ retrieval, runtime orchestration, and voice. Source on
 - [Checkpoints](guides/checkpoint.md) — `core/agent`: the checkpoint
   store contract, incremental records, and the board write record an
   engine persists at a boundary.
-- [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
-  command-hook runner, the frozen event vocabulary, the invocation
-  contract, and the trust rules for plugin-contributed sources.
+- [Hooks](guides/hooks.md) — `agent.Hooks`: the three host boundaries of a
+  turn (`OnSession`, `BeforeTurn`, `AfterTurn`), their failure policy, and
+  how a deployment declares its own hook kinds.
 - [Media & Attachments](guides/media.md) — `core/media`:
   attachment classification, image normalization budgets, and the
   `media.attachments` prepare hook; the vocabulary stays in

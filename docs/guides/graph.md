@@ -1,1148 +1,315 @@
 ---
 layout: default
-title: Graph Runtime
+title: Graph Engine
 ---
-# Graph Runtime Guide
+# Graph Engine Guide
 
-`core/agent-graph` is the declarative engine an agent can be built from: a graph
-of nodes driven by a frontier. It is a sibling of `core/agent`, not a layer above
-it — both produce `agent.Event` streams, so a deployment exposes either through
-the same protocol.
+`core/agent-graph` is an `agent.Engine`: an agent as a graph of nodes driven by a
+frontier. It is a sibling of `core/agent`, not a layer above it — `agent` defines
+what a task and its events are, `graph` runs nodes whose edges decide where the
+run goes next, and both produce `agent.Event` streams, so a deployment exposes
+either through the same protocol.
 
-## Layers
+## The run is a frontier loop, not a wave over a DAG
 
-| Layer | Type | Job |
-| --- | --- | --- |
-| Wire | `graph.Document` | the YAML or JSON document: state, nodes, edges, output |
-| Registry | `graph.Registry` + `graph.NodeKind` | bind a node kind name to an implementation |
-| Build | `graph.Build(doc, registry, opts...)` | validate, compile conditions, check kinds |
-| Execution | `graph.Run` | the frontier loop, its checkpoints and its records |
+A graph may loop: a ReAct cycle is model → tools → model. There is therefore no
+topological order and no cycle rejection. Each step:
 
-## Document
+1. invokes the frontier — the nodes reached in the previous step;
+2. applies the step's writes, in declaration order;
+3. evaluates the outgoing edges of every node that ran, to compute the next
+   frontier.
+
+An edge fires when its condition holds (an empty condition always fires), so a
+node fans out by having several outgoing edges, and branching joins implicitly: a
+node reached twice in one step runs once. `limits.max_steps` bounds a loop that
+never empties the frontier.
+
+## No board, and no values on edges
+
+The previous engine kept a board of untyped vars copied per branch and merged
+with reflection. Three things followed, and this package is built to avoid all
+three:
+
+- **An edge carries a condition, not a value.** A wrong edge used to surface as a
+  runtime type assertion with no context; here routing is a compiled expression
+  over the state, so a bad one fails at build.
+- **A fan-out shares immutable values.** A message list is a persistent sequence:
+  appending is O(1) and shares its parent, so a branch costs its own work, not the
+  size of the history.
+- **Merging is declared, not diffed.** A state key declares its merge rule, and a
+  rule that cannot decide is an error rather than a silent winner.
+
+A node produces state and nothing else. Values do not travel along edges: in a
+loop, "the value on this edge" has no answer, so the state is the only carrier
+that stays well defined.
+
+## The document
+
+The graph is its own file; the deployment's engine settings only name it:
 
 ```yaml
+# deploy.yaml
+agents:
+  - name: forge
+    engine:
+      kind: graph
+      settings:
+        path: ./graphs/react.yaml
+    runtime:
+      layers: [{priority: 0, path: ./runtime.yaml}]
+```
+
+```yaml
+# graphs/react.yaml
 version: 1
-name: assistant
+name: react
 entry: model
-input: messages            # the state key a run's message is seeded into
+input: messages
+
+limits:
+  max_steps: 24
+  max_nodes: 200
+  timeout: 5m
+  concurrency: 4
+
+checkpoint:
+  every: 8              # also write a base every N steps
+
+stream:
+  state: false          # report each step's writes as a GraphState event
+
 state:
-  messages: {type: messages, merge: append}
-  pending:  {type: json}
-  answer:   {type: text}
+  messages: {type: messages, merge: append, carry: true}
+  pending: {type: json}
+  answer: {type: text}
+
 nodes:
   - id: model
     kind: model
-    config: {messages: messages, pending: pending, output: answer}
+    config:
+      messages: messages
+      pending: pending
+      usage: usage
+      request:
+        model: {provider: openai, name: gpt-5}
+        system: "You are a coding agent."
+        tools: {names: [read, write, exec]}
   - id: tools
     kind: tool
-    config: {messages: messages, pending: pending}
+    config:
+      messages: messages
+      pending: pending
+      parallelism: 4
+  - id: done
+    kind: condition
+    config:
+      key: answer
+
 edges:
-  - {from: model, to: tools, when: len(state.pending) > 0}
+  - {from: model, to: tools, when: "len(pending) > 0"}
+  - {from: model, to: done, when: "len(pending) == 0"}
   - {from: tools, to: model}
-  - {from: model, to: end}
-output: {key: answer}
+
+output:
+  key: answer
 ```
 
-- `state` declares every key a node may read or write, with its kind and its merge
-  rule. An undeclared key is a load error, not a new variable.
-- `edges[].when` is an expression over `state` and `step`, compiled at Build, so a
-  typo fails the load instead of a run.
-- A node returns state updates and nothing else: values do not travel along edges.
-- `output.key` is what a finished run reports, and `input` is where the caller's
-  message lands.
-- `limits` bounds a run: `max_steps`, `max_nodes`, `timeout`, `concurrency`.
+| Field | Rule |
+| --- | --- |
+| `version` | Must be `1`. |
+| `entry` | The node the first frontier holds. |
+| `input` | The state key `Start` seeds with the run's messages. Empty means the graph takes no input, and a caller that supplies some is refused. |
+| `limits` | `max_steps`, `max_nodes` (skipped nodes count: a cycle of skipped nodes still spends budget), `timeout`, `concurrency`. Zero means no cap — the caller's context is always the outer bound. |
+| `checkpoint.every` | `0` writes a base only when the deltas would be missing; a positive value also writes one every N steps, bounding how long a restart replays. |
+| `stream.state` | Emit a `GraphState` event per step. Off by default: it costs a JSON projection per step, and a run nobody is watching should not pay for one. |
+| `output.key` | The state key a finished run reports. |
 
-## Node kinds
+YAML is the written form and JSON is accepted; both go through one strict
+decoding, so an unknown field is an error either way.
 
-The built-in kinds are `model`, `tool` and `condition`. A host adds its own with
-`nodes.WithKinds(...)`; the script kind lives in `nodes/script` and runs a rule
-written in Starlark — see [script.md](script.md).
+## State
 
-> **The rest of this page predates the current engine.** The sections below
-> describe the board, channels, node-type resources and script bridges that
-> `core/agent-graph` no longer has. Until they are rewritten, treat
-> `core/agent-graph/{graph,node,run}.go` and the package docs as the source of
-> truth.
+| Field | Values |
+| --- | --- |
+| `type` | `text`, `json`, `messages`, `bool`. |
+| `merge` | `single` (default: a second write in one step is an error), `last` (last write wins), `append` (the writes concatenate). |
+| `carry` | Keep this key across the tasks of one session: a new task seeds it from the previous task's state instead of the declared zero value. |
 
-## Engine settings (`agent.Engine/graph`)
+`carry` is the document's way to say "this is the conversation, not the
+request". It is meant for bounded state — a game, a form, a plan — which carries
+in microseconds. A key that grows without bound costs its own size on every turn,
+because the state is re-read from the store: a 200-message transcript measured
+667 µs and 5000 allocations per turn. A long conversation belongs in one task,
+not in a carried key.
 
-The deployment-facing factory is `core/graph/resource`. Its settings subtree:
+Nodes in one step read the state as it was when the step started. Their writes
+apply after the step, in declaration order — which is why `merge: single` turns
+"two nodes wrote the same key" into an error instead of a coin flip.
 
-| Key                              | Meaning                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------ |
-| `graph`                          | graph definition: literal content, `{file: ...}`, or `{embed: ...}` (required) |
-| `build.max_iterations`           | cap on nodes routed per `Execute`; default `100`, `0` lifts the guard          |
-| `build.timeout`                  | wall-clock bound for one `Execute` call (Go duration string, e.g. `1h`); `0` means no engine-level bound |
-| `build.run_end_publish_timeout`  | deadline for publishing terminal run events; default `5s`, must be `> 0`       |
-| `build.max_node_retries`         | retries per node before the run fails                                          |
-| `build.checkpoint_compaction`    | incremental records a checkpoint chain may hold before a full one is rewritten; default `32` |
-| `build.parallel.enabled`         | enable parallel waves                                                          |
-| `build.parallel.branch_timeout`  | per-branch wall-clock bound; `0` means none                                    |
-| `build.parallel.max_concurrency` | max concurrent branches                                                        |
-| `build.parallel.max_branches`    | max total branches per wave                                                    |
-| `build.parallel.merge_strategy`  | `first_write_wins` or `last_write_wins`                                        |
-
-The engine has two deps and no others:
-
-| Dep               | Meaning                                                                                                          |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `node_type`       | the `graph.NodeType` resources the graph may reference, as `node_type` or `node_type.<suffix>` (`Many`, optional) |
-| `script_bindings` | an `agent.ScriptBindings` provider replacing the script surface (optional)                                        |
-
-Every collaborator a node actually calls — the inference assembly or router,
-the tool assembly, the script runtime, the workspace, the sandbox — is a dep of
-the *node type*, not of the engine (see "Node types" below). A type that lacks
-one of them fails the build, naming the node that needed it. The optional
-`script_bindings` dep replaces the engine-level script surface; see "Script
-bindings" below — to keep the standard surface and extend it, compose it with
-`impl: chain` of the same kind.
-
-### Budgets and timeouts
-
-Three independent budgets bound a graph run; they compose with whatever the
-host layers on top.
-
-- **Iteration guard** (`build.max_iterations`, default `100`, `0` = unlimited)
-  counts *nodes routed*, not nodes invoked: a node whose skip condition fires
-  still routes along its edges and still consumes budget, which is what keeps a
-  cycle of skipped nodes from spinning forever. The check runs once per wave,
-  so the counter never exceeds the cap, but a wave that no longer fits fails
-  outright instead of running partially. The kernel also injects the counter
-  into edge conditions as `__iterations`, the supported way to soft-exit a loop
-  (`"__iterations < 10"`) instead of tripping the guard. Conditions are
-  evaluated after a wave, so a wide wave can overshoot the threshold by its own
-  size.
-- **Wall clock** (`build.timeout`, `build.parallel.branch_timeout`) —
-  `build.timeout` bounds one `Execute` call, run-start publish and checkpoints
-  included; `0` disables it. `branch_timeout` bounds each parallel branch; a
-  branch that times out fails the whole wave. Context cancellation is
-  cooperative: a handler that ignores its context can run past the deadline, so
-  scripts that must be cut off need `max_exec_time` and shell calls need the
-  sandbox timeout.
-- **Publish window** (`build.run_end_publish_timeout`, default `5s`, must be
-  `> 0`) bounds the terminal events, which are published on a detached context
-  so they still go out after a timeout. A failed terminal publish fails the run
-  (`agent.RunEndPublishError`), so keep it above the bus's normal latency;
-  `Execute` can take up to `build.timeout + run_end_publish_timeout` in the
-  worst case.
-
-All three are per `Execute`, not per agent run: a revise attempt or a resume is
-a new `Execute` call and gets a fresh window. Bound the whole run from the agent
-layer with `policy.run_timeout` (a Go duration string, e.g. `10m`) or
-`agent.WithRunTimeout`; that single deadline wraps every attempt, Referee and
-Committer, and the shorter of it and the engine's own timeout wins.
-
-`max_iterations` is a loop guard, not a cost guard: node retries
-(`build.max_node_retries`) and provider calls made inside one node (a script
-looping over `inference.generate`, say) do not advance the counter. Enforce
-cross-attempt token or cost limits through the host's usage budget —
-`agent.Host.ReportUsage` returning `errdefs.BudgetExceeded`.
-
-A failed engine call surfaces as `BudgetExceeded` (HTTP 429) or, once a
-deadline fires, as a timeout (HTTP 504). Both end the run, neither is retried by
-`build.max_node_retries`, and a non-completed attempt never consumes the revise
-budget. Timeouts raised *inside* a node by its provider or tool are retried like
-any other transient failure.
-
-Build-time topology findings (unreachable nodes, cycles with no conditional
-exit, missing default branches) never fail the build; the resource factory logs
-each one as a `graph build warning`.
-
-## Script runtimes
-
-Script nodes run on an `agent.ScriptRuntime` resource mounted on the node type
-that provides them, under `script_runtime.<name>`; a node's `config.runtime`
-selects one by that name, so a single type can serve a JS node and a Lua node
-of the same graph. The core runtimes:
+## Nodes
 
 ```yaml
-resources:
-  js:
-    kind: agent.ScriptRuntime
-    impl: js
-    settings:
-      pool_size: 4              # positive; number of pooled VMs
-      max_call_stack_size: 512  # js only; positive call-stack bound
-      max_exec_time: 30s        # Go duration; zero disables the cap
-
-  lua:
-    kind: agent.ScriptRuntime
-    impl: lua
-    settings:
-      pool_size: 4
-      max_exec_time: 30s
+- id: model                 # unique within the document
+  kind: model               # a registered kind; unknown is a load error
+  config: { ... }           # the kind decodes this strictly
+  skip: "step > 10"         # a condition: when it holds, the node is not invoked
+  timeout: 90s              # one invocation
+  retries: 2                # retryable failures
 ```
 
-Implementations live in `core/agent/scriptrt/{jsrt,luart}`. A runtime that
-cannot nest sub-scripts degrades `runtime.execScript` to a `not_available`
-signal instead of panicking (see below).
+A skipped node is not invoked, **but its outgoing edges still fire**: it routes
+without running. That is what makes `skip` useful for a terminating branch.
 
-## Node types
+### `model`
 
-Nothing about a node type is built in. `inference`, `tool` and `script` are
-`graph.NodeType` resources like any host-provided type, mounted on the engine's
-`node_type` dep, and a graph names the types its deployment declared:
+One model call per invocation.
+
+| Config | Meaning |
+| --- | --- |
+| `messages` | State key carrying the conversation (a `messages` value). |
+| `pending` | State key the call's tool calls are written to. |
+| `usage` | State key the token usage is appended to. |
+| `output` | State key the response text is written to. |
+| `request.stream` | Nil streams (incremental events, what a reader watches); `false` returns one finished response for a call whose answer is data. |
+| `request.model` | `provider`, `name`, `profile` — resolved against the runtime's routing table. |
+| `request.system` | The system framing for this call. |
+| `request.tools` | `enabled`, `names` (restrict the offer), `require` (force visible in a dynamic catalog), `choice`. |
+| `request.extensions` | Provider extensions, decoded by the registered `ExtensionDecoder`s. |
+
+### `tool`
+
+Executes the pending tool calls.
+
+| Config | Meaning |
+| --- | --- |
+| `messages`, `pending` | As above: read the conversation, drain the pending calls. |
+| `effects` | `after` (default) records a finished call; `before` writes the started record before the tool runs, so a crash leaves an outcome to reconcile instead of a silent duplicate. |
+| `parallelism` | Caps how many calls of one batch run at once; `0` leaves the batch unbounded. |
+
+### `condition`
+
+Evaluates an expression and writes the branch it took.
 
 ```yaml
-resources:
-  node_inference:
-    kind: graph.NodeType
-    impl: inference
-    deps: {inference: infer, router: router, tools: tools}
-  node_tool:
-    kind: graph.NodeType
-    impl: tool
-    deps: {tools: tools}
-  node_script:
-    kind: graph.NodeType
-    impl: script
-    deps: {script_runtime.js: js, tools: tools, workspace: ws}
-
-agents:
-  assistant:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.inference: node_inference
-        node_type.tool: node_tool
-        node_type.script: node_script
-      settings:
-        graph: {file: ./graphs/assistant.json}
+- id: done
+  kind: condition
+  config: {key: answer, when: "answer != nil", then: yes, else: no}
 ```
 
-The dep key's suffix names the type a graph references (`node_type.tool` mounts
-a type named `tool`); `settings.type` renames it. The engine registers no
-default, so a graph naming a type no dep provides fails `Build` rather than
-running against a collaborator the deployment never granted — a graph with no
-`script` node type cannot run script at all.
+### `script`
 
-The standard impls and the collaborators each one declares:
+Not built in: a host registers it, because a script engine is a dependency
+choice. See [script.md](script.md).
 
-| impl            | deps                                                                                                            |
-| --------------- | --------------------------------------------------------------------------------------------------------------- |
-| `inference`     | `inference` and/or `router` (at least one), plus optional `tools`                                               |
-| `tool`          | `tools` (required)                                                                                              |
-| `script`        | `script_runtime.<name>` (at least one), plus optional `tools`, `inference`, `router`, `workspace`, `sandbox`     |
-| `script_inline` | the same as `script`, with the source fixed in the type's settings instead of in each node's config             |
+## Conditions
 
-Changing a collaborator is then scoped: a graph that must not reach a workspace
-mounts a script type without `workspace`, and only script nodes of *that* type
-see the difference.
-
-### `inference` — single-shot generation
-
-Runs one `Generate` call: the channel tail is the current turn's input, the
-assistant message (tool calls included) is appended to the same channel.
-The node never executes tool calls — a `tool_calls` finish reason is flagged
-onto `tool_pending_key` and the graph routes onward.
-
-| Config field                             | Meaning                                                                                                           |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `model`                                  | explicit target `{id: {provider, name}, profile?}`; absent defers selection to the wired router                   |
-| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board:model}`); the hinted target is tried first, and on failure fallback restarts at the head of the default chain |
-| `messages_channel`                       | board channel holding the conversation; empty means the main channel (`__main_channel`)                          |
-| `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
-| `output_key`                             | board var receiving the full assistant `Message`                                                                  |
-| `usage_key`                              | board var receiving the call's `inference/usage.Usage`                                                            |
-| `tool_pending_key`                       | board var receiving `finish_reason == tool_calls` (the condition edges branch on)                                 |
-| `undefined_tool_recovery`                | `{enabled, max_per_run}`: convert an undefined-tool rejection into recoverable board feedback instead of failing the node; disabled by default |
-| `recover_pending_key`                    | board var receiving whether the round was recovered from an undefined-tool response (loop-back condition)             |
-| `recover_count_key`                      | board var receiving the per-run recovery counter (node hard-fails past `max_per_run`)                               |
-| `recover_feedback_key`                   | board var receiving the user-role feedback text for the recovered round; the recovered inference round consumes it as its current input; defaults to the reserved per-node `__recover_feedback.<node id>` var when unset |
-| `stream`                                 | open a `GenerateStream`; text/reasoning deltas stream incrementally, the board still gets one assembled message   |
-| `stream_failure_policy`                  | `{on_error, on_interrupt}` actions (`commit_partial`, default, or `discard`) for what happens to buffered partial text when a streamed call fails or is interrupted; a recoverable undefined-tool rejection always discards |
-| `tools`                                  | named catalog tools the model may call this turn                                                                  |
-| `all_tools`                              | send the catalog's entire visible set; with `tools`, names are declared `RequiredByName` and must exist           |
-| `tool_choice`                            | constrain when/which tools are called                                                                             |
-| `intent`                                 | canonical execution envelope: `{text, image, audio, video}` with per-modality controls (see below)                |
-| `extensions`                             | provider knobs in the `{provider, id, fields}` wire form, resolved via the assembly's decoders                    |
-| `request_metadata`                       | opaque `map[string]string` copied onto the canonical `GenerateRequest`; keys are deployment-defined and core never interprets them |
-
-Behavior:
-
-- The channel tail must have role `user` or `tool`; everything before it is
-  the request context. An empty channel or wrong role is a validation error.
-- `request_metadata` is copied verbatim onto the canonical request. Only
-  drivers whose deployment sets `request_metadata.envelope` forward it;
-  unsupported or unconfigured drivers report a `dropped` compile decision
-  instead of failing the node silently.
-- `model` uses the wired `inference.Assembly`; no `model` requires the
-  `inference.Router` (selector/fallback chain picks the target).
-- `model_hint` is a request-level preference consumed only by the router:
-  it never bypasses the router or targets a model outside the configured
-  pools, and it is ignored when `model` is set. Board references resolve
-  per invocation, so a per-conversation choice can ride `agent.Request`
-  inputs (`inputs: {model: ...}`) and be read with `${board:model}` — pair
-  it with a default (`${board:model:}`) so turns without the input still
-  route with the default policy. A bare name is honored only when exactly
-  one configured target carries it; an unknown, malformed, or ambiguous
-  hint falls back to the default selection. The hinted model is tried
-  first; if it fails (or its declared output kinds cannot serve the
-  request), fallback continues through the declared order with the hinted
-  target omitted, skipping any target whose declared outputs cannot serve
-  the request and never re-attempting the hint. Hints match by provider +
-  model name — profiles are not part of a hint.
-- `intent` is the authoritative execution envelope and covers every
-  generation modality: text controls (`response`, `max_output_tokens`,
-  `tools`, `tool_choice`, `temperature`, `top_p`, `reasoning_enabled`,
-  `reasoning_effort` (`minimal|low|medium|high|xhigh`), image (`size`,
-  `count`, `seed`,
-  `output_format`, `delivery`, `quality`), audio/tts (`voice`, `format`, `speed`,
-  `count`), and video (`duration_millis`, `resolution`, `aspect_ratio`,
-  `seed`, `watermark`). When `intent` is absent the node defaults to plain
-  text generation. `tools` / `all_tools` / `tool_choice` remain node-level
-  sugar: they resolve the wired catalog into `intent.text.tools` /
-  `intent.text.tool_choice` and may not be combined with an intent that
-  declares those fields itself. Modality combinations a provider cannot
-  honor (image with sampling controls, tts with tools, …) are rejected by
-  the provider's compiler.
-- With `tools`/`all_tools` configured the tools dep's catalog must be wired;
-  unknown names fail the node.
-- A response whose tool calls name tools absent from the exposed definitions
-  is rejected by the engine with a distinguishable `undefined_tool` error
-  (not the generic `provider_response_unusable`). When
-  `undefined_tool_recovery` is enabled, the node stores a user-role
-  feedback text under `recover_feedback_key` (defaulting to the reserved
-  per-node `__recover_feedback.<node id>` var) — telling the model the
-  tool is not exposed and to use `tool_search` — sets `recover_pending_key` to true
-  (`tool_pending_key` to false), and returns success. The feedback is
-  deliberately never appended to the messages channel: the transcript stays
-  a pure user/assistant conversation, so UIs do not need to filter
-  engine-generated turns. On the recovered round the stored text becomes
-  the current input (user role) with the whole channel as context, so the
-  model sees the same sequence it would have seen from an appended
-  message. The graph must route the recovered round back to inference: the
-  `recover_pending_key` marker is the explicit hook for an edge back into
-  the tool loop (e.g. `llm -> compact` conditioned on
-  `recover_pending == true`). With a standard tool-pending graph whose
-  `llm -> __end__` edge fires when `tool_pending == false`, a recovered
-  round without a loop-back edge terminates the run with the feedback left
-  on the board — the model never gets another round. A graph whose tool
-  loop already routes the inference node back unconditionally can omit the
-  marker. Because the feedback is never a channel message, no tool node can
-  execute the rejected call by accident; a successful round clears
-  `recover_pending_key` and deletes the feedback var. `max_per_run`
-  (default 2) bounds recoveries per graph run; past it the rejection fails
-  the node as before, keeping strict deployments intact. One rejection
-  discards the whole round's response — the other tool calls in the same
-  response are dropped, and only the offending call is described in the
-  stored feedback. `tool_choice` `named`/`required` violations are never
-  recovered.
-- Usage is reported to the host on every call. In stream mode a mid-stream
-  failure commits the buffered partial text to the board and reports the
-  last usage snapshot before propagating the error — unless
-  `stream_failure_policy` is `discard` for that termination category, or
-  the failure is a recoverable undefined-tool rejection (which never
-  materializes partial text so the recovered round keeps a clean
-  transcript).
-
-```json
-{
-  "type": "inference",
-  "model": { "id": { "provider": "openai", "name": "gpt-image-1" } },
-  "intent": {
-    "image": { "size": { "width": 1024, "height": 1024 }, "count": 2 }
-  }
-}
-```
-
-### `tool` — batch tool execution
-
-Reads the `tool_call` parts off the channel tail's assistant message,
-executes the whole batch through the tool dispatcher (model-issued call ids
-preserved, so the provider can pair results next turn), and appends the
-results as one `role=tool` message — again a valid tail for `inference`.
-
-| Config field       | Meaning                                                                        |
-| ------------------ | ------------------------------------------------------------------------------ |
-| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
-| `results_key`      | board var receiving the raw `[]message.ToolResult` for downstream nodes/conditions |
-
-Each result uses the message wire shape — `{call_id, content: {parts:
-[...]}, is_error}` — so a multimodal tool result stays intact; read
-`content.parts[].text` for the text of a text part.
-
-Behavior:
-
-- The channel tail must have role `assistant` and carry at least one
-  `tool_call` part.
-- Allow-listing and approval policy live in the dispatcher's middleware
-  chain, not in the node.
-- Each result is published as a stream delta; a publish failure is logged
-  and does not fail the node (the calls already executed — retries would
-  re-run side effects).
-
-### `script` — embedded script with host bindings
-
-Runs inline JS or Lua source on the `agent.ScriptRuntime` the mounted type
-provides. Decoding is strict: unknown top-level config fields are errors.
-
-| Config field | Meaning                                                                                             |
-| ------------ | --------------------------------------------------------------------------------------------------- |
-| `runtime`    | name of a `script_runtime.<name>` dep on the mounted type; a name the type did not mount fails `Build` |
-| `source`     | inline script source; required (may be `{file: ...}` / `{embed: ...}`)                              |
-| `name`       | execution label for errors and runtime pooling; defaults to the node ID                             |
-| `config`     | becomes the script's `config` global; values may carry `${board:*}` references                      |
-
-Each invocation assembles a fresh script environment with the standard
-bridges below, executes the source, and maps control signals to Go errors.
-Subscriptions opened mid-script are bound to the invocation and never
-outlive it.
-
-## Script bridges
-
-Scripts never touch the Go context directly; the node exposes named globals
-through `core/agent/bindings` (plus three graph-layer bridges). This is the
-*standard* surface — a deployment replaces it wholesale with an
-`agent.ScriptBindings` provider (see "Script bindings" below), and composes
-several surfaces with the `chain` impl of that kind. Its availability
-depends on the deps of the node type running the script:
-
-| Global      | Wired when                                | Provides                             |
-| ----------- | ----------------------------------------- | ------------------------------------ |
-| `board`     | always                                    | read/write board vars and channels   |
-| `expr`      | always                                    | evaluate expr-lang expressions       |
-| `host`      | always                                    | publish/emit/interrupt/askUser/usage |
-| `run`       | always                                    | read-only run identity               |
-| `node`      | always                                    | current graph node identity          |
-| `tools`     | the type has a `tools` dep                | call tools / list catalog            |
-| `inference` | the type has an `inference`/`router` dep  | LLM generation, routing, streaming   |
-| `stream`    | always (needs a host with an event bus)   | subscribe to node stream deltas      |
-| `parallel`  | always (active during parallel waves)     | cancel sibling branches              |
-| `fs`        | the type has a `workspace` dep            | workspace file operations            |
-| `shell`     | the type has a `sandbox` dep              | sandboxed command execution          |
-| `runtime`   | always                                    | nested sub-script execution          |
-
-### Script bindings (`agent.ScriptBindings`)
-
-The table above is the *standard* surface. Which globals a script execution
-gets is decided by one engine-level bindings provider, wired as the optional
-`script_bindings` dep:
+Conditions are [expr](https://expr-lang.org) expressions over the state as it was
+when the step started, plus `step`:
 
 ```yaml
-resources:
-  std:
-    kind: agent.ScriptBindings
-    impl: standard          # core's implementation of the table above
-    deps:
-      tools: tools          # each wired capability unlocks its global
-      workspace: ws
-      inference: infer
-
-agents:
-  assistant:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.script: node_script   # mounted with deps: {script_runtime.js: js}
-        script_bindings: std
-      settings:
-        graph: {file: ./graphs/assistant.json}
+skip: "step > 10"
+when: "pending != nil and len(pending) > 0"
 ```
 
-- **Wired** — the provider serves every script execution of the graph: the
-  mounted `script` / `script_inline` types and script-backed custom node types
-  alike. It *replaces* the standard surface rather than extending it, so a
-  provider that binds `tokens` and nothing else leaves scripts without `board`.
-- **Not wired** — each script-running node type falls back to the standard
-  bindings over its own deps: a `script` type unlocks `tools` / `inference` /
-  `fs` / `shell` from the deps it was mounted with, and so does a
-  `script_inline` or host-provided one. Omitting the dep keeps the standard
-  surface, so a deployment only mounts `script_bindings` to replace or extend
-  it.
-- **`impl: none`** — binds nothing at all: scripts still run, with an empty
-  scope. The explicit way to disable the surface for a locked-down graph.
-- **`impl: chain`** — composes the kind's resources into one provider: the
-  optional `base` first, then every `unit` dep in sorted key order (see
-  below). Like any other provider it replaces the standard fallback, so mount
-  `standard` as `base` to extend that surface rather than to drop it. It needs
-  at least one dep; `impl: none` is the empty surface.
+They are compiled once at build, so a typo is a load error rather than a
+run-time surprise, and a step evaluates its skip conditions and its edges against
+one snapshot. Values keep their shape in the environment: text is a string, a
+number or object is decoded JSON, a message list is the slice (so `len(messages)`
+works), media is its descriptor. A condition that returns a non-bool is a run
+error naming the node.
 
-The standard impl also carries the *policy* of the bridges whose shape the
-surface owns, so a deployment configures them without touching Go:
-
-| Setting                | Meaning                                                                                       |
-| ---------------------- | --------------------------------------------------------------------------------------------- |
-| `tools.allow`          | the exact catalog tools the surface may call; every name must exist in the wired tool assembly, so a typo fails the build. An explicit empty list denies every tool |
-| `tools.allow_all`      | expose the whole catalog (fully trusted scripts only); conflicts with `allow`                  |
-| `fs.max_read_bytes`    | positive cap on one `fs.read`; omitting keeps the bridge default                               |
-| `fs.max_write_bytes`   | positive cap on one `fs.write`; omitting keeps the bridge default                              |
-| `shell.allow`          | commands `shell.exec` may run, matched as written and by base name; an explicit empty list denies every command, omitting leaves the sandbox policy in charge |
-
-A policy section requires the capability it configures (`tools`, `workspace`,
-`sandbox`) to be wired; asking for a policy without it fails the build.
-Omitting a section keeps the bridge default — notably, `tools` stays
-fail-closed: without `tools.allow` or `tools.allow_all` a script cannot call
-any tool. The fallback surface (no `script_bindings` dep) carries no
-document-level policy at all, so wiring the standard resource is how a
-deployment configures the script surface.
-
-```yaml
-resources:
-  std:
-    kind: agent.ScriptBindings
-    impl: standard
-    deps: {tools: tools, workspace: ws}
-    settings:
-      tools: {allow: [search, fetch]}
-      fs: {max_read_bytes: 65536}
-```
-
-Hosts extend the surface by registering their own impl of the kind. A
-provider binds its own globals only — composition is the deployment's job:
+## Extending it with a node kind
 
 ```go
-// The provider is built once per deployment: per-execution state (board,
-// node identity, executing runtime) arrives through the invocation.
-type tokensProvider struct{}
-
-func (tokensProvider) Bind(inv bindings.Invocation) ([]bindings.Binding, error) {
-    tokens := bindings.Binding{
-        Name: "tokens",
-        Value: map[string]any{
-            "estimate": func(text string) int { return len(text) / 4 },
-            "nodeID":   func() string { return inv.NodeID },
-        },
-    }
-    return []bindings.Binding{tokens}, nil
+type NodeKind interface {
+    Name() string
+    Invoke(ctx context.Context, in Invoke) (NodeStream, error)
 }
 
-// The factory is registered on the host's resource registry.
-func (tokensFactory) Spec() resource.Spec {
-    return resource.Spec{Kind: bindings.ResourceKind, Impl: "tokens"}
+// Optional: parse the config once, at Build.
+type ConfigDecoder interface {
+    DecodeConfig(raw json.RawMessage) (any, error)
 }
-
-func (tokensFactory) New(context.Context, resource.Input) (any, error) {
-    return bindings.Provider(tokensProvider{}), nil
-}
-
-registry.Register(tokensFactory{})
 ```
 
-```yaml
-resources:
-  std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
-  tok: {kind: agent.ScriptBindings, impl: tokens}
-  panel:
-    kind: agent.ScriptBindings
-    impl: chain
-    deps: {base: std, unit.tokens: tok}
+`Invoke` carries everything a node needs and nothing it could misuse:
 
-agents:
-  assistant:
-    engine:
-      deps: {node_type.script: node_script, script_bindings: panel}
-```
+| Field | Use |
+| --- | --- |
+| `Node`, `Config`, `Decoded` | The instance id, its raw settings, and the value `Build` decoded. |
+| `State(key)`, `Snapshot()` | Read a declared key, or the whole step. The snapshot is read-only: it is shared by every node of the step. |
+| `Step` | The loop counter, so a node can decide to stop. |
+| `Answer` | The reply to a question this node asked by suspending. |
+| `Lookup`, `Replay` | A recorded model call by request hash, and whether the run must answer from records (a miss is an error, not a silent live call). |
+| `Records(kind)`, `Checkpoint` | Durable facts earlier steps recorded, and an immediate write for a side effect that must be recorded before it runs. |
+| `Trace`, `Bodies` | How much is traced, and whether response bytes are kept. |
 
-A provider is built once per deployment and shared across runs, so it reads
-per-execution state from the invocation it is handed: the run's board, the
-host, the node identity, the executing `agent.ScriptRuntime`, the per-node
-stream emitter, and the run identity. `bindings.Provider.Bind` returns the
-ordinary globals; an optional `bindings.LateProvider.BindLate` runs after
-them and sees the built environment — that is how `runtime` captures the
-final bindings map so nested sub-scripts inherit the same surface. A name
-bound twice fails the execution instead of silently shadowing, and every
-global name must be an identifier that is neither a JavaScript nor a Lua
-keyword (`tokens`, `db_query`; not `tokens.estimate`, `$helper`, `var`,
-`end`) — a name a script cannot reference is rejected at assembly rather
-than installed as an unreachable property. Inside a chain the duplicate
-report names the dep keys that bound the name; direct wiring reports the
-name alone.
+A node returns a `NodeStream` rather than calling back into the engine — the
+engine pulls, so backpressure and cancellation are the contract rather than a
+convention, and a kind can be tested by feeding it inputs and reading the stream.
+Most kinds compute and return `Static(result)`; only one that reports progress (a
+streaming model call, a long tool run) needs its own stream.
 
-A host impl may still take an optional `base` dep and `bindings.Chain` its
-own provider onto it — the pattern before `chain` existed. It keeps working,
-and a chain accepts such a provider as a unit; prefer `impl: chain` for new
-deployments, because the composition then lives in the document instead of
-in every host factory.
+`Result` has three fields: `State` (the writes), `Records` (durable facts),
+`Suspend` (a question). A node that suspends loses its writes — it is re-entered
+from the start on resume and produces them again, so committing them now would
+apply them twice.
 
-#### Composing surfaces (`agent.ScriptBindings/chain`)
-
-`impl: chain` composes the kind's resources into one provider: the optional
-`base` dep binds first, then every `unit` dep in sorted key order (`unit`
-before `unit.a`, `unit.b`, ...). Order is the dep key order, not the order
-written in the document, so choose key names that read in the intended order.
-
-```yaml
-resources:
-  std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
-  tok: {kind: agent.ScriptBindings, impl: tokens}
-  audit:
-    kind: agent.ScriptBindings
-    impl: audit
-    deps: {events: bus}
-  panel:
-    kind: agent.ScriptBindings
-    impl: chain
-    deps: {base: std, unit.audit: audit, unit.tokens: tok}
-
-agents:
-  assistant:
-    engine:
-      deps: {node_type.script: node_script, script_bindings: panel}
-```
-
-- A unit binds its own globals only; a base or unit may itself be a chain, a
-  host impl, `standard` or `none`, so `std` + `tokens` + `audit` needs no
-  intermediate resources.
-- Both phases keep that order: every unit's ordinary bindings, then every
-  unit's `LateProvider` phase — the order `bindings.Merge` applies for
-  every composed surface, `bindings.Chain` included.
-- The engine still consumes one provider: a chain replaces the standard
-  surface like any other provider, so mount the standard resource as `base`
-  to extend it rather than to drop it.
-- A duplicate global fails the execution, naming the deps that bound it. The
-  common case is a unit that rebinds a base global:
-  `global "board" bound by both dep "base" and dep "unit.tokens"`. A late
-  binding that lands on a name an ordinary one already bound names the late
-  dep only — `global "board" bound by dep "unit.tokens" was already bound
-  before the late phase` — because the merge does not carry the ordinary
-  phase across the two calls. Names exist only once a provider binds, so a
-  duplicate *name* cannot be caught at deploy time — a chain at least says
-  what collided.
-- Mounting one provider value under two dep keys is refused earlier, at build
-  time (`provider mounted twice (as "base" and "unit.same")`), when the value
-  can be identified: identity is pointer equality, so pointer-backed providers
-  only. `standard` and `chain` return struct values and `none` a function, so
-  a doubly mounted `standard` or `chain` builds and falls through to the
-  execution-time check above, which names both keys; a doubly mounted `none`
-  binds nothing, so it has nothing to collide.
-- A chain with no `base` and no `unit` fails the build instead of deploying a
-  surface that binds nothing: binding nothing on purpose is what `impl: none`
-  says.
-- The impl takes no settings: the composition is the deps, and a settings
-  key fails the build instead of being ignored.
-- A chain is a normal resource: built once, shareable by several engines,
-  and it needs a core release that registers the impl — an older pin rejects
-  the document with `no factory for agent.ScriptBindings/chain`.
-
-The surface is observable: the node span carries `script.bindings.count` and
-`script.bindings.source` (`engine` for a wired provider, `standard` for the
-fallback), and a debug log named "script bindings assembled" lists the node
-identity and the global names. That is what makes "the script says `board is
-not defined`" distinguishable from a typo in the script.
-
-### Declaring your own type (`graph.NodeType`)
-
-A resource of kind `graph.NodeType` produces a value implementing
-`graph.NodeTypeRegistrar`; the graph engine factory registers every `node_type`
-dependency into the engine's registry before `Build`, so the graph definition
-can reference the type by name. The standard impls take exactly that path —
-the engine fills no registry of its own.
-
-Because a node type is a resource, it participates in the normal resource DAG:
-it declares its own deps (script runtime, tools, workspace, ...), is built
-exactly once, and can be shared by several agents. The engine accepts the deps
-under the `node_type` name or `node_type.<suffix>` keys (the `Many` dep form,
-like `tool.*` sources). The dep suffix names the type a graph references and
-`settings.type` overrides it, so mounting two resources of one impl gives two
-independent types. The dep keys are what the diagnostics report: one resource
-mounted under two keys fails the build naming both, two resources claiming one
-type name fail it naming both keys when they implement
-`graph.TypeNameProvider` (`NodeTypeNames`) and otherwise fail in `RegisterType`
-naming the key that lost, and a graph naming an unmounted type lists the names
-the mounted resources would have provided.
-
-#### The type owns its config contract (`ValidateConfig`)
-
-The engine never looks inside a node's config, so a type that has a build-time
-opinion about it says so itself:
+Register kinds where the graph is opened:
 
 ```go
-coregraph.NodeType[MyConfig]{
-    Handler:        handler,
-    ValidateConfig: func(nodeID string, raw json.RawMessage) error { ... },
-}
+built, err := nodes.Open(ctx, rt, "graphs/react.yaml",
+    nodes.WithKinds(myKind()),                  // static kinds
+    nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
+        return script.New(script.WithRuntime(rt))
+    }),
+    nodes.WithModelDecoders(decoders),          // request.extensions
+    nodes.WithBlobStore(store),                 // media out of the state
+)
 ```
 
-It runs at `Build`, once per node of the type, after the unknown-field check and
-before the I/O roles resolve — so it sees the config as written, with
-`${board:*}` references still unresolved. The standard types use it for the
-checks the kernel cannot make: an inference node without `model` on a type with
-no `router`, a node naming a tool the catalog does not have, a script node
-selecting a runtime the type did not mount. Each one names the node id, the type
-and the dep to add, and each one fails the deployment rather than the node's
-first turn.
-
-#### Script-backed impl (`graph.NodeType/script_inline`)
-
-The `script_inline` impl defines the node behaviour as one embedded script that
-runs on the mounted `agent.ScriptRuntime` with exactly the same bridges as the
-`script` node type. The node's config in the graph definition is the script's
-`config` global (board references still resolve first), and the script
-writes/reads the board like any script node. The `script` impl is the same node
-behaviour with the source in each node's config instead of in the resource, so a
-deployment that wants N bespoke node types mounts N `script_inline` resources and
-a deployment that wants one type for many inline scripts mounts one `script`.
-
-| Settings field | Meaning                                                                       |
-| -------------- | ----------------------------------------------------------------------------- |
-| `type`         | the node type name graphs reference; defaults to the impl name (`script_inline`), must not collide with another mounted type |
-| `runtime`      | name of a `script_runtime.<name>` dep on this type; optional with one runtime dep, required with several |
-| `source`       | handler source: inline string or `{file: ...}` / `{embed: ...}` (required)    |
-| `desc`         | optional human-readable type description                                      |
-| `reads` / `writes` | static I/O roles (`kind: var|messages`, `name` or `config_key`, `required`); enforced at Build and invocation |
-
-Deps: `script_runtime.<name>` (at least one), plus optional `tools`,
-`inference`, `router`, `workspace`, `sandbox` enabling the same globals the
-`script` type unlocks (`tools`, `inference`, `fs`, `shell`). When the engine
-wires a `script_bindings` dep, that engine-level provider serves this type too —
-the node type's own deps are the fallback.
-
-```yaml
-resources:
-  greet:
-    kind: graph.NodeType
-    impl: script_inline
-    deps:
-      script_runtime.js: js
-    settings:
-      type: greet
-      source: board.setVar("greeting", "hi " + config.name)
-      writes:
-        - kind: var
-          name: greeting
-          required: true
-
-agent:
-  asst:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.greet: greet
-```
-
-The graph can then use the type like any other:
-
-```json
-{
-  "name": "greeter",
-  "entry": "hello",
-  "nodes": [
-    {
-      "id": "hello",
-      "type": "greet",
-      "config": { "name": "${board:user}" }
-    }
-  ],
-  "edges": []
-}
-```
-
-Go-backed custom node types follow the same contract: a host or plugin
-registers a `graph.NodeType` resource factory whose value implements
-`graph.NodeTypeRegistrar` (typically by calling `graph.RegisterType` with a
-closure capturing the resource's deps). The engine wires them identically —
-`RegisterType` is what the standard impls call too.
-
-### `board`
-
-Direct read/write of the engine board.
-
-| Method                           | Signature                                                         |
-| -------------------------------- | ----------------------------------------------------------------- |
-| `board.getVar(key)`              | `any`                                                             |
-| `board.setVar(key, value)`       | —                                                                 |
-| `board.deleteVar(key)`           | —                                                                 |
-| `board.getVars()`                | `map`                                                             |
-| `board.hasVar(key)`              | `bool`                                                            |
-| `board.resolve(str)`             | `any` — typed `${board:*}` expansion                              |
-| `board.resolveString(str)`       | `string` — text `${board:*}` expansion                            |
-| `board.channel(name)`            | `array` of message objects (never null)                           |
-| `board.channelLen(name)`         | `number` — message count                                          |
-| `board.lastMessage(name)`        | last message object, or `null` when the channel is empty          |
-| `board.channelTail(name, count)` | `array` — the last `count` message objects, in channel order      |
-| `board.setChannel(name, msgs)`   | throws on validation errors                                       |
-| `board.appendChannel(name, msg)` | throws on validation errors; `msg` is one message or an array     |
-| `board.MAIN_CHANNEL`             | the reserved default channel name (use it instead of the literal) |
-
-`resolve` / `resolveString` run the same `${board:*}` expansion the
-engine applies to node config strings: missing references error unless a
-default is given, and `resolveString` renders non-string values to text.
-
-Messages use the inference wire format: `{role, content: {parts: [...]}}`
-with parts like `{"type": "text", "text": "..."}` or
-`{"type": "image", "source": {...}}`. Decoding is strict, so typos surface
-as errors.
-
-`channel` projects every message into a fresh object, so a node that only
-needs the size or the tail of a long conversation should read through the
-narrow accessors instead: `channelLen` is a count, `lastMessage` is the
-tail, `channelTail` is the last `count` messages. They touch the channel
-header and the tail alone. Reads are detached — editing what one returned
-never edits the board — and `appendChannel` copies what it appends, so a
-batch a script built stays its own.
-
-`lastMessage` answers `null` on an empty channel, so guard the fields you
-read off it. The array form of `appendChannel` lands a whole batch under
-one lock — a concurrent reader sees all of it or none of it — and
-validates the batch before anything is appended, so a batch that fails
-lands none of it. An empty list is not an error either way: an empty batch
-appends nothing, and `setChannel` with an empty list clears the channel.
-Lua spells both as the empty table.
-
-```js
-board.setVar("plan", "1. read files\n2. summarize");
-board.appendChannel(board.MAIN_CHANNEL, {
-  role: "user",
-  content: { parts: [{ type: "text", text: "go" }] },
-});
-```
-
-### `expr`
-
-Evaluates expr-lang against an environment map (compiled programs are LRU
-cached).
-
-```js
-var ok = expr.eval("score > 0.5 && !done", { score: 0.8, done: false });
-```
-
-### `host`
-
-The script-side handle onto `agent.Host`. Every method returns nil / `""` on
-a no-op host, so scripts can call them unconditionally.
-
-| Method                                            | Signature                                             |
-| ------------------------------------------------- | ----------------------------------------------------- |
-| `host.publish(subject, payload)`                  | `error` — low-level escape hatch to any event subject |
-| `host.emit(type, payload)`                        | void — per-node stream delta                          |
-| `host.checkInterrupt()`                           | `{cause, detail} \| null`                             |
-| `host.askUser({parts, schema, source, metadata})` | `{parts, metadata}`                                   |
-| `host.reportUsage({input, output, total})`        | `error`                                               |
-| `host.drainSteer()`                               | `array` of wire messages — take-all, `[]` when empty   |
-
-`host.emit` event types recognized by the graph script node:
-
-| Type          | Payload                                      | Resulting delta                |
-| ------------- | -------------------------------------------- | ------------------------------ |
-| `token`       | string (or any value, JSON-stringified)      | text part delta                |
-| `tool_call`   | JSON string or `{id, name, arguments}`       | tool call part delta           |
-| `tool_result` | `{tool_call_id, parts, is_error}`            | tool result part delta         |
-| `part`        | canonical part wire object (`{"type": ...}`) | arbitrary `message.Part` delta |
-| `finish`      | `{finish_reason, request_id?, response_id?}` | finish delta with typed fields |
-| `provider_outputs` | `[{provider, extension, value}]`        | provider_outputs delta         |
-| anything else | any value                                    | passthrough delta; raw payload rides under `payload` |
-
-Emission is fire-and-forget: publish failures are dropped, not thrown.
-Payloads that do not decode into the type's required shape (e.g. a
-`tool_call` without `id`) are skipped instead of published as empty
-deltas. `finish` requires `finish_reason`; `provider_outputs` requires
-a non-empty array with `provider` / `extension` / `value` on every
-entry.
-
-**Steering a running turn.** `host.drainSteer()` returns the messages the
-run's owner submitted while the run was in flight (the turn's steer queue)
-and empties it — `[]` when nothing is queued. The result uses the same wire
-shape `board.appendChannel` accepts, so the canonical steer node is:
-
-```js
-var pending = host.drainSteer();
-board.appendChannel(board.MAIN_CHANNEL, pending);
-```
-
-Binding the drain before appending is what keeps the node portable: in
-argument position a `host.*` call expands to both of its return values
-under Lua, where the binding reads the second one as an extra argument
-(`expected 2 arguments, got 3`). Appending the array lands the whole batch
-in one call, under one lock, so a concurrent reader sees all of the
-correction or none of it — a per-message loop can expose a prefix. An
-empty queue appends nothing and is not an error.
-
-Under JS a rejected append throws. Under Lua the binding reports the same
-rejection as its return value instead — Lua has no exception to catch —
-so a Lua steer node that must not pass a bad batch silently checks it:
-`local err = board.appendChannel(...)`; `if err then error(err) end`.
-
-The document declares *where* steer text lands by placing such a node, just
-like any other step: the usual position is a round boundary
-(`tools → steer → next round`), which puts the message after the tool result
-and before the next inference call, so the next round reads a valid
-conversation. Nothing else drains the queue — the executor's interrupt
-checkpoints are not delivery points, and core never injects text
-mid-stream. Draining is destructive and not latching: a later call answers
-with whatever arrived since. `host.drainSteer()` throws
-`errdefs.NotAvailable` when the host cannot accept steer at all (same
-classification as `stream.subscribe_node` without a bus); the runtime
-installs the queue on every turn, so a graph executed outside a runtime
-session (tests, dry runs) is the case that sees the error. Messages still
-queued when the turn ends before the node ran are never delivered — the
-turn result's state carries `session.pending_steer` with the count. The
-event stream does not: the run-end envelope is published before the turn
-settles, so read that count from the turn result.
-
-### `run`
-
-Read-only run identity, sourced from the ambient `RunInfo`. All getters
-return `""` when unset, so scripts can branch on absence directly.
-
-| Method                    | Returns                                  |
-| ------------------------- | ---------------------------------------- |
-| `run.get_run_id()`        | run id                                   |
-| `run.get_task_id()`       | task id                                  |
-| `run.get_agent_id()`      | agent id                                 |
-| `run.get_context_id()`    | conversation id                          |
-| `run.get_parent_run_id()` | parent run id (empty for top-level runs) |
-
-### `node`
-
-Per-step identity of the executing graph node (distinct from `run`, which is
-immutable across a whole run).
-
-| Method        | Returns                         |
-| ------------- | ------------------------------- |
-| `node.id()`   | the node's ID in the definition |
-| `node.type()` | the registered node type name   |
-
-### `tools`
-
-Script-callable facade over the tool dispatcher/catalog pair, with an
-allow-list set by the host (`WithAllowedToolNames` / `WithToolAllowAll`). By
-default **no** tool is callable.
-
-| Method                                         | Signature                                                       |
-| ---------------------------------------------- | --------------------------------------------------------------- |
-| `tools.call(name, argumentsJSON)`              | `{parts, is_error, tool_call_id, name}`                         |
-| `tools.callAll([{name, arguments, id?}, ...])` | same shape per entry, plus `name`; batch via the dispatcher     |
-| `tools.list()`                                 | `[names]` the script is allowed to call                         |
-| `tools.definitions()`                          | wire-ready tool declarations to splice into a generate request  |
-
-`parts` is the canonical part array (`{"type":"text","text":"..."}`,
-`{"type":"image","source":{...}}`, ...), never a flattened string, so a
-multimodal tool result reaches the script intact and can be passed back
-to `tools.callAll` or emitted unchanged.
-
-Denied entries get an `is_error` result in place; the rest of the batch
-still runs. A model-issued `id` passed to `callAll` is forwarded verbatim,
-which is required when results feed back into an LLM turn.
-
-### `inference`
-
-LLM generation from scripts. Requests/responses are the canonical
-`GenerateRequest` / `GenerateResponse` wire JSON; the bridge performs
-exactly one call per invocation, so multi-turn tool loops live in
-script-land (check `finish_reason`, call the message's tool parts via
-`tools.callAll`, continue with `input.role = "tool"`).
-
-| Method                                                                       | Behavior                                                                |
-| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `inference.generate(request)`                                                | exact model (`model` key required) via the assembly                     |
-| `inference.route(request)`                                                   | router-selected target (no `model` key); response gains `trace`         |
-| `inference.explain(request)`                                                 | preflight against one exact model, no provider I/O                      |
-| `inference.routeExplain(request)`                                            | preflight through the router; returns `{explanation, decision, limits}` |
-| `inference.models()`                                                         | full catalog of model descriptors                                       |
-| `inference.inspect(model)`                                                   | one model's descriptor                                                  |
-| `inference.embed(request)` / `inference.routeEmbed(request)`                 | embedding twins of generate/route                                       |
-| `inference.explainEmbed(request)` / `inference.routeExplainEmbed(request)`   | embedding twins of explain/routeExplain                                 |
-| `inference.explainStream(request)` / `inference.routeExplainStream(request)` | local stream preflight without opening a provider stream                |
-| `inference.stream(request)` / `inference.routeStream(request)`               | streaming twins returning `{next, result, close}`                       |
-| `inference.transcribe(request)` / `inference.routeTranscribe(request)`       | whole-audio transcription; route twin gains `trace`                     |
-| `inference.explainTranscribe(request)` / `inference.routeExplainTranscribe(request)` | transcription preflight (exact model vs router); route twin returns `{explanation, decision, limits}` |
-| `inference.transcribeSession(request)` / `inference.routeTranscribeSession(request)` | duplex session handle `{send, next, result, interrupt, finish, close}`; route twin attaches `trace` to the result |
-| `inference.decision(request)` / `inference.routeDecision(request)`       | evidence plus ordered questions, answers in request order; route twin gains `trace` |
-| `inference.explainDecision(request)` / `inference.routeExplainDecision(request)` | decision preflight (exact model vs router); route twin returns `{explanation, decision, limits}` |
-
-Stream handle: `next()` returns one event or `null` at EOF, `result()`
-returns the accumulated `GenerateResponse` after `next()` returned `null`,
-and `close()` abandons a stream early (idempotent).
-
-Transcription session handle:
-
-| Method              | Behavior                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------- |
-| `session.send(chunk)`   | feeds one `media.AudioChunk` wire JSON (`{data, sequence}`); fails once the session ended    |
-| `session.next()`        | one `TranscriptionSessionEvent`, or `null` at normal end; errors terminate the iteration     |
-| `session.result()`      | the accumulated `TranscriptionResponse` (same shape as `transcribe`); only after `next()` → `null` |
-| `session.interrupt()`   | terminates abnormally (barge-in); surfaces from the next `next()` / `result()`               |
-| `session.finish()`      | explicit end-of-input (`FinishInput`); errors when the provider session lacks the capability |
-| `session.close()`       | idempotent early exit                                                                        |
-
-Extensions ride a bridge-level `extensions` array of
-`{provider, id, fields}`, resolved through decoders the host registered
-with `WithExtensionDecoder`; unregistered identities fail.
-
-```js
-var resp = inference.route({
-  context: board.channel(board.MAIN_CHANNEL).slice(0, -1),
-  input: {
-    role: "user",
-    content: {
-      content: "summarize the workspace",
-      intent: { text: { tools: tools.definitions() } },
-    },
-  },
-});
-if (resp.finish_reason === "tool_calls") {
-  // pull tool_call parts off resp.message, call tools.callAll, loop
-}
-```
-
-### `stream`
-
-Node stream subscriptions over the run's event bus. Subscriptions are
-scoped to the script invocation and closed automatically when it ends or
-when every subscribed node has terminated.
-
-| Method                                                                | Signature                                                             |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| `stream.subscribe_node({node_id \| node_ids, run_id?, buffer_size?})` | `{next, next_timeout_ms, current, close}`                             |
-| `iter.next()`                                                         | `bool` — blocks for the next matching event                           |
-| `iter.next_timeout_ms(ms)`                                            | `(bool, error)` — bounded wait; timeout returns false without closing |
-| `iter.current()`                                                      | latest event map, or null                                             |
-| `iter.close()`                                                        | idempotent early close                                                |
-
-Options: `node_id` and `node_ids` are mutually exclusive; `run_id` must
-match the current run (overrides are rejected); `buffer_size` is 1..4096,
-default 256, with `DropOldest` backpressure so slow scripts still see
-terminal lifecycle events.
-
-Each event is a map with `event`, `envelope_id`, `id`, `subject`, `time`,
-`run_id`, `node_id`, `agent_id`, plus payload fields. Lifecycle events are
-`step.started` / `step.ended` (status `success` or `error`) /
-`step.skipped`; stream deltas arrive as `event: "stream.delta"` with
-`type` / `part` / `speculative` / `branch_id` fields, plus `payload`
-carrying the raw value of forward-compatible custom emit types.
-
-```js
-var iter = stream.subscribe_node({ node_id: "planner" });
-while (iter.next_timeout_ms(5000)) {
-  var ev = iter.current();
-  if (ev.event === "step.ended") break;
-}
-iter.close();
-```
-
-### `parallel`
-
-Parallel-fork controls. The controller exists only while a parallel wave is
-in flight; outside one `cancelNode` returns `false` (fail open).
-
-| Method                                | Signature                               |
-| ------------------------------------- | --------------------------------------- |
-| `parallel.cancelNode(nodeID, reason)` | `bool` — true if a branch was cancelled |
-
-### `fs`
-
-Workspace file operations (wired when the engine has a `workspace` dep; the
-workspace's own scoping/deny rules apply).
-
-| Method                    | Signature         |
-| ------------------------- | ----------------- |
-| `fs.read(path)`           | `(string, error)` |
-| `fs.write(path, content)` | `error`           |
-| `fs.exists(path)`         | `bool`            |
-| `fs.delete(path)`         | `error`           |
-
-### `shell`
-
-Sandboxed command execution (wired when the engine has a `sandbox` dep).
-Returns a result map instead of throwing on non-zero exits.
-
-| Method                     | Signature                     |
-| -------------------------- | ----------------------------- |
-| `shell.exec(cmd, args...)` | `{exit_code, stdout, stderr}` |
-
-The host may restrict commands with `WithAllowedCommands`; a rejected
-command returns `exit_code: -1` with an error in `stderr`.
-
-### `runtime`
-
-Nested script execution. Child scripts inherit the parent's final bindings;
-the child's `config` global is the second argument.
-
-| Method                               | Signature                                             |
-| ------------------------------------ | ----------------------------------------------------- |
-| `runtime.execScript(source, config)` | `(signal, error)` — error signals throw in the parent |
-
-Nested execution is a runtime capability, not a guarantee: a pool with one
-busy VM degrades to a `not_available` signal instead of panicking.
-
-## Example
-
-```json
-{
-  "name": "assistant",
-  "entry": "chat",
-  "nodes": [
-    {
-      "id": "chat",
-      "type": "inference",
-      "config": {
-        "messages_channel": "__main_channel",
-        "tool_pending_key": "tool_pending",
-        "tools": ["read_file", "list_dir", "grep"]
-      }
-    },
-    {
-      "id": "tools",
-      "type": "tool",
-      "config": {
-        "messages_channel": "__main_channel",
-        "results_key": "tool_results"
-      }
-    },
-    {
-      "id": "finalize",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": { "file": "./nodes/finalize.js" }
-      }
-    }
-  ],
-  "edges": [
-    { "from": "chat", "to": "tools", "condition": "tool_pending == true" },
-    { "from": "tools", "to": "chat" },
-    { "from": "chat", "to": "finalize", "condition": "tool_pending == false" },
-    { "from": "finalize", "to": "__end__" }
-  ]
-}
-```
-
-```js
-// nodes/finalize.js
-var last = board.lastMessage(board.MAIN_CHANNEL);
-if (last) board.setVar("summary", last.content.parts[0].text);
-host.emit("token", "done: " + run.get_run_id());
-```
-
-The three types the definition names have to be mounted, with the collaborators
-those nodes use (see "Node types" above):
-
-```yaml
-resources:
-  node_inference:
-    kind: graph.NodeType
-    impl: inference
-    deps: {inference: infer, router: router, tools: tools}
-  node_tool:
-    kind: graph.NodeType
-    impl: tool
-    deps: {tools: tools}
-  node_script:
-    kind: graph.NodeType
-    impl: script
-    deps: {script_runtime.js: js}
-
-agents:
-  assistant:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.inference: node_inference
-        node_type.tool: node_tool
-        node_type.script: node_script
-      settings:
-        graph: {file: ./graphs/assistant.json}
-```
-
-## Sources of truth
-
-`core/graph/definition.go`, `core/graph/graph.go`, `core/graph/execute.go`,
-`core/graph/nodes/inference.go`, `core/graph/nodes/tool.go`,
-`core/graph/nodes/script/`, `core/graph/resource/resource.go`,
-`core/graph/resource/node_types.go`, `core/graph/resource/node_type.go`,
-`core/agent/bindings/`.
+The registry's shape matches the engine tables in `core/deploy`: a kind is a name
+resolved at build time, so an unknown kind is a document error listing the known
+names.
+
+## Suspension
+
+Asking is a primitive, not a node kind: any node may ask — a tool node relaying an
+`ask_user` tool, a custom node collecting a missing parameter. `One node may
+suspend per step`, and the step finishes first, so a suspension cannot tear a
+concurrent step apart. On resume the node is re-entered from the start with
+`Invoke.Answer` set; anything it did before suspending is its own idempotency
+problem, which is why a node with a side effect should record it with
+`Checkpoint` before suspending.
+
+## Checkpoints and replay
+
+`graph.NewRunner` takes a `RunnerConfig` with the store, the run's identity and
+the session/task ids. The graph itself is compiled once per deployment and shared
+by every session; the runner owns one run.
+
+- Deltas are written with the step; a base carries the whole state and is written
+  when the deltas would be missing, or every `checkpoint.every` steps.
+- The engine's `Fingerprint` is the document's **path and bytes**: editing the
+  file invalidates the checkpoints taken under the old graph, the same rule a
+  changed runtime or engine setting follows.
+- `Replay: true` answers model calls from the task's records. A miss is an error,
+  because a replay that silently goes live is a replay that proves nothing.
+
+## Events
+
+Besides the events every run emits (text, reasoning, tool calls, usage), the graph
+adds `NodeEvent` and — when `stream.state` is on — `GraphState`, which reports
+each step's writes. Both are `agent.EventExtension` payloads, so a protocol
+forwards them without knowing the graph exists.
+
+## What replaced what
+
+| Gone | Now |
+| --- | --- |
+| `core/graph`, a board of untyped vars | `core/agent-graph`, declared state keys with merge rules |
+| Message channels copied per branch | Persistent message sequences, shared on append |
+| `reflect.DeepEqual` + `MergeFunc` | `merge: single / last / append`, declared per key |
+| Edges as bare connections | Edges carrying a compiled condition |
+| A fixed node set | A registry of kind names, extended by the host |
