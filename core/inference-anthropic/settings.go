@@ -21,6 +21,10 @@ const DefaultBaseURL = "https://api.anthropic.com"
 // DefaultTimeout bounds one HTTP call, including the response body.
 const DefaultTimeout = 2 * time.Minute
 
+// DefaultSchemaCacheEntries bounds the decoded tool-schema cache one provider
+// instance keeps. An LRU means a rotating catalog only pays for its working set.
+const DefaultSchemaCacheEntries = 512
+
 // Wire declares endpoint extensions the deployment accepts on top of the
 // Messages protocol.
 type Wire struct {
@@ -44,6 +48,10 @@ type Settings struct {
 	Timeout time.Duration
 	// Retries is how many extra attempts a retryable failure gets.
 	Retries int
+	// SchemaCacheEntries bounds the per-instance cache of decoded tool schemas.
+	// Zero uses DefaultSchemaCacheEntries; a negative value is rejected rather than
+	// silently defaulted.
+	SchemaCacheEntries int
 	// HTTPClient overrides the transport. Nil builds one from Timeout.
 	HTTPClient *http.Client
 	// Wire declares provider extensions this endpoint accepts.
@@ -60,6 +68,9 @@ func (s Settings) Validate() error {
 	}
 	if s.Retries < 0 {
 		return errors.New("anthropic: retries must not be negative")
+	}
+	if s.SchemaCacheEntries < 0 {
+		return errors.New("anthropic: schema_cache_entries must not be negative")
 	}
 	if s.Timeout < 0 {
 		return errors.New("anthropic: timeout must not be negative")
@@ -78,6 +89,9 @@ func (s Settings) normalized() Settings {
 	s.BaseURL = strings.TrimRight(s.BaseURL, "/")
 	if s.Timeout <= 0 {
 		s.Timeout = DefaultTimeout
+	}
+	if s.SchemaCacheEntries <= 0 {
+		s.SchemaCacheEntries = DefaultSchemaCacheEntries
 	}
 	return s
 }

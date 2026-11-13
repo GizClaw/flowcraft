@@ -21,6 +21,11 @@ const DefaultBaseURL = "https://api.openai.com/v1"
 // DefaultTimeout bounds one HTTP call, including the response body.
 const DefaultTimeout = 2 * time.Minute
 
+// DefaultSchemaCacheEntries bounds the decoded tool-schema cache one provider
+// instance keeps. It is sized for a large agent catalog: the entries are small
+// (a decoded schema object), and an LRU means only the working set is paid for.
+const DefaultSchemaCacheEntries = 512
+
 // API selects which wire surface the deployment speaks.
 type API string
 
@@ -75,6 +80,12 @@ type Settings struct {
 	Timeout time.Duration
 	// Retries is how many extra attempts a retryable failure gets.
 	Retries int
+	// SchemaCacheEntries bounds the per-instance cache of decoded JSON schemas —
+	// tool inputs and response formats, which share one cache because the decode is
+	// the same function over the same kind of value. Zero uses
+	// DefaultSchemaCacheEntries; a deployment with a large dynamic catalog can raise
+	// it, and a negative value is rejected rather than silently defaulted.
+	SchemaCacheEntries int
 	// HTTPClient overrides the transport. Nil builds a client from Timeout.
 	HTTPClient *http.Client
 
@@ -102,6 +113,9 @@ func (s Settings) Validate() error {
 	if s.Retries < 0 {
 		return errors.New("openai: retries must not be negative")
 	}
+	if s.SchemaCacheEntries < 0 {
+		return errors.New("openai: schema_cache_entries must not be negative")
+	}
 	return nil
 }
 
@@ -113,6 +127,9 @@ func (s Settings) normalized() Settings {
 	s.BaseURL = strings.TrimRight(s.BaseURL, "/")
 	if s.Timeout <= 0 {
 		s.Timeout = DefaultTimeout
+	}
+	if s.SchemaCacheEntries <= 0 {
+		s.SchemaCacheEntries = DefaultSchemaCacheEntries
 	}
 	return s
 }

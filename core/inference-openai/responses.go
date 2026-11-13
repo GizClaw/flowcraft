@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/goccy/go-json"
 )
 
 // Which canonical content kinds each Responses role can carry. This surface
@@ -39,7 +38,7 @@ func (d *driver) responsesCompile(
 	if err != nil {
 		return protocol.Compiled[responses.ResponseNewParams]{}, err
 	}
-	params, err := responsesParams(request, options)
+	params, err := d.responsesParams(request, options)
 	if err != nil {
 		return protocol.Compiled[responses.ResponseNewParams]{}, err
 	}
@@ -51,7 +50,7 @@ func (d *driver) responsesCompile(
 	}, nil
 }
 
-func responsesParams(
+func (d *driver) responsesParams(
 	request inference.GenerateRequest,
 	options *GenerationOptions,
 ) (responses.ResponseNewParams, error) {
@@ -63,7 +62,7 @@ func responsesParams(
 		Model: shared.ResponsesModel(request.Model.ID.Name),
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
 	}
-	tools, err := responsesTools(request.Tools.Definitions())
+	tools, err := d.responsesTools(request.Tools.Definitions())
 	if err != nil {
 		return responses.ResponseNewParams{}, err
 	}
@@ -73,7 +72,7 @@ func responsesParams(
 	if choice := request.Tools.Choice(); choice != nil {
 		params.ToolChoice = responsesToolChoice(*choice)
 	}
-	if err := responsesApply(&params, options); err != nil {
+	if err := d.responsesApply(&params, options); err != nil {
 		return responses.ResponseNewParams{}, err
 	}
 	return params, nil
@@ -214,13 +213,13 @@ func responsesRole(role message.Role) (responses.EasyInputMessageRole, error) {
 	}
 }
 
-func responsesTools(definitions []message.ToolDefinition) ([]responses.ToolUnionParam, error) {
+func (d *driver) responsesTools(definitions []message.ToolDefinition) ([]responses.ToolUnionParam, error) {
 	if len(definitions) == 0 {
 		return nil, nil
 	}
 	out := make([]responses.ToolUnionParam, 0, len(definitions))
 	for _, definition := range definitions {
-		parameters, err := schemaObject(definition)
+		parameters, err := d.schemaObject(definition)
 		if err != nil {
 			return nil, err
 		}
@@ -343,7 +342,7 @@ func responsesUsage(raw *responses.Response) usage.Usage {
 }
 
 // responsesApply maps per-call options onto Responses parameters.
-func responsesApply(params *responses.ResponseNewParams, options *GenerationOptions) error {
+func (d *driver) responsesApply(params *responses.ResponseNewParams, options *GenerationOptions) error {
 	if options == nil {
 		return nil
 	}
@@ -377,7 +376,7 @@ func responsesApply(params *responses.ResponseNewParams, options *GenerationOpti
 		params.PromptCacheKey = openai.String(options.PromptCacheKey)
 	}
 	if options.ResponseFormat != nil {
-		format, err := responsesResponseFormat(*options.ResponseFormat)
+		format, err := d.responsesResponseFormat(*options.ResponseFormat)
 		if err != nil {
 			return err
 		}
@@ -400,15 +399,15 @@ func responsesApply(params *responses.ResponseNewParams, options *GenerationOpti
 }
 
 // responsesResponseFormat maps the canonical format onto the Responses union.
-func responsesResponseFormat(format ResponseFormat) (responses.ResponseFormatTextConfigUnionParam, error) {
+func (d *driver) responsesResponseFormat(format ResponseFormat) (responses.ResponseFormatTextConfigUnionParam, error) {
 	switch format.Kind {
 	case FormatJSONObject:
 		return responses.ResponseFormatTextConfigUnionParam{
 			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		}, nil
 	case FormatJSONSchema:
-		var schema map[string]any
-		if err := json.Unmarshal(format.Schema, &schema); err != nil {
+		schema, err := d.decodedSchema(format.Schema)
+		if err != nil {
 			return responses.ResponseFormatTextConfigUnionParam{}, fmt.Errorf(
 				"openai: response schema: %w", err,
 			)

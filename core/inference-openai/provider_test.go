@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/internal/cache"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -105,20 +106,33 @@ func TestLiveChat(t *testing.T) {
 	}
 }
 
-// Decoding a schema per request is a full json.Unmarshal per tool; the
-// definition never changes after construction.
+// Decoding a schema per request is a full json.Unmarshal per tool; the definition
+// never changes after construction, so one instance keeps the decoded copy.
 func TestSchemaObjectIsCached(t *testing.T) {
 	definition := message.ToolDefinition{
 		Name:        "read_file",
 		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
 	}
-	if _, err := schemaObject(definition); err != nil {
+	d := &driver{schemas: cache.New[map[string]any](8)}
+	first, err := d.schemaObject(definition)
+	if err != nil {
 		t.Fatalf("schemaObject: %v", err)
 	}
-	calls := func() { _, _ = schemaObject(definition) }
+	calls := func() { _, _ = d.schemaObject(definition) }
 	if got := testing.AllocsPerRun(100, calls); got > 3 {
 		t.Fatalf("schemaObject allocates %.0f times after warm-up, want at most 3 "+
 			"(key plus slack); a decode would be many more", got)
+	}
+	// A hit must return the same decoded object, not a re-decoded copy.
+	second, err := d.schemaObject(definition)
+	if err != nil {
+		t.Fatalf("schemaObject: %v", err)
+	}
+	if len(second) != len(first) {
+		t.Fatalf("cached object has %d keys, first had %d", len(second), len(first))
+	}
+	if got := d.schemas.Len(); got != 1 {
+		t.Fatalf("cache holds %d entries, want 1", got)
 	}
 }
 
@@ -127,10 +141,49 @@ func BenchmarkSchemaObject(b *testing.B) {
 		Name:        "read_file",
 		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`),
 	}
+	d := &driver{schemas: cache.New[map[string]any](8)}
 	b.ReportAllocs()
-	for i := 0; i < b.N; i++ {
-		if _, err := schemaObject(definition); err != nil {
+	for range b.N {
+		if _, err := d.schemaObject(definition); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestResponseFormatSharesSchemaCache pins the sharing: a response-format schema is
+// decoded by the same cache as a tool schema, because the value is the same kind of
+// object, so one entry answers both.
+func TestResponseFormatSharesSchemaCache(t *testing.T) {
+	schema := []byte(`{"type":"object","properties":{"answer":{"type":"string"}}}`)
+	format := ResponseFormat{Kind: FormatJSONSchema, Name: "out", Schema: schema}
+	d := &driver{schemas: cache.New[map[string]any](8)}
+
+	if _, err := d.chatResponseFormat(format); err != nil {
+		t.Fatalf("chatResponseFormat: %v", err)
+	}
+	if got := d.schemas.Len(); got != 1 {
+		t.Fatalf("cache holds %d entries after one format, want 1", got)
+	}
+	if _, err := d.chatResponseFormat(format); err != nil {
+		t.Fatalf("chatResponseFormat again: %v", err)
+	}
+	if got := d.schemas.Len(); got != 1 {
+		t.Fatalf("cache holds %d entries after a repeat, want 1", got)
+	}
+
+	// A tool that declares the identical schema must hit the same entry.
+	if _, err := d.schemaObject(message.ToolDefinition{Name: "emit", InputSchema: schema}); err != nil {
+		t.Fatalf("schemaObject: %v", err)
+	}
+	if got := d.schemas.Len(); got != 1 {
+		t.Fatalf("cache holds %d entries after a shared tool schema, want 1", got)
+	}
+
+	// The Responses surface reads the same cache through its own union.
+	if _, err := d.responsesResponseFormat(format); err != nil {
+		t.Fatalf("responsesResponseFormat: %v", err)
+	}
+	if got := d.schemas.Len(); got != 1 {
+		t.Fatalf("cache holds %d entries after the Responses path, want 1", got)
 	}
 }

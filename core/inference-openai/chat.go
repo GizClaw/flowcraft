@@ -3,7 +3,6 @@ package openai
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
@@ -41,7 +40,7 @@ func (d *driver) chatCompile(
 	if err != nil {
 		return protocol.Compiled[openai.ChatCompletionNewParams]{}, err
 	}
-	params, err := chatParams(request, options, shape)
+	params, err := d.chatParams(request, options, shape)
 	if err != nil {
 		return protocol.Compiled[openai.ChatCompletionNewParams]{}, err
 	}
@@ -53,7 +52,7 @@ func (d *driver) chatCompile(
 	}, nil
 }
 
-func chatParams(
+func (d *driver) chatParams(
 	request inference.GenerateRequest,
 	options *GenerationOptions,
 	shape protocol.Shape,
@@ -62,7 +61,7 @@ func chatParams(
 	if err != nil {
 		return openai.ChatCompletionNewParams{}, err
 	}
-	tools, err := chatTools(request.Tools.Definitions())
+	tools, err := d.chatTools(request.Tools.Definitions())
 	if err != nil {
 		return openai.ChatCompletionNewParams{}, err
 	}
@@ -74,7 +73,7 @@ func chatParams(
 	if choice := request.Tools.Choice(); choice != nil {
 		params.ToolChoice = chatToolChoice(*choice)
 	}
-	if err := chatApply(&params, options); err != nil {
+	if err := d.chatApply(&params, options); err != nil {
 		return openai.ChatCompletionNewParams{}, err
 	}
 	if shape == protocol.ShapeStream {
@@ -220,13 +219,13 @@ func chatUserContent(item message.Message) ([]openai.ChatCompletionContentPartUn
 	return out, hasMedia, nil
 }
 
-func chatTools(definitions []message.ToolDefinition) ([]openai.ChatCompletionToolUnionParam, error) {
+func (d *driver) chatTools(definitions []message.ToolDefinition) ([]openai.ChatCompletionToolUnionParam, error) {
 	if len(definitions) == 0 {
 		return nil, nil
 	}
 	out := make([]openai.ChatCompletionToolUnionParam, 0, len(definitions))
 	for _, definition := range definitions {
-		parameters, err := schemaObject(definition)
+		parameters, err := d.schemaObject(definition)
 		if err != nil {
 			return nil, err
 		}
@@ -350,27 +349,44 @@ func chatUsage(raw *openai.ChatCompletion) usage.Usage {
 	return out
 }
 
-// schemaCache memoizes decoded tool schemas.
+// schemaObject decodes a tool input schema into the untyped object the SDK expects.
 //
-// A definition is fixed when the tool is constructed, and the SDK only reads the
-// object while marshalling, so the key — name plus raw schema — cannot return a
-// different value for the same key. Without it the driver runs a full
-// json.Unmarshal per tool on every text request.
-var schemaCache sync.Map // string -> map[string]any
-
-// schemaObject decodes a tool input schema into the untyped object the SDK
-// expects. The canonical definition already validated it as a JSON object.
-func schemaObject(definition message.ToolDefinition) (map[string]any, error) {
-	key := definition.Name + "\x00" + string(definition.InputSchema)
-	if cached, ok := schemaCache.Load(key); ok {
-		return cached.(map[string]any), nil
-	}
-	var parameters map[string]any
-	if err := json.Unmarshal(definition.InputSchema, &parameters); err != nil {
+// The canonical definition already validated it as a JSON object, and the result is
+// pure: identical bytes always decode to an equal value, so the instance keeps the
+// last few in an LRU instead of re-decoding on every request. The key is the schema
+// itself, which also shares an entry between two tools that declare the same shape.
+func (d *driver) schemaObject(definition message.ToolDefinition) (map[string]any, error) {
+	schema, err := d.decodedSchema(definition.InputSchema)
+	if err != nil {
 		return nil, fmt.Errorf("openai: tool %q schema: %w", definition.Name, err)
 	}
-	schemaCache.Store(key, parameters)
-	return parameters, nil
+	return schema, nil
+}
+
+// decodedSchema decodes one JSON schema into the untyped object the SDK expects,
+// memoized per instance.
+//
+// Tool input schemas and response-format schemas share the cache because the decode
+// is the same function over the same kind of value: the same bytes always produce an
+// equal object, so an entry is never wrong for a different caller, and two callers
+// that happen to declare the same shape share one entry.
+func (d *driver) decodedSchema(raw []byte) (map[string]any, error) {
+	key := string(raw)
+	if d.schemas != nil {
+		if cached, ok := d.schemas.Get(key); ok {
+			return cached, nil
+		}
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		return nil, err
+	}
+	if d.schemas != nil {
+		// A driver assembled by hand — a test, or a host that does not go through New
+		// — carries no cache. Decoding still answers; it just does not remember.
+		d.schemas.Put(key, schema)
+	}
+	return schema, nil
 }
 
 // toolArguments normalizes accumulated arguments into a JSON object: a call with
@@ -384,7 +400,7 @@ func toolArguments(arguments string) json.RawMessage {
 
 // chatApply maps per-call options onto chat parameters. Options the chat surface
 // cannot express are rejected rather than ignored.
-func chatApply(params *openai.ChatCompletionNewParams, options *GenerationOptions) error {
+func (d *driver) chatApply(params *openai.ChatCompletionNewParams, options *GenerationOptions) error {
 	if options == nil {
 		return nil
 	}
@@ -401,7 +417,7 @@ func chatApply(params *openai.ChatCompletionNewParams, options *GenerationOption
 		params.ReasoningEffort = shared.ReasoningEffort(options.ReasoningEffort)
 	}
 	if options.ResponseFormat != nil {
-		format, err := chatResponseFormat(*options.ResponseFormat)
+		format, err := d.chatResponseFormat(*options.ResponseFormat)
 		if err != nil {
 			return err
 		}
@@ -433,15 +449,15 @@ func chatApply(params *openai.ChatCompletionNewParams, options *GenerationOption
 }
 
 // chatResponseFormat maps the canonical format onto the chat surface's union.
-func chatResponseFormat(format ResponseFormat) (openai.ChatCompletionNewParamsResponseFormatUnion, error) {
+func (d *driver) chatResponseFormat(format ResponseFormat) (openai.ChatCompletionNewParamsResponseFormatUnion, error) {
 	switch format.Kind {
 	case FormatJSONObject:
 		return openai.ChatCompletionNewParamsResponseFormatUnion{
 			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		}, nil
 	case FormatJSONSchema:
-		var schema map[string]any
-		if err := json.Unmarshal(format.Schema, &schema); err != nil {
+		schema, err := d.decodedSchema(format.Schema)
+		if err != nil {
 			return openai.ChatCompletionNewParamsResponseFormatUnion{}, fmt.Errorf(
 				"openai: response schema: %w", err,
 			)

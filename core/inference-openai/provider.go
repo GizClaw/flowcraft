@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/internal/cache"
 )
 
 // driver holds one deployment's configuration and its SDK client. The client is
@@ -13,6 +14,10 @@ import (
 type driver struct {
 	settings Settings
 	client   openaiClient
+	// schemas memoizes decoded tool schemas for this deployment. It is per instance,
+	// not global: one process can serve several providers and none of them should be
+	// able to evict another's entries. The bound comes from the settings.
+	schemas *cache.LRU[map[string]any]
 
 	text            protocol.GenerateDriver
 	textStream      protocol.GenerateStreamDriver
@@ -88,7 +93,11 @@ func New(settings Settings) (inference.Provider, error) {
 	if err := normalized.Validate(); err != nil {
 		return inference.Provider{}, err
 	}
-	d := &driver{settings: normalized, client: newClient(normalized)}
+	d := &driver{
+		settings: normalized,
+		client:   newClient(normalized),
+		schemas:  cache.New[map[string]any](normalized.SchemaCacheEntries),
+	}
 
 	unary, stream, err := d.bind(normalized.API.Kind())
 	if err != nil {

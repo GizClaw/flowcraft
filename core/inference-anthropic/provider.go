@@ -5,11 +5,17 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/internal/cache"
+
+	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 )
 
 type driver struct {
 	settings Settings
 	client   client
+	// schemas memoizes decoded tool schemas for this deployment: per instance, not
+	// global, so one process serving several providers cannot evict across them.
+	schemas *cache.LRU[anthropicgo.ToolInputSchemaParam]
 }
 
 // New builds a provider for one deployment.
@@ -18,7 +24,7 @@ func New(settings Settings) (inference.Provider, error) {
 	if err := normalized.Validate(); err != nil {
 		return inference.Provider{}, err
 	}
-	driver := &driver{settings: normalized, client: newClient(normalized)}
+	driver := &driver{settings: normalized, client: newClient(normalized), schemas: cache.New[anthropicgo.ToolInputSchemaParam](normalized.SchemaCacheEntries)}
 	unary, err := protocol.BindGenerate(
 		ProviderID, driver.compile, driver.call, driver.decode,
 	)
