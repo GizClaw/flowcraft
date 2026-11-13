@@ -140,6 +140,16 @@ bench-compare:
 	fi
 	@go run golang.org/x/perf/cmd/benchstat@latest "$(OLD)" "$(NEW)"
 
+# Coverage for the sandbox subsystem, measured across the packages rather than
+# per package. A per-package number is misleading here: sessionkit and netpolicy
+# are exercised through the backends, so their own test files cover a small slice
+# while the real hit rate is several times higher.
+.PHONY: cover
+cover:
+	@cd core && go test -count=1 -coverpkg=./sandbox/... -coverprofile=../.cover.out ./sandbox/... >/dev/null
+	@cd core && go tool cover -func=../.cover.out | tail -n 25
+	@echo "==> full profile: .cover.out (go tool cover -html=.cover.out)"
+
 .PHONY: test-shuffle
 test-shuffle:
 	@$(call GO_FOREACH,$(MODULES_WORK),test-shuffle,go test -shuffle=on -count=3 ./...)

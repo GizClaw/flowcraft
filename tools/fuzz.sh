@@ -11,6 +11,8 @@ targets=(
 	"./internal/decode FuzzToJSON"
 	"./agent-a2a/wire FuzzFromMessage"
 	"./agent-graph FuzzStateEvent"
+	"./sandbox-remote/wire FuzzSpecRoundTrip"
+	"./sandbox-remote/wire FuzzErrorRoundTrip"
 )
 
 for entry in "${targets[@]}"; do
