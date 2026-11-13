@@ -186,3 +186,56 @@ func samplerRunning() bool {
 	defer sharedSampler.mu.Unlock()
 	return sharedSampler.running
 }
+
+// A quiet host is sampled less often, and the first jump snaps the cadence back.
+// The rule is a pure function so it can be pinned without a clock.
+func TestWatchIntervalBacksOffWhenIdle(t *testing.T) {
+	for idle := range groupWatchIdleTicks {
+		if got := watchIntervalFor(idle); got != groupWatchInterval {
+			t.Errorf("idle %d: interval = %v, want the base cadence %v", idle, got, groupWatchInterval)
+		}
+	}
+	for _, idle := range []int{groupWatchIdleTicks, groupWatchIdleTicks + 1, 100} {
+		if got := watchIntervalFor(idle); got != groupWatchIdleInterval {
+			t.Errorf("idle %d: interval = %v, want the idle cadence %v", idle, got, groupWatchIdleInterval)
+		}
+	}
+	if groupWatchIdleInterval <= groupWatchInterval {
+		t.Fatalf("idle cadence %v is not slower than the base %v", groupWatchIdleInterval, groupWatchInterval)
+	}
+}
+
+// tick reports movement only for the groups it watches, which is what decides
+// whether the sampler slows down.
+func TestHostSamplerNoticesMovementPerGroup(t *testing.T) {
+	h := newSamplerHarness(t)
+	h.usage = map[int]groupUsage{51: {rssKB: 100}, 52: {rssKB: 200}}
+
+	first := StartGroupCapsWatcher(context.Background(), 51, sandbox.ResourceLimits{MemoryBytes: 1 << 30}, 0)
+	defer first.Stop()
+	second := StartGroupCapsWatcher(context.Background(), 52, sandbox.ResourceLimits{MemoryBytes: 1 << 30}, 0)
+	defer second.Stop()
+
+	if !sharedSampler.tick() {
+		t.Fatal("the first sample reported no movement")
+	}
+	if sharedSampler.tick() {
+		t.Fatal("an unchanged sample reported movement")
+	}
+
+	// One group grows while the other is untouched: still movement.
+	h.mu.Lock()
+	h.usage[52] = groupUsage{rssKB: 900}
+	h.mu.Unlock()
+	if !sharedSampler.tick() {
+		t.Fatal("a growing group reported no movement")
+	}
+
+	// An unwatched group moving does not count.
+	h.mu.Lock()
+	h.usage[99] = groupUsage{rssKB: 1 << 20}
+	h.mu.Unlock()
+	if sharedSampler.tick() {
+		t.Fatal("a group nobody watches kept the sampler busy")
+	}
+}

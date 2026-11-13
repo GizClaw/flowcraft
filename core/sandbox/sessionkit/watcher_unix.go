@@ -50,6 +50,27 @@ var groupSamplingUsable = sync.OnceValue(func() bool {
 // silence the automatic ticker and drive the sampler deterministically.
 var groupWatchInterval = 250 * time.Millisecond
 
+const (
+	// groupWatchIdleTicks is how many consecutive unchanged samples let the
+	// sampler slow down. A group whose footprint has not moved for a second is
+	// almost certainly waiting on input, and a guard that costs a ps invocation
+	// every 250ms to watch a stopped process is a guard that costs more than it
+	// protects.
+	groupWatchIdleTicks = 4
+	// groupWatchIdleInterval is the cadence once it has. Detection latency for a
+	// group that starts growing again is bounded by this, which is why it stays
+	// in the low seconds rather than minutes.
+	groupWatchIdleInterval = time.Second
+)
+
+// watchIntervalFor is the cadence after idleTicks unchanged samples.
+func watchIntervalFor(idleTicks int) time.Duration {
+	if idleTicks >= groupWatchIdleTicks {
+		return groupWatchIdleInterval
+	}
+	return groupWatchInterval
+}
+
 // maxSampleFailures is how many consecutive sampling errors the watcher
 // tolerates before declaring the caps unenforceable. One flaky ps run
 // (a transient fork failure under load) must not kill an innocent
@@ -275,6 +296,9 @@ type hostSampler struct {
 	running bool
 	stop    chan struct{}
 	done    chan struct{}
+	// last is the previous sample for the watched groups, used only to notice
+	// that nothing is moving.
+	last map[int]groupUsage
 }
 
 var sharedSampler = &hostSampler{entries: make(map[*GroupCapsWatcher]struct{})}
@@ -313,23 +337,31 @@ func (s *hostSampler) remove(w *GroupCapsWatcher) {
 
 func (s *hostSampler) run(stop, done chan struct{}) {
 	defer close(done)
-	ticker := time.NewTicker(groupWatchInterval)
-	defer ticker.Stop()
+	idle := 0
+	timer := time.NewTimer(groupWatchInterval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-stop:
 			return
-		case <-ticker.C:
-			s.tick()
+		case <-timer.C:
+			if s.tick() {
+				idle = 0
+			} else {
+				idle++
+			}
+			timer.Reset(watchIntervalFor(idle))
 		}
 	}
 }
 
-// tick runs one sampling pass and applies it to every watcher.
-func (s *hostSampler) tick() {
+// tick runs one sampling pass and applies it to every watcher. It reports
+// whether any watched group moved, which is what the idle cadence keys on.
+func (s *hostSampler) tick() bool {
 	usage, sampleErr := sampleHostFn()
 
 	s.mu.Lock()
+	changed := s.movedLocked(usage)
 	var tripped []*GroupCapsWatcher
 	for w := range s.entries {
 		if w.observe(usage[w.pgid], sampleErr) {
@@ -344,6 +376,23 @@ func (s *hostSampler) tick() {
 		w.killGroup()
 		s.remove(w)
 	}
+	return changed
+}
+
+// movedLocked reports whether the sample differs from the previous one for any
+// watched group, and remembers this sample for the next comparison.
+func (s *hostSampler) movedLocked(usage map[int]groupUsage) bool {
+	moved := false
+	current := make(map[int]groupUsage, len(s.entries))
+	for w := range s.entries {
+		u := usage[w.pgid]
+		current[w.pgid] = u
+		if prev, ok := s.last[w.pgid]; !ok || prev != u {
+			moved = true
+		}
+	}
+	s.last = current
+	return moved
 }
 
 // killGroupFn delivers the terminating signal to a process group. It is a
@@ -352,6 +401,17 @@ func (s *hostSampler) tick() {
 var killGroupFn = func(pgid int) error { return syscall.Kill(-pgid, syscall.SIGKILL) }
 
 // sampleHost aggregates every process group on the host in one pass.
+//
+// Why not cgroups, which would be cheaper: CPU is exact there (cpu.stat), but
+// memory is not. memory.current includes page cache charged to the group, so a
+// session that wrote a file would trip a memory cap it never approached, and
+// memory.stat's anon leaves out file-backed pages, so a session that mapped a big
+// file would run over a cap silently — the one outcome this package promises never
+// to produce. RSS from the process table is what the caps were specified against.
+//
+// On Linux the pass is one /proc read per process (no fork); on macOS it is one ps
+// invocation, which is the expensive one, and the idle cadence above is what keeps
+// a quiet fleet from paying for it four times a second.
 func sampleHost() (map[int]groupUsage, error) {
 	if runtime.GOOS == "linux" {
 		return sampleHostLinux()

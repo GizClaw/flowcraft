@@ -16,6 +16,15 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// execReadWindow is how much one Exec read asks for.
+//
+// It trades round trips for memory. A local runner reads a slice of the ring
+// either way, but a remote one pays one request per window: at 64 KiB a megabyte
+// cost sixteen round trips, at 256 KiB it costs four, which measured ~30% off a
+// remote Exec of a 1 MiB command. The buffer is small next to what a tool call
+// captures anyway.
+const execReadWindow = 256 << 10
+
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot Exec helper:
 // output beyond it is truncated rather than buffered without bound.
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -130,7 +139,7 @@ func runCommand(
 
 	afterSeq := int64(0)
 	for {
-		output, err := sess.Read(ctx, afterSeq, 64*1024)
+		output, err := sess.Read(ctx, afterSeq, execReadWindow)
 		if err != nil {
 			return nil, errdefs.FromContext(err)
 		}

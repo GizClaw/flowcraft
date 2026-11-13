@@ -260,3 +260,32 @@ func TestRemoteReadRatio(t *testing.T) {
 			window>>10, localMS, localMB, remoteMS, remoteMB, remoteMS/localMS)
 	}
 }
+
+// The window engine.Exec reads with, measured through engine.Exec itself rather
+// than through a hand-driven drain: this is the path a tool call takes.
+func BenchmarkExec1MOutput(b *testing.B) {
+	cases := []struct {
+		name   string
+		runner func(*testing.B) sandbox.Runner
+	}{
+		{"local", localRunnerForBench},
+		{"remote", remoteRunnerForBench},
+	}
+	for _, tc := range cases {
+		b.Run(tc.name, func(b *testing.B) {
+			runner := tc.runner(b)
+			argv := []string{"dd", "if=/dev/zero", "bs=1048576", "count=1"}
+			b.SetBytes(1 << 20)
+			b.ResetTimer()
+			for range b.N {
+				result, err := engine.Exec(context.Background(), runner, argv[0], argv[1:], sandbox.ExecOptions{})
+				if err != nil {
+					b.Fatalf("Exec: %v", err)
+				}
+				if len(result.Stdout) != 1<<20 {
+					b.Fatalf("stdout is %d bytes", len(result.Stdout))
+				}
+			}
+		})
+	}
+}
