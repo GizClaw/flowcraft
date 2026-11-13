@@ -124,11 +124,13 @@ func (r *allowCommandsRunner) OpenJournal(ctx context.Context) (sandbox.FileJour
 //     caller supplied nothing. A default never widens a caller policy;
 //     an invalid policy is preserved so backend validation rejects it
 //     instead of it being silently dropped.
-//   - Resources: defaults wins entirely. Caller cannot raise caps;
-//     and narrowing CPU/Mem/Disk per call is not actionable for a
-//     local runner today (those fields are advisory until a real
-//     isolation backend lands), so the simpler "defaults only"
-//     rule keeps the contract honest.
+//   - Resources: field-wise, the stricter of the two — the smaller
+//     non-zero value, with a zero side deferring to the other (the same
+//     rule Timeout uses). Defaults therefore act as a ceiling and a call
+//     may ask for a tighter cap, but a decorator never silently drops a
+//     caller's cap: dropping one would run the command with less
+//     enforcement than the caller asked for, which is the one thing a
+//     boundary must not do.
 //
 // Composition with the other decorators:
 //
@@ -210,7 +212,7 @@ func (r *defaultsRunner) merge(caller sandbox.ExecOptions) sandbox.ExecOptions {
 		Env:        mergeEnv(caller.Env, r.defaults.Env),
 		Net:        r.defaults.Net,
 		Permission: caller.Permission,
-		Resources:  r.defaults.Resources,
+		Resources:  mergeResources(caller.Resources, r.defaults.Resources),
 	}
 	// A caller policy is a decision, so defaults never widen it; when the
 	// caller supplied none, the configured boundary applies.
@@ -240,6 +242,46 @@ func mergeTimeout(caller, def time.Duration) time.Duration {
 		return caller
 	}
 	return def
+}
+
+// mergeResources takes the stricter of the two budgets field by field: a zero
+// side defers to the other, and when both are set the smaller wins. It is the same
+// shape as mergeTimeout, because a resource cap is a ceiling rather than a
+// posture: the caller may ask for less, never for more, and the decorator must not
+// discard the caller's value on the way down.
+func mergeResources(caller, defaults sandbox.ResourceLimits) sandbox.ResourceLimits {
+	return sandbox.ResourceLimits{
+		CPUMillicores:  minPositive(caller.CPUMillicores, defaults.CPUMillicores),
+		MemoryBytes:    minPositive64(caller.MemoryBytes, defaults.MemoryBytes),
+		DiskBytes:      minPositive64(caller.DiskBytes, defaults.DiskBytes),
+		MaxOutputBytes: minPositive64(caller.MaxOutputBytes, defaults.MaxOutputBytes),
+	}
+}
+
+func minPositive(a, b int) int {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
+}
+
+func minPositive64(a, b int64) int64 {
+	switch {
+	case a <= 0:
+		return b
+	case b <= 0:
+		return a
+	case a < b:
+		return a
+	default:
+		return b
+	}
 }
 
 // mergeEnv enforces the asymmetric Env policy: defaults owns Allow,

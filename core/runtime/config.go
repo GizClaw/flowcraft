@@ -69,6 +69,10 @@ type SandboxConfig struct {
 	Writes []string `json:"writes"`
 	// Net is the outbound posture.
 	Net NetConfig `json:"net"`
+	// Timeout is the default per-call command deadline ("30s"). A tool may ask
+	// for a shorter one; this is the ceiling. It is also what a cpu budget is
+	// derived from, which is why cpu_millicores without it is rejected.
+	Timeout string `json:"timeout"`
 	// CPU is a millicore budget; zero means unbounded.
 	CPU int `json:"cpu_millicores"`
 	// MemoryMiB caps address space; zero means unbounded.
@@ -325,6 +329,13 @@ func (c SandboxConfig) validate() error {
 		return errdefs.Validationf(
 			"sandbox: cpu_millicores, memory_mib and output_mib must not be negative")
 	}
+	if _, err := c.timeout(); err != nil {
+		return err
+	}
+	if c.CPU > 0 && c.Timeout == "" {
+		return errdefs.Validationf(
+			"sandbox.cpu_millicores requires sandbox.timeout: the cpu budget is derived from the deadline")
+	}
 	return c.Net.validate()
 }
 
@@ -443,6 +454,11 @@ func (n NetConfig) validate() error {
 func (n NetConfig) mode0() permission.NetMode {
 	mode, _ := n.mode()
 	return mode
+}
+
+// timeout is the default per-call deadline, zero meaning none.
+func (c SandboxConfig) timeout() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.timeout", c.Timeout)
 }
 
 // mode maps the written name to the contract value.

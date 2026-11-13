@@ -11,12 +11,14 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox-bwrap"
 	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-seatbelt"
 	"github.com/GizClaw/flowcraft/core/sandbox-windows"
+	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -88,6 +90,16 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	if err != nil {
 		return errdefs.Validationf("sandbox.backend %q: %w", r.cfg.Sandbox.Backend, err)
 	}
+	// applySandboxPolicy returns nil on error, so close the runner it was given
+	// rather than the decoration that does not exist.
+	built, err := r.applySandboxPolicy(ctx, runner, limits)
+	if err != nil {
+		if cerr := runner.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "sandbox: close the backend after a policy failure", cerr)
+		}
+		return err
+	}
+	runner = built
 	r.runner = runner
 	r.closers = append(r.closers, runner)
 
@@ -369,6 +381,71 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 	}
 	sort.Strings(names)
 	return strings.Join(names, ", ")
+}
+
+// applySandboxPolicy projects the document's sandbox policy onto every call.
+//
+// The document is the only place a deployment states its boundary, so the fields
+// it sets have to reach the commands: without this, cpu_millicores, memory_mib and
+// writes were parsed, validated and then ignored.
+//
+// Three rules, all "narrow, never widen":
+//
+//   - A cpu or memory budget becomes the Resources default on every call. A
+//     backend that does not enforce the cap is a build error rather than a
+//     dropped field, because running unmeasured is the failure mode these caps
+//     exist to prevent.
+//   - sandbox.writes becomes the per-call file boundary, but only where the
+//     backend confines writes at the OS level. The local runner has no boundary
+//     and rejects a per-call one, and a remote runner's boundary belongs to the
+//     server's own document, so both warn instead of failing every command.
+//   - sandbox.timeout is a ceiling: a tool may ask for a shorter deadline, never
+//     a longer one (the decorator takes the smaller).
+func (r *Runtime) applySandboxPolicy(ctx context.Context, runner sandbox.Runner, limits sandbox.ResourceLimits) (sandbox.Runner, error) {
+	backend := r.cfg.Sandbox.Backend
+	caps := runner.Capabilities().Policy
+
+	if limits.CPUMillicores > 0 && !caps.CPUCap {
+		return nil, errdefs.Validationf(
+			"sandbox.cpu_millicores: backend %q cannot enforce a cpu budget; "+
+				"drop it or pick a backend that samples the process group", backend)
+	}
+	if limits.MemoryBytes > 0 && !caps.MemoryCap {
+		return nil, errdefs.Validationf(
+			"sandbox.memory_mib: backend %q cannot enforce a memory budget; "+
+				"drop it or pick a backend that samples the process group", backend)
+	}
+
+	timeout, err := r.cfg.Sandbox.timeout()
+	if err != nil {
+		return nil, err
+	}
+	defaults := sandbox.ExecOptions{
+		Timeout: timeout,
+		Resources: sandbox.ResourceLimits{
+			CPUMillicores: limits.CPUMillicores,
+			MemoryBytes:   limits.MemoryBytes,
+		},
+	}
+
+	writes := r.cfg.Sandbox.Writes
+	if len(writes) > 0 {
+		switch {
+		case backend == BackendRemote:
+			telemetry.Warn(ctx,
+				"sandbox.writes is decided by the server's own document; this list does not reach it",
+				attribute.String(telemetry.AttrSandboxEndpoint, r.cfg.Sandbox.Remote.Endpoint))
+		case !caps.WriteConfinement:
+			telemetry.Warn(ctx,
+				"this backend cannot confine writes per call; sandbox.writes is only advisory here",
+				attribute.String("sandbox.backend", backend))
+		default:
+			defaults.Permission = &permission.Policy{
+				Writes: permission.Writes{Paths: writes},
+			}
+		}
+	}
+	return sandboxengine.WithDefaults(runner, defaults), nil
 }
 
 // maxSkillDiagnosticsLogged bounds how many skipped skill files one runtime logs:

@@ -133,3 +133,69 @@ func TestRunnerCloseIsIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// optsRunner records the ExecOptions each Start receives, so a decorator's merge
+// can be asserted on what actually reached the backend.
+type optsRunner struct {
+	opts []sandbox.ExecOptions
+}
+
+func (r *optsRunner) Close() error                       { return nil }
+func (r *optsRunner) Capabilities() sandbox.Capabilities { return sandbox.Capabilities{} }
+func (r *optsRunner) Start(_ context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+	r.opts = append(r.opts, spec.Opts)
+	return nil, errdefs.NotAvailablef("optsRunner: no sessions")
+}
+func (r *optsRunner) List(context.Context) ([]sandbox.SessionInfo, error) { return nil, nil }
+func (r *optsRunner) Terminate(context.Context, string) error             { return nil }
+
+// A resource cap is a ceiling, not a posture: the caller may ask for less, and the
+// decorator must not discard the caller's value on the way down. This is what makes
+// a deployment default usable together with a tool's own cap.
+func TestWithDefaultsResourcesTakeTheStricter(t *testing.T) {
+	cases := []struct {
+		name     string
+		caller   sandbox.ResourceLimits
+		defaults sandbox.ResourceLimits
+		want     sandbox.ResourceLimits
+	}{
+		{
+			name:     "caller unset defers to defaults",
+			caller:   sandbox.ResourceLimits{},
+			defaults: sandbox.ResourceLimits{MemoryBytes: 64 << 20, MaxOutputBytes: 1 << 20},
+			want:     sandbox.ResourceLimits{MemoryBytes: 64 << 20, MaxOutputBytes: 1 << 20},
+		},
+		{
+			name:     "defaults unset keep the caller",
+			caller:   sandbox.ResourceLimits{MemoryBytes: 8 << 20},
+			defaults: sandbox.ResourceLimits{},
+			want:     sandbox.ResourceLimits{MemoryBytes: 8 << 20},
+		},
+		{
+			name:     "the smaller of two wins per field",
+			caller:   sandbox.ResourceLimits{MemoryBytes: 4 << 20, MaxOutputBytes: 8 << 20},
+			defaults: sandbox.ResourceLimits{MemoryBytes: 64 << 20, MaxOutputBytes: 1 << 20},
+			want:     sandbox.ResourceLimits{MemoryBytes: 4 << 20, MaxOutputBytes: 1 << 20},
+		},
+		{
+			name:     "cpu, disk and output merge independently",
+			caller:   sandbox.ResourceLimits{CPUMillicores: 500, DiskBytes: 1 << 30},
+			defaults: sandbox.ResourceLimits{CPUMillicores: 250, MaxOutputBytes: 1 << 20},
+			want:     sandbox.ResourceLimits{CPUMillicores: 250, DiskBytes: 1 << 30, MaxOutputBytes: 1 << 20},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			inner := &optsRunner{}
+			runner := engine.WithDefaults(inner, sandbox.ExecOptions{Resources: tc.defaults})
+			if _, err := runner.Start(context.Background(), sandbox.SessionSpec{
+				Opts: sandbox.ExecOptions{Resources: tc.caller},
+			}); err != nil && !errdefs.IsNotAvailable(err) {
+				t.Fatalf("Start: %v", err)
+			}
+			if got := inner.opts[0].Resources; got != tc.want {
+				t.Fatalf("Resources = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
