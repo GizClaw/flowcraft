@@ -31,10 +31,10 @@
 //	Net.Mode == NetAllowList    loopback-only profile + host enforcement proxy (hostname allow-list)
 //	Net.Mode == NetProxy        loopback-only profile + host enforcement proxy (upstream)
 //	Permission != nil            its writable paths replace the runner root for this call
-//	Resources.MemoryBytes       group watcher (core/sandbox.GroupCapsWatcher)
+//	Resources.MemoryBytes       group watcher (sessionkit.GroupCapsWatcher)
 //	Resources.CPUMillicores     group watcher, cpu-time = Timeout x millicores/1000
 //	Resources.DiskBytes         errdefs.NotAvailable (no quota mechanism)
-//	Resources.MaxOutputBytes    truncated in Go (limitedBuffer)
+//	Resources.MaxOutputBytes    truncated in Go (engine.Exec)
 //
 // # File journal
 //

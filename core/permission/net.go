@@ -139,6 +139,17 @@ func (p NetPolicy) Validate() error {
 	return nil
 }
 
+// IsolatingNetModes returns the postures a backend that confines egress at the
+// OS level can enforce: deny everything, permit an allow-list, or pin traffic to
+// an enforcement proxy. NetDefault is deliberately absent — it is the absence of
+// a policy, not an enforceable posture.
+//
+// It is a function rather than a package variable so one backend cannot mutate
+// what another one reports.
+func IsolatingNetModes() []NetMode {
+	return []NetMode{NetDenyAll, NetAllowList, NetProxy}
+}
+
 // IsZero reports whether the network policy asks for nothing: no mode, no
 // rules, no proxy. It is what an unconfigured host produces.
 func (p NetPolicy) IsZero() bool {

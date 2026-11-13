@@ -26,7 +26,7 @@
 //
 // # What it does not cover
 //
-// The file journal has its own suite (internal/journaltest), because a journal
+// The file journal has its own suite (journal/journaltest), because a journal
 // is opt-in per runner. ErrSequenceGap is not forced here either: the replay
 // window is a construction-time parameter, not part of the Runner interface, so
 // only the backend that owns the window can provoke a gap.

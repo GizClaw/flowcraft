@@ -96,10 +96,10 @@
 //
 // bwrap itself has no cgroup / rlimit controls, so CPU and memory caps
 // ride on the shared process-group sampling watcher
-// (sandbox.StartGroupCapsWatcher), exactly like sandbox-local and the
+// (sessionkit.StartGroupCapsWatcher), exactly like sandbox-local and the
 // seatbelt backend. That is a soft ~250ms-sampled cap rather than a
 // hard cgroup limit, so Enforcement gates MemoryCap / CPUCap on
-// sandbox.GroupCapsSupported instead of claiming them unconditionally.
+// sessionkit.GroupCapsAvailable instead of claiming them unconditionally.
 // A future hard-cap layer could wrap bwrap with an external cgroup v2
 // setup without changing the Runner seam.
 //

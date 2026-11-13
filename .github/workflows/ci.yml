@@ -402,7 +402,9 @@ jobs:
           report
           exit 1
       - name: Test
-        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./sandbox-bwrap/...
+        run: |
+          go test -tags=integration_bwrap -count=1 -timeout 180s \
+            ./sandbox-bwrap/...
         working-directory: core
 
   test-core-windows:
@@ -451,7 +453,9 @@ jobs:
       # ships with macOS, so nothing is installed.
       - name: Test
         working-directory: core
-        run: go test -count=1 -race -timeout 300s ./sandbox/... ./sandbox-seatbelt/...
+        run: |
+          go test -count=1 -race -timeout 300s \
+            ./sandbox/... ./sandbox-local/... ./sandbox-seatbelt/...
 
   ci-pass:
     name: CI

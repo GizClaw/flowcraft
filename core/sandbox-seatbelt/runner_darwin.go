@@ -121,18 +121,15 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 
 // Capabilities implements core/sandbox.Runner.
 func (r *Runner) Capabilities() sandbox.Capabilities {
-	caps := sessionkit.GroupCapsAvailable()
 	return sandbox.Capabilities{
-		Policy: sandbox.Enforcement{
+		Policy: sessionkit.Enforcement(sandbox.Enforcement{
 			EnvAllowList:     true,
-			NetModes:         []permission.NetMode{permission.NetDenyAll, permission.NetAllowList, permission.NetProxy},
+			NetModes:         permission.IsolatingNetModes(),
 			Socks5:           true,
 			MITM:             true,
-			MemoryCap:        caps,
-			CPUCap:           caps,
 			FilesystemBounds: true,
 			WriteConfinement: true,
-		},
+		}),
 		Features: sandbox.SessionFeatures{
 			TTY:    true,
 			Signal: true,

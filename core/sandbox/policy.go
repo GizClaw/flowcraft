@@ -51,29 +51,12 @@ type ResourceLimits struct {
 	MaxOutputBytes int64
 }
 
-// ValidateExecPolicy runs the policy checks every built-in backend
-// applies before spawning anything, whether through Exec or
-// Runner.Start:
-//
-//   - DiskBytes is rejected everywhere (no backend has a quota
-//     mechanism yet).
-//   - CPUMillicores derives its budget from Timeout, so it is rejected
-//     when Timeout is absent.
-//   - MemoryBytes / CPUMillicores ride the shared process-group
-//     sampler; where that sampler cannot run, honouring the request
-//     would silently run without caps, so it is rejected instead.
-//   - Permission, when supplied, must validate: absolute glob-free
-//     paths, and its network half left to ExecOptions.Net so a nil
-//     permission ("inherit") cannot be confused with an empty network
-//     policy ("unrestricted").
-//
-// Backend-specific posture checks (which Net modes a runner enforces,
-// WorkDir confinement) stay in each backend.
-
 // ErrPathTraversal is returned when a WorkDir resolves outside the
-// runner's root, including via symlinks. sandbox owns its own
-// ErrPathTraversal so this package does not depend on core/workspace
-// (which would create an import cycle through the deprecation aliases).
-// core/workspace keeps a separate ErrPathTraversal for its filesystem
-// API.
+// runner's root, including via symlinks.
+//
+// It is deliberately independent of the filesystem layer's own refusals
+// (fsx.ErrDenied): that one answers "the write boundary refused this", while
+// this one answers "the working directory is not inside the sandbox". A caller
+// that renders an error to a model should not have to guess which of the two it
+// got.
 var ErrPathTraversal = errdefs.Forbidden(errors.New("sandbox: path traversal denied"))

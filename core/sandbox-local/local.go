@@ -151,11 +151,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 		features = sandbox.SessionFeatures{TTY: true, Signal: true, Events: true}
 	}
 	return sandbox.Capabilities{
-		Policy: sandbox.Enforcement{
-			EnvAllowList: true,
-			MemoryCap:    sessionkit.GroupCapsAvailable(),
-			CPUCap:       sessionkit.GroupCapsAvailable(),
-		},
+		Policy:   sessionkit.Enforcement(sandbox.Enforcement{EnvAllowList: true}),
 		Features: features,
 		Journal:  r.journal.Capabilities(),
 	}

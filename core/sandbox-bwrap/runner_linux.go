@@ -50,18 +50,15 @@ type Runner struct {
 // Enforcement reports the dimensions bwrap plus the shared
 // process-group watcher enforce in this backend.
 func (r *Runner) Enforcement() sandbox.Enforcement {
-	caps := sessionkit.GroupCapsAvailable()
-	return sandbox.Enforcement{
+	return sessionkit.Enforcement(sandbox.Enforcement{
 		EnvAllowList:     true,
-		NetModes:         []permission.NetMode{permission.NetDenyAll, permission.NetAllowList, permission.NetProxy},
+		NetModes:         permission.IsolatingNetModes(),
 		Socks5:           true,
 		MITM:             true,
 		UnixSocketPolicy: true,
-		MemoryCap:        caps,
-		CPUCap:           caps,
 		FilesystemBounds: true,
 		WriteConfinement: true,
-	}
+	})
 }
 
 // New returns a Runner that confines child processes with bubblewrap.

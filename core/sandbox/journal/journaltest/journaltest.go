@@ -59,7 +59,7 @@ type Builder func(t *testing.T, enabled bool, opts sandbox.JournalOptions) Harne
 // same promise is checked the same way on inotify, kqueue and
 // ReadDirectoryChangesW — each in its platform's own words.
 type Shell interface {
-	// Argv wraps script in this shell's argv, ready for sandbox.Exec.
+	// Argv wraps script in this shell's argv, ready for engine.Exec.
 	Argv(script string) []string
 	// Create makes a new file name with content "x".
 	Create(name string) string

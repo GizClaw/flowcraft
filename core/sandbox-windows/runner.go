@@ -119,17 +119,18 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 // signal and event features are not. A journal is reported when the
 // runner was constructed with one.
 func (r *Runner) Capabilities() sandbox.Capabilities {
+	// MemoryCap / CPUCap are unconditional here: job objects enforce them in
+	// the kernel, so the answer does not depend on the unix group sampler that
+	// sessionkit.Enforcement gates on.
 	policy := sandbox.Enforcement{
 		EnvAllowList: true,
 		MemoryCap:    true,
 		CPUCap:       true,
+		NetModes:     permission.IsolatingNetModes(),
 	}
 	if r.cfg.writeConfine {
 		policy.FilesystemBounds = true
 		policy.WriteConfinement = true
-	}
-	policy.NetModes = []permission.NetMode{
-		permission.NetDenyAll, permission.NetAllowList, permission.NetProxy,
 	}
 	return sandbox.Capabilities{
 		Policy:   policy,
@@ -270,24 +271,20 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	return startSession(ctx, spec, cmd, r.cfg.writeConfine, iso)
 }
 
-// validatePolicy mirrors engine.ValidateExecPolicy minus the
-// process-group sampling gate: the windows backend enforces Memory /
-// CPU caps through job objects, so the shared unix ps(1) sampler
-// availability check does not apply. The job-object caps themselves
-// are enforced by the kernel, not sampled.
+// validatePolicy is engine.ValidateExecPolicy plus the windows posture: a
+// per-call file boundary needs write confinement, and the net modes are the
+// three the AppContainer / WFP path can enforce.
+//
+// The resource caps are not special-cased any more: ValidateExecPolicy reads
+// them off the runner's own Enforcement, and this backend reports them from job
+// objects rather than from the shared group sampler.
 func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
-	if spec.Opts.Permission != nil {
-		if !spec.Opts.Permission.Net.IsZero() {
-			return errdefs.Validationf(
-				"windows: set the network posture on ExecOptions.Net, not on Permission.Net")
-		}
-		if err := spec.Opts.Permission.Validate(); err != nil {
-			return err
-		}
-		if !r.cfg.writeConfine {
-			return errdefs.NotAvailablef(
-				"windows: a per-call file boundary requires the runner to be constructed with WithWriteConfinement")
-		}
+	if err := engine.ValidateExecPolicy(spec.Opts, r.Capabilities().Policy); err != nil {
+		return err
+	}
+	if spec.Opts.Permission != nil && !r.cfg.writeConfine {
+		return errdefs.NotAvailablef(
+			"windows: a per-call file boundary requires the runner to be constructed with WithWriteConfinement")
 	}
 	if spec.Opts.Net.Mode != permission.NetDefault {
 		switch spec.Opts.Net.Mode {
@@ -298,14 +295,6 @@ func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
 			return errdefs.NotAvailablef(
 				"windows: net mode %d not supported yet", int(spec.Opts.Net.Mode))
 		}
-	}
-	if spec.Opts.Resources.DiskBytes != 0 {
-		return errdefs.NotAvailablef(
-			"windows: disk limits not supported (no quota mechanism)")
-	}
-	if spec.Opts.Resources.CPUMillicores != 0 && spec.Opts.Timeout <= 0 {
-		return errdefs.NotAvailablef(
-			"windows: CPUMillicores requires a per-call Timeout to derive a cpu-time cap")
 	}
 	return nil
 }
