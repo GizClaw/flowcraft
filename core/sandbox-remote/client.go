@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"math/rand/v2"
 	"sync"
 	"time"
 
@@ -20,6 +21,10 @@ const (
 	// defaultRetries is how many times an operation that is safe to repeat is
 	// retried after a transport failure. Writes are never retried here.
 	defaultRetries = 3
+	// retryBudget is what the backoff schedule below can add to one operation:
+	// 20ms + 100ms + 500ms. A caller that needs a tighter bound sets its own
+	// context.
+	retryBudget = 620 * time.Millisecond
 	// drainTimeout bounds the best-effort session drain on Close.
 	drainTimeout = 10 * time.Second
 	// operationTimeout bounds an operation whose interface takes no context.
@@ -243,17 +248,84 @@ func (r *Runner) retry(ctx context.Context, op Op, req any, res any) error {
 	if err != nil {
 		return err
 	}
+	return r.retryTransport(ctx, func() error {
+		return r.transport.Do(ctx, op, body, res)
+	})
+}
+
+// retryTransport runs attempt until it succeeds, fails with something the server
+// decided, or exhausts the budget.
+//
+// The wait between attempts is the point: retrying a connection failure
+// immediately turns one troubled server into a stream of requests, and the second
+// attempt would arrive before the first failure had a chance to clear.
+func (r *Runner) retryTransport(ctx context.Context, attempt func() error) error {
 	var last error
-	for attempt := 0; attempt <= r.retries; attempt++ {
-		last = r.transport.Do(ctx, op, body, res)
+	for i := 0; i <= r.retries; i++ {
+		if i > 0 {
+			if err := retrySleep(ctx, retryBackoff(i-1)); err != nil {
+				// The caller gave up while we were waiting: that is the more
+				// truthful reason to report.
+				return errdefs.FromContext(err)
+			}
+		}
+		last = attempt()
 		if last == nil {
 			return nil
 		}
-		if !isTransportError(last) || ctx.Err() != nil {
+		// A caller that has given up gets its own cancellation reported, not the
+		// transport failure that happened to race it.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return errdefs.FromContext(ctxErr)
+		}
+		if !isTransportError(last) {
 			return last
 		}
 	}
 	return last
+}
+
+// backoffFor is the wait before retry attempt n (zero-based). It grows so a
+// server that is restarting has time to come back, and stops growing at half a
+// second so a doomed operation fails inside about one.
+func backoffFor(attempt int) time.Duration {
+	switch attempt {
+	case 0:
+		return 20 * time.Millisecond
+	case 1:
+		return 100 * time.Millisecond
+	default:
+		return 500 * time.Millisecond
+	}
+}
+
+// retryBackoff adds jitter to the schedule. A fleet that restarted together would
+// otherwise retry in lockstep, which is the one case where these delays make a
+// herd worse instead of better. Both it and retrySleep are variables so a test can
+// assert the schedule without waiting for it.
+var retryBackoff = func(attempt int) time.Duration {
+	base := backoffFor(attempt)
+	if base <= 0 {
+		return 0
+	}
+	// Up to +20%: never shorter than the schedule, so the "do not hammer" property
+	// holds for every draw.
+	return base + time.Duration(rand.Int64N(int64(base)/5+1))
+}
+
+// retrySleep waits for d or until the context ends.
+var retrySleep = func(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func encodeRequest(req any) ([]byte, error) {

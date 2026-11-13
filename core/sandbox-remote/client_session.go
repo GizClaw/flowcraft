@@ -129,6 +129,11 @@ func (s *session) Wait(ctx context.Context) (sandbox.SessionExit, error) {
 
 	failures := 0
 	for {
+		if failures > 0 {
+			if err := retrySleep(ctx, retryBackoff(failures-1)); err != nil {
+				return sandbox.SessionExit{}, errdefs.FromContext(err)
+			}
+		}
 		var out wire.WaitResponse
 		err := s.runner.transport.Do(ctx, OpWait,
 			mustEncode(wire.WaitRequest{ID: s.id, HoldMS: s.runner.holdMS()}), &out)
@@ -141,13 +146,17 @@ func (s *session) Wait(ctx context.Context) (sandbox.SessionExit, error) {
 		case err == nil:
 			// The server held as long as it was asked to and the process is
 			// still alive: ask again, which is what "blocks until it exits"
-			// means over a request/response transport.
+			// means over a request/response transport. This is not a failure, so
+			// it neither counts against the retry budget nor waits.
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return sandbox.SessionExit{}, errdefs.FromContext(ctxErr)
 			}
 			failures = 0
 		default:
-			if !isTransportError(err) || ctx.Err() != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return sandbox.SessionExit{}, errdefs.FromContext(ctxErr)
+			}
+			if !isTransportError(err) {
 				return sandbox.SessionExit{}, err
 			}
 			failures++
