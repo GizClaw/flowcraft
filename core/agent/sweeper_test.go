@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -329,8 +331,9 @@ func TestTrimKeepsTheMostRecentlyUsed(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(evicted) != 3 {
-		t.Fatalf("evicted = %v, want three reports", evicted)
+	sort.Strings(evicted)
+	if got, want := strings.Join(evicted, ","), "a,b,c"; got != want {
+		t.Fatalf("evicted = %s, want %s", got, want)
 	}
 }
 
@@ -374,14 +377,18 @@ func TestTrimSkipsRunningSessions(t *testing.T) {
 	}
 }
 
-// BenchmarkTrimOverCap is the message path's cost when a table sits k times over
-// its cap: one pass and a sort, independent of how many sessions are dropped.
-// The previous shape scanned the whole table once per victim.
+// BenchmarkTrimOverCap is the message path's cost when a table sits over its
+// cap. over is how many times the cap: the steady state of a capped deployment is
+// just over it, where one victim is needed, and that case must stay as cheap as
+// the single scan it replaced.
+//
+// The refill between iterations re-inserts the sessions trim just evicted rather
+// than minting new ones: allocations made while the timer is stopped are still
+// counted by the benchmark, so newSession/Sprintf churn there would drown out
+// trim's own (tens of) allocations.
 func BenchmarkTrimOverCap(b *testing.B) {
-	// over is how many times the cap the table sits at. Two and four are the
-	// shapes that pay: one session over the cap is one scan either way.
 	for _, sessions := range []int{1000, 5000} {
-		for _, over := range []int{2, 4} {
+		for _, over := range []int{1, 2, 4} {
 			b.Run(fmt.Sprintf("sessions=%d/over=%dx", sessions, over), func(b *testing.B) {
 				max := sessions / over
 				a, err := NewAgent(AgentOptions{
@@ -398,16 +405,19 @@ func BenchmarkTrimOverCap(b *testing.B) {
 				for i := 0; i < sessions; i++ {
 					insertIdleB(b, a, fmt.Sprintf("s-%05d", i), base.Add(-time.Duration(i)*time.Millisecond))
 				}
+				var refill []*session
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
 					b.StopTimer()
-					// Refill to the over-cap size without timing the setup.
-					for j := a.table.count(); int(j) < sessions; j++ {
-						insertIdleB(b, a, fmt.Sprintf("r-%d-%05d", i, j), base)
+					for _, evicted := range refill {
+						shard := a.table.shard(evicted.id)
+						shard.mu.Lock()
+						shard.insert(evicted)
+						shard.mu.Unlock()
 					}
 					b.StartTimer()
-					a.trim()
+					refill = a.trim()
 				}
 			})
 		}
@@ -426,4 +436,54 @@ func insertIdleB(tb testing.TB, a *Agent, id string, lastUsed time.Time) *sessio
 	shard.insert(entry)
 	shard.mu.Unlock()
 	return entry
+}
+
+// TestTrimIsRaceFreeUnderConcurrentRuns pins the reason trim copies each
+// candidate's timestamp while holding the shard lock. `lastUsed` is written by
+// acquire and release under that lock; the first version of the single-pass trim
+// collected entry pointers and sorted on the live field afterwards, which -race
+// reports as a data race as soon as two runs touch the same table.
+func TestTrimIsRaceFreeUnderConcurrentRuns(t *testing.T) {
+	a := probeAgent(t, AgentOptions{MaxSessions: 2})
+	var (
+		wg      sync.WaitGroup
+		mu      sync.Mutex
+		runErrs []error
+	)
+	for round := 0; round < 3; round++ {
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			// The loop variables are passed in: Go 1.22 makes them per-iteration,
+			// but an explicit parameter keeps the intent readable.
+			go func(round, i int) {
+				defer wg.Done()
+				sessionID := fmt.Sprintf("s-%d-%d", round, i)
+				// t.Fatalf is illegal off the test goroutine, so a failed run is
+				// collected and reported once the goroutines have joined.
+				for _, err := range a.Run(context.Background(), sessionID, message.NewTextMessage(message.RoleUser, "hi")) {
+					if err != nil {
+						mu.Lock()
+						runErrs = append(runErrs, err)
+						mu.Unlock()
+						return
+					}
+				}
+			}(round, i)
+		}
+	}
+	wg.Wait()
+	for _, err := range runErrs {
+		t.Errorf("run: %v", err)
+	}
+	// A session is only a trim candidate once its run released it, and release
+	// runs on the run's own goroutine, so poll rather than assume the table is
+	// settled the instant the sequences end.
+	deadline := time.Now().Add(2 * time.Second)
+	for a.table.count() > 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("table holds %d sessions, want at most 2", a.table.count())
+		}
+		a.trim()
+		time.Sleep(2 * time.Millisecond)
+	}
 }
