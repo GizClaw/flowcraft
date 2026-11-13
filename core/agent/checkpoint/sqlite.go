@@ -2,9 +2,14 @@
 //
 // The schema is two tables plus a blob table, and it is written to translate:
 //
-//	tasks   one row per Task: the immutable seed, the mutable projection, a version
+//	tasks   one row per Task: the immutable seed, the mutable projection, a version,
+//	        and a save counter that orders a session's tasks
 //	events  the appended facts, one row per fact, keyed (task_id, seq)
 //	blobs   artifact bytes by content hash
+//
+// "The newest task of a session" — the one a later turn carries from — is the
+// greatest save counter, never a timestamp: see savedAtLayout for what the text
+// comparison got wrong.
 //
 // Every save is one transaction: append the round's events and update the
 // projection together, so a reader never sees a task that mentions a message the
@@ -46,6 +51,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 	body           BLOB NOT NULL,
 	version        INTEGER NOT NULL DEFAULT 1,
 	server_version INTEGER NOT NULL DEFAULT 0,
+	saved_at       INTEGER NOT NULL DEFAULT 0,
 	updated_at     TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
@@ -60,6 +66,18 @@ CREATE TABLE IF NOT EXISTS blobs (
 	ref  TEXT PRIMARY KEY,
 	body BLOB NOT NULL
 );`
+
+// savedAtLayout is how updated_at is written: a fixed nine-digit fraction, so
+// the text sorts the way the clock does.
+//
+// time.RFC3339Nano trims trailing zeros, which makes the column's order depend on
+// how the clock landed rather than on which row is newer: "…00.1234Z" compares
+// greater than "…00.123456Z" because 'Z' sorts after '4', yet the second value is
+// 56 microseconds later. "The newest task of this session" is read from that
+// order, so a session could inherit the task before its previous one — one turn's
+// conversation lost from the carry. Ordering uses saved_at (below) for the same
+// reason: an integer cannot mis-sort.
+const savedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // SQLite is the database/sql backend. A Postgres backend is a sibling file
 // with the same shape, which is why nothing here is named "local".
@@ -137,8 +155,12 @@ func Open(path string, config ...Option) (*SQLite, error) {
 		}
 	}
 	// An older database predates the adapter's own counter; adding it here keeps
-	// one migration path without a schema-version table.
+	// One migration path without a schema-version table: each of these is run
+	// unconditionally and a duplicate column is ignored.
 	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN server_version INTEGER NOT NULL DEFAULT 0")
+	// The newest task of a session is ordered by this counter, not by the
+	// timestamp text: see savedAtLayout.
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN saved_at INTEGER NOT NULL DEFAULT 0")
 	// A database written before the projection stopped carrying history has no
 	// seed column; Load falls back to the body for those rows.
 	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN seed BLOB NOT NULL DEFAULT ''")
@@ -202,10 +224,14 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
+	// Ordering is the save counter's job; updated_at is for a reader. Both are
+	// written from one clock read so the row cannot disagree with itself.
+	at := time.Now().UTC()
+	savedAt := at.UnixNano()
+	now := at.Format(savedAtLayout)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, version, server_version, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, version, server_version, saved_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
 			context_id     = excluded.context_id,
 			state          = excluded.state,
@@ -216,6 +242,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			version        = tasks.version + 1,
 			server_version = CASE WHEN excluded.server_version > 0
 				THEN excluded.server_version ELSE tasks.server_version END,
+			saved_at       = excluded.saved_at,
 			updated_at     = excluded.updated_at`,
 		checkpoint.Task.ID,
 		checkpoint.Task.SessionID,
@@ -226,6 +253,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		seed,
 		body,
 		checkpoint.ServerVersion,
+		savedAt,
 		now,
 	); err != nil {
 		return 0, 0, fmt.Errorf("checkpoint: project task: %w", err)
@@ -342,7 +370,7 @@ func (l *SQLite) LatestForSession(ctx context.Context, sessionID string) (agent.
 	var taskID string
 	err := l.db.QueryRowContext(ctx,
 		`SELECT task_id FROM tasks WHERE context_id = ?
-		 ORDER BY updated_at DESC LIMIT 1`, sessionID).Scan(&taskID)
+		 ORDER BY saved_at DESC, updated_at DESC LIMIT 1`, sessionID).Scan(&taskID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -392,9 +420,12 @@ func (l *SQLite) SetServerVersion(ctx context.Context, taskID string, version in
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// updated_at is for a reader; saved_at is what orders a session's tasks, and
+	// this write must not reorder them: the adapter's counter moving is not the
+	// engine saving a task.
 	res, err := l.db.ExecContext(ctx,
 		`UPDATE tasks SET server_version = ?, updated_at = ? WHERE task_id = ?`,
-		version, time.Now().UTC().Format(time.RFC3339Nano), taskID)
+		version, time.Now().UTC().Format(savedAtLayout), taskID)
 	if err != nil {
 		return fmt.Errorf("checkpoint: set server version: %w", err)
 	}
@@ -457,7 +488,8 @@ func truncateEvents(ctx context.Context, db execer, taskID string, seq int64, ki
 // List returns every task, newest first.
 func (l *SQLite) List(ctx context.Context) ([]agent.TaskSummary, error) {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT task_id, context_id, state, round, updated_at FROM tasks ORDER BY updated_at DESC`)
+		`SELECT task_id, context_id, state, round, updated_at FROM tasks
+		 ORDER BY saved_at DESC, updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: list: %w", err)
 	}

@@ -279,3 +279,182 @@ INSERT INTO events (task_id, seq, kind, payload) VALUES ('task-1', 1, 'message',
 		t.Fatalf("appended = %+v, want the named time", appended)
 	}
 }
+
+// TestSavedAtLayoutOrdersChronologically pins why updated_at is written with a
+// fixed-width fraction. time.RFC3339Nano trims trailing zeros, and 'Z' sorts above
+// every digit, so an earlier instant compares greater than a later one whenever its
+// fraction is a prefix of the other's. "The newest task of this session" is read
+// from that order, and reading it wrong hands a turn the previous turn's
+// transcript.
+func TestSavedAtLayoutOrdersChronologically(t *testing.T) {
+	base := time.Date(2026, 11, 13, 14, 0, 0, 0, time.UTC)
+	pairs := []struct {
+		name    string
+		earlier time.Time
+		later   time.Time
+	}{
+		{"trimmed fraction", base.Add(123400 * time.Microsecond), base.Add(123456 * time.Microsecond)},
+		{"no fraction", base, base.Add(1 * time.Nanosecond)},
+	}
+	for _, pair := range pairs {
+		if pair.earlier.Format(time.RFC3339Nano) <= pair.later.Format(time.RFC3339Nano) {
+			t.Fatalf("%s: RFC3339Nano no longer mis-orders %q / %q; this test needs a new witness",
+				pair.name, pair.earlier.Format(time.RFC3339Nano), pair.later.Format(time.RFC3339Nano))
+		}
+		if got, want := pair.earlier.Format(savedAtLayout), pair.later.Format(savedAtLayout); got >= want {
+			t.Fatalf("%s: savedAtLayout does not order %q before %q", pair.name, got, want)
+		}
+	}
+}
+
+// TestLatestForSessionUsesTheSaveCounter pins that ordering is the counter's job,
+// so a clock that lands awkwardly cannot reorder a session's tasks. Two real saves
+// establish the rows, then the ordering inputs are forged to the case that broke:
+// the older row's timestamp text compares greater than the newer one's.
+func TestLatestForSessionUsesTheSaveCounter(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	saved := func(id string) agent.Checkpoint {
+		return agent.Checkpoint{
+			Schema:      agent.CheckpointSchema,
+			Fingerprint: "sha256:x",
+			Task:        agent.Task{ID: id, SessionID: "session", State: agent.StateCompleted},
+		}
+	}
+	if _, _, err := store.Save(ctx, saved("old"), nil); err != nil {
+		t.Fatalf("Save old: %v", err)
+	}
+	if _, _, err := store.Save(ctx, saved("new"), nil); err != nil {
+		t.Fatalf("Save new: %v", err)
+	}
+	base := time.Now().UTC().Truncate(time.Second)
+	earlier := base.Add(123400 * time.Microsecond) // ".123400000": a prefix of later's fraction
+	later := base.Add(123456 * time.Microsecond)   // ".123456000"
+	if earlier.Format(time.RFC3339Nano) <= later.Format(time.RFC3339Nano) {
+		t.Fatalf("fixture is not adversarial: %q <= %q",
+			earlier.Format(time.RFC3339Nano), later.Format(time.RFC3339Nano))
+	}
+	for id, at := range map[string]time.Time{"old": earlier, "new": later} {
+		if _, err := store.db.ExecContext(ctx,
+			`UPDATE tasks SET updated_at = ? WHERE task_id = ?`,
+			at.Format(time.RFC3339Nano), id); err != nil {
+			t.Fatalf("forge updated_at for %s: %v", id, err)
+		}
+	}
+
+	latest, err := store.LatestForSession(ctx, "session")
+	if err != nil {
+		t.Fatalf("LatestForSession: %v", err)
+	}
+	if latest.Task.ID != "new" {
+		t.Fatalf("LatestForSession = %q, want the task with the greater save counter", latest.Task.ID)
+	}
+}
+
+// TestSaveStampsTheSaveCounter: every save moves the counter forward, including
+// one that only rewrites the projection, and the session's newest task follows.
+func TestSaveStampsTheSaveCounter(t *testing.T) {
+	store := openStore(t)
+	ctx := context.Background()
+	saved := func(id string) agent.Checkpoint {
+		return agent.Checkpoint{
+			Schema:      agent.CheckpointSchema,
+			Fingerprint: "sha256:x",
+			Task:        agent.Task{ID: id, SessionID: "session", State: agent.StateCompleted},
+		}
+	}
+	if _, _, err := store.Save(ctx, saved("task-a"), nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, _, err := store.Save(ctx, saved("task-b"), nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	latest, err := store.LatestForSession(ctx, "session")
+	if err != nil {
+		t.Fatalf("LatestForSession: %v", err)
+	}
+	if latest.Task.ID != "task-b" {
+		t.Fatalf("LatestForSession = %q, want task-b", latest.Task.ID)
+	}
+	var savedAt int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT saved_at FROM tasks WHERE task_id = 'task-b'`).Scan(&savedAt); err != nil {
+		t.Fatalf("read saved_at: %v", err)
+	}
+	if savedAt == 0 {
+		t.Fatal("Save left saved_at at zero, so a session's order would fall back to the timestamp text")
+	}
+}
+
+// TestOpenMigratesATasksTableWithoutSavedAt: a store written before the ordering
+// counter existed keeps working. Its rows read back with a zero counter, so the
+// timestamp is still the tie-break for them — the pre-existing answer — and the
+// first save through the new code sets a real counter.
+func TestOpenMigratesATasksTableWithoutSavedAt(t *testing.T) {
+	path := t.TempDir() + "/old.db"
+	old, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	// A row written before `seed` existed carries the whole checkpoint in body.
+	legacyBody, err := json.Marshal(agent.Checkpoint{
+		Schema: agent.CheckpointSchema,
+		Task:   agent.Task{ID: "legacy", SessionID: "session", State: agent.StateCompleted, Round: 1},
+	})
+	if err != nil {
+		t.Fatalf("encode the legacy row: %v", err)
+	}
+	if _, err := old.Exec(`
+CREATE TABLE tasks (
+	task_id TEXT PRIMARY KEY, context_id TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL, round INTEGER NOT NULL DEFAULT 0,
+	schema INTEGER NOT NULL, fingerprint TEXT NOT NULL,
+	body BLOB NOT NULL, version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL
+);
+CREATE TABLE events (task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL, payload BLOB NOT NULL, PRIMARY KEY (task_id, seq));
+INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, body, updated_at)
+VALUES ('legacy', 'session', 'completed', 1, 1, '', ?, '2026-01-01T00:00:00.000000000Z');
+`, legacyBody); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed the old schema: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close seed: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open the old database: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ctx := context.Background()
+	latest, err := store.LatestForSession(ctx, "session")
+	if err != nil {
+		t.Fatalf("LatestForSession: %v", err)
+	}
+	if latest.Task.ID != "legacy" {
+		t.Fatalf("LatestForSession = %q, want the pre-existing row", latest.Task.ID)
+	}
+	var savedAt int64
+	if err := store.db.QueryRowContext(ctx,
+		`SELECT saved_at FROM tasks WHERE task_id = 'legacy'`).Scan(&savedAt); err != nil {
+		t.Fatalf("read saved_at: %v", err)
+	}
+	if savedAt != 0 {
+		t.Fatalf("legacy saved_at = %d, want the migration default", savedAt)
+	}
+
+	if _, _, err := store.Save(ctx, agent.Checkpoint{
+		Schema: agent.CheckpointSchema,
+		Task:   agent.Task{ID: "fresh", SessionID: "session", State: agent.StateCompleted},
+	}, nil); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	latest, err = store.LatestForSession(ctx, "session")
+	if err != nil {
+		t.Fatalf("LatestForSession after save: %v", err)
+	}
+	if latest.Task.ID != "fresh" {
+		t.Fatalf("LatestForSession = %q, want the task saved after the migration", latest.Task.ID)
+	}
+}
