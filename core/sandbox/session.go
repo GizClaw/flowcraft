@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 // Session errors. They are plain sentinels: callers distinguish them
@@ -171,6 +173,47 @@ type SessionInfo struct {
 	StartedAt time.Time
 	Running   bool
 	Exit      *SessionExit
+}
+
+// SessionAttacher is implemented by runners that can hand back a handle to a
+// session they already manage.
+//
+// The contract needs this seam because Start is the only method that returns a
+// [Session]: a caller that reconnects — a restarted client, a dropped
+// connection, a supervisor adopting its own process table — could List what
+// exists but had no way to read from it. A remote runner implements it over its
+// wire; a supervisor that keeps sessions past their starter can implement it
+// over its own table.
+type SessionAttacher interface {
+	// Attach returns a handle to the session id, or errdefs.NotAvailable when
+	// this runner cannot hand one out.
+	//
+	// The handle is an ordinary [Session]: it reads the same output log from
+	// any retained cursor. In particular Close keeps its contract meaning — it
+	// terminates a still running session and reaps it — so attaching is "take
+	// over this session", not "peek at it". Detaching while leaving the process
+	// running is deliberately not part of this interface; add it when a caller
+	// needs it rather than guessing at the ownership rule now.
+	Attach(ctx context.Context, id string) (Session, error)
+}
+
+// Attach opens a handle to id on r. It is the only supported way to reach the
+// optional interface: callers ask the runner, they do not assert
+// [SessionAttacher] themselves, so a backend can keep the capability behind a
+// decorator chain or behind the wire.
+func Attach(ctx context.Context, r Runner, id string) (Session, error) {
+	if r == nil {
+		return nil, errdefs.Validationf("sandbox: Attach: nil runner")
+	}
+	if id == "" {
+		return nil, errdefs.Validationf("sandbox: Attach: empty session id")
+	}
+	attacher, ok := r.(SessionAttacher)
+	if !ok {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: runner %T does not support re-attaching a session", r)
+	}
+	return attacher.Attach(ctx, id)
 }
 
 // Session is the unified, tool-facing handle to one running process.
