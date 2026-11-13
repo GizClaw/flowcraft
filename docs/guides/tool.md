@@ -79,7 +79,7 @@ refreshes the entry, idle entries are evicted after
 loaded cache that costs no tokens: those entries return to the visible set when
 used or re-searched.
 `tool_search` must stay `always`; a different exposure is rejected at
-assembly build time. 
+assembly build time.
 
 MCP servers are declared in the runtime document, under `tools.mcp`. Two modes,
 one visible difference: eager starts every server at assembly, deferred starts one

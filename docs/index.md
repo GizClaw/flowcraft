@@ -121,4 +121,3 @@ go get github.com/GizClaw/flowcraft/core@latest
 
 Every package carries a `doc.go` stating what it is and what it deliberately is
 not; start there, then read the guide above for the layer you are wiring.
-
