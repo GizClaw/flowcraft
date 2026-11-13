@@ -143,7 +143,7 @@ func peer(t *testing.T, text string) *httptest.Server {
 func TestExposedAgentServesA2A(t *testing.T) {
 	peerServer := peer(t, "served")
 	manager := newManager(t,
-		deploy.BuiltinKinds().WithProtocols(a2aprotocol.Kind()),
+		deploy.BuiltinKinds(),
 		host.Bindings{RuntimeOptions: []runtime.Option{stubDriver()}})
 	spec := deploy.Spec{
 		Name:   "backend",
@@ -219,7 +219,7 @@ func (artifactRunner) Close() error                         { return nil }
 func TestArtifactURLReachesTheWire(t *testing.T) {
 	kinds := deploy.BuiltinKinds().
 		WithEngines(artifactEngine()).
-		WithProtocols(a2aprotocol.Kind())
+		WithProtocols(deploy.A2AProtocol())
 	manager := newManager(t, kinds, host.Bindings{
 		RuntimeOptions: []runtime.Option{stubDriver()},
 		ArtifactURL:    func(ref string) string { return "https://files.test/" + ref },
@@ -260,9 +260,13 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 }
 
 // Without the protocol registered, the same spec is refused: exposure is a
-// deployment choice, not a silent default.
+// deployment choice, not a silent default. The built-ins offer a2a now, so the test
+// withholds it explicitly — the rule under test is "the host must register it", not
+// "the built-ins must not".
 func TestA2AProtocolMustBeRegistered(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds(), host.Bindings{})
+	kinds := deploy.BuiltinKinds()
+	delete(kinds.Protocols, "a2a")
+	manager := newManager(t, kinds, host.Bindings{})
 	err := manager.Add(context.Background(), deploy.Spec{
 		Name:     "backend",
 		Engine:   deploy.EngineSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{"peer": "https://peer.example"})},
@@ -277,7 +281,7 @@ var _ = sync.Mutex{}
 
 // The registration is a value a host composes: a name, a decoder and a builder.
 func TestKindRegistersA2A(t *testing.T) {
-	kind := a2aprotocol.Kind()
+	kind := deploy.A2AProtocol()
 	if kind.Name != "a2a" {
 		t.Fatalf("name = %q, want a2a", kind.Name)
 	}

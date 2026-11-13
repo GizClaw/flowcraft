@@ -139,7 +139,9 @@ func BuiltinKinds() Kinds {
 			"a2a":   A2AEngine(),
 			"graph": GraphEngine(),
 		},
-		Protocols: map[string]ProtocolKind{},
+		Protocols: map[string]ProtocolKind{
+			"a2a": A2AProtocol(),
+		},
 		// Hooks are the host's own policy, so the built-ins register none.
 		Hooks: map[string]HookKind{},
 	}
