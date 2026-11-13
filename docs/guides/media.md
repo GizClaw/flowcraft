@@ -4,160 +4,96 @@ title: Media & Attachments
 ---
 # Media & Attachments
 
-Attachments travel in the canonical `message` part vocabulary — image,
-audio, video, file — and three packages decide what a payload is, how
-large it may be, and how it survives the trip into a request:
+Attachments travel in the canonical `message` part vocabulary — text, image,
+audio, video, file — and the value types that describe them live in
+`core/message/media`. There is no separate media pipeline in core: a payload
+enters a request through the tool that read it or the caller that built it, and
+the budgets that bound it are owned where they are enforced.
 
 | Piece | Package | Job |
 | --- | --- | --- |
-| Classification | `core/utils/filetype` | decide a file's type by its content, not its name |
-| Normalization | `core/media/imageutil` | EXIF orientation, alpha flattening, bounded JPEG re-encoding |
-| Board adaptation | `core/media/hook` | the `media.attachments` prepare hook |
+| Part vocabulary | `core/message` | `Part`, `Content`, marshalling, `NormalizePart`. |
+| Media values | `core/message/media` | Sources (URL or bytes), formats, sizes, aspect ratios, duration. |
+| Content classification | `core/tool-builtin/files` | decide what a payload is by its bytes, not its name. |
+| Provider surfaces | `core/inference-openai` | transcription, image generation and image edit. |
 
-`core/message/media` keeps the vocabulary (sources, parts, streams); the
-handling around it is split across the three packages above. A payload's path
-into a request therefore reads `message.Part` → `media/hook` →
-`media/imageutil`, with `filetype` answering what the bytes are along the way.
+## The vocabulary
 
-Nothing in core wires the hook or the normalization entry points: they are the
-contract hosts consume. The desktop application registers `media.attachments`
-in place of its own hook and calls `imageutil` when it persists attachments,
-and the model-facing tools that read and render images (`view_image`,
-`generate_image`) follow in their own change. Until then these packages are
-pinned by their own tests — including the cross-package wiring tests in
-`imageutil/budget_test.go` — rather than by in-repo callers.
-
-## The `media.attachments` prepare hook
-
-The hook runs as an `agent.Preparer` and normalizes the seeded user
-message before the engine reads the board:
-
-- **audio, video and file parts are flattened** into a text line naming
-  the attachment path, so a turn whose routed model declares no such
-  input still runs, and the file tools can still reach the attachment
-  by path;
-- **URL-sourced image, audio and video parts that point at a local
-  file are inlined** as byte parts: no provider can fetch a host path,
-  and inline bytes are what the wire carries;
-- **images and text otherwise pass through untouched**: a vision model
-  takes the image part directly, and the declaration checks route the
-  turn to a target that accepts it;
-- **an attachment whose bytes cannot travel is flattened the same way**
-  rather than failing the turn: a local file over the inline budget, and
-  an inline or stream source with no path to name, are described in the
-  line (`[image file] sessions/s-abc/media/2-b.png`,
-  `[audio file] (inline audio/webm)`) so the model knows what it did not
-  get. How large an attachment is never decides whether a turn runs.
-
-The hook never rewrites the request itself; flattening and inlining
-live on the board the engine reads, so a session archive that keeps the
-request keeps the original typed attachments.
-
-Flattened lines use forward slashes on every platform, because prompt
-text crosses hosts.
-
-The hook moves bytes; it does not normalize them. An attachment under
-`max_inline_bytes` reaches the request at its stored size, so the
-prompt-side bound (`imageutil.DefaultPromptImageBytes`) is applied by
-whoever normalizes before seeding — registering `media.attachments`
-alone never downscales.
-
-Part URLs on the main channel are host-attested: the hook inlines
-whatever local file they name, wherever it lives. An attachment
-legitimately sits outside the workspace root (`work_dir` is for
-readable paths, not confinement — a host keeps session media in its own
-data directory), so a host that maps untrusted input into parts must
-sanitize before seeding the board.
-
-```yaml
-agents:
-  assistant:
-    prepare:
-      - type: media.attachments        # hook.prepare attachment normalizer
-        settings:
-          work_dir: /workspace           # attachment paths under it render relative
-          passthrough_kinds: [video]     # keep these kinds as parts: audio / video / file
-          max_inline_bytes: 10485760     # inline budget per attachment (10 MiB default)
-          audio_marker: "[audio file] "  # per-kind label (defaults shown)
-          video_marker: "[video file] "
-          image_marker: "[image file] "
-          file_marker: "[file] "
-```
-
-Settings:
-
-| Field | Meaning |
-| --- | --- |
-| `work_dir` | Workspace root; attachment paths under it render relative in the flattened text, paths outside it stay absolute. Optional. |
-| `passthrough_kinds` | The non-image kinds (`audio`, `video`, `file`) whose parts survive as parts. The default flattens every non-image attachment: the hook runs before routing, so the declared inputs of the eventual target are not known here. A deployment lists a kind only for turns it routes to a model that declares that input. Images are flattened only when their bytes cannot travel. |
-| `max_inline_bytes` | Inline budget for one attachment. Optional; 10 MiB (`hook.DefaultMaxInlineBytes`) when unset, matching `imageutil.MaxInlineImageBytes` (pinned by a test) so an attachment that survived persistence also survives the trip into a request. A file over it is flattened to a path line, never a failed turn. |
-| `audio_marker`, `video_marker`, `image_marker`, `file_marker` | Prefix of the flattened line for that kind. An empty marker falls back to `[audio file] `, `[video file] `, `[image file] ` and `[file] `. |
-
-## Content classification
-
-`core/utils/filetype` answers two questions at once — the media type to
-report and whether the payload is text:
+A part is one piece of a message, and `Part` is a sealed union: one concrete type
+per kind, so a switch over it is exhaustive and a new kind cannot appear without
+every table being revisited. `PartKinds()` is the enumeration: `text`, `image`,
+`audio`, `video`, `file`, `data`, `tool_call`, `tool_result`, `reasoning`.
 
 ```go
-kind := filetype.OfPath("report.ts") // or OfData(name, payload)
-kind.MediaType                       // the type to report; never empty
-kind.Text                            // render as source, read as lines
+src, err := media.NewImageBytes(png, media.ImageFormatPNG.MediaType())
+content := message.NewTextContent("what is in this chart?")
+content.Parts = append(content.Parts, message.ImagePart{Source: src})
 ```
 
-The rule is content-first, in order:
+| Type | Carries |
+| --- | --- |
+| `ImageSource`, `AudioSource`, `VideoSource`, `FileSource` | A URL (`NewImageURL`, …) or inline bytes (`NewImageBytes`, …); `DataURL` renders bytes as a data URI. |
+| `ImageFormat` | `png`, `jpeg`, `webp`, `gif`, `avif` — each knows its `MediaType()`. |
+| `ImageSize`, `AspectRatio` | Dimensions and `width:height`, both validated on construction. |
+| `AudioDurationMillis` | The duration of an audio payload in a given `AudioFormat` (container parsing, no decoding). |
 
-1. a media signature in the leading 512 bytes (image, video, audio,
-   PDF) wins when the payload is binary or the name agrees on the
-   family — this keeps documents that merely start with `BM` or `ID3`
-   as text;
-2. a payload without a NUL byte is text, whatever the name says: the
-   platform table maps `.ts` to `video/mp2t`, and the TypeScript source
-   beside the recording must still open as source;
-3. everything else is binary and takes the name's type when the
-   platform table has one, and the sniffed type otherwise.
+`message.NormalizePart` fills defaults before a part reaches a provider, and
+`MarshalPart` / `UnmarshalPart` are the wire form — which is what makes an
+attachment survive a checkpoint, a store round trip or a protocol hop.
 
-`IsText`, `NameType` and `Family` expose the individual rules.
+## How a payload reaches a request
 
-## Image normalization
+**Through a tool.** `read_file` has an image branch: it sniffs the leading bytes
+with `http.DetectContentType` and returns an image part instead of text. The rules
+are content-first, because a `.png` may hold a JPEG and a JPEG may be named
+`.txt`:
 
-`core/media/imageutil` turns an arbitrary attachment image into
-predictable prompt bytes:
+| Bound | Value | On exceed |
+| --- | --- | --- |
+| Bytes per image | 8 MiB (`maxImageBytes`) | Refused, naming the size and the limit. |
+| Longest edge | 4096 px (`maxImageEdge`) | Refused with an instruction to downscale. |
+| Decodable formats | PNG, JPEG, GIF | WebP is recognised by content type and refused **by name**, because this build has no decoder for it. |
 
-- `NormalizeToJPEG(r)` decodes JPEG / PNG / GIF / TIFF / BMP, applies
-  the EXIF orientation, flattens transparency onto white (JPEG cannot
-  carry alpha), and re-encodes at quality 90. Formats the decoder does
-  not know (WebP, AVIF, …) return an error so the caller can fall back
-  to the original bytes;
-- `NormalizeFileToJPEG(path)` is the file entry point: it checks the
-  pixel budget from the header first, so a decompression bomb is
-  rejected before a full-size allocation;
-- `DownscaleToJPEG(r, maxEdge, maxBytes)` fits both bounds: quality is
-  stepped down first, and the image is scaled further only when the
-  lowest quality still does not fit (`maxBytes <= 0` applies no byte
-  budget). The dimensions it returns always describe the bytes it
-  returns, including when the budget stays out of reach even at the
-  smallest size the ladder produces — then the smallest encoding is
-  returned rather than an error;
-- `JPEGUpright(path)` reports whether a JPEG's EXIF orientation needs
-  no transform, so an upright file can be persisted byte-for-byte
-  instead of being re-encoded. It answers what imaging's own EXIF
-  reader answers (first APP1 segment only; the orientation is the first
-  two bytes of the tag's value field, whatever type and count the entry
-  declares), and where it cannot follow a malformed stream — truncated
-  EXIF data, marker fill bytes — it reports "needs a transform" rather
-  than guessing.
+The refusal is the design: core does not resize or re-encode, so silently
+shrinking would hide that the model saw something other than the file.
 
-Budgets. Three bounds apply, and each is owned where it is enforced — which is
-why the same payload can pass one and fail another:
+**Through the caller.** A host that already holds bytes builds the part itself
+and seeds the message. Nothing in core rewrites it: there is no prepare hook and
+no normalization step, so EXIF orientation, alpha flattening and downscaling are
+the host's, before seeding. That is deliberate — a pipeline inside the turn loop
+would have to re-encode on every retry and every replay.
+
+**Through a provider surface.** Transcription and image generation/edit are
+`inference` extensions in `core/inference-openai`; they take their media as
+arguments and return it as parts. See [inference.md](inference.md).
+
+## Budgets
 
 | Constant | Value | Bounds |
 | --- | --- | --- |
-| `hook.DefaultMaxInlineBytes` | 10 MiB | one inlined attachment of any kind; `max_inline_bytes` overrides it |
-| `MaxInlineImageBytes` | 10 MiB | one image: persisted as an attachment, previewed as a data URL |
-| `MaxDecodePixels` | 40,000,000 | pixels of any image that is fully decoded |
-| `DefaultPromptImageEdge` | 1568 px | longest edge of a prompt-side downscale |
-| `DefaultPromptImageBytes` | 786,000 | raw JPEG size whose marshalled part stays under the default 1 MiB non-text part budget (`middleware.DefaultResultPartBudget`), pinned by a test. The bound a host applies while normalizing before seeding; the hook does not enforce it. |
+| `files.maxImageBytes` | 8 MiB | one image read by the file tools. |
+| `files.maxImageEdge` | 4096 px | one side of an image read by the file tools. |
+| `tool/middleware.DefaultResultPartBudget` | 1 MiB | the encoded size of all non-text parts of one tool result; the `result_limit` middleware enforces it, overridable per deployment. |
 
-Decoding runs on `github.com/disintegration/imaging` (pure Go, no cgo);
-TIFF and BMP decoding comes from `golang.org/x/image`, which imaging
-imports for registration (a test in the package pins that dependency).
+The last one is why a large image can be readable and still not fit a tool
+result: the read cap bounds one attachment, the part budget bounds what a *tool
+result* may carry. A model-facing image that exceeds it comes back as a marker
+line rather than an oversized part.
+
+## Flattening, when it happens
+
+A provider that does not accept a kind refuses the request; routing is what
+should prevent that, not a silent rewrite in the message. If a host wants a turn
+to run when the selected model declares no `audio` input, the flattening (an
+`[audio file] path` line) belongs to whoever seeds the turn — `AfterTurn` and
+`BeforeTurn` hooks are where a summary of what was dropped goes, not the media
+layer. See [hooks.md](hooks.md).
+
+## What is not here
+
+| Not in core | Why |
+| --- | --- |
+| An attachment store, previews, data URLs for UIs | Host concerns; the part vocabulary is all a turn needs. |
+| EXIF orientation, alpha flattening, JPEG re-encoding | A turn loop that re-encodes pays on every retry and every replay. |
+| A `media.attachments` prepare hook | Removed with the hook system; seeding is the host's. |
+| Resizing on read | Refusing with the limit is honest; resizing hides what the model saw. |

@@ -4,259 +4,161 @@ title: Delegation
 ---
 # Delegation Guide
 
-`core/delegation` defines backend-neutral contracts for assigning work to
-another agent or execution target. `Directory` owns discovery; `Service`
-owns execution and status lookup. Delegation is synchronous or
-asynchronous, and the local implementation executes delegated work
-through the same session lifecycle as a user turn.
+`core/delegation` lets one agent hand work to another and get an answer back. A
+`Service` binds a policy to the host's session table: the targets it may reach, the
+modes it may use, how deep a chain may go, how many may run at once, and how large
+one input may be.
+
+```go
+service, err := delegation.New(
+    sessions,                      // the host's session table (agent-host implements it)
+    delegation.Policy{/* from the deployment */},
+    delegation.WithStore(delegation.NewMemStore()),   // async jobs
+)
+source := delegation.Tools(service)                   // a tool.Source
+```
+
+There is no directory, no session provider and no backend resource. The session
+table **is** discovery: `Sessions.Names()` is who can be reached, and
+`Sessions.Session(name, id)` is how one is entered.
 
 ## Deployment
 
-The three core resources:
+Delegation is a block on an agent, not an assembly graph:
 
 ```yaml
-resources:
-  dir:
-    kind: delegation.Directory
-    impl: local    # no settings; binds the deployment's agents at wire time
-
-  svc:
-    kind: delegation.Service
-    impl: local
-    deps:
-      directory: dir
-      # backend: async            # optional; absent = sync-only service
-      # session_provider: prov    # optional identity policy
-    settings:
-      max_concurrency: 4          # positive; default 4
-      max_depth: 8                # positive; default 8
-      timeout: 5m                 # Go duration; zero leaves the caller's context
-      idempotency_retention: 24h  # positive; how long responses stay replayable
-      defer_workers: true         # start async workers on Start instead of at build
-
-  prov:
-    kind: delegation.SessionProvider
-    impl: random   # no settings; fresh ContextID per delegation, never persists
+agents:
+  - name: forge
+    delegation:
+      targets: [forge-review, forge-test]   # empty = every deployed agent except self
+      modes: [sync, async]                  # empty = sync only
+      max_depth: 4                          # zero = 4
+      max_concurrent: 4                     # zero = 4
+      timeout: 5m                           # zero = the caller's context
+      max_input_bytes: 65536                # zero = 64 KiB
 ```
 
-The directory is required and is bound to the assembled deployment during
-the deploy wire phase, so every generation delegates against its own
-agents. The backend and session provider deps are optional: without a
-backend the service is sync-only, and without a session provider each
-delegation mints a fresh `ContextID`.
+An **absent** block means the agent gets no delegation tools at all — not
+"unrestricted". `deploy` turns the block into a `delegation.Policy`, and
+`agent-host` builds the service per deployment, so every generation delegates
+against its own agents.
 
-## Exposing delegation to agents
+`delegation.Tools(service)` is the model-facing surface:
 
-Turn hosts expose the service through
-`runtime.Builder.WithResultHostFactory` plus `delegation/hostwrap`; the
-service is then available to execution-time consumers via
-`ServiceFromHost`. The model-facing delegation tools come from a
-`tool.Source` resource:
+| Tool | Use |
+| --- | --- |
+| `delegate` | Hand an input to a target; sync waits, async returns a delegation id. |
+| `delegation_targets` | What this agent may reach, from the policy. |
+| `delegation_status` | The state of one delegation, by id, including a question it asked. |
+| `delegation_answer` | Answer a child that is waiting for input. |
+| `delegation_cancel` | Stop a child. |
 
-```yaml
-resources:
-  dtools:
-    kind: tool.Source
-    impl: delegation
-    deps:
-      directory: dir   # no settings; delegate / delegation_status / delegation_targets
+The tools read the policy on every call, so a projection rebuilt for a new
+generation sees that generation's targets.
+
+## One delegation, step by step
+
+`Service.Delegate` is deliberately strict about its preconditions, because each
+one is a fact that would otherwise become a wrong answer somewhere else:
+
+1. **A parent session** — `runctx.From(ctx)` must carry one. A delegation outside
+   a run has no place to return to.
+2. **A tool call id** — `tool.CallIDFromContext`. It is what makes the child
+   session key deterministic.
+3. **The mode is allowed** by the policy, and the target is in `targets` (or
+   `targets` is empty and the target is not the caller).
+4. **The input is non-empty** and under `max_input_bytes`.
+5. **The depth is under `max_depth`**; a chain that reaches it is refused rather
+   than truncated.
+
+The child session key is derived, not random:
+
+```text
+<parent session>/d/<target>/<tool call id>
 ```
 
-The tools discover their targets from the same generation-bound directory
-on every call, so each generation's tools see that generation's agents.
+That is the whole idempotency story. A tool call that is retried — a dropped
+connection, a client that resubmits — lands on the **same** child session, and a
+child that already reached a terminal state is reported from its stored state
+instead of being run again. A child that is still `working` is a `Conflict`, not a
+second run behind the user's back.
 
-## Lifecycle
+Sync mode then runs the child and collects its answer; async mode stores a `Job`
+and returns as soon as the work is accepted.
 
-- Sync mode waits for the delegated work and returns its terminal
-  response; async mode admits work and returns immediately, with status
-  lookup through `delegation_status`.
-- Successful responses stay replayable for `idempotency_retention`, so
-  retried delegation does not re-execute completed work.
-- A `Reload` re-binds the directory and service to the new generation,
-  so in-flight delegation completes on the generation it started on.
-- **Run identity:** the delegation id — what `Submit` returns and what
-  `Work.ID`, `Response.ID`, and `delegation_status` carry — names the
-  work item; the subagent run id names the turn that executes it. A
-  backend implementing `delegation.RunIDNotifier` learns the run id as
-  soon as the turn exists, keyed by the delegation id, never by the
-  stream escrow ref: a delegation that inherits no sink has no ref, and
-  a ref describes a delivery attachment rather than work. A queue-owned
-  worker outside the service supplies the claimed id through
-  `delegation.WithWorkID` before calling `Run`; the stamp is consumed at
-  the run boundary, so a delegation started inside the subagent never
-  reports its run id against the parent's work item. An implementation
-  that keyed `NoteRunID` by an escrow ref still compiles and now no-ops
-  silently — rekey it to the delegation id.
-- **Terminal metadata:** a response whose run reported an id carries it
-  under `delegation.run_id`, beside the subagent session identity under
-  `delegation.session_id`. In async mode this is the only place the
-  delegated run stays addressable, because `Response.ID` holds the
-  delegation id — but it reports the run, it does not promise one: a
-  turn canceled before it started, or an engine that reports no run id,
-  leaves the key absent.
+## Statuses and outcomes
 
-## Session identity and resume
+| Status | Meaning |
+| --- | --- |
+| `accepted` | An async job is stored and not yet claimed. |
+| `running` | The child is working. |
+| `completed` | The child produced a final answer. |
+| `input_required` | The child asked a question; answer it with `delegation_answer`. |
+| `failed` | The child failed or was rejected. |
+| `canceled` | The child was stopped. |
 
-When a session manager is bound, delegated work runs through the runtime
-session lifecycle. `SessionProvider.Persistent()` is provider-wide: a
-persistent provider's `ContextID` is stable, durable, and resumable, while
-providers that mint a fresh `ContextID` per delegation (e.g. `random`) are
-ephemeral and never write state. A one-shot target behind a persistent
-provider can therefore still opt out by returning a fresh `ContextID`.
+`Outcome` carries the status, the delegation id, the target, the child session id,
+the content or the question, an error string, and the lineage:
 
-A retried delegation with the same `ContextID` resumes the parked run from
-its last checkpoint instead of starting fresh, but only when **both** the
-request and the session key match:
+| Field | Meaning |
+| --- | --- |
+| `Depth` | Edges above this run; the root sees zero. |
+| `ChainID` | The root delegation of the chain, `sha256(session, task, call)`; every descendant keeps it, so a chain is one trace. |
 
-- identical message, metadata inputs, and declared run attributes → the
-  turn replays from the checkpoint under the original run id
-  (`runtime.sessions.resume` and a `checkpoint_store` are required). The
-  lineage keys the service owns (`tool.call_id`) are excluded: a retry is
-  a new tool call and still replays;
-- a different message or inputs → a fresh turn starts on the same session;
-- any failure to replay — a missing checkpoint, unreadable parked state,
-  transient checkpoint-store read errors, or an engine that cannot
-  resume — falls back to a fresh start with a warning rather than
-  failing the retry.
+## Async jobs
 
-Resume replays the request stored with the parked run; callers retrying a
-job should send the exact same message and inputs. After a successful run
-the parked marker is cleared, so a later delegation of the same key starts
-fresh.
+An async delegation is a `Job` in a `Store`:
 
-Agent preparers run again on resume before the engine restores the
-checkpoint board. Preparers with side effects (uploads, live-progress
-resets) must be idempotent or detect the replay via `agent.ResumeContext`
-/ `Run.ResumeFrom` and skip.
+```go
+type Store interface {
+    Create(ctx context.Context, job Job) (created Job, found bool, err error)
+    Get(ctx context.Context, id string) (Job, error)
+    Update(ctx context.Context, id string, mutate func(*Job)) error
+}
+```
 
-## Delegated policy
+`Create` returns `found` when a job with that id already exists — the same
+derived-key rule one layer down, so a retried submission does not create a second
+job. `Job` carries the parent identity (session, agent, task, call id), the
+traceparent, the child session id, the content or question, and the timestamps.
+`delegation.MemStore` is the reference implementation; a durable store is a table
+with the same three methods.
 
-A delegated run has its own session identity and its own execution
-environment, so a deployment that confines or gates work per session has
-to decide the subagent's policy explicitly — core never derives one from
-the caller. Two seams carry that decision, and neither makes core
-interpret it.
+## Lineage
 
-**Declared run attributes.** `Request.Attributes` is a caller-declared map
-that reaches the subagent's `Run.Attributes` (via `agent.Request`), so
-policy keys such as `sandbox.mode` or `tenant.id` arrive as run metadata.
-Core treats the map as opaque, with two guarantees:
+```go
+call, ok := delegation.CallFrom(ctx)     // {Depth, ChainID}
+next := delegation.WithCall(ctx, call.Child())
+depth := delegation.DepthFromContext(ctx)
+```
 
-- lineage is service-owned — declaring `tool.call_id` is a validation
-  error, and the service layers its own value over anything a lower-level
-  caller hands it, so a delegation cannot be made to look like a
-  different tool call. Middleware that forwards the caller's attribute
-  bag has to drop the lineage keys first; forwarding them as-is is
-  rejected, not silently trimmed;
-- the caller's own run attributes are **not** inherited. Deployments keep
-  run-scoped payloads there (checkpoint recovery blobs, for instance) that
-  must not appear inside a subagent, so a subagent sees only what the
-  delegation declares.
+`Call` is a value, not a set of context keys, so a later field (a budget, an eval
+marker) does not invent another key. The service stamps it before running the
+child, and everything downstream — a hook, a child delegation — reads the same
+lineage.
 
-Model-facing arguments cannot set them: `delegate` takes `metadata` and
-`note`, and stamps attributes only from the context.
-`delegation.WithRunAttributes` is the producer, and tool middleware is the
-natural caller — it is the last seam that still sees the caller's context
-before the service is invoked. Declared attributes take part in
-idempotency identity, so replaying an idempotency key under a different
-policy is a conflict instead of a silent reuse of the earlier (possibly
-wider) decision. `nil` and an empty map are equivalent; blank keys and
-surrounding whitespace in a key or value are validation errors, because
-the map is compared verbatim.
+## What the child inherits, and what it does not
 
-**Session initializer.** `WithSessionInitializer` runs once per delegated
-run that has a session identity, after that identity is minted and before
-the turn starts **or resumes** on it. That is where a deployment writes
-the per-session state core does not model — sandbox mode, think level,
-model hint — into its own store. The hook fails closed: an initializer
-error fails the delegation, because a policy that could not be applied
-must not run under the store's default.
+The child is **a session of its own**: its own task, its own checkpoint, its own
+hooks (with `Agent` naming the child's deployment), and its own sandbox
+configuration.
 
-The identity comes from a bound session manager, or from a
-`SessionProvider` on the manager-less path, where the hook runs just the
-same. A delegation configured with an initializer but with neither is
-rejected rather than run without the policy it was told to apply. Only
-this seam reaches a store keyed on the session: run attributes are not
-what such a store reads.
+Core derives no policy for it. In particular, a deployment that confines or gates
+work per session has to decide the child's boundary explicitly — `delegation.Policy`
+bounds delegation (who, how many, how deep, how large) and says nothing about the
+child's write boundary or approval mode. The child's own `sandbox` block, and a
+hook that recognises the child, are where that decision lives.
 
-Neither seam widens what the subagent may do once its policy is applied.
-In particular approval is not inherited: the subagent's asker refuses
-user prompts, so an escalation the caller could have answered fails
-closed inside the delegated run. Until that changes, a deployment whose
-subagents need a wider allowance has to grant it in the initializer
-rather than relying on a prompt.
+Budget: the caller's context bounds everything, `timeout` bounds one delegation,
+and `max_concurrent` bounds in-flight sync children with a slot table — a child
+beyond the limit waits, and a cancelled caller does not hold a slot.
 
-An application wired through a deployment document injects both through
-`delegation.NewServiceFactory(opts…)`, which accepts app-owned options the
-document cannot express.
+## What this replaced
 
-## Stream inheritance
-
-Delegated subagent turns inherit the caller turn's stream sinks: the turn
-execution context carries the caller's stream policy, and the delegation
-service attaches those sinks to the subagent session as observers.
-Authority and explicit-ack semantics are downgraded on inheritance — the
-subagent turn is never handed to the inherited sink, so it cannot fulfil
-authoritative/explicit-ack obligations (an unacked window would otherwise
-detach the attachment mid-run). Visibility is preserved.
-
-An inherited sink may be invoked concurrently from multiple sessions
-(the caller turn plus parallel subagents) and must be safe for concurrent
-`OnDelta` calls.
-
-Async delegation inherits the same way, across the queue boundary:
-
-- **In-process (escrow):** the submit side stores the caller's live sink
-  specs in a service-side escrow referenced by `AsyncRequest.Stream.Ref`;
-  the worker restores them and attaches them, so deltas reach the exact
-  sink instances the caller's UI is listening on. Entries are released
-  at terminal completion and swept by TTL as a backstop.
-- **Cross-process (target + resolver):** the submit side also persists a
-  serializable `StreamTarget` (`AsyncRequest.Stream.Target`) describing
-  the destination. When no escrow entry survives (TTL expiry, restart, a
-  worker in another process), the worker resolves the target through the
-  runtime's whitelisted `StreamTargetResolver`
-  (`runtime.StreamExportRegistry`).
-- **Reachability:** `conversation` targets resolve to a live sink
-  registered in the resolving process's registry — they recover streams
-  in-process but do not deliver across processes. `bus` targets forward
-  onto a named event bus and are the kind capable of true cross-process
-  delivery, as long as the bus transport spans the processes.
-- **Single-destination caveat:** `StreamRef.Target` is single-valued.
-  The in-process escrow preserves every inherited sink; the
-  cross-process path restores exactly one. The exporter prefers
-  broadcast (bus) targets when several sinks are describable. Sinks
-  describe themselves by implementing `delegation.StreamTargetProvider`,
-  so UI decorators can pass the description through without breaking
-  recognition.
-- **Lifecycle:** async stream deltas carry lineage headers (`run_id`,
-  `parent_run_id`, `tool_call_id`, `agent_id`) but the sink sees no
-  explicit EOF; terminal state is reported through kanban card events
-  and `delegation_status`.
-
-See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
-[tool.md](tool.md) for tool sources.
-
-## Steer and inherited hosts
-
-Host inheritance is per capability, not all-or-nothing. A delegated run
-inherits the caller's `agent.Host`, and the child engine keeps what it
-legitimately reads — `delegation.ServiceProvider` for nested delegation,
-`agent.EventBusProvider` for the inherited stream — while the caller's
-turn-owned steer queue stays behind: the service masks `agent.SteerSource`
-out of the host the child receives (`agent.HostCapabilityMask`). A delegated
-document that calls `host.drainSteer()` therefore sees `errdefs.NotAvailable`
-instead of consuming corrections addressed to the caller's board.
-
-A sub-run started against a bound `session.Manager` is the other case: it
-gets its own turn, so it owns a queue and is steerable through that turn like
-any other run — never through the parent's. See [runtime.md](runtime.md) for
-`Turn.Steer` and the queue's bounds.
-
-## Sources of truth
-
-`core/delegation/delegation.go`, `core/delegation/service.go`,
-`core/delegation/attributes.go`, `core/delegation/directory.go`,
-`core/delegation/host.go`,
-`core/delegation/hostwrap/`, `core/delegation/resource.go`,
-`core/delegation/tool/`.
+`delegation.Directory` (a resource that owned discovery), `delegation.SessionProvider`
+(a resource that minted child identities), an `async` backend resource, escrow
+refs and `RunIDNotifier`. All of it folded into three things: the host's session
+table for discovery, a derived session key for identity, and a `Store` for async
+jobs. The behaviour that mattered — a retry must not re-run a completed child, a
+chain must be traceable, a child's boundary must not be guessed — is unchanged and
+now stated in one place.

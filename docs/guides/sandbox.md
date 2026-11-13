@@ -287,12 +287,12 @@ Semantics worth relying on:
 - **`Escalation` is not a `Runner`.** Only a completed result tells a refusal
   from an ordinary failure, so the retry lives at the Exec level. Interactive
   sessions keep their own chains and never restart behind the user's back.
-- **A delegated subagent is a separate session.** A mode store keyed on the
-  session identity answers for the subagent's own `ContextID`, not the caller's,
-  and core derives no mode for it. The deployment carries its decision through
-  `delegation.WithSessionInitializer` (writes the store before the turn starts)
-  or declared run attributes (`Request.Attributes`, which only reach the
-  subagent's `Run.Attributes`). Core reads a mode out of neither. See
+- **A delegated subagent is a separate session.** A mode store keyed on session
+  identity answers for the subagent's own session, not the caller's, and core
+  derives no mode for it: `delegation.Policy` bounds delegation (targets, modes,
+  depth, concurrency, timeout, input size) and says nothing about the child's
+  boundary. A deployment that wants one gets it from the child's own
+  `sandbox` configuration or from a hook that recognises the child. See
   [delegation.md](delegation.md).
 
 `outcome` reports `Refused` / `Approved` / `Remembered`, so a host can attach its

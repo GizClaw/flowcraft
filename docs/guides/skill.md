@@ -110,7 +110,7 @@ before the index is built, so a disabled skill cannot rank back in.
 
 ## Ranking
 
-Ranking runs over the shared `core/utils/bm25` kernel — the same one
+Ranking runs over the shared `core/internal/search` kernel — the same one
 behind tool discovery — with the standard Okapi parameters
 (k1 = 1.2, b = 0.75): the name field is weighted 3× the description,
 a query term that only prefixes an index term is discounted ×0.5,

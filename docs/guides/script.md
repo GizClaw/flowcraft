@@ -4,10 +4,33 @@ title: Script Rules
 ---
 # Script Rules
 
-`core/agent-graph/nodes/script` binds a rule script to a graph node. A rule reads
+`core/agent-graph/script` binds a rule script to a graph node. A rule reads
 the state it declares, returns the state it declares, and does nothing else: it
 does not speak (only a model node streams text), it does not open a session, and
 it cannot suspend.
+
+It is not a built-in node kind — a script engine is a dependency choice, so the
+host registers it where it opens the graph:
+
+```go
+built, err := nodes.Open(ctx, rt, "graphs/game.yaml",
+    nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
+        kind, err := script.New(
+            script.WithRuntime(rt),                 // what a tool call dispatches through
+            script.WithBackends(starlark.New()),    // config.backend resolves here
+        )
+        if err != nil {
+            return nil, err
+        }
+        return []graph.NodeKind{kind}, nil
+    }),
+)
+```
+
+`New` fails at construction when no backend is registered, a backend is nil, or
+two share a name — a wiring mistake a host should hear about once, not per turn.
+The default source is a `FileSource` rooted at the process working directory;
+`script.WithSource` replaces it for embedded or generated rules.
 
 That is the whole reason it can be bounded, tested and replayed. It is also what
 makes it *not* the script runtime this repository removed: there is no board, no

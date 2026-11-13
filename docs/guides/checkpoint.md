@@ -1,159 +1,146 @@
 ---
 layout: default
-title: Checkpoints and Resumable State
+title: Checkpoints
 ---
-# Checkpoints and Resumable State
+# Checkpoints Guide
 
-`core/agent` owns the checkpoint contract; every engine decides when a boundary
-is safe and every host decides whether anything is stored. This page covers both
-sides: what an engine persists and what it costs, and how to implement a store
-that survives a long session.
+`core/agent` defines what a checkpoint is and what a store must do; a backend
+(`core/agent/checkpoint` for SQLite, `agenttest.MemStore` for tests) does the
+storing.
 
-- [Why a checkpoint is not a board copy](#why-a-checkpoint-is-not-a-board-copy)
-- [The write record](#the-write-record)
-- [What an engine persists](#what-an-engine-persists)
-- [Capability negotiation](#capability-negotiation)
-- [Compaction](#compaction)
-- [Writing a store](#writing-a-store)
-- [Failure semantics](#failure-semantics)
-
-## Why a checkpoint is not a board copy
-
-A long session grows monotonically: every turn appends messages and writes vars,
-and the board keeps all of it because a resume needs all of it. The naive
-implementation — snapshot the board, store the snapshot — therefore costs
-`O(history)` per boundary, and a run with `N` boundaries costs `O(N × history)`.
-
-The board is append-heavy, so almost nothing changes between two boundaries. A
-checkpoint is a **base record plus a chain of increments**, and the engine only
-pays for the writes that happened since the last one:
-
-| boundary | what is written |
-| --- | --- |
-| first wave of a run, every compaction window, a resume | base: the whole board |
-| every other wave | increment: the vars written and messages appended since the last one |
-
-`Load` hides the difference: it returns the same record it always did, rebuilt
-from the base and its chain.
-
-## The write record
-
-`Board.Mark()` records a position; `Board.Since(mark)` returns what changed after
-it. Both are cheap — a mark is a counter plus one length per channel, and a delta
-is proportional to the writes, not to the state:
+A checkpoint is **a task plus the deployment it ran under**:
 
 ```go
-mark := board.Mark()
-// ... node handlers write vars and append messages ...
-writes := board.Since(mark)   // only this window's writes
-```
-
-This is why the board owns an **ownership contract**: a value stored in a var is
-immutable once written, and a change goes through `Board.SetVar` (or
-`DeleteVar`/`AppendSliceVar`/`UpdateSliceVarItem`/`SetChannel`). The write record
-is what makes an increment possible, and only the board's own methods are
-recorded. Mutating a value read back from `Board.Var` is already a data race
-against any concurrent snapshot or parallel branch — now it would also be a
-silent gap in the record. `agent.AuditBoardValues(true)` makes `Var`/`Vars`
-return copies, so a test can catch the violation where it is introduced.
-
-Channels are append-only by convention; a channel that is set wholesale or
-popped is recorded as a replacement and travels whole.
-
-## What an engine persists
-
-| engine | boundary | notes |
-| --- | --- | --- |
-| `core/graph` | every completed wave | `Steps` is the wave, so a resume rebuilds the frontier from every branch's outgoing edges |
-| `core/agent/a2a` | every task state transition | the remote task id and the already-seen message ids ride in `Payload` |
-| `core/runtime/session` | every turn | the committed board plus the parked run id and request, under `session-<hash>` |
-
-All three go through `agent.CheckpointWriter`, which owns the base-versus-delta
-decision. Engines do not call `Host.Checkpoint` directly: doing so builds the
-record before anyone discovers that nothing will store it.
-
-## Capability negotiation
-
-`CheckpointTarget` is an optional Host capability, resolved through
-`agent.CheckpointCapabilitiesFromHost` (which follows `HostUnwrapper`
-decorators):
-
-| host | `Enabled` | `Journal` |
-| --- | --- | --- |
-| `runtime.baseHost` with a store | `true` | the store, when it implements `CheckpointJournal` |
-| `runtime.baseHost` without a store | `false` | — |
-| `HostFuncs` with `CheckpointFn` | `true` | none: a replacement writer only promises full records |
-| `HostFuncs`/`TracingMiddleware` delegating | the inner answer | routed through the decorator |
-| any host that does not declare it | `true` | none |
-
-The default is deliberately conservative: a host written before this capability
-existed keeps receiving self-contained records. `Enabled: false` is an explicit
-statement — "nothing is stored" — and it is what makes a deployment without a
-checkpoint store stop paying for a board snapshot at every wave.
-
-## Compaction
-
-A chain is bounded by `build.checkpoint_compaction` (default
-`agent.DefaultCheckpointCompaction`, 32): the writer appends at most that many
-increments after a base, and the next boundary rewrites one — so boundaries sit
-about `window + 1` waves apart. The window is a **resume-latency** knob, not a
-memory knob: a load replays the base plus at most that many increments. A store
-may also cap its own chain and answer `agent.ErrNeedsBase`, which the writer
-answers with a base; `sqlite.WithMaxDeltas(n)` is that cap.
-
-```yaml
-agents:
-  assistant:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      settings:
-        graph: {file: ./graphs/assistant.json}
-        build:
-          checkpoint_compaction: 16   # full record every 16 waves
-```
-
-A writer whose store cannot take increments (`Journal == nil`) writes a full
-record per boundary, exactly as before.
-
-## Writing a store
-
-Implement `agent.CheckpointStore` first — `Save` and `Load`, with `Load`
-returning the rebuilt record — and run `agenttest.CheckpointStoreSuite`. To take
-increments, add `agenttest.CheckpointJournalSuite` plus the two methods:
-
-```go
-type CheckpointJournal interface {
-	// WriteBase replaces the record and discards its chain.
-	WriteBase(ctx context.Context, cp Checkpoint) error
-	// Append extends the record; ErrNeedsBase asks for a full one.
-	Append(ctx context.Context, delta CheckpointDelta) error
+type Checkpoint struct {
+    Schema     int                        // 1; a reader that does not know it refuses
+    Version    int64                      // the store advances this on every save
+    ServerVersion int64                   // a protocol adapter's own counter
+    Fingerprint Fingerprint               // the deployment that wrote this
+    Task       Task                       // the projection: what is true now
+    Sections   map[string]json.RawMessage // engine-owned state
 }
 ```
 
-`Save` must behave like `WriteBase`. Two rules make a chain trustworthy:
+It does not contain a runtime: a runtime holds processes, handles and connections
+that cannot be serialised. What can be is the fingerprint of the stack needed to
+rebuild one, plus the transcript to replay — which is why a checkpoint is a
+retrieval point for the whole deployment, not just the conversation.
 
-- **Apply in sequence order.** `CheckpointDelta.ApplyTo` folds one increment onto
-  a decoded record; `CheckpointDelta.Validate` rejects a malformed one.
-- **Fail closed.** A gap, or an increment with no base, means the record cannot
-  be rebuilt; `Load` must return an `errdefs.NotAvailable` error rather than
-  partial state. That error is the signal a caller acts on — `core/runtime`
-  currently surfaces it and fails the turn, and a host that would rather start
-  fresh can branch on `errdefs.IsNotAvailable`.
-- **One writer per exec id.** A chain is only consistent if the caller extending
-  it is the caller that computed the increments against it; two replicas sharing
-  one record will interleave. `Load` cannot detect that (there is no gap), so it
-  is a precondition of the contract.
+## The store contract
 
-`core/agent/checkpoint` is the reference implementation: a base row plus a
-`(exec_id, seq)` table, replayed on load. `agenttest.JournalStore` is an
-in-memory double that also reports how many bases and increments were written, so
-an engine test can assert the shape of a run.
+```go
+type Store interface {
+    Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord, options ...SaveOption) (first, last int64, err error)
+    Load(ctx context.Context, taskID string) (Checkpoint, error)
+    LatestForSession(ctx context.Context, sessionID string) (Checkpoint, error)
+    Events(ctx context.Context, taskID string) ([]EventRecord, error)
+    EventsAfter(ctx context.Context, taskID string, after int64) ([]EventRecord, error)
+    SetServerVersion(ctx context.Context, taskID string, version int64) error
+    TruncateEvents(ctx context.Context, taskID string, seq int64, kinds ...string) error
+    List(ctx context.Context) ([]TaskSummary, error)
+    Delete(ctx context.Context, taskID string) error
+    PutBlob(ctx context.Context, data []byte) (string, error)
+    // …plus the blob reader
+}
+```
 
-## Failure semantics
+The interface is semantic rather than relational: a task is addressed by id, and
+a first save is just a save, so create and append collapse into `Save`. Where
+state lives — a local file, Postgres, an object store — is a deployment decision.
 
-Checkpoints are best-effort: a store error never fails a run. Engines log it and
-carry on — an aborted reload, a full disk or a locked database must not take the
-conversation with it. What a failure does *not* do is advance the writer: the next
-boundary retries from the same position, so the writes covered by the rejected
-boundary are persisted by the next successful one.
+| Call | Answers |
+| --- | --- |
+| `Save` | Writes the projection and appends this round's events in **one transaction**; returns the sequence range it assigned. |
+| `Load` | The newest projection of one task. It does not replay: `Task.History` is always empty. |
+| `LatestForSession` | The newest task of a session — what resuming a session needs, since checkpoints are keyed by task. |
+| `Events` / `EventsAfter` | Every appended fact, or the suffix after a sequence, oldest first. |
+| `SetServerVersion` | Advances the adapter's counter without rewriting the projection. |
+| `TruncateEvents` | Drops events at or before a sequence, optionally only those of some kinds. |
+| `PutBlob` | Stores bytes by content hash: the same bytes must yield the same reference, so a repeated write costs nothing. |
+
+A missing task is `agent.ErrNoCheckpoint`, not an empty struct — a resume that
+cannot tell "nothing yet" from "an empty task" is a resume that silently starts
+over.
+
+## Projection and event log
+
+Both are written, in one transaction, because they answer different questions:
+
+- the **projection** answers "what is true now" — state, round, pending tool
+  call, artifacts;
+- the **event log** answers "how it got there" — appended facts ordered by `Seq`,
+  dated by `At`.
+
+Storing only the projection makes every write carry the whole transcript; storing
+only events makes every read a replay. Keeping `Load` projection-only is what
+makes it cost the same for a one-turn task and a thousand-turn one. A reader that
+needs history asks for it.
+
+`TruncateEvents` takes kinds for the same reason: an engine that keeps trace
+records beside its state compacts only the state, so the records survive the
+compaction that would otherwise be indistinguishable from data loss. The newest
+event is never removable, so sequence numbers stay monotonic.
+
+## Two counters
+
+| Counter | Owned by | Advances on |
+| --- | --- | --- |
+| `Version` | the store | every save; it is what a concurrent writer is compared against. |
+| `ServerVersion` | a protocol adapter | only that adapter, through `SetServerVersion`. The loop's own saves never touch it. |
+
+Two writers sharing one counter would reject each other's writes, and both are
+legitimate: the engine owns the state, the adapter owns its token.
+
+## The fingerprint
+
+`Fingerprint` is the deployment identity a checkpoint was written under — the
+runtime digest, the engine identity and the settings that define them. A resume
+under a different fingerprint is not the same deployment, so a host can refuse
+rather than replay a transcript into a stack that did not produce it. For the
+graph engine the fingerprint is the document's **path and bytes**, which is why
+editing the graph invalidates the checkpoints taken under the old one.
+
+## Who writes what
+
+| Writer | Boundary | Notes |
+| --- | --- | --- |
+| `core/agent-graph` | every step, plus a base every `checkpoint.every` steps | A base carries the whole state; the interval is the price paid for a short replay. See [graph.md](graph.md). |
+| `core/agent-a2a` | every task state transition | the remote task id and the already-seen message ids ride in the payload |
+| `core/agent-host` | every turn | the session table resumes a conversation with `LatestForSession` |
+
+## Backends
+
+```go
+store, err := checkpoint.Open("state.db", checkpoint.WithSynchronous(checkpoint.SynchronousNormal))
+defer store.Close()
+```
+
+`core/agent/checkpoint` is two tables plus a blob table:
+
+```text
+tasks   one row per Task: the immutable seed, the mutable projection, a version,
+        and a save counter that orders a session's tasks
+events  the appended facts, one row per fact, keyed (task_id, seq)
+blobs   artifact bytes by content hash
+```
+
+"The newest task of a session" is the greatest save counter, never a timestamp —
+a text comparison over timestamps ordered two saves in the same millisecond
+wrongly, which is the kind of bug that only shows up as a lost message after a
+resume. The shapes are portable (TEXT stays TEXT, BLOB becomes BYTEA) and the
+only upsert uses the standard `ON CONFLICT` form, so a Postgres sibling is a
+translation rather than a redesign.
+
+`agenttest.Store(t, open)` is the conformance suite a backend runs instead of
+re-deriving the promises. It covers what a backend gets wrong quietly: a seed
+written twice, an event edited in place, a projection carrying history, a
+truncate that eats the tail, two counters crossing, a session picking the wrong
+task.
+
+## What this replaced
+
+The previous model checkpointed a **board**: an untyped var map plus message
+channels, copied per branch and merged by reflection, with a `CheckpointWriter`
+deciding base-versus-delta and a `build.checkpoint_compaction` window. It is
+gone with the board. The current shape records a projection and an append-only
+event log, and the only thing an engine decides is when to write a base.

@@ -38,7 +38,7 @@ model node whose own code sits between the run and the provider.
 | Slot | Runs | Receives | An error means |
 | --- | --- | --- | --- |
 | `OnSession` | After a session is opened or restored, before its turn | `SessionInfo`: agent, session id, task id, state, `Resumed` | The open fails. A host that cannot prepare its memory refuses the turn instead of running it blind. |
-| `BeforeTurn` | Before the turn reaches the engine | `*Turn`: agent, session, message, attributes | The turn stops before it starts. Nothing was sent, so nothing has to be undone. |
+| `BeforeTurn` | Before the turn reaches the engine | `*Turn`: agent, session, message (mutable) | The turn stops before it starts. Nothing was sent, so nothing has to be undone. |
 | `AfterTurn` | After the run ends | `Turn` and the `Result` it reached | Logged, and the turn stands. |
 
 The `AfterTurn` asymmetry is not an oversight. The work is already durable, and
@@ -67,8 +67,10 @@ hooks := agent.Hooks{
 }
 ```
 
-`Turn.Attributes` carries what the deployment declared for this run, and is where
-a policy that is keyed by attributes (rather than by session) reads its input.
+`Turn.Message` is the input, metadata included, and `BeforeTurn` may replace the
+whole value — that is the seam a policy uses to inject a recap without touching
+the stored transcript. `TaskID` is empty there: the run mints the task, so a hook
+that needs one reads it in `AfterTurn`.
 
 ## Attaching hooks from a document
 
