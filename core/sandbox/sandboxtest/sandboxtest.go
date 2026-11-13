@@ -150,8 +150,38 @@ func testCapabilitiesMatchBehaviour(t *testing.T, build Builder) {
 		}
 		requireNotAvailable(t, werr,
 			"Watch on a runner that does not advertise events")
+	} else {
+		// The other direction of the same promise: a capability that is
+		// advertised has to work. The session has already produced output and
+		// exited, so the subscription replays from the retained log and must
+		// reach the exit event without anyone having to nudge it.
+		watcher, werr := sess.Watch(context.Background())
+		if werr != nil {
+			t.Fatalf("Watch on an advertised event stream: %v", werr)
+		}
+		waitForExitEvent(t, watcher)
+		_ = watcher.Close()
 	}
 	_ = sess.Close()
+}
+
+// waitForExitEvent drives one subscription until the process's exit arrives.
+func waitForExitEvent(t *testing.T, watcher sandbox.SessionWatcher) {
+	t.Helper()
+	deadline := time.After(stepTimeout)
+	for {
+		select {
+		case ev, open := <-watcher.Events():
+			if !open {
+				t.Fatal("event stream closed before reporting the exit")
+			}
+			if ev.Type == sandbox.SessionEventExited {
+				return
+			}
+		case <-deadline:
+			t.Fatal("event stream never reported the exit")
+		}
+	}
 }
 
 func testExecRunsOneCommand(t *testing.T, build Builder) {

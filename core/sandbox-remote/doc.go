@@ -33,18 +33,22 @@
 // client re-reads from its last cursor instead of losing what it missed — and it
 // is why the transport can stay request/response.
 //
+// The one pushing operation is the session event stream, carried as Server-Sent
+// Events. It needs no resume cursor of its own: the contract's Watch replays the
+// retained log before following live, and a consumer that fell behind recovers
+// with a Read from the seq its lag event names.
+//
 // Files do not cross. The built-in file tools work on a local fsx tree, so a
 // deployment that puts commands on a remote host needs that host's filesystem to
 // be mounted where the tools run, or those tools turned off. This package moves
 // the process boundary only.
 //
-// # Capabilities are narrowed, never invented
+// # Capabilities are forwarded, never edited
 //
-// The client reports the server's declaration verbatim with one exception:
-// [sandbox.SessionFeatures].Events is cleared, because the push stream is not
-// proxied yet. A caller reads Capabilities and knows not to call Watch; the
-// alternative — advertising the feature and failing on use — is exactly what
-// Capabilities exists to prevent.
+// The client reports the server's declaration verbatim. A capability the far end
+// does not claim is one this client does not claim either, and one it does claim
+// has to work — which is why the conformance suite checks both directions of
+// every advertised feature.
 //
 // # Security
 //

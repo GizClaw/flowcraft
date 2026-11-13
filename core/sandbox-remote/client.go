@@ -29,10 +29,9 @@ const (
 // Runner is a sandbox.Runner that executes on a remote server.
 //
 // It is a proxy, not an implementation: every operation is one message, and
-// every capability it reports is the server's own declaration. The one exception
-// is documented rather than silent — [sandbox.SessionFeatures].Events is cleared
-// because this client does not proxy the push stream yet, so a caller that reads
-// Capabilities learns that Watch is unavailable before trying it.
+// every capability it reports is the server's own declaration, verbatim. A
+// capability the far end does not claim is a capability this client does not
+// claim either — which is what makes reading Capabilities enough to decide.
 //
 // Policy stays on this side of the wire: engine decorators wrap this runner
 // exactly like a local one, and the server re-validates what arrives.
@@ -120,9 +119,6 @@ func New(ctx context.Context, url string, opts ...Option) (*Runner, error) {
 			hello.Version, wire.Version)
 	}
 	r.caps = hello.Capabilities
-	// Watch is not proxied yet: say so instead of advertising a capability
-	// that would fail on the first call.
-	r.caps.Features.Events = false
 	return r, nil
 }
 

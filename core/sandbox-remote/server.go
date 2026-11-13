@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -124,6 +125,7 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /v1/wait", s.handleWait)
 	mux.HandleFunc("POST /v1/close", s.handleClose)
 	mux.HandleFunc("POST /v1/journal", s.handleJournal)
+	mux.HandleFunc("POST /v1/events", s.handleEvents)
 	s.mux = mux
 }
 
@@ -399,6 +401,86 @@ func (s *Server) handleJournal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, batch)
+}
+
+// handleEvents streams one session's events as Server-Sent Events.
+//
+// The inner watcher already replays the retained output before delivering live
+// events, so this is a forwarding loop: the resume cursor a consumer needs is the
+// seq carried on each frame, and a consumer that fell behind recovers with a Read
+// from the seq a lag event names — the contract's own recovery path, which is why
+// this endpoint takes no cursor of its own.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	var req wire.EventsRequest
+	if !decodeRequest(w, r, &req) {
+		return
+	}
+	session, err := s.session(req.ID)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, errdefs.NotAvailablef(
+			"sandbox-remote: this ResponseWriter cannot flush, so it cannot stream"))
+		return
+	}
+
+	watcher, err := session.Watch(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	defer func() { _ = watcher.Close() }()
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	// The one proxy directive that decides whether this is live or arrives in
+	// batches at the end.
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	for {
+		select {
+		case ev, open := <-watcher.Events():
+			if !open {
+				return
+			}
+			if err := writeEvent(w, flusher, ev); err != nil {
+				return
+			}
+		case <-r.Context().Done():
+			return
+		}
+	}
+}
+
+// writeEvent renders one frame. The id is the event's seq, so a reader holds its
+// position from the frame itself.
+func writeEvent(w http.ResponseWriter, flusher http.Flusher, ev sandbox.SessionEvent) error {
+	frame := wire.FromEvent(ev)
+	data, err := wire.Encode(frame)
+	if err != nil {
+		return err
+	}
+	// Assembled in one buffer and written once: a frame split across writes can
+	// be flushed half-rendered.
+	buf := make([]byte, 0, len(data)+48)
+	buf = append(buf, "id: "...)
+	buf = strconv.AppendInt(buf, ev.Seq, 10)
+	buf = append(buf, "\nevent: "...)
+	buf = append(buf, frame.Type...)
+	buf = append(buf, "\ndata: "...)
+	buf = append(buf, data...)
+	buf = append(buf, '\n', '\n')
+	if _, err := w.Write(buf); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
 }
 
 // ---------------------------------------------------------------------------

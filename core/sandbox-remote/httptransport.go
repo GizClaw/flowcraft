@@ -71,8 +71,12 @@ func WithHTTPTLS(config *tls.Config) HTTPOption {
 func WithHTTPInsecureTLS() HTTPOption {
 	return func(t *httpTransport) {
 		t.client = httpkit.NewHTTPClient(
-			//nolint:gosec // opt-in by name, documented as loopback-only.
-			httpkit.WithTLSClientConfig(&tls.Config{InsecureSkipVerify: true}),
+			httpkit.WithTLSClientConfig(&tls.Config{
+				// Skipping verification is the point of this option; the
+				// protocol floor is not, so it stays at 1.2.
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: true, //nolint:gosec // opt-in by name, loopback only.
+			}),
 			httpkit.WithoutRetry(),
 		)
 	}
@@ -109,44 +113,12 @@ func NewHTTPTransport(base string, opts ...HTTPOption) Transport {
 
 // Do implements Transport.
 func (t *httpTransport) Do(ctx context.Context, op Op, req []byte, res any) error {
-	url := t.base + "/v1/" + string(op)
-
-	var body io.Reader
-	if len(req) > 0 {
-		body = bytes.NewReader(req)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	resp, err := t.open(ctx, op, req, "application/json")
 	if err != nil {
-		return errdefs.Internalf("sandbox-remote: build request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
-	if t.token != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+t.token)
-	}
-	// The command a sandbox runs belongs to the trace that asked for it.
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
-
-	client := t.client
-	if t.timeout > 0 {
-		// Shallow copy: the deadline belongs to this call, not to the shared
-		// client (which is reused across sessions).
-		clone := *client
-		clone.Timeout = t.timeout
-		client = &clone
-	}
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return errdefs.FromContext(ctxErr)
-		}
-		return &TransportError{Err: err}
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return decodeFailure(resp)
-	}
 	if res == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
@@ -165,6 +137,60 @@ func (t *httpTransport) Do(ctx context.Context, op Op, req []byte, res any) erro
 // payload and are already bounded by the read's max_bytes, so this ceiling only
 // guards against a server that answers with something else.
 const maxResponseBody = 64 << 20
+
+// Stream implements Transport. It is Do without the body decoding: the response
+// stays open and the caller reads frames from it until it closes or the context
+// ends.
+func (t *httpTransport) Stream(ctx context.Context, op Op, req []byte) (io.ReadCloser, error) {
+	resp, err := t.open(ctx, op, req, "text/event-stream")
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+// open builds one request, applies authentication and trace propagation, and
+// returns a 2xx response with its body still unread.
+func (t *httpTransport) open(ctx context.Context, op Op, req []byte, accept string) (*http.Response, error) {
+	url := t.base + "/v1/" + string(op)
+
+	var body io.Reader
+	if len(req) > 0 {
+		body = bytes.NewReader(req)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, errdefs.Internalf("sandbox-remote: build request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", accept)
+	if t.token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+t.token)
+	}
+	// The command a sandbox runs belongs to the trace that asked for it.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
+
+	client := t.client
+	if t.timeout > 0 {
+		// Shallow copy: the deadline belongs to this call, not to the shared
+		// client (which is reused across sessions).
+		clone := *client
+		clone.Timeout = t.timeout
+		client = &clone
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, errdefs.FromContext(ctxErr)
+		}
+		return nil, &TransportError{Err: err}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		defer func() { _ = resp.Body.Close() }()
+		return nil, decodeFailure(resp)
+	}
+	return resp, nil
+}
 
 // decodeFailure rebuilds the error the server reported. A body that is not the
 // envelope (a proxy's HTML error page, say) still has to produce an error whose

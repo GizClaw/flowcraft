@@ -3,7 +3,9 @@ package remote_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -123,10 +125,11 @@ func TestJournalWithoutOneIsNotAvailable(t *testing.T) {
 	}
 }
 
-// Capabilities travel verbatim, with the single documented narrowing: this client
-// does not carry the push stream, so it clears Events instead of advertising a
-// call that would fail.
-func TestCapabilitiesAreTheServersWithEventsCleared(t *testing.T) {
+// Capabilities travel verbatim: a client that edited them would turn "ask before
+// trying" into a failed call. Every dimension is compared, because a narrowing
+// disguised as a proxy decision is exactly the kind of drift this test exists to
+// catch.
+func TestCapabilitiesAreTheServers(t *testing.T) {
 	client, _ := serve(t, []remote.ServerOption{remote.WithServerToken(testToken)},
 		remote.WithToken(testToken))
 
@@ -134,34 +137,8 @@ func TestCapabilitiesAreTheServersWithEventsCleared(t *testing.T) {
 	defer func() { _ = inner.Close() }()
 	want := inner.Capabilities()
 
-	got := client.Capabilities()
-	if !got.Policy.EnvAllowList || got.Policy.MemoryCap != want.Policy.MemoryCap {
-		t.Fatalf("policy = %+v, want %+v", got.Policy, want.Policy)
-	}
-	if got.Features.Events {
-		t.Fatal("client advertises Events, but Watch is not proxied")
-	}
-	if got.Features.TTY != want.Features.TTY || got.Features.Signal != want.Features.Signal {
-		t.Fatalf("features = %+v, want TTY/Signal from %+v", got.Features, want.Features)
-	}
-}
-
-// Watch is the one operation with no transport behind it yet; it must say so
-// rather than return a channel that never carries anything.
-func TestWatchIsNotAvailable(t *testing.T) {
-	client, _ := serve(t, []remote.ServerOption{remote.WithServerToken(testToken)},
-		remote.WithToken(testToken))
-
-	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo hi"},
-	})
-	if err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { _ = sess.Close() }()
-
-	if _, err := sess.Watch(context.Background()); !errdefs.IsNotAvailable(err) {
-		t.Fatalf("Watch = %v, want NotAvailable", err)
+	if got := client.Capabilities(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("capabilities = %+v, want the server's %+v", got, want)
 	}
 }
 
@@ -232,6 +209,10 @@ func TestVersionMismatchIsRefused(t *testing.T) {
 
 // helloOnly answers the handshake and nothing else.
 type helloOnly struct{ version int }
+
+func (h helloOnly) Stream(context.Context, remote.Op, []byte) (io.ReadCloser, error) {
+	return nil, errdefs.NotAvailablef("helloOnly: no streams")
+}
 
 func (h helloOnly) Do(_ context.Context, op remote.Op, _ []byte, res any) error {
 	if op != remote.OpHello {

@@ -1,8 +1,11 @@
 package remote
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
+	"strings"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -155,15 +158,120 @@ func (s *session) Wait(ctx context.Context) (sandbox.SessionExit, error) {
 	}
 }
 
-// Watch implements sandbox.Session.
+// Watch implements sandbox.Session: the server's push stream, framed as SSE.
 //
-// The push stream is the one part of the contract this client does not carry
-// yet, and its Capabilities say so (Events is cleared). Returning NotAvailable
-// here is the honest answer; a silent empty channel would look like a quiet
-// process.
+// The stream is replay-then-live on the server, so this only forwards. A consumer
+// that falls behind is not invented a Lag event here: the contract's lag comes
+// from the server's own bounded queue, and a lag frame tells the consumer which
+// seq to Read from.
 func (s *session) Watch(ctx context.Context) (sandbox.SessionWatcher, error) {
-	return nil, errdefs.NotAvailablef(
-		"sandbox-remote: this client does not proxy the session event stream")
+	if err := s.live(); err != nil {
+		return nil, err
+	}
+	if !s.caps.Events {
+		return nil, errdefs.NotAvailablef(
+			"sandbox-remote: session %q was not started with an event stream", s.id)
+	}
+
+	// The stream lives as long as the watcher, not as long as this call.
+	streamCtx, cancel := context.WithCancel(ctx)
+	body, err := s.runner.transport.Stream(streamCtx, OpEvents,
+		mustEncode(wire.EventsRequest{ID: s.id}))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	w := &watcher{
+		cancel: cancel,
+		stream: body,
+		events: make(chan sandbox.SessionEvent, watchBuffer),
+	}
+	go w.pump(streamCtx)
+	return w, nil
+}
+
+// watchBuffer bounds the queue between the frames arriving and the consumer
+// reading them. A full queue blocks the pump, which is backpressure on the
+// connection rather than a dropped event.
+const watchBuffer = 64
+
+// watcher is one subscription to the server's event stream.
+type watcher struct {
+	cancel context.CancelFunc
+	stream io.ReadCloser
+	events chan sandbox.SessionEvent
+
+	once sync.Once
+}
+
+// Events implements sandbox.SessionWatcher.
+func (w *watcher) Events() <-chan sandbox.SessionEvent { return w.events }
+
+// Close implements sandbox.SessionWatcher: it ends the request and closes the
+// channel after the pump has stopped, so a reader never sees a send on a closed
+// channel.
+func (w *watcher) Close() error {
+	w.once.Do(w.cancel)
+	return nil
+}
+
+// pump decodes SSE frames until the stream ends, the context is cancelled, or
+// the server sends the session's Closed event.
+func (w *watcher) pump(ctx context.Context) {
+	defer close(w.events)
+	defer func() { _ = w.stream.Close() }()
+
+	reader := bufio.NewReaderSize(w.stream, 64<<10)
+	var (
+		data  []byte
+		frame bool
+	)
+	for {
+		line, err := reader.ReadString('\n')
+		if len(line) > 0 {
+			line = strings.TrimRight(line, "\r\n")
+			switch {
+			case line == "":
+				if frame {
+					done := w.deliver(ctx, data)
+					data, frame = nil, false
+					if done {
+						return
+					}
+				}
+			case strings.HasPrefix(line, "data:"):
+				data = append(data, strings.TrimPrefix(strings.TrimPrefix(line, "data:"), " ")...)
+				frame = true
+			}
+			// id: and event: are redundant with the payload's own Seq and Type.
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || ctx.Err() != nil {
+				return
+			}
+			return
+		}
+	}
+}
+
+// deliver hands one frame to the consumer and reports whether the stream is
+// finished (the Closed event is the last one).
+func (w *watcher) deliver(ctx context.Context, data []byte) bool {
+	var frame wire.Event
+	if err := wire.Decode(data, &frame); err != nil {
+		return true // a frame we cannot read ends the subscription
+	}
+	ev, err := wire.ToEvent(frame)
+	if err != nil {
+		return true
+	}
+	select {
+	case w.events <- ev:
+	case <-ctx.Done():
+		return true
+	}
+	return ev.Type == sandbox.SessionEventClosed
 }
 
 // Close implements sandbox.Session: it terminates the process, reaps it and
@@ -222,4 +330,7 @@ func mustEncode(v any) []byte {
 	return body
 }
 
-var _ sandbox.Session = (*session)(nil)
+var (
+	_ sandbox.Session        = (*session)(nil)
+	_ sandbox.SessionWatcher = (*watcher)(nil)
+)

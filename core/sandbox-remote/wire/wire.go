@@ -38,6 +38,7 @@ package wire
 import (
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
@@ -167,6 +168,28 @@ type WaitRequest struct {
 	HoldMS int    `json:"hold_ms,omitempty"`
 }
 
+// EventsRequest opens the session's event stream.
+//
+// It carries no cursor on purpose: the contract's Session.Watch has none either
+// — it replays the retained output from its start and then follows live, and a
+// consumer that fell behind recovers with a Read from the seq a Lag event names.
+// Inventing a resume cursor here would be a second, weaker recovery path.
+type EventsRequest struct {
+	ID string `json:"id"`
+}
+
+// Event is one pushed session event.
+//
+// Type is one of "output", "exited", "closed", "lag"; the fields that matter
+// follow it, exactly like sandbox.SessionEvent.
+type Event struct {
+	Seq    int64                `json:"seq"`
+	Type   string               `json:"type"`
+	Stream int                  `json:"stream,omitempty"`
+	Data   []byte               `json:"data,omitempty"`
+	Exit   *sandbox.SessionExit `json:"exit,omitempty"`
+}
+
 // CloseResponse answers a close. Close terminates and reaps, so the exit it
 // produced is the answer: a client that closed a session can still report how it
 // ended, which is what the contract promises a handle does after Close.
@@ -253,4 +276,60 @@ func toEnv(w Env) sandbox.EnvPolicy {
 		out.Allow = *w.Allow
 	}
 	return out
+}
+
+// Event type spellings. They are wire values, so they are strings a log can carry
+// and a foreign implementation can read.
+const (
+	EventOutput = "output"
+	EventExited = "exited"
+	EventClosed = "closed"
+	EventLag    = "lag"
+)
+
+// FromEvent converts a session event into its wire form.
+func FromEvent(ev sandbox.SessionEvent) Event {
+	out := Event{
+		Seq:    ev.Seq,
+		Stream: int(ev.Stream),
+		Data:   ev.Data,
+		Exit:   ev.Exit,
+	}
+	switch ev.Type {
+	case sandbox.SessionEventExited:
+		out.Type = EventExited
+	case sandbox.SessionEventClosed:
+		out.Type = EventClosed
+	case sandbox.SessionEventLag:
+		out.Type = EventLag
+	default:
+		out.Type = EventOutput
+	}
+	return out
+}
+
+// ToEvent converts a wire event back into a session event. An unknown type is
+// reported rather than mapped to output: a receiver that cannot classify an
+// event must not turn it into bytes.
+func ToEvent(w Event) (sandbox.SessionEvent, error) {
+	out := sandbox.SessionEvent{
+		Seq:    w.Seq,
+		Stream: sandbox.SessionStream(w.Stream),
+		Data:   w.Data,
+		Exit:   w.Exit,
+	}
+	switch w.Type {
+	case EventOutput:
+		out.Type = sandbox.SessionEventOutput
+	case EventExited:
+		out.Type = sandbox.SessionEventExited
+	case EventClosed:
+		out.Type = sandbox.SessionEventClosed
+	case EventLag:
+		out.Type = sandbox.SessionEventLag
+	default:
+		return sandbox.SessionEvent{}, errdefs.Validationf(
+			"wire: unknown session event type %q", w.Type)
+	}
+	return out, nil
 }

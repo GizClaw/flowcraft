@@ -3,6 +3,7 @@ package remote
 import (
 	"context"
 	"errors"
+	"io"
 )
 
 // Op names one request the server understands. It doubles as the URL path
@@ -26,6 +27,9 @@ const (
 	OpWait       Op = "wait"
 	OpClose      Op = "close"
 	OpJournal    Op = "journal"
+	// OpEvents is the one op that streams: it answers with Server-Sent Events
+	// rather than a single decoded body.
+	OpEvents Op = "events"
 )
 
 // Transport carries one message to a server and decodes the answer.
@@ -43,6 +47,11 @@ type Transport interface {
 	// Do sends op with the already-encoded request body and decodes the
 	// response into res. A nil req means "no request body".
 	Do(ctx context.Context, op Op, req []byte, res any) error
+
+	// Stream sends op and returns the response body as it arrives. It exists
+	// for the one operation that pushes: the session event stream. The caller
+	// closes the reader, which ends the request.
+	Stream(ctx context.Context, op Op, req []byte) (io.ReadCloser, error)
 }
 
 // TransportError reports that a request never reached a decision: a dial
