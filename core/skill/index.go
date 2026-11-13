@@ -21,6 +21,10 @@ type Index struct {
 	inner  *search.Index
 	byPath map[string]Metadata
 	byName map[string]Metadata
+	// order is the catalog in discovery order, which is what an unfiltered
+	// listing returns: a caller that wants "the first N skills" needs a stable
+	// sequence, and the maps above cannot provide one.
+	order []Metadata
 }
 
 // NewIndex indexes skill names and descriptions.
@@ -28,12 +32,16 @@ func NewIndex(skills []Metadata) (*Index, error) {
 	docs := make([]search.Doc, 0, len(skills))
 	byPath := make(map[string]Metadata, len(skills))
 	byName := make(map[string]Metadata, len(skills))
+	order := make([]Metadata, 0, len(skills))
 	for _, skill := range skills {
 		docs = append(docs, search.Doc{
 			ID:   skill.Path,
 			Name: skill.Name,
 			Text: skill.Description,
 		})
+		if _, seen := byPath[skill.Path]; !seen {
+			order = append(order, skill)
+		}
 		byPath[skill.Path] = skill
 		if _, ok := byName[skill.Name]; !ok {
 			byName[skill.Name] = skill
@@ -43,11 +51,22 @@ func NewIndex(skills []Metadata) (*Index, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Index{inner: inner, byPath: byPath, byName: byName}, nil
+	return &Index{inner: inner, byPath: byPath, byName: byName, order: order}, nil
 }
 
 // Len reports how many skills are indexed.
 func (ix *Index) Len() int { return len(ix.byPath) }
+
+// All returns the catalog in discovery order. The slice is a copy: a caller
+// cannot reorder what the index reports.
+func (ix *Index) All() []Metadata {
+	if ix == nil || len(ix.order) == 0 {
+		return nil
+	}
+	out := make([]Metadata, len(ix.order))
+	copy(out, ix.order)
+	return out
+}
 
 // ByName resolves a skill by its declared name.
 func (ix *Index) ByName(name string) (Metadata, bool) {

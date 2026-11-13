@@ -192,11 +192,24 @@ func (r *Runtime) buildSources(ctx context.Context) ([]tool.Source, error) {
 		if err != nil {
 			return nil, errdefs.Validationf("skills: %w", err)
 		}
-		group, err := skills.New(r.tree, outcome.Skills)
+		group, err := skills.New(r.tree, index)
 		if err != nil {
 			return nil, errdefs.Validationf("tools.skills: %w", err)
 		}
 		r.skills = index
+		// Parse failures and name/directory mismatches do not fail discovery, so
+		// they have to be said out loud here or they never reach anyone: the
+		// catalog silently gets smaller and the author never learns why.
+		for i, diagnostic := range outcome.Diagnostics {
+			if i >= maxSkillDiagnosticsLogged {
+				telemetry.Warn(ctx, "skills: further problems were not logged",
+					attribute.Int("skills.diagnostics.total", len(outcome.Diagnostics)))
+				break
+			}
+			telemetry.Warn(ctx, "skills: a skill file was skipped",
+				attribute.String("skills.path", diagnostic.Path),
+				attribute.String(telemetry.AttrErrorMessage, diagnostic.Message))
+		}
 		sources = append(sources, group)
 	}
 
@@ -357,6 +370,10 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 	sort.Strings(names)
 	return strings.Join(names, ", ")
 }
+
+// maxSkillDiagnosticsLogged bounds how many skipped skill files one runtime logs:
+// a broken tree should be visible, not a wall of warnings.
+const maxSkillDiagnosticsLogged = 5
 
 // remoteRunner connects to the remote boundary described by the document.
 //

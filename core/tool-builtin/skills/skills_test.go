@@ -39,7 +39,11 @@ func catalog(t *testing.T) *Tool {
 	if len(discovered.Skills) != 2 {
 		t.Fatalf("discovered %d skills, want 2: %+v", len(discovered.Skills), discovered.Diagnostics)
 	}
-	group, err := New(tree, discovered.Skills)
+	index, err := skill.NewIndex(discovered.Skills)
+	if err != nil {
+		t.Fatalf("NewIndex: %v", err)
+	}
+	group, err := New(tree, index)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

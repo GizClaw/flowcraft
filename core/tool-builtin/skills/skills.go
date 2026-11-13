@@ -30,24 +30,26 @@ const defaultSearchLimit = 10
 // maxSearchLimit bounds one search; a variable so tests can exercise the clamp.
 var maxSearchLimit = 50
 
-// Tool is the skill tool group over one catalog and the tree it was discovered
-// from: search reads the index, read loads a body through the same tree.
+// Tool is the skill tool group over the host's catalog and the tree it was
+// discovered from: search reads the index, read loads a body through the same tree.
+//
+// The index is owned by the caller (the runtime), not built here: one catalog, one
+// index, so what the tools search is exactly what the host reports through
+// Runtime.Skills().
 type Tool struct {
 	tree  *fsx.Tree
 	index *skill.Index
-	all   []skill.Metadata
 }
 
-// New builds the tools from discovered metadata.
-func New(tree *fsx.Tree, discovered []skill.Metadata) (*Tool, error) {
+// New builds the tools over an existing catalog.
+func New(tree *fsx.Tree, index *skill.Index) (*Tool, error) {
 	if tree == nil {
 		return nil, errdefs.Validationf("skills: an fsx tree is required")
 	}
-	index, err := skill.NewIndex(discovered)
-	if err != nil {
-		return nil, fmt.Errorf("skills: index: %w", err)
+	if index == nil {
+		return nil, errdefs.Validationf("skills: a catalog index is required")
 	}
-	return &Tool{tree: tree, index: index, all: discovered}, nil
+	return &Tool{tree: tree, index: index}, nil
 }
 
 // Tools returns the skill tools sharing this catalog.
@@ -108,7 +110,7 @@ func (t *searchTool) Execute(_ context.Context, arguments string) (message.Conte
 
 	hits := make([]searchHit, 0, limit)
 	if strings.TrimSpace(params.Query) == "" {
-		for _, meta := range t.tool.all {
+		for _, meta := range t.tool.index.All() {
 			if len(hits) >= limit {
 				break
 			}
