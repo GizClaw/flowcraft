@@ -6,8 +6,8 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/GizClaw/flowcraft/core/internal/search"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/search"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 

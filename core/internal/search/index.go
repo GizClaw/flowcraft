@@ -1,6 +1,5 @@
 // Package search is the ranking core: an in-memory BM25 index over a fixed
-// document set, plus the statistics needed to score a corpus that does not fit in
-// one place.
+// document set.
 //
 // It is deliberately dependency-free. The regime it serves — a few hundred to a
 // few thousand short documents such as tool definitions, skill files or retrieved
@@ -21,24 +20,22 @@
 // single characters plus adjacent bigrams, which lets a Chinese query match a
 // fragment without a segmentation dictionary.
 //
-// # Sharded corpora
-//
-// BM25 weights are properties of the set being scored, not of the part a reader
-// happens to hold: scoring one shard against its own counts and the next against
-// its own would weigh the same term differently in each, and the scores would no
-// longer be comparable. [Index.Aggregate] exposes the statistics, [Aggregate.Add]
-// merges them, and [NewFromTerms] indexes documents whose tokens are already
-// computed — so a reader can collect counts across shards and then score every
-// shard against the combined set, getting the ranking it would have got from one
-// index over the whole corpus.
-//
 // # Configuration
 //
-// [WithK1] and [WithB] set the standard Okapi parameters (defaults [DefaultK1] and
-// [DefaultB]); [WithPrefixWeight] adjusts the prefix discount.
+// withK1 and withB set the standard Okapi parameters (defaults defaultK1 and
+// defaultB); withPrefixWeight adjusts the prefix discount. The defaults are what
+// both callers build with, so these are internal tuning hooks rather than a
+// published surface.
 //
 // The index keeps term statistics only — it never retains document text — and is
 // immutable once built, so concurrent searches are safe.
+//
+// # Why internal
+//
+// The consumers are core packages that rank their own catalogs: core/skill and
+// core/tool/engine. Ranking is not a contract a deployment implements, so there
+// is no second implementation to keep this one honest against, and a published
+// surface here would cost a deprecation cycle per tuning change.
 package search
 
 import (
@@ -59,9 +56,10 @@ type Doc struct {
 }
 
 // TermDoc is one indexed document whose fields are already tokenized:
-// each map holds term frequencies. Callers that persist or cache
-// tokens — a projection storing per-document term counts, say — index
-// them directly instead of re-tokenizing text.
+// each map holds term frequencies. Callers that cache tokens — the
+// tool_search catalog index, which persists per-document term counts on
+// its cache entry, say — index them directly instead of re-tokenizing
+// text.
 //
 // The terms must come from Tokenize (or a tokenizer that splits the
 // same way): queries are always tokenized with Tokenize, so terms
@@ -81,8 +79,8 @@ type Result struct {
 
 // Scoring defaults: the standard Okapi BM25 parameters.
 const (
-	DefaultK1 = 1.2
-	DefaultB  = 0.75
+	defaultK1 = 1.2
+	defaultB  = 0.75
 )
 
 // Field weights: a term in the name field scores higher than the same
@@ -113,27 +111,27 @@ type config struct {
 }
 
 func defaultConfig() config {
-	return config{k1: DefaultK1, b: DefaultB, prefixWeight: defaultPrefixWeight}
+	return config{k1: defaultK1, b: defaultB, prefixWeight: defaultPrefixWeight}
 }
 
-// Option adjusts scoring when an index is built. Options are applied in
-// order and validated by New and NewFromTerms. A nil Option is ignored,
+// option adjusts scoring when an index is built. Options are applied in
+// order and validated by New and NewFromTerms. A nil option is ignored,
 // so a caller can pass one through unconditionally.
-type Option func(*config)
+type option func(*config)
 
-// WithK1 sets the term-frequency saturation parameter (default
-// DefaultK1). k1 must be finite and positive.
-func WithK1(k1 float64) Option { return func(c *config) { c.k1 = k1 } }
+// withK1 sets the term-frequency saturation parameter (default
+// defaultK1). k1 must be finite and positive.
+func withK1(k1 float64) option { return func(c *config) { c.k1 = k1 } }
 
-// WithB sets the document-length normalisation strength (default
-// DefaultB). b must be in [0,1]; WithB(0) disables length
+// withB sets the document-length normalisation strength (default
+// defaultB). b must be in [0,1]; withB(0) disables length
 // normalisation rather than falling back to the default.
-func WithB(b float64) Option { return func(c *config) { c.b = b } }
+func withB(b float64) option { return func(c *config) { c.b = b } }
 
-// WithPrefixWeight sets the discount applied when a query term only
+// withPrefixWeight sets the discount applied when a query term only
 // prefixes an index term (default 0.5). The weight must be in [0,1];
-// WithPrefixWeight(0) disables prefix matching entirely.
-func WithPrefixWeight(weight float64) Option {
+// withPrefixWeight(0) disables prefix matching entirely.
+func withPrefixWeight(weight float64) option {
 	return func(c *config) { c.prefixWeight = weight }
 }
 
@@ -151,7 +149,7 @@ func (c config) validate() error {
 	return nil
 }
 
-func resolveConfig(opts []Option) (config, error) {
+func resolveConfig(opts []option) (config, error) {
 	cfg := defaultConfig()
 	for _, opt := range opts {
 		if opt == nil {
@@ -180,7 +178,7 @@ type Index struct {
 // by ID and a caller that maps a result back to its document would
 // silently pick one of the duplicates. Ties in Search keep the order
 // docs arrive in.
-func New(docs []Doc, opts ...Option) (*Index, error) {
+func New(docs []Doc, opts ...option) (*Index, error) {
 	cfg, err := resolveConfig(opts)
 	if err != nil {
 		return nil, err
@@ -203,7 +201,7 @@ func New(docs []Doc, opts ...Option) (*Index, error) {
 // NewFromTerms builds an index over documents whose fields are already
 // tokenized; see TermDoc for why a caller would want that. Documents
 // with invalid term frequencies are rejected.
-func NewFromTerms(docs []TermDoc, opts ...Option) (*Index, error) {
+func NewFromTerms(docs []TermDoc, opts ...option) (*Index, error) {
 	cfg, err := resolveConfig(opts)
 	if err != nil {
 		return nil, err
@@ -514,7 +512,7 @@ func (ix *Index) addToScores(scores, best []float64, touched []int32, group term
 // Search ranks documents against query with BM25 over both the name
 // and text fields and returns at most limit results in descending
 // score. Query terms also match by prefix when prefix weighting is
-// enabled (see WithPrefixWeight); a query term contributes the best of
+// enabled (see withPrefixWeight); a query term contributes the best of
 // its exact and prefix matches, so prefix noise never sums past an
 // exact hit.
 //

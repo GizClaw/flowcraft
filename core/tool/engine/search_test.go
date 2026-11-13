@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// The kernel is shared (core/utils/bm25); the catalog's own contract is
+// The kernel is shared (core/internal/search); the catalog's own contract is
 // what it hands the kernel and how it keys the results.
 
 func TestCatalogTermsDropSingleRuneASCII(t *testing.T) {

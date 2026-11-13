@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/search"
+	"github.com/GizClaw/flowcraft/core/internal/search"
 )
 
 // Scored couples one ranked skill with its BM25 score, for search output and

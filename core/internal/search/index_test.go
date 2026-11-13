@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func mustIndex(t *testing.T, docs []Doc, opts ...Option) *Index {
+func mustIndex(t *testing.T, docs []Doc, opts ...option) *Index {
 	t.Helper()
 	index, err := New(docs, opts...)
 	if err != nil {
@@ -88,7 +88,7 @@ func TestSearchPrefixMatches(t *testing.T) {
 	}
 
 	// With prefix weighting disabled only exact terms match.
-	exact := mustIndex(t, docs, WithPrefixWeight(0))
+	exact := mustIndex(t, docs, withPrefixWeight(0))
 	if results := exact.Search("re", 10); len(results) != 0 {
 		t.Fatalf("Search(re) without prefix matching = %v, want none", results)
 	}
@@ -202,7 +202,7 @@ func TestFieldLengthCountsAllTokens(t *testing.T) {
 	}
 }
 
-func TestWithBZeroDisablesLengthNormalisation(t *testing.T) {
+func TestBZeroDisablesLengthNormalisation(t *testing.T) {
 	docs := []Doc{
 		{ID: "short", Text: "alpha"},
 		{ID: "long", Text: "alpha beta gamma delta"},
@@ -213,13 +213,13 @@ func TestWithBZeroDisablesLengthNormalisation(t *testing.T) {
 		t.Fatalf("default ranking = %v, want [short long]", normalised)
 	}
 
-	flat := mustIndex(t, docs, WithB(0)).Search("alpha", 10)
+	flat := mustIndex(t, docs, withB(0)).Search("alpha", 10)
 	if len(flat) != 2 {
-		t.Fatalf("WithB(0) ranking = %v, want both documents", flat)
+		t.Fatalf("withB(0) ranking = %v, want both documents", flat)
 	}
 	// With b=0 the length ratio drops out: equal tf scores equally.
 	if math.Abs(flat[0].Score-flat[1].Score) > 1e-12 {
-		t.Fatalf("WithB(0) scores differ: %v vs %v", flat[0].Score, flat[1].Score)
+		t.Fatalf("withB(0) scores differ: %v vs %v", flat[0].Score, flat[1].Score)
 	}
 }
 
@@ -272,19 +272,19 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 	docs := []Doc{{ID: "a", Name: "alpha"}}
 	cases := []struct {
 		name string
-		opt  Option
+		opt  option
 	}{
-		{"k1 zero", WithK1(0)},
-		{"k1 negative", WithK1(-1)},
-		{"k1 NaN", WithK1(math.NaN())},
-		{"k1 infinite", WithK1(math.Inf(1))},
-		{"b below range", WithB(-0.1)},
-		{"b above range", WithB(1.1)},
-		{"b NaN", WithB(math.NaN())},
-		{"b infinite", WithB(math.Inf(-1))},
-		{"prefix weight negative", WithPrefixWeight(-0.1)},
-		{"prefix weight above one", WithPrefixWeight(1.1)},
-		{"prefix weight NaN", WithPrefixWeight(math.NaN())},
+		{"k1 zero", withK1(0)},
+		{"k1 negative", withK1(-1)},
+		{"k1 NaN", withK1(math.NaN())},
+		{"k1 infinite", withK1(math.Inf(1))},
+		{"b below range", withB(-0.1)},
+		{"b above range", withB(1.1)},
+		{"b NaN", withB(math.NaN())},
+		{"b infinite", withB(math.Inf(-1))},
+		{"prefix weight negative", withPrefixWeight(-0.1)},
+		{"prefix weight above one", withPrefixWeight(1.1)},
+		{"prefix weight NaN", withPrefixWeight(math.NaN())},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -296,12 +296,12 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 			}
 		})
 	}
-	if _, err := New(docs, WithK1(0.1), WithB(0), WithB(1), WithPrefixWeight(0), WithPrefixWeight(1)); err != nil {
+	if _, err := New(docs, withK1(0.1), withB(0), withB(1), withPrefixWeight(0), withPrefixWeight(1)); err != nil {
 		t.Fatalf("New with boundary options: %v", err)
 	}
 	// A nil option is ignored rather than applied, so a caller can pass an
 	// optional one through without checking it first.
-	if _, err := New(docs, nil, WithK1(1.4)); err != nil {
+	if _, err := New(docs, nil, withK1(1.4)); err != nil {
 		t.Fatalf("New with a nil option: %v", err)
 	}
 	if _, err := NewFromTerms([]TermDoc{{ID: "a"}}, nil); err != nil {
@@ -310,9 +310,8 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 }
 
 // TestNewRejectsDuplicateIDs pins the uniqueness precondition both callers
-// rely on: core/tool maps a hit back to its definition by name, and the
-// memory lane keys its documents by ID, so a duplicate would silently pick
-// one of the two.
+// rely on: core/tool and core/skill map a hit back to its document by ID, so
+// a duplicate would silently pick one of the two.
 func TestNewRejectsDuplicateIDs(t *testing.T) {
 	if _, err := New([]Doc{{ID: "a", Name: "alpha"}, {ID: "a", Name: "beta"}}); err == nil {
 		t.Fatal("New accepted duplicate ids, want error")
