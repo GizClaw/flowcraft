@@ -503,4 +503,6 @@ side closed before the child exits. It is separate from `SessionSpec.Stdin`,
 which declares a streaming input side for `Start`. An empty slice is the same
 as omitting it — neither buys the child a pipe.
 
-See [workspace.md](workspace.md) for state storage.
+State storage is `core/fsx`: the file tools write through an OS handle rooted at a
+declared directory, and this guide covers the command boundary only. See
+[tool.md](tool.md) for those tools.

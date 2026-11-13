@@ -21,17 +21,12 @@ retrieval, runtime orchestration, and voice. Source on
   and parsing, BM25 ranking over names and descriptions, and the
   per-turn `## Skills` section; lifecycle and authoring stay with the
   caller.
-- [Event Bus](guides/event.md) — `core/event`: subject-routed
-  publish/subscribe, in-process `MemoryBus`, host capability
-  wiring, backpressure policies.
 - [Application Runtime](guides/runtime.md) — `core/runtime` +
   `core/runtime/session`: process-level services and leased,
   interruptible streaming sessions above a built deployment.
 - [Checkpoints](guides/checkpoint.md) — `core/agent`: the checkpoint
   store contract, incremental records, and the board write record an
   engine persists at a boundary.
-- [Prompt Lifecycle Events](guides/prompt.md) — the
-  `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
 - [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
   command-hook runner, the frozen event vocabulary, the invocation
   contract, and the trust rules for plugin-contributed sources.
@@ -42,15 +37,9 @@ retrieval, runtime orchestration, and voice. Source on
 
 ### State and execution boundary
 
-- [Workspace](guides/workspace.md) — `core/workspace`: per-run
-  filesystem abstraction, backends, capabilities, the
-  `state vs policy` split vs Sandbox.
 - [Sandbox](guides/sandbox.md) — `core/sandbox`: agent execution
   boundary, env / net / resources policy, runners (local /
   seatbelt / bwrap), decorators and approval.
-- [Memory Stack](guides/memory.md) — the three-layer memory stack:
-  `core/memory` contracts, deploy/runtime glue, and app-registered
-  implementations.
 
 ### Assembly
 
@@ -60,10 +49,6 @@ retrieval, runtime orchestration, and voice. Source on
 - [Deployment Assembly](guides/deploy.md) — `core/deploy`: one YAML
   document + one `Build` call to wire shared resources, named agents,
   engines, and lifecycle hooks.
-- [Resource Protocol](guides/resource.md) — `core/resource`: the
-  provider-neutral factory, dependency DAG, loader, and lifecycle phases
-  that every deployment resource uses.
-
 ### Delegation
 
 - [Delegation](guides/delegation.md) — `core/delegation`: backend-neutral
@@ -111,7 +96,7 @@ The repository is organised as independently released Go modules:
 
 ## Repository layout
 
-```
+```text
 core/            Platform module (contracts, deploy, runtime, built-in resources)
 driver/          Provider inference adapters (one module)
 memory/          Long-term memory backend and its eval harness

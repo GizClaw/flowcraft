@@ -47,9 +47,8 @@ defer detach()
 Attachments are torn down when the Runtime closes, and `Attach` fails
 with `NotAvailable` afterwards. External attachments inherit the bus
 default backpressure (`DropNewest`); pass
-`event.WithAttachBackpressure` to override per subscription. See
-[prompt.md](prompt.md) for the prompt lifecycle events, and the
-"Dynamic agent registry" section below for the `runtime.agent.*`
+`event.WithAttachBackpressure` to override per subscription. The
+"Dynamic agent registry" section below covers the `runtime.agent.*`
 lifecycle events published on dynamic registration/removal.
 
 ## Accessing deployment resources
@@ -430,8 +429,7 @@ Semantics:
   `.failed` events (`SubjectRuntimeRebuild*`, subscribe with
   `PatternRuntimeRebuild()`); the `RuntimeRebuildEvent` payload carries
   `generation_id`, `previous_generation_id`, `rebound_agents`,
-  `drained_agents`, and `error` (on failure). See [event.md](event.md)
-  for the event namespaces.
+  `drained_agents`, and `error` (on failure).
 
 Reload options replace the inputs a generation is built with, for the
 cases the document alone cannot express (a per-tenant external value, a
@@ -477,4 +475,4 @@ builder.WithResultHostFactory(func(result *deploy.Result, factory session.HostFa
 The decorator is retained across reloads and re-applied to each new
 generation's host factory with that generation's deployment.
 
-See [deploy.md](deploy.md) and [resource.md](resource.md).
+See [deploy.md](deploy.md).

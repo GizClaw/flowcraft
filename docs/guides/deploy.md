@@ -232,4 +232,5 @@ priority order, and returns provenance. The first layer must be complete;
 later layers may be partial. Runtime settings, resource settings, and agent
 policy are merged.
 
-See [resource.md](resource.md) for the factory protocol.
+The factory protocol this page describes is the previous assembly model; this page
+is being rewritten for the current one (a deployment document plus a kind table).
