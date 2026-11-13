@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -978,17 +979,46 @@ func (a *Agent) evictIdle(now time.Time) []*session {
 //
 // It is the one limit the message path enforces, because a cap is a memory
 // bound and a bound checked once a minute is not a bound. Within the cap it
-// costs one atomic load.
+// costs one atomic load; over the cap it costs one pass over the table, not one
+// pass per evicted session — the previous shape called oldestIdle in a loop, so
+// dropping k sessions off a table of N scanned N entries k times.
 func (a *Agent) trim() []*session {
 	max := int64(a.opts.MaxSessions)
 	if max <= 0 || a.table.count() <= max {
 		return nil
 	}
+
+	// One pass collects the candidates. Each shard is read under its own lock for
+	// the duration of its own scan, and every entry is re-checked against its
+	// shard before removal: a session that started running in between stays.
+	var idle []*session
+	for _, shard := range a.table.shards {
+		shard.mu.Lock()
+		for _, entry := range shard.entries {
+			if entry.running || entry.opening != nil {
+				continue
+			}
+			idle = append(idle, entry)
+		}
+		shard.mu.Unlock()
+	}
+	if len(idle) == 0 {
+		return nil
+	}
+	// Least recently used first, ties broken by id so a table of sessions that
+	// share a timestamp still evicts in a fixed order. The old single-victim scan
+	// walked shard maps, so its tie-break was map order.
+	sort.Slice(idle, func(i, j int) bool {
+		if !idle[i].lastUsed.Equal(idle[j].lastUsed) {
+			return idle[i].lastUsed.Before(idle[j].lastUsed)
+		}
+		return idle[i].id < idle[j].id
+	})
+
 	var evicted []*session
 	var evictedIDs []string
-	for a.table.count() > max {
-		victim := a.oldestIdle()
-		if victim == nil {
+	for _, victim := range idle {
+		if a.table.count() <= max {
 			break
 		}
 		where := a.table.shard(victim.id)
@@ -1013,27 +1043,6 @@ func (a *Agent) fireEvict(ids []string) {
 	for _, id := range ids {
 		a.opts.OnEvict(id)
 	}
-}
-
-// oldestIdle finds the least recently used session that is not running.
-// oldestIdle returns the least recently used idle session, or nil when every
-// session is running or opening. The shard is derived from the session's id at
-// the call site, so a caller cannot hold a session without its shard.
-func (a *Agent) oldestIdle() *session {
-	var oldest *session
-	for _, shard := range a.table.shards {
-		shard.mu.Lock()
-		for _, entry := range shard.entries {
-			if entry.running || entry.opening != nil {
-				continue
-			}
-			if oldest == nil || entry.lastUsed.Before(oldest.lastUsed) {
-				oldest = entry
-			}
-		}
-		shard.mu.Unlock()
-	}
-	return oldest
 }
 
 // newSession starts an entry in the submitted state.

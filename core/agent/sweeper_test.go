@@ -292,3 +292,138 @@ func BenchmarkRunWithABoundedTable(b *testing.B) {
 		})
 	}
 }
+
+// TestTrimKeepsTheMostRecentlyUsed: the cap drops the least recently used idle
+// sessions first, and reports exactly those. The order used to be re-derived per
+// victim by scanning the whole table; it is now one sorted pass, so the survivors
+// are asserted rather than just the count.
+func TestTrimKeepsTheMostRecentlyUsed(t *testing.T) {
+	var mu sync.Mutex
+	var evicted []string
+	a := probeAgent(t, AgentOptions{
+		MaxSessions: 3,
+		OnEvict: func(id string) {
+			mu.Lock()
+			evicted = append(evicted, id)
+			mu.Unlock()
+		},
+	})
+	// oldest -> newest: a, b, c, d, e, f
+	for i, id := range []string{"a", "b", "c", "d", "e", "f"} {
+		insertIdle(t, a, id, time.Now().Add(-time.Duration(6-i)*time.Second))
+	}
+	a.trim()
+
+	if got := a.table.count(); got != 3 {
+		t.Fatalf("table holds %d sessions, want 3", got)
+	}
+	for _, gone := range []string{"a", "b", "c"} {
+		if holds(a, gone) {
+			t.Errorf("%s survived, want the three oldest evicted", gone)
+		}
+	}
+	for _, kept := range []string{"d", "e", "f"} {
+		if !holds(a, kept) {
+			t.Errorf("%s was evicted, want the three newest kept", kept)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(evicted) != 3 {
+		t.Fatalf("evicted = %v, want three reports", evicted)
+	}
+}
+
+// TestTrimBreaksTiesDeterministically: when several sessions share a last-used
+// timestamp the eviction order is still fixed (by id), where the old per-victim
+// scan inherited the shard map's random iteration order.
+func TestTrimBreaksTiesDeterministically(t *testing.T) {
+	at := time.Now().Add(-time.Minute)
+	for attempt := 0; attempt < 5; attempt++ {
+		a := probeAgent(t, AgentOptions{MaxSessions: 2})
+		for _, id := range []string{"a", "b", "c", "d"} {
+			insertIdle(t, a, id, at)
+		}
+		a.trim()
+		for _, kept := range []string{"c", "d"} {
+			if !holds(a, kept) {
+				t.Fatalf("attempt %d: %s was evicted, want the id order to break the tie", attempt, kept)
+			}
+		}
+	}
+}
+
+// TestTrimSkipsRunningSessions: a session with a run in flight is never a
+// candidate, however old its clock looks.
+func TestTrimSkipsRunningSessions(t *testing.T) {
+	a := probeAgent(t, AgentOptions{MaxSessions: 1})
+	busy := insertIdle(t, a, "busy", time.Now().Add(-time.Hour))
+	shard := a.table.shard("busy")
+	shard.mu.Lock()
+	busy.running = true
+	shard.mu.Unlock()
+	insertIdle(t, a, "normal", time.Now())
+
+	a.trim()
+
+	if !holds(a, "busy") {
+		t.Fatal("a running session was evicted")
+	}
+	if holds(a, "normal") {
+		t.Fatal("the idle session survived while a running one held the cap")
+	}
+}
+
+// BenchmarkTrimOverCap is the message path's cost when a table sits k times over
+// its cap: one pass and a sort, independent of how many sessions are dropped.
+// The previous shape scanned the whole table once per victim.
+func BenchmarkTrimOverCap(b *testing.B) {
+	// over is how many times the cap the table sits at. Two and four are the
+	// shapes that pay: one session over the cap is one scan either way.
+	for _, sessions := range []int{1000, 5000} {
+		for _, over := range []int{2, 4} {
+			b.Run(fmt.Sprintf("sessions=%d/over=%dx", sessions, over), func(b *testing.B) {
+				max := sessions / over
+				a, err := NewAgent(AgentOptions{
+					MaxSessions: max,
+					NewRunner: func(context.Context, string, string) (Runner, error) {
+						return &probeRunner{}, nil
+					},
+				})
+				if err != nil {
+					b.Fatalf("NewAgent: %v", err)
+				}
+				defer func() { _ = a.Close() }()
+				base := time.Now()
+				for i := 0; i < sessions; i++ {
+					insertIdleB(b, a, fmt.Sprintf("s-%05d", i), base.Add(-time.Duration(i)*time.Millisecond))
+				}
+				b.ReportAllocs()
+				b.ResetTimer()
+				for i := 0; i < b.N; i++ {
+					b.StopTimer()
+					// Refill to the over-cap size without timing the setup.
+					for j := a.table.count(); int(j) < sessions; j++ {
+						insertIdleB(b, a, fmt.Sprintf("r-%d-%05d", i, j), base)
+					}
+					b.StartTimer()
+					a.trim()
+				}
+			})
+		}
+	}
+}
+
+// insertIdleB is insertIdle for benchmarks: it takes a testing.TB and fails the
+// benchmark rather than a test.
+func insertIdleB(tb testing.TB, a *Agent, id string, lastUsed time.Time) *session {
+	tb.Helper()
+	entry := newSession(id)
+	entry.runner = &probeRunner{}
+	entry.lastUsed = lastUsed
+	shard := a.table.shard(id)
+	shard.mu.Lock()
+	shard.insert(entry)
+	shard.mu.Unlock()
+	return entry
+}
