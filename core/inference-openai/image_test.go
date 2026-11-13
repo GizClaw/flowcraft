@@ -335,3 +335,72 @@ func openaiImagesResponse(t *testing.T, body string) *openai.ImagesResponse {
 	}
 	return &response
 }
+
+// TestImageJSONSetReachesTheBody covers the escape hatch on the generation surface:
+// a provider quirk the image vocabulary does not model (MiniMax H3-Image's area
+// tier) is written verbatim into the JSON body.
+func TestImageJSONSetReachesTheBody(t *testing.T) {
+	var received map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &received)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"created":0,"data":[{"b64_json":"` + redPixelPNG + `"}]}`))
+	}))
+	defer server.Close()
+
+	provider, err := New(Settings{API: APIChat, APIKey: "test-key", BaseURL: server.URL})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	request := imageRequest(t, "a red square")
+	request.Extensions = inference.Extensions{&GenerationOptions{
+		JSONSet: map[string]json.RawMessage{"area": json.RawMessage(`"2K"`)},
+	}}
+	if _, err := provider.Generate(context.Background(), request); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if received["area"] != "2K" {
+		t.Fatalf("area = %v, want the injected 2K", received["area"])
+	}
+	if received["prompt"] != "a red square" {
+		t.Fatalf("prompt lost: %v", received["prompt"])
+	}
+}
+
+// TestImageJSONSetIsAccounted keeps the image surface inside the same contract as
+// the text one: an injected key is a field the compilation must report.
+func TestImageJSONSetIsAccounted(t *testing.T) {
+	request := imageRequest(t, "a red square")
+	request.Extensions = inference.Extensions{&GenerationOptions{
+		JSONSet: map[string]json.RawMessage{"area": json.RawMessage(`"2K"`)},
+	}}
+	d := &driver{settings: testSettings(APIChat)}
+	compiled, err := d.imageCompile(context.Background(), request, protocol.ShapeUnary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	want := inference.Field("extension.openai.generation.json.area")
+	for _, field := range compiled.Fields {
+		if field == want {
+			return
+		}
+	}
+	t.Fatalf("injected field %q not reported: %v", want, compiled.Fields)
+}
+
+// TestImageRejectsNonJSONSetGenerationOptions keeps the narrowing honest: the image
+// surfaces honor only json_set, so a text knob on an image call names itself
+// instead of failing the generic contract check.
+func TestImageRejectsNonJSONSetGenerationOptions(t *testing.T) {
+	request := imageRequest(t, "a red square")
+	temperature := 0.5
+	request.Extensions = inference.Extensions{&GenerationOptions{
+		Temperature: &temperature,
+	}}
+	d := &driver{settings: testSettings(APIChat)}
+	_, err := d.imageCompile(context.Background(), request, protocol.ShapeUnary)
+	if !inference.IsKind(err, inference.InvalidExtension) {
+		t.Fatalf("kind = %v, want InvalidExtension", err)
+	}
+}

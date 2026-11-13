@@ -60,6 +60,20 @@ func (d *driver) imageEditCompile(
 	if err := editApply(&params, options); err != nil {
 		return protocol.Compiled[openai.ImageEditParams]{}, err
 	}
+	// The edits surface is multipart, so the json_set escape hatch has no JSON body
+	// to merge into: refuse it rather than send a request whose extra fields
+	// silently vanished.
+	extra, _, err := imageJSONSet(request.Extensions)
+	if err != nil {
+		return protocol.Compiled[openai.ImageEditParams]{}, err
+	}
+	if len(extra) > 0 {
+		return protocol.Compiled[openai.ImageEditParams]{}, inference.NewError(
+			inference.InvalidExtension,
+			inference.FieldExtensions,
+			fmt.Errorf("openai: json_set is not supported on image edits; the edits surface is multipart"),
+		)
+	}
 	if shape == protocol.ShapeStream && options != nil && options.PartialImages != nil {
 		params.PartialImages = openai.Int(int64(*options.PartialImages))
 	}

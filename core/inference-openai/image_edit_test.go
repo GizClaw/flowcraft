@@ -362,3 +362,17 @@ func TestLiveImageStream(t *testing.T) {
 		t.Fatalf("expected at least one preview plus the final image, got %d", parts)
 	}
 }
+
+// TestImageEditRejectsJSONSet pins the escape hatch's boundary: the edits surface
+// is multipart, so a JSON-only injection cannot reach it.
+func TestImageEditRejectsJSONSet(t *testing.T) {
+	request := editRequest(t, "make it blue", []byte("IMG"))
+	request.Extensions = inference.Extensions{&GenerationOptions{
+		JSONSet: map[string]json.RawMessage{"area": json.RawMessage(`"2K"`)},
+	}}
+	d := &driver{settings: testSettings(APIChat)}
+	_, err := d.imageEditCompile(context.Background(), request, protocol.ShapeUnary)
+	if !inference.IsKind(err, inference.InvalidExtension) {
+		t.Fatalf("kind = %v, want InvalidExtension", err)
+	}
+}

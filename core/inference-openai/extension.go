@@ -15,6 +15,10 @@ import (
 // per call, not per provider.
 const GenerationExtensionID = "generation"
 
+// jsonSetFieldPrefix namespaces the escape hatch's injected keys inside the option
+// vocabulary, so every raw field is accounted for under its own identity.
+const jsonSetFieldPrefix = "json."
+
 // Effort is the canonical reasoning depth a caller asks for. The driver maps it
 // onto the surface's own value, so a deployment never writes a wire token.
 type Effort string
@@ -189,7 +193,7 @@ func (o *GenerationOptions) ActiveFields() []inference.ExtensionField {
 	}
 	slices.Sort(keys)
 	for _, key := range keys {
-		add("json." + key)
+		add(jsonSetFieldPrefix + key)
 	}
 	return fields
 }
@@ -377,4 +381,69 @@ func extensionJSONSet(extensions inference.Extensions) (map[string]json.RawMessa
 		return nil, nil
 	}
 	return options.JSONSet, nil
+}
+
+// imageJSONSet extracts the json_set escape hatch for the image surfaces, which
+// carry [ImageOptions] rather than [GenerationOptions]. It is lenient about the
+// extension type — a text option set alongside the image one is not an image knob —
+// but strict about content: the image surfaces honor only json_set, so any other
+// active generation option is refused here instead of surfacing later as an
+// unaccounted field.
+//
+// It returns the raw fields to merge and the qualified identities to report, so a
+// compilation can prove it honored what the request declared.
+func imageJSONSet(
+	extensions inference.Extensions,
+) (map[string]json.RawMessage, []inference.Field, error) {
+	var found *GenerationOptions
+	for _, extension := range extensions {
+		options, ok := extension.(*GenerationOptions)
+		if !ok || ptr.IsNil(options) {
+			continue
+		}
+		if found != nil {
+			return nil, nil, inference.NewError(
+				inference.InvalidExtension,
+				inference.FieldExtensions,
+				fmt.Errorf("openai: duplicate generation options"),
+			)
+		}
+		found = options
+	}
+	if found == nil {
+		return nil, nil, nil
+	}
+	// A generation option that is not the escape hatch has no meaning here, and
+	// saying so is clearer than the generic unaccounted-field rejection.
+	var others []string
+	for _, field := range found.ActiveFields() {
+		name := string(field)
+		if len(name) < len(jsonSetFieldPrefix) || name[:len(jsonSetFieldPrefix)] != jsonSetFieldPrefix {
+			others = append(others, name)
+		}
+	}
+	if len(others) > 0 {
+		return nil, nil, inference.NewError(
+			inference.InvalidExtension,
+			inference.FieldExtensions,
+			fmt.Errorf(
+				"openai: the image surfaces honor only json_set from the generation options, not %v",
+				others,
+			),
+		)
+	}
+	if len(found.JSONSet) == 0 {
+		return nil, nil, nil
+	}
+	keys := make([]string, 0, len(found.JSONSet))
+	for key := range found.JSONSet {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	fields := make([]inference.Field, 0, len(keys))
+	for _, key := range keys {
+		fields = append(fields,
+			inference.ExtensionField(jsonSetFieldPrefix+key).Qualify(found))
+	}
+	return found.JSONSet, fields, nil
 }

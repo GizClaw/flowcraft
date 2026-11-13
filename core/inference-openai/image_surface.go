@@ -254,6 +254,14 @@ func (d *driver) imageCompile(
 	}
 
 	fields := append(honoredFields(request), qualifiedFields(options)...)
+	// The escape hatch is a generation option set on an image request, so the
+	// image compilation has to account for its keys itself; otherwise the contract
+	// check reports them as dropped and refuses a request that would work.
+	_, jsonFields, err := imageJSONSet(request.Extensions)
+	if err != nil {
+		return protocol.Compiled[openai.ImageGenerateParams]{}, err
+	}
+	fields = append(fields, jsonFields...)
 	return protocol.Compiled[openai.ImageGenerateParams]{
 		Wire:   params,
 		Fields: fields,
@@ -331,7 +339,15 @@ func (d *driver) imageCall(
 	request inference.GenerateRequest,
 	params openai.ImageGenerateParams,
 ) (*openai.ImagesResponse, error) {
-	return d.client.Images.Generate(ctx, params)
+	extra, _, err := imageJSONSet(request.Extensions)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := bodyOptions(params, extra)
+	if err != nil {
+		return nil, err
+	}
+	return d.client.Images.Generate(ctx, params, opts...)
 }
 
 // imageDecode maps the generated images onto content parts. The provider's revised
