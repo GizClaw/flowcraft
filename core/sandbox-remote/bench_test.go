@@ -45,28 +45,36 @@ func BenchmarkWireDecodeSpec(b *testing.B) {
 	}
 }
 
-// Output crosses the wire base64-encoded inside JSON; this is what a 64 KiB read
-// costs to marshal and unmarshal.
-func BenchmarkWireReadResponse(b *testing.B) {
-	resp := wire.ReadResponse{Output: sandbox.SessionOutput{
-		NextSeq: 64 << 10,
-		Chunks: []sandbox.OutputChunk{{
-			Seq:    0,
-			Stream: sandbox.SessionStreamStdout,
-			Data:   make([]byte, 64<<10),
-		}},
-	}}
-	encoded, err := wire.Encode(resp)
-	if err != nil {
-		b.Fatalf("Encode: %v", err)
-	}
-	b.SetBytes(int64(len(encoded)))
-	b.ResetTimer()
-	for range b.N {
-		var got wire.ReadResponse
-		if err := wire.Decode(encoded, &got); err != nil {
-			b.Fatalf("Decode: %v", err)
+// The read frame: one header, raw chunk bytes, no base64 and no JSON. Encode and
+// decode are separate because they are separate costs at each end.
+func BenchmarkReadFrame(b *testing.B) {
+	for _, size := range []int{64 << 10, 1 << 20} {
+		out := sandbox.SessionOutput{
+			NextSeq: int64(size),
+			Chunks: []sandbox.OutputChunk{{
+				Seq:    0,
+				Stream: sandbox.SessionStreamStdout,
+				Data:   make([]byte, size),
+			}},
 		}
+		body := wire.AppendReadResponse(nil, out, false)
+
+		b.Run(fmt.Sprintf("encode/%dK", size>>10), func(b *testing.B) {
+			b.SetBytes(int64(len(body)))
+			for range b.N {
+				if got := wire.AppendReadResponse(nil, out, false); len(got) != len(body) {
+					b.Fatalf("encoded %d bytes, want %d", len(got), len(body))
+				}
+			}
+		})
+		b.Run(fmt.Sprintf("decode/%dK", size>>10), func(b *testing.B) {
+			b.SetBytes(int64(len(body)))
+			for range b.N {
+				if _, _, err := wire.DecodeReadResponse(body); err != nil {
+					b.Fatalf("DecodeReadResponse: %v", err)
+				}
+			}
+		})
 	}
 }
 

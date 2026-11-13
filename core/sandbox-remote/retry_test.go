@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/sandbox-remote/wire"
 )
 
 // The retry policy is observable here because both halves — how long to wait and
@@ -29,6 +28,16 @@ func (s *scriptedTransport) Do(context.Context, Op, []byte, any) error {
 	err := s.errs[0]
 	s.errs = s.errs[1:]
 	return err
+}
+
+func (s *scriptedTransport) DoBytes(context.Context, Op, []byte) ([]byte, error) {
+	s.calls++
+	if len(s.errs) == 0 {
+		return nil, nil
+	}
+	err := s.errs[0]
+	s.errs = s.errs[1:]
+	return nil, err
 }
 
 func (s *scriptedTransport) Stream(context.Context, Op, []byte) (io.ReadCloser, error) {
@@ -73,8 +82,7 @@ func TestRetryWaitsBetweenTransportFailures(t *testing.T) {
 	tr := &scriptedTransport{errs: []error{transportFailure(), transportFailure()}}
 	r := newScriptedRunner(tr)
 
-	var out wire.ReadResponse
-	if err := r.retry(context.Background(), OpRead, nil, &out); err != nil {
+	if _, err := r.retryBytes(context.Background(), OpRead, nil); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	if tr.calls != 3 {
@@ -96,8 +104,7 @@ func TestRetryDoesNotWaitForServerAnswers(t *testing.T) {
 	tr := &scriptedTransport{errs: []error{errdefs.NotAvailablef("no sessions here")}}
 	r := newScriptedRunner(tr)
 
-	var out wire.ReadResponse
-	err := r.retry(context.Background(), OpRead, nil, &out)
+	_, err := r.retryBytes(context.Background(), OpRead, nil)
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("retry = %v, want NotAvailable", err)
 	}
@@ -126,8 +133,7 @@ func TestRetryReportsCancellationDuringBackoff(t *testing.T) {
 	tr := &scriptedTransport{errs: []error{transportFailure(), transportFailure()}}
 	r := newScriptedRunner(tr)
 
-	var out wire.ReadResponse
-	err := r.retry(ctx, OpRead, nil, &out)
+	_, err := r.retryBytes(ctx, OpRead, nil)
 	if !errors.Is(err, context.Canceled) && !errdefs.IsAborted(err) {
 		t.Fatalf("retry = %v, want the caller's cancellation", err)
 	}

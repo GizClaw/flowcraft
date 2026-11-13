@@ -243,16 +243,15 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	output, err := session.Read(ctx, req.AfterSeq, req.MaxBytes)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && r.Context().Err() == nil {
-			writeJSON(w, wire.ReadResponse{
-				Output: sandbox.SessionOutput{NextSeq: req.AfterSeq},
-				Idle:   true,
-			})
+			// The hold elapsed: an idle frame at the same cursor, so the caller
+			// simply asks again.
+			writeReadResponse(w, sandbox.SessionOutput{NextSeq: req.AfterSeq}, true)
 			return
 		}
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, wire.ReadResponse{Output: output})
+	writeReadResponse(w, output, false)
 }
 
 func (s *Server) handleWrite(w http.ResponseWriter, r *http.Request) {
@@ -589,6 +588,33 @@ func decodeRequest(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// writeReadResponse writes one read result as the binary frame.
+//
+// The body is written piecewise — header, then each chunk's header and its bytes —
+// so the server never assembles a second copy of the output. Content-Length is
+// known up front from the frame size, which is what lets the client size its
+// buffer once instead of growing it.
+func writeReadResponse(w http.ResponseWriter, out sandbox.SessionOutput, idle bool) {
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.Itoa(wire.ReadResponseSize(out, idle)))
+	w.WriteHeader(http.StatusOK)
+
+	if _, err := w.Write(wire.AppendReadHeader(nil, out, idle)); err != nil {
+		return
+	}
+	if idle {
+		return
+	}
+	for _, chunk := range out.Chunks {
+		if _, err := w.Write(wire.AppendChunkHeader(nil, chunk)); err != nil {
+			return
+		}
+		if _, err := w.Write(chunk.Data); err != nil {
+			return
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

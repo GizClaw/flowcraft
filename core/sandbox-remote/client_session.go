@@ -56,14 +56,18 @@ func (s *session) Read(ctx context.Context, afterSeq int64, maxBytes int) (sandb
 		MaxBytes: maxBytes,
 		HoldMS:   s.runner.holdMS(),
 	}
-	var out wire.ReadResponse
-	if err := s.runner.retry(ctx, OpRead, req, &out); err != nil {
+	body, err := s.runner.retryBytes(ctx, OpRead, req)
+	if err != nil {
 		return sandbox.SessionOutput{}, err
 	}
-	if out.Idle {
+	out, idle, err := wire.DecodeReadResponse(body)
+	if err != nil {
+		return sandbox.SessionOutput{}, err
+	}
+	if idle {
 		return sandbox.SessionOutput{NextSeq: afterSeq}, nil
 	}
-	return out.Output, nil
+	return out, nil
 }
 
 // Write implements sandbox.Session.

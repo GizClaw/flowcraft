@@ -47,6 +47,13 @@ func (f *flakyTransport) Do(ctx context.Context, op remote.Op, req []byte, res a
 	return f.inner.Do(ctx, op, req, res)
 }
 
+func (f *flakyTransport) DoBytes(ctx context.Context, op remote.Op, req []byte) ([]byte, error) {
+	if err := f.gate(op); err != nil {
+		return nil, err
+	}
+	return f.inner.DoBytes(ctx, op, req)
+}
+
 func (f *flakyTransport) Stream(ctx context.Context, op remote.Op, req []byte) (io.ReadCloser, error) {
 	if err := f.gate(op); err != nil {
 		return nil, err
@@ -483,6 +490,10 @@ func (p *pipeTransport) Do(_ context.Context, op remote.Op, _ []byte, res any) e
 		return errdefs.NotAvailablef("pipeTransport: %s", op)
 	}
 	return nil
+}
+
+func (p *pipeTransport) DoBytes(context.Context, remote.Op, []byte) ([]byte, error) {
+	return nil, errdefs.NotAvailablef("pipeTransport: no byte answers")
 }
 
 func (p *pipeTransport) Stream(ctx context.Context, op remote.Op, _ []byte) (io.ReadCloser, error) {

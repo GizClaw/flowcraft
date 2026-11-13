@@ -48,6 +48,12 @@ type Transport interface {
 	// response into res. A nil req means "no request body".
 	Do(ctx context.Context, op Op, req []byte, res any) error
 
+	// DoBytes sends op with the already-encoded request body and returns the
+	// response body untouched. It exists for the read operation, whose payload is
+	// a binary frame: decoding it inside the transport would mean teaching the
+	// transport about payloads, and the client owns that format.
+	DoBytes(ctx context.Context, op Op, req []byte) ([]byte, error)
+
 	// Stream sends op and returns the response body as it arrives. It exists
 	// for the one operation that pushes: the session event stream. The caller
 	// closes the reader, which ends the request.

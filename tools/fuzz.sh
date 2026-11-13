@@ -13,6 +13,7 @@ targets=(
 	"./agent-graph FuzzStateEvent"
 	"./sandbox-remote/wire FuzzSpecRoundTrip"
 	"./sandbox-remote/wire FuzzErrorRoundTrip"
+	"./sandbox-remote/wire FuzzDecodeReadResponse"
 )
 
 for entry in "${targets[@]}"; do

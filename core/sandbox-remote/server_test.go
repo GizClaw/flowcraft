@@ -210,6 +210,10 @@ func TestVersionMismatchIsRefused(t *testing.T) {
 // helloOnly answers the handshake and nothing else.
 type helloOnly struct{ version int }
 
+func (h helloOnly) DoBytes(context.Context, remote.Op, []byte) ([]byte, error) {
+	return nil, errdefs.NotAvailablef("helloOnly: no byte answers")
+}
+
 func (h helloOnly) Stream(context.Context, remote.Op, []byte) (io.ReadCloser, error) {
 	return nil, errdefs.NotAvailablef("helloOnly: no streams")
 }

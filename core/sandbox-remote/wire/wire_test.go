@@ -269,26 +269,139 @@ func TestErrorUnknownKind(t *testing.T) {
 	}
 }
 
-// Output crosses the wire as bytes: a chunk's Data is base64 in JSON on both
-// sides, so a stream that is not valid UTF-8 (a TTY, a binary command) survives.
-func TestReadResponseRoundTrip(t *testing.T) {
-	resp := wire.ReadResponse{Output: sandbox.SessionOutput{
+// The read frame carries raw bytes, so a chunk that is not valid UTF-8 (a TTY, a
+// binary command) needs no escaping — and decoding points into the body instead of
+// copying it.
+func TestReadFrameRoundTrip(t *testing.T) {
+	want := sandbox.SessionOutput{
 		NextSeq: 42,
 		Chunks: []sandbox.OutputChunk{
 			{Seq: 40, Stream: sandbox.SessionStreamStdout, Data: []byte{0xff, 0xfe, 0x00}},
 			{Seq: 41, Stream: sandbox.SessionStreamStderr, Data: []byte("plain")},
 		},
 		EOF: true,
-	}}
-	encoded, err := wire.Encode(resp)
+	}
+
+	body := wire.AppendReadResponse(nil, want, false)
+	if size := wire.ReadResponseSize(want, false); size != len(body) {
+		t.Fatalf("ReadResponseSize = %d, encoded %d", size, len(body))
+	}
+
+	got, idle, err := wire.DecodeReadResponse(body)
 	if err != nil {
-		t.Fatalf("Encode: %v", err)
+		t.Fatalf("DecodeReadResponse: %v", err)
 	}
-	var got wire.ReadResponse
-	if err := wire.Decode(encoded, &got); err != nil {
-		t.Fatalf("Decode: %v", err)
+	if idle {
+		t.Fatal("a real batch decoded as idle")
 	}
-	if !reflect.DeepEqual(got, resp) {
-		t.Fatalf("round trip = %+v, want %+v", got, resp)
+	if got.NextSeq != want.NextSeq || got.EOF != want.EOF || len(got.Chunks) != len(want.Chunks) {
+		t.Fatalf("decoded = %+v, want %+v", got, want)
 	}
+	for i := range want.Chunks {
+		if got.Chunks[i].Seq != want.Chunks[i].Seq ||
+			got.Chunks[i].Stream != want.Chunks[i].Stream ||
+			!reflect.DeepEqual(got.Chunks[i].Data, want.Chunks[i].Data) {
+			t.Fatalf("chunk %d = %+v, want %+v", i, got.Chunks[i], want.Chunks[i])
+		}
+	}
+}
+
+// The server writes the header and then each chunk straight to the connection, so
+// the piecewise form has to produce exactly what the one-shot form does.
+func TestReadFramePiecewiseMatchesOneShot(t *testing.T) {
+	out := sandbox.SessionOutput{
+		NextSeq: 9,
+		Chunks: []sandbox.OutputChunk{
+			{Seq: 0, Stream: sandbox.SessionStreamStdout, Data: []byte("ab")},
+			{Seq: 2, Stream: sandbox.SessionStreamTTY, Data: []byte("cde")},
+		},
+	}
+	oneShot := wire.AppendReadResponse(nil, out, false)
+
+	piecewise := wire.AppendReadHeader(nil, out, false)
+	for _, chunk := range out.Chunks {
+		piecewise = wire.AppendChunkHeader(piecewise, chunk)
+		piecewise = append(piecewise, chunk.Data...)
+	}
+	if !reflect.DeepEqual(piecewise, oneShot) {
+		t.Fatalf("piecewise %v != one-shot %v", piecewise, oneShot)
+	}
+	if size := wire.ReadResponseSize(out, false); size != len(piecewise) {
+		t.Fatalf("ReadResponseSize = %d, want %d (what Content-Length promises)", size, len(piecewise))
+	}
+}
+
+func TestReadFrameIdle(t *testing.T) {
+	body := wire.AppendReadResponse(nil, sandbox.SessionOutput{NextSeq: 7}, true)
+	if size := wire.ReadResponseSize(sandbox.SessionOutput{NextSeq: 7}, true); size != len(body) {
+		t.Fatalf("idle size = %d, encoded %d", size, len(body))
+	}
+	got, idle, err := wire.DecodeReadResponse(body)
+	if err != nil {
+		t.Fatalf("DecodeReadResponse: %v", err)
+	}
+	if !idle || got.NextSeq != 7 || len(got.Chunks) != 0 || got.EOF {
+		t.Fatalf("idle frame decoded as %+v (idle=%v)", got, idle)
+	}
+}
+
+// A response that is not ours has to be refused, not parsed into nonsense chunk
+// lengths: a proxy's HTML error page and a truncated body both land here.
+func TestReadFrameRejectsMalformed(t *testing.T) {
+	good := wire.AppendReadResponse(nil, sandbox.SessionOutput{
+		NextSeq: 3,
+		Chunks:  []sandbox.OutputChunk{{Seq: 0, Stream: sandbox.SessionStreamStdout, Data: []byte("abc")}},
+	}, false)
+
+	cases := map[string][]byte{
+		"empty":            nil,
+		"short header":     good[:5],
+		"wrong magic":      append([]byte("HTML"), good[4:]...),
+		"truncated chunk":  good[:len(good)-1],
+		"truncated header": good[:len(good)-4],
+		"trailing bytes":   append(append([]byte(nil), good...), 0x00),
+		"impossible count": func() []byte {
+			bad := append([]byte(nil), good...)
+			bad[5], bad[6], bad[7], bad[8] = 0xff, 0xff, 0x00, 0x00
+			return bad
+		}(),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, _, err := wire.DecodeReadResponse(body); err == nil {
+				t.Fatal("malformed frame decoded without an error")
+			} else if !errdefs.IsInternal(err) {
+				t.Fatalf("err = %v, want an internal classification", err)
+			}
+		})
+	}
+}
+
+// FuzzDecodeReadResponse: arbitrary bytes either decode or are refused; nothing
+// panics, and a decoded frame never reports chunk data outside the body.
+func FuzzDecodeReadResponse(f *testing.F) {
+	f.Add(wire.AppendReadResponse(nil, sandbox.SessionOutput{
+		NextSeq: 3,
+		Chunks:  []sandbox.OutputChunk{{Seq: 0, Stream: sandbox.SessionStreamStdout, Data: []byte("abc")}},
+	}, false))
+	f.Add(wire.AppendReadResponse(nil, sandbox.SessionOutput{NextSeq: 1}, true))
+	f.Add([]byte("FSR1"))
+	f.Add([]byte{})
+
+	f.Fuzz(func(t *testing.T, body []byte) {
+		out, idle, err := wire.DecodeReadResponse(body)
+		if err != nil {
+			return
+		}
+		if idle && len(out.Chunks) != 0 {
+			t.Fatalf("idle frame carried %d chunks", len(out.Chunks))
+		}
+		total := 0
+		for _, c := range out.Chunks {
+			total += len(c.Data)
+		}
+		if total > len(body) {
+			t.Fatalf("decoded %d bytes of data from a %d-byte body", total, len(body))
+		}
+	})
 }

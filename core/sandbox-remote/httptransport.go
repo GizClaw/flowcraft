@@ -123,7 +123,7 @@ func (t *httpTransport) Do(ctx context.Context, op Op, req []byte, res any) erro
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil
 	}
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
+	respBody, err := readBody(resp, maxResponseBody)
 	if err != nil {
 		return errdefs.Internalf("sandbox-remote: read %s response: %w", op, err)
 	}
@@ -131,6 +131,35 @@ func (t *httpTransport) Do(ctx context.Context, op Op, req []byte, res any) erro
 		return errdefs.Internalf("sandbox-remote: decode %s response: %w", op, err)
 	}
 	return nil
+}
+
+// DoBytes implements Transport.
+func (t *httpTransport) DoBytes(ctx context.Context, op Op, req []byte) ([]byte, error) {
+	resp, err := t.open(ctx, op, req, "application/octet-stream")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := readBody(resp, maxResponseBody)
+	if err != nil {
+		return nil, errdefs.Internalf("sandbox-remote: read %s response: %w", op, err)
+	}
+	return body, nil
+}
+
+// readBody reads one response body, sizing the buffer from Content-Length when the
+// server declared it. A read response carries a megabyte often enough that the
+// doubling and copying of an unknown-length read is worth avoiding.
+func readBody(resp *http.Response, limit int64) ([]byte, error) {
+	if resp.ContentLength > 0 && resp.ContentLength <= limit {
+		body := make([]byte, resp.ContentLength)
+		if _, err := io.ReadFull(resp.Body, body); err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
 // maxResponseBody bounds a successful response. Output batches are the largest

@@ -253,6 +253,23 @@ func (r *Runner) retry(ctx context.Context, op Op, req any, res any) error {
 	})
 }
 
+// retryBytes is retry for an operation whose answer is a raw body.
+func (r *Runner) retryBytes(ctx context.Context, op Op, req any) ([]byte, error) {
+	body, err := encodeRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	var out []byte
+	err = r.retryTransport(ctx, func() error {
+		got, callErr := r.transport.DoBytes(ctx, op, body)
+		if callErr == nil {
+			out = got
+		}
+		return callErr
+	})
+	return out, err
+}
+
 // retryTransport runs attempt until it succeeds, fails with something the server
 // decided, or exhausts the budget.
 //

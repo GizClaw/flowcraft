@@ -113,28 +113,21 @@ type SessionRef struct {
 // JournalRequest asks for the next slice of the journal: the events after
 // AfterSeq, at most Max of them. It never waits; a journal is a log, not a
 // stream.
+type JournalRequest struct {
+	AfterSeq int64 `json:"after_seq"`
+	Max      int   `json:"max,omitempty"`
+}
+
+// ReadRequest asks for the next slice of the output log.
 //
 // HoldMS is how long the server may keep the request open waiting for output; a
-// server that reaches it answers with an empty batch and Idle set. AfterSeq is
-// exclusive, exactly like [sandbox.Session.Read].
+// server that reaches it answers with an idle frame and the cursor unchanged.
+// AfterSeq is exclusive, exactly like [sandbox.Session.Read].
 type ReadRequest struct {
 	ID       string `json:"id"`
 	AfterSeq int64  `json:"after_seq"`
 	MaxBytes int    `json:"max_bytes,omitempty"`
 	HoldMS   int    `json:"hold_ms,omitempty"`
-}
-
-// ReadResponse is one read result. Idle reports that the server returned because
-// HoldMS elapsed rather than because the process produced anything; the batch is
-// then empty and the cursor unchanged.
-type ReadResponse struct {
-	Output sandbox.SessionOutput `json:"output"`
-	Idle   bool                  `json:"idle,omitempty"`
-}
-
-type JournalRequest struct {
-	AfterSeq int64 `json:"after_seq"`
-	Max      int   `json:"max,omitempty"`
 }
 
 // WriteRequest carries the bytes to send to the process.
