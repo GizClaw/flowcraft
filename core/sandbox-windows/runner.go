@@ -134,8 +134,11 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 		policy.WriteConfinement = true
 	}
 	return sandbox.Capabilities{
-		Policy:   policy,
-		Features: sandbox.SessionFeatures{TTY: true},
+		Policy: policy,
+		// The session surface is the shared layer's, not a local guess: a runner
+		// that claims less than its sessions do is a runner whose promise the
+		// conformance suite can falsify (Watch works, or it does not).
+		Features: sessionkit.SessionFeatures(),
 		Journal:  r.journal.Capabilities(),
 	}
 }
