@@ -1,6 +1,6 @@
 //go:build windows
 
-package windows
+package sessionkit
 
 import (
 	"strings"

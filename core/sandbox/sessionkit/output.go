@@ -8,11 +8,15 @@ package sessionkit
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
+
+// sessionCopyChunk is the per-read buffer one output copier uses.
+const sessionCopyChunk = 32 * 1024
 
 // watcherQueueSize bounds each event subscriber's live queue. Overflow surfaces
 // as SessionEventLag followed by the watcher closing; consumers recover with
@@ -314,4 +318,20 @@ func (l *outputLog) trimLocked() {
 func (l *outputLog) wakeReadersLocked() {
 	close(l.wake)
 	l.wake = make(chan struct{})
+}
+
+// copyLoop drains r into the log as one stream. Both platform spawners use it:
+// the unix pty master and the Windows pseudo console are both an io.Reader whose
+// bytes are the merged TTY stream.
+func copyLoop(out *outputLog, r io.Reader) {
+	buf := make([]byte, sessionCopyChunk)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			out.append(sandbox.SessionStreamTTY, buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
 }

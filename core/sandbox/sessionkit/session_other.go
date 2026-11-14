@@ -1,4 +1,4 @@
-//go:build !unix
+//go:build !unix && !windows
 
 package sessionkit
 
@@ -19,7 +19,11 @@ func StartSession(_ context.Context, _ sandbox.SessionSpec, _ *exec.Cmd) (sandbo
 		"sandbox: interactive process sessions require a unix platform")
 }
 
-// isBrokenPipe is the non-unix half of [isClosedInput]. A platform session
-// supplies its own when it lands; until then a broken pipe can only be the
-// portable io.ErrClosedPipe.
+// SessionFeatures reports what a session supports where there is no session
+// implementation: nothing.
+func SessionFeatures() sandbox.SessionFeatures { return sandbox.SessionFeatures{} }
+
+// isBrokenPipe is the fallback half of [isClosedInput]: a platform with no
+// session implementation has no pipe errno to match, so only the portable
+// io.ErrClosedPipe / os.ErrClosed cases apply.
 func isBrokenPipe(error) bool { return false }

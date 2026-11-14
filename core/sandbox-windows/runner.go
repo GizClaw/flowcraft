@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/paths"
@@ -201,9 +202,9 @@ func (r *Runner) registry() *sessionkit.SessionRegistry {
 	return r.sessions
 }
 
-// spawnProcess is Runner's sandbox.SessionStarter: it applies the
-// same policy surface as Exec and hands the configured command to the
-// session implementation, which owns job creation and assignment.
+// spawnProcess is Runner's sandbox.SessionStarter: it applies the same policy
+// surface as Exec, then hands the configured command and its own process policy
+// to the shared session layer, which owns the lifecycle and the job object.
 func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
 	if err := r.validatePolicy(spec); err != nil {
 		return nil, err
@@ -230,39 +231,73 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 		if err != nil {
 			return nil, err
 		}
-		// AppContainer cannot read the user profile; redirect the
-		// child's home-facing env into the sandbox home.
+		// AppContainer cannot read the user profile; redirect the child's
+		// home-facing env into the sandbox home.
 		env = iso.env(env)
 	}
-	if spec.TTY {
-		if r.cfg.writeConfine {
-			return nil, errdefs.NotAvailablef(
-				"windows: TTY sessions with write confinement are not supported yet")
-		}
-		env = sanitizeEnv(env)
-		if err := ctx.Err(); err != nil {
-			return nil, errdefs.FromContext(err)
-		}
-		return startTTYSession(ctx, spec, workDir, env)
+	if spec.TTY && r.cfg.writeConfine {
+		return nil, errdefs.NotAvailablef(
+			"windows: TTY sessions with write confinement are not supported yet")
 	}
 
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = env
-	if iso == nil && r.cfg.writeConfine {
+	if iso == nil && !spec.TTY && r.cfg.writeConfine {
 		writable := spec.Opts.Writable(append([]string{r.rootDir}, r.cfg.writable...))
 		for _, p := range writable {
 			if err := labelLowIntegrity(p); err != nil {
 				return nil, err
 			}
 		}
-		cmd.Env = withLowTempEnv(cmd.Env, r.lowTemp)
+		cmd.Env = withLowTempEnv(env, r.lowTemp)
+	} else {
+		cmd.Env = env
 	}
 	cmd.Env = sanitizeEnv(cmd.Env)
 	if err := ctx.Err(); err != nil {
 		return nil, errdefs.FromContext(err)
 	}
-	return startSession(ctx, spec, cmd, r.cfg.writeConfine, iso)
+
+	// The policy this backend contributes: the child's token. A TTY session is
+	// spawned by the pseudo console, which builds its own attributes, and both
+	// combinations that would need one are refused above.
+	var setup sessionkit.ProcessSetup
+	switch {
+	case spec.TTY:
+		setup = nil
+	case iso != nil:
+		setup = func(cmd *exec.Cmd) (func() error, error) {
+			// The child runs under the AppContainer token: network is
+			// kernel-isolated and writes are bounded by the package SID's DACL
+			// grants, which replace the Low-IL confinement.
+			if err := enableCreateProcessAsUserPrivileges(); err != nil {
+				return nil, err
+			}
+			cmd.SysProcAttr.Token = syscall.Token(iso.token)
+			return iso.Close, nil
+		}
+	case r.cfg.writeConfine:
+		setup = func(cmd *exec.Cmd) (func() error, error) {
+			// The child runs under a restricted, Low-integrity token: reads
+			// everywhere, writes only where the mandatory label was lowered.
+			if err := enableCreateProcessAsUserPrivileges(); err != nil {
+				return nil, err
+			}
+			token, err := restrictToken()
+			if err != nil {
+				return nil, err
+			}
+			cmd.SysProcAttr.Token = syscall.Token(token)
+			return token.Close, nil
+		}
+	}
+	return sessionkit.StartSessionWithPolicy(ctx, spec, cmd, setup)
+}
+
+// Attach implements sandbox.SessionAttacher: the registry owns the process, so a
+// caller that only has the id can still read its output and its exit status.
+func (r *Runner) Attach(ctx context.Context, id string) (sandbox.Session, error) {
+	return r.registry().Attach(ctx, id)
 }
 
 // validatePolicy is engine.ValidateExecPolicy plus the windows posture: a
@@ -404,3 +439,8 @@ func sanitizeEnv(env []string) []string {
 
 var _ sandbox.Runner = (*Runner)(nil)
 var _ sandbox.JournalProvider = (*Runner)(nil)
+
+var (
+	_ sandbox.Runner          = (*Runner)(nil)
+	_ sandbox.SessionAttacher = (*Runner)(nil)
+)

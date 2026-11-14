@@ -1,5 +1,3 @@
-//go:build unix
-
 package local
 
 import (
@@ -12,10 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/sessionkit"
 )
-
-// sessionsAvailable reports whether interactive process sessions can be
-// started on this platform.
-func sessionsAvailable() bool { return true }
 
 // spawnProcess is Runner's sandbox.SessionStarter: it applies the
 // same policy surface as Exec and hands the configured command to the

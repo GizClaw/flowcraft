@@ -142,14 +142,11 @@ var newJournalEngine = journal.New
 
 // Capabilities declares Runner's honest surface: the env
 // allow-list is honoured, memory/cpu caps are enforced by the group
-// watcher where the platform supports it, sessions are available on
-// unix, and everything that is call-time validation only (WorkDir
+// watcher where the platform supports it, sessions are whatever the shared
+// session layer supports here, and everything that is call-time validation only (WorkDir
 // bounding, NetDefault pass-through) is deliberately not claimed.
 func (r *Runner) Capabilities() sandbox.Capabilities {
-	features := sandbox.SessionFeatures{}
-	if sessionsAvailable() {
-		features = sandbox.SessionFeatures{TTY: true, Signal: true, Events: true}
-	}
+	features := sessionkit.SessionFeatures()
 	return sandbox.Capabilities{
 		Policy:   sessionkit.Enforcement(sandbox.Enforcement{EnvAllowList: true}),
 		Features: features,

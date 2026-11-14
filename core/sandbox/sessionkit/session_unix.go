@@ -26,7 +26,6 @@ import (
 const (
 	defaultSessionRows = 24
 	defaultSessionCols = 80
-	sessionCopyChunk   = 32 * 1024
 )
 
 // startWithCleanSignalMask runs one process spawn from a thread whose signal mask
@@ -316,18 +315,11 @@ func classifyExit(s *session, sampler *GroupCapsWatcher, waitErr error) (sandbox
 		errdefs.Internal(fmt.Errorf("sandbox: process wait: %w", waitErr))
 }
 
-// copyLoop drains the pty master into the output log as the TTY stream.
-func copyLoop(out *outputLog, r io.Reader) {
-	buf := make([]byte, sessionCopyChunk)
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			out.append(sandbox.SessionStreamTTY, buf[:n])
-		}
-		if err != nil {
-			return
-		}
-	}
+// SessionFeatures reports what a session supports on this platform. A backend
+// advertises these and the session reports the same, so a caller can trust the
+// runner-level answer before starting anything.
+func SessionFeatures() sandbox.SessionFeatures {
+	return sandbox.SessionFeatures{TTY: true, Signal: true, Events: true}
 }
 
 // isBrokenPipe is the unix half of [isClosedInput]: a pipe whose reader is gone,
