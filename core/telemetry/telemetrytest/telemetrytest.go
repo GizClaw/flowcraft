@@ -13,6 +13,7 @@ package telemetrytest
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"go.opentelemetry.io/otel"
@@ -31,8 +32,18 @@ type Recorder struct {
 // restores the previous provider on cleanup. Call it before the code under test
 // starts spans: a tracer resolved before New keeps delegating to the old
 // provider.
+// providerLock serializes the tests that install a provider.
+//
+// The provider is process-global, so two tests that use this helper at the same
+// time — `t.Parallel` in one, a sibling in the other — put each other's spans in
+// one recorder: a test asserting "exactly one span named X" then sees the other
+// test's span. Holding the lock for the test's lifetime makes the window
+// exclusive, and a parallel test simply waits its turn.
+var providerLock sync.Mutex
+
 func New(t *testing.T) *Recorder {
 	t.Helper()
+	providerLock.Lock()
 	previous := otel.GetTracerProvider()
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
@@ -40,6 +51,7 @@ func New(t *testing.T) *Recorder {
 	t.Cleanup(func() {
 		_ = provider.Shutdown(context.Background())
 		otel.SetTracerProvider(previous)
+		providerLock.Unlock()
 	})
 	return &Recorder{exporter: exporter}
 }

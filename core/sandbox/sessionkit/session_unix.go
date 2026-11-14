@@ -20,7 +20,7 @@ import (
 	"github.com/rs/xid"
 	"go.opentelemetry.io/otel/attribute"
 
-	"github.com/creack/pty"
+	ptylib "github.com/creack/pty"
 )
 
 const (
@@ -72,26 +72,26 @@ func StartSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 		writeSlots: make(chan struct{}, sessionWriteConcurrency),
 	}
 
-	var (
-		ptmx    *os.File
-		ptyMu   sync.Mutex
-		copiers sync.WaitGroup
-	)
+	pty := &ptyHandle{}
+	var copiers sync.WaitGroup
 	tty := spec.TTY
 	if tty {
 		err := startWithCleanSignalMask(func() error {
 			var startErr error
-			ptmx, startErr = pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+			master, startErr := ptylib.StartWithSize(cmd, &ptylib.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+			if startErr == nil {
+				pty.set(master)
+			}
 			return startErr
 		})
 		if err != nil {
 			return nil, classifyStartError(cmd.Path, err)
 		}
-		s.stdin = ptmx
+		s.stdin = pty.get()
 		copiers.Add(1)
 		go func() {
 			defer copiers.Done()
-			copyLoop(s.out, ptmx)
+			copyLoop(s.out, pty.get())
 		}()
 	} else {
 		var stdin io.WriteCloser
@@ -134,12 +134,12 @@ func StartSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 	s.port = port{
 		pid:     func() int { return proc.Pid },
 		caps:    sandbox.SessionCapabilities{TTY: tty, Stdin: s.input, Signal: true, Events: true},
-		resize:  func(rows, cols int) error { return resizePTY(ptmx, &ptyMu, rows, cols) },
-		signal:  func(sig sandbox.SessionSignal) error { return signalSession(ptmx, &ptyMu, pgid, sig) },
+		resize:  func(rows, cols int) error { return resizePTY(pty, rows, cols) },
+		signal:  func(sig sandbox.SessionSignal) error { return signalSession(pty, pgid, sig) },
 		soft:    func() { killGroup(pgid, syscall.SIGTERM, "sandbox: SIGTERM process group failed") },
 		hard:    func() { killGroup(pgid, syscall.SIGKILL, "sandbox: SIGKILL process group failed") },
-		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, &ptmx, &ptyMu, &copiers, sampler) },
-		release: func() { releaseOnce.Do(func() { releaseSession(s, &ptmx, &ptyMu, sampler) }) },
+		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, pty, &copiers, sampler) },
+		release: func() { releaseOnce.Do(func() { releaseSession(s, pty, sampler) }) },
 	}
 
 	if spec.Opts.Timeout > 0 {
@@ -155,21 +155,50 @@ func StartSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 
 // resizePTY applies a window size. Setsize uses Fd(), which is not safe against a
 // concurrent Close, so the lock spans the ioctl.
-func resizePTY(ptmx *os.File, mu *sync.Mutex, rows, cols int) error {
-	mu.Lock()
-	defer mu.Unlock()
-	if ptmx == nil {
+// ptyHandle owns the master side of a pty: the copy loop, the ioctl and reap all
+// reach it from different goroutines, so the value lives behind one lock instead
+// of in a variable they share.
+type ptyHandle struct {
+	mu   sync.Mutex
+	file *os.File
+}
+
+func (p *ptyHandle) set(file *os.File) {
+	p.mu.Lock()
+	p.file = file
+	p.mu.Unlock()
+}
+
+func (p *ptyHandle) get() *os.File {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.file
+}
+
+// take returns the master and forgets it, so exactly one caller closes it.
+func (p *ptyHandle) take() *os.File {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	file := p.file
+	p.file = nil
+	return file
+}
+
+func resizePTY(pty *ptyHandle, rows, cols int) error {
+	// Setsize uses Fd(), which is not safe against a concurrent Close, so the
+	// lock spans the ioctl.
+	pty.mu.Lock()
+	defer pty.mu.Unlock()
+	if pty.file == nil {
 		return errdefs.NotAvailablef("sandbox: Resize requires a TTY session")
 	}
-	return pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	return ptylib.Setsize(pty.file, &ptylib.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 }
 
 // signalSession delivers Ctrl-C semantics: a VINTR byte on a TTY (the terminal
 // driver signals the foreground group), SIGINT to the group on pipes.
-func signalSession(ptmx *os.File, mu *sync.Mutex, pgid int, sig sandbox.SessionSignal) error {
-	mu.Lock()
-	master := ptmx
-	mu.Unlock()
+func signalSession(pty *ptyHandle, pgid int, sig sandbox.SessionSignal) error {
+	master := pty.get()
 	if master != nil {
 		// A no-op when the child put the terminal in raw mode (ISIG off) —
 		// authentic Ctrl-C behaviour, documented on Session.
@@ -203,16 +232,12 @@ func killGroup(pgid int, sig syscall.Signal, msg string) {
 func waitSession(
 	s *session,
 	cmd *exec.Cmd,
-	ptmx **os.File,
-	mu *sync.Mutex,
+	pty *ptyHandle,
 	copiers *sync.WaitGroup,
 	sampler *GroupCapsWatcher,
 ) (sandbox.SessionExit, error) {
 	waitErr := cmd.Wait()
-	mu.Lock()
-	master := *ptmx
-	*ptmx = nil
-	mu.Unlock()
+	master := pty.take()
 	if master != nil {
 		if err := master.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
@@ -225,14 +250,11 @@ func waitSession(
 
 // releaseSession frees the platform handles. It is called from reap and from
 // Close, and runs once.
-func releaseSession(s *session, ptmx **os.File, mu *sync.Mutex, sampler *GroupCapsWatcher) {
+func releaseSession(s *session, pty *ptyHandle, sampler *GroupCapsWatcher) {
 	if sampler != nil {
 		sampler.Stop()
 	}
-	mu.Lock()
-	master := *ptmx
-	*ptmx = nil
-	mu.Unlock()
+	master := pty.take()
 	if master != nil {
 		if err := master.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "sandbox: close pty master failed", err,
