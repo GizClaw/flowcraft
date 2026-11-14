@@ -1,545 +1,150 @@
-# Graph definition JSON
+# Graph document
 
-The graph engine (`engine.kind: agent.Engine`, `impl: graph`) reads
-`settings.graph` as literal content or `{file: ...}` / `{embed: ...}`.
-File definitions are capped at 1 MiB.
-
-```json
-{
-  "name": "assistant",
-  "version": "1",
-  "entry": "chat",
-  "nodes": [
-    {"id": "chat", "type": "inference", "config": {
-      "model": {"id": {"provider": "deepseek", "name": "deepseek-flash"}},
-      "messages_channel": "__main_channel"
-    }},
-    {"id": "tools", "type": "tool", "config": {
-      "messages_channel": "__main_channel",
-      "results_key": "tool_results"
-    }}
-  ],
-  "edges": [
-    {"from": "chat", "to": "tools", "condition": "tool_pending == true"},
-    {"from": "tools", "to": "chat"},
-    {"from": "chat", "to": "__end__"}
-  ]
-}
-```
-
-## Rules
-
-- `entry` must name a node; IDs are unique — `--type graph` **validator**.
-- Edges target node IDs or `__end__` — `--type graph` **validator**.
-- `condition`/`skip_condition` are expr-lang expressions over board vars —
-  compiled by the host build, not checked by the validator.
-- Model refs require the nested `id` form — node config decode at host
-  build.
-- Script nodes require `runtime` and `source`; the runtime must be one the
-  mounted script node type declares (`script_runtime.<name>`) — host build.
-
-The validator (`--type graph`) runs `GraphDefinition.Validate` only:
-structure, node id uniqueness, entry presence, and edge endpoints. Node
-configs are not decoded, node types are not checked against a registry,
-and expressions are not compiled; those checks happen when the host
-builds the graph engine.
-
-## Engine settings (`agent.Engine/graph`)
-
-| Key | Meaning |
-| --- | --- |
-| `graph` | graph definition: literal content, `{file: ...}`, or `{embed: ...}` (required) |
-| `build.max_iterations` | cap on nodes routed per execute; default `100`, `0` = unlimited |
-| `build.timeout` | wall-clock bound for one execute call (e.g. `1h`); `0` = none |
-| `build.run_end_publish_timeout` | deadline for run-end lifecycle events; default `5s`, must be `> 0` |
-| `build.max_node_retries` | per-node retries before the run fails |
-| `build.checkpoint_compaction` | incremental records a checkpoint chain may hold before a full one is rewritten; default `32` |
-| `build.parallel.enabled` | enable parallel waves |
-| `build.parallel.branch_timeout` | per-branch wall-clock bound; `0` = none |
-| `build.parallel.max_concurrency` | max concurrent branches |
-| `build.parallel.max_branches` | max total branches per wave |
-| `build.parallel.merge_strategy` | `first_write_wins` or `last_write_wins` |
-
-The engine has exactly two deps: `node_type` (`Many`, optional — the
-`graph.NodeType` resources the graph may reference, as `node_type` or
-`node_type.<suffix>`) and `script_bindings` (optional — replaces the script
-surface, see below). Everything a node calls — inference assembly or router,
-tools, script runtime, workspace, sandbox — is a dep of the *node type*, not
-of the engine.
-
-Those budgets are per execute call, not per agent run: revise attempts and
-resumes get a fresh window. `policy.run_timeout: 10m` on the agent bounds the
-whole run (every attempt) instead. `max_iterations` counts *routed* nodes —
-skipped nodes consume budget too, and a wave that does not fit fails as a
-whole — and is a loop guard, not a cost guard: node retries and provider calls
-made inside a node do not advance it. Use the host usage budget for token or
-cost limits. A loop's ordinary exit is a condition on `__iterations`; the
-guard itself only fires on an unbounded (or mis-guarded) cycle and surfaces as
-HTTP 429. Build-time topology findings are logged as `graph build warning`.
-
-## Node types
-
-Node types are deployment resources, not engine built-ins: `inference`, `tool`
-and `script` are mounted like any host-provided type, and each declares its
-own collaborators.
+An engine of `kind: graph` runs the file named by `settings.path`. It is one
+document, compiled once per deployment and shared by every session.
 
 ```yaml
-resources:
-  node_inference:
-    kind: graph.NodeType
-    impl: inference
-    deps: {inference: infer, router: router, tools: tools}   # inference or router required
-  node_tool:
-    kind: graph.NodeType
-    impl: tool
-    deps: {tools: tools}                                     # required
-  node_script:
-    kind: graph.NodeType
-    impl: script
-    deps: {script_runtime.js: js, tools: tools, workspace: ws}   # one runtime required
+version: 1
+name: react
+entry: model
+input: messages
 
-agents:
-  assistant:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.inference: node_inference
-        node_type.tool: node_tool
-        node_type.script: node_script
-      settings:
-        graph: {file: ./graphs/assistant.json}
+limits:
+  max_steps: 16
+  max_nodes: 64
+  timeout: 5m
+  concurrency: 4
+
+checkpoint:
+  every: 8            # also write a base every N steps
+
+stream:
+  state: false        # report each step's writes as a GraphState event
+
+state:
+  messages: {type: messages, merge: append, carry: true}
+  pending: {type: json}
+  answer: {type: text}
+
+nodes:
+  - id: model
+    kind: model
+    config:
+      messages: messages
+      pending: pending
+      output: answer
+      request:
+        model: {provider: luna, name: gpt-5}
+        system: Use the file tools when they help.
+        tools: {names: [read_file, write_file]}
+  - id: tools
+    kind: tool
+    config: {messages: messages, pending: pending, parallelism: 4}
+
+edges:
+  - {from: model, to: tools, when: "len(pending) > 0"}
+  - {from: tools, to: model}
+  - {from: model, to: END, when: "len(pending) == 0"}
+
+output: {key: answer}
 ```
 
-The dep key's suffix names the type graphs reference (`node_type.tool` mounts a
-type named `tool`) and `settings.type` renames it. The engine registers no
-default, so a graph naming a type no dep provides fails `Build` — and a
-deployment never grants a capability its graph does not use. A node whose
-config needs a collaborator its type lacks fails at `Build` too, naming the
-node, the type and the missing dep.
+## The run is a frontier loop
 
-| impl | deps |
+A step invokes the frontier, applies the step's writes in declaration order, then
+evaluates the outgoing edges of every node that ran. A graph may loop — a ReAct
+cycle is just edges — so there is no topological order and no cycle rejection.
+A node reached twice in one step runs once; `limits.max_steps` bounds a loop that
+never empties the frontier.
+
+A node produces **state**, never a value on an edge. A skipped node is not
+invoked but its edges still fire: it routes without running.
+
+## Fields
+
+| Field | Rule |
 | --- | --- |
-| `inference` | `inference` and/or `router` (at least one), plus optional `tools` |
-| `tool` | `tools` (required) |
-| `script` | `script_runtime.<name>` (at least one), plus optional `tools`, `inference`, `router`, `workspace`, `sandbox` |
-| `script_inline` | same as `script`, with the source fixed in the type settings |
+| `version` | Must be `1`. |
+| `entry` | The node the first frontier holds. Required. |
+| `input` | The state key `Start` seeds with the run's messages. Empty means the graph takes no input. |
+| `limits` | `max_steps`, `max_nodes` (skipped nodes count too), `timeout`, `concurrency`. Zero means no cap; the caller's context is always the outer bound. |
+| `checkpoint.every` | `0` writes a base only when the deltas would be missing; N also writes one every N steps. |
+| `stream.state` | Emit a `GraphState` event per step. Off by default — it costs a projection per step. |
+| `output.key` | The state key a finished run reports. |
 
-### `inference` — single-shot LLM generation
+## State
 
-Runs one `Generate` call; the channel tail is the current input (role
-`user` or `tool`), and the assistant message (tool calls included) is
-appended to the same channel. The node never executes tool calls — a
-`tool_calls` finish reason is flagged onto `tool_pending_key` for edges.
-
-| Config field | Meaning |
+| Field | Values |
 | --- | --- |
-| `model` | explicit target `{id: {provider, name}, profile?}`; omit in favor of the wired router — pin only for tests or single-target demos |
-| `model_hint` | per-call router preference: `provider/name` or a bare name (e.g. `${board:model}`); ignored when `model` is set |
-| `messages_channel` | board channel holding the conversation; empty means the main channel (`__main_channel`) |
-| `system_prompt` | prepended system message when the context does not start with one (may be `{file: ...}` / `{embed: ...}`) |
-| `output_key` / `usage_key` / `tool_pending_key` | board vars receiving the message / usage / tool-pending flag |
-| `undefined_tool_recovery` | `{enabled, max_per_run}`: store undefined-tool rejections as board feedback (never in the transcript); disabled by default |
-| `recover_pending_key` / `recover_count_key` / `recover_feedback_key` | board vars receiving the recovery marker / per-run counter / feedback text (feedback defaults to `__recover_feedback.<node id>`) |
-| `stream` | stream deltas incrementally; the board still gets one assembled message |
-| `tools` / `all_tools` | named catalog tools, or the catalog's entire visible set |
-| `tool_choice` | constrain when/which tools are called |
-| `intent` | canonical execution envelope `{text, image, audio, video}` with per-modality controls (see below) |
-| `extensions` | provider knobs `{provider, id, fields}` |
-| `request_metadata` | opaque `map[string]string` copied onto the canonical generate request; keys are deployment-defined |
+| `type` | `text`, `json`, `messages`, `bool`. |
+| `merge` | `single` (default: a second write in one step is an error), `last`, `append`. |
+| `carry` | Keep the key across the tasks of one session: a new task seeds it from the previous task's state. |
 
-**Model selection: prefer the router.** Inference nodes should omit
-`model` and rely on the wired `inference.Router`: the router's policy
-(tiers of `{model, score}` targets plus retry / circuit-breaker) selects
-per request, filters targets by their declared capabilities, and falls back
-across tiers. Hardcoding `model` pins the node to one provider/model and
-bypasses routing — keep it only for tests or single-target deployments.
-Use `model_hint` (e.g. `${board:model}` from user input) for per-call
-preferences against the router.
+`carry` is for bounded state (a game, a form, a plan). A key that grows without
+bound costs its own size on every turn, because the state is re-read from the
+store: a 200-message transcript measured 667 µs and 5000 allocations per turn.
 
-`intent` is authoritative and covers every generation modality: text
-controls (`response`, `max_output_tokens`, `tools`, `tool_choice`,
-`temperature`, `top_p`, `reasoning_enabled`, `reasoning_effort`
-(`minimal|low|medium|high|xhigh`), image
-(`size`, `count`, `seed`, `output_format`, `delivery`),
-audio/tts (`voice`, `format`, `speed`, `count`), and video
-(`duration_millis`, `resolution`, `aspect_ratio`, `seed`, `watermark`).
-When `intent` is absent the node defaults to plain text generation.
-`tools` / `all_tools` / `tool_choice` remain node-level sugar: they resolve
-the wired catalog into `intent.text.tools` / `intent.text.tool_choice` and
-may not be combined with an intent that declares those fields itself.
-Legacy node-level sampling/reasoning/response-format keys were removed —
-strict decode rejects them; put them under `intent.text` instead.
-
-`request_metadata` values are forwarded only when the selected driver's
-deployment configures `request_metadata.envelope`. Drivers without a native
-channel (or with forwarding disabled) report a `dropped` compile decision
-for the metadata field, so no metadata is silently ignored.
-
-`model_hint` is a request-level preference consumed only by the router: it
-never bypasses routing and falls back to the default policy when the hint
-is unknown, malformed, or ambiguous. A response naming tools absent from
-the exposed definitions fails with a distinguishable `undefined_tool`
-error; with `undefined_tool_recovery` enabled the node stores a user-role
-feedback text under `recover_feedback_key` (defaulting to the reserved
-per-node `__recover_feedback.<node id>` var), sets `recover_pending_key`
-(clearing `tool_pending_key`), and returns success. The feedback never
-enters the messages channel; the recovered round consumes the stored text
-as its current input. The graph must route the recovered round back to
-inference — never to a tool node, which would execute the rejected call.
-`max_per_run` defaults to 2; past it the rejection fails the node.
-
-### `tool` — batch tool execution
-
-Reads the `tool_call` parts off the channel tail's assistant message,
-executes the whole batch through the tool dispatcher (call ids preserved),
-and appends the results as one `role=tool` message.
-
-| Config field | Meaning |
-| --- | --- |
-| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
-| `results_key` | board var receiving the raw `[]message.ToolResult` (`{call_id, content: {parts: [...]}, is_error}`) |
-
-Allow-listing/approval policy lives in the dispatcher's middleware, not the
-node.
-
-### `script` — embedded script with host bindings
-
-Runs inline JS or Lua on the runtime the mounted type provides. Decoding is
-strict: unknown top-level config fields are errors.
-
-| Config field | Meaning |
-| --- | --- |
-| `runtime` | name of a `script_runtime.<name>` dep on the mounted type (required); an unmounted name fails `Build` |
-| `source` | inline script source; required (may be `{file: ...}` / `{embed: ...}`) |
-| `name` | execution label for errors/runtime pooling; defaults to the node ID |
-| `config` | becomes the script's `config` global; values may carry `${board.*}` references |
-
-## Script bridges
-
-Scripts get named globals through `core/agent/bindings` (plus three
-graph-layer bridges). This is the *standard* surface — a deployment can
-replace it with an `agent.ScriptBindings` provider (below). Availability
-depends on the deps of the node type running the script:
-
-| Global | Wired when the type has | Provides |
-| --- | --- | --- |
-| `board` | always | read/write vars and channels |
-| `expr` | always | eval expr-lang expressions |
-| `host` | always | publish / emit / interrupt / askUser / usage |
-| `run` | always | read-only run identity |
-| `node` | always | current graph node identity |
-| `tools` | a `tools` dep | call tools / list catalog |
-| `inference` | an `inference` and/or `router` dep | LLM generation / routing / streaming |
-| `stream` | always (host with event bus) | subscribe to node stream deltas |
-| `parallel` | always (during parallel waves) | cancel sibling branches |
-| `fs` | a `workspace` dep | workspace file ops |
-| `shell` | a `sandbox` dep | sandboxed command execution |
-| `runtime` | always | nested sub-script execution |
-
-### Script bindings (`agent.ScriptBindings`)
-
-The table above is the *standard* surface. One engine-level provider decides
-what a script execution actually gets, wired as the optional
-`script_bindings` dep:
+## Nodes
 
 ```yaml
-resources:
-  std:
-    kind: agent.ScriptBindings
-    impl: standard          # core's implementation of the table above
-    deps: {tools: tools, workspace: ws, inference: infer}
-
-engine:
-  kind: agent.Engine
-  impl: graph
-  deps:
-    node_type.script: node_script   # mounted with deps: {script_runtime.js: js}
-    script_bindings: std
+- id: model          # unique in the document
+  kind: model        # a registered kind; an unknown one is a build error
+  config: { ... }    # the kind decodes this strictly
+  skip: "step > 10"  # a condition: when it holds, the node is not invoked
+  timeout: 90s       # one invocation
+  retries: 2
 ```
 
-- **Wired** — the provider serves every script execution of the graph
-  (the mounted `script` / `script_inline` types and custom script-backed ones)
-  and *replaces* the standard surface: `impl: standard` with no
-  `tools`/`workspace` dep means no `tools`/`fs` global.
-- **Not wired** — each script-running node type falls back to the standard
-  bindings over its own deps, so mounting `script_bindings` is an explicit
-  choice to replace or extend that surface.
-- **`impl: none`** — binds nothing: scripts run with an empty scope.
-- **`impl: chain`** — composes several bindings resources into one provider:
-  the optional `base` first, then the bare `unit` key, then every `unit.*` in
-  sorted key order (the order is the dep key order, not the document's). It
-  replaces the standard fallback like any other provider, so mount
-  `standard` as `base` to extend it. It needs at least one dep — an empty
-  chain fails the build, since `impl: none` is the empty surface — and
-  mounting one pointer-backed provider under two dep keys fails the build too.
-- Hosts add their own globals with another impl of the kind; a name bound
-  twice fails the execution instead of shadowing, and every global must be a
-  JS/Lua identifier that is not a keyword (`tokens`, not `tokens.estimate`).
-  An impl should bind its own globals only and leave composition to the
-  deployment — the pre-chain pattern of a Go-side `base` dep still works.
+### `model`
 
-```yaml
-std: {kind: agent.ScriptBindings, impl: standard, deps: {tools: tools}}
-tok: {kind: agent.ScriptBindings, impl: tokens}
-panel:
-  kind: agent.ScriptBindings
-  impl: chain
-  deps: {base: std, unit.tokens: tok}   # base first, then unit.* by key
-```
-
-A duplicate global fails the execution; through a chain the error names what
-collided (`global "board" bound by both dep "base" and dep "unit.tokens"` for
-a unit that rebinds a base global, and the dep that landed late when a late
-binding hits a name an earlier phase bound). `chain` takes no settings.
-
-The node span records `script.bindings.count` and `script.bindings.source`
-(`engine` or `standard`); a debug log lists the global names, so a missing
-global is distinguishable from a typo in the script.
-
-`impl: standard` settings (each section needs its capability dep wired):
-
-| Setting | Meaning |
+| Config | Meaning |
 | --- | --- |
-| `tools.allow` | exact catalog tools the surface may call; every name must exist in the wired assembly; `[]` denies all |
-| `tools.allow_all` | expose the whole catalog (trusted scripts only); conflicts with `allow` |
-| `fs.max_read_bytes` / `fs.max_write_bytes` | positive caps on one `fs.read` / `fs.write`; omitting keeps the bridge default |
-| `shell.allow` | commands `shell.exec` may run (matched as written and by base name); `[]` denies all; omitting leaves the sandbox policy |
+| `messages` | State key holding the conversation (`messages` value). |
+| `pending` | State key the call's tool calls are written to. |
+| `usage` | State key the token usage is appended to. |
+| `output` | State key the response text is written to. |
+| `request.stream` | Nil streams (incremental events); `false` returns one finished response. |
+| `request.model` | `provider`, `name`, `profile`. |
+| `request.system` | The system framing for this call. |
+| `request.hint` | A routing hint (`selector`), not a model choice. |
+| `request.tools` | `enabled`, `names`, `require`, `choice`. |
+| `request.extensions` | Provider extensions, decoded by the host's decoders. |
 
-Without a `tools` policy the bridge stays fail-closed: no tool is callable.
+### `tool`
 
-```yaml
-  std:
-    kind: agent.ScriptBindings
-    impl: standard
-    deps: {tools: tools, workspace: ws}
-    settings:
-      tools: {allow: [search, fetch]}
-      fs: {max_read_bytes: 65536}
-```
-
-### Declaring your own type (`graph.NodeType`)
-
-A resource of kind `graph.NodeType` produces a value implementing
-`graph.NodeTypeRegistrar`; the engine factory registers every `node_type`
-dependency into the registry before `Build`, so the graph definition can
-reference the type by name. The standard impls above take exactly that path.
-Types participate in the normal resource DAG (own deps, built once, shareable
-across agents); the engine accepts deps under `node_type` or
-`node_type.<suffix>`. The dep suffix names the type graphs reference and
-`settings.type` overrides it, so two resources of one impl are two independent
-types.
-
-`script_inline` defines the node behaviour as one embedded script on the
-mounted script runtime with the same bridges as the `script` type; the node's
-config in the graph definition becomes the script's `config` global. (`script`
-is the same node behaviour with the source in each node's config instead.)
-
-| Settings field | Meaning |
+| Config | Meaning |
 | --- | --- |
-| `type` | node type name graphs reference; defaults to the impl name, must not collide with another mounted type |
-| `runtime` | a `script_runtime.<name>` dep on this type; optional with one runtime dep, required with several |
-| `source` | handler source: inline string or `{file: ...}` / `{embed: ...}` (required) |
-| `desc` | optional human-readable type description |
-| `reads` / `writes` | static I/O roles (`kind: var\|messages`, `name` or `config_key`, `required`); enforced at Build and invocation |
+| `messages`, `pending` | As above: read the conversation, drain the pending calls. |
+| `effects` | `after` (default) records a finished call; `before` writes the started record before the tool runs, so a crash leaves an outcome to reconcile. |
+| `parallelism` | Caps one batch's concurrent calls; `0` is unbounded. |
 
-Deps: `script_runtime.<name>` (at least one), plus optional `tools`,
-`inference`, `router`, `workspace`, `sandbox` enabling the same globals the
-`script` type unlocks. An engine-level `script_bindings` provider serves the
-type too; its own deps are the fallback.
+### `condition`
 
 ```yaml
-resources:
-  greet:
-    kind: graph.NodeType
-    impl: script_inline
-    deps:
-      script_runtime.js: js
-    settings:
-      type: greet
-      source: board.setVar("greeting", "hi " + config.name)
-      writes:
-        - kind: var
-          name: greeting
-          required: true
+- id: done
+  kind: condition
+  config: {key: answer, when: "answer != nil", then: yes, else: no}
 ```
 
-Wire the type into the engine with a `node_type` dep, then reference it by
-name in the graph:
+### `script`
+
+Not built in — the host registers the kind (`core/agent-graph/script`), because a
+script engine is a dependency choice.
+
+## Edges and conditions
+
+An edge fires when its condition holds; an empty condition always fires. A
+condition is an [expr](https://expr-lang.org) expression over the state as it was
+when the step started, plus `step`:
 
 ```yaml
-agents:
-  asst:
-    engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.greet: greet
+edges:
+  - {from: model, to: tools, when: "len(pending) > 0 and step < 8"}
+  - {from: tools, to: model}
+  - {from: model, to: END}
 ```
 
-```json
-{
-  "name": "greeter",
-  "entry": "hello",
-  "nodes": [
-    {"id": "hello", "type": "greet", "config": {"name": "${board:user}"}}
-  ],
-  "edges": []
-}
-```
-
-Go-backed custom node types follow the same contract: a host or plugin
-registers a `graph.NodeType` resource factory whose value implements
-`graph.NodeTypeRegistrar` (typically by calling `graph.RegisterType` with a
-closure capturing the resource's deps). A type may also set
-`NodeType.ValidateConfig` to check its node configs at `Build` — the standard
-types use it for "no `model` without a router", "unknown tool name", "runtime
-not mounted".
-
-### `board`
-
-- `getVar(key)`, `setVar(key, value)`, `deleteVar(key)`, `getVars()`,
-  `hasVar(key)`
-- `resolve(str)` → `any`, `resolveString(str)` → `string` — typed / text
-  `${board.*}` expansion (missing references error unless a default is given)
-- `channel(name)` → message objects (never null); `channelLen(name)` → count;
-  `lastMessage(name)` → the last message, or `null` when the channel is
-  empty; `channelTail(name, count)` → the last `count` messages, in order.
-  The narrow reads avoid projecting the whole channel.
-- `setChannel(name, msgs)`, `appendChannel(name, msg)` throw on validation
-  errors; `msg` is one message object or an array of them, appended as one
-  batch (validated as a whole: a failing batch lands none of it). An empty
-  list appends nothing and clears the channel under `setChannel`
-- `MAIN_CHANNEL` — the reserved default channel constant
-
-Messages use the inference wire format `{role, content: {parts: [...]}}`;
-decoding is strict, so typos surface as errors.
-
-`host.drainSteer()` returns the steer queue's messages in the same wire
-shape, so the canonical steer node binds the drain before appending it:
-`var pending = host.drainSteer(); board.appendChannel(board.MAIN_CHANNEL,
-pending);`. Binding first keeps the node portable (under Lua a `host.*`
-call in argument position expands to both of its return values).
-
-### `expr`
-
-`expr.eval(expression, env)` — evaluate expr-lang against an environment
-map.
-
-### `host`
-
-`host.publish(subject, payload)`, `host.emit(type, payload)`,
-`host.checkInterrupt()` → `{cause, detail} | null`,
-`host.askUser({parts, schema, source, metadata})` →
-`{parts, metadata}`, `host.reportUsage({input, output, total})`.
-Every method returns nil/`""` on a no-op host.
-
-`host.emit` event types in the graph script node: `token` (text delta),
-`tool_call` (`{id, name, arguments}`), `tool_result`
-(`{tool_call_id, content, is_error}`), `part` (canonical part wire object),
-`finish` (`{finish_reason, request_id?, response_id?}` — typed finish
-delta), `provider_outputs` (`[{provider, extension, value}]` —
-provider_outputs delta), or a passthrough type. Emission is fire-and-forget;
-payloads that do not decode into the type's required shape (e.g. a
-`tool_call` without `id`, a `finish` without `finish_reason`, an empty
-`provider_outputs`) are skipped instead of published as empty deltas.
-
-### `run`
-
-`get_run_id()`, `get_task_id()`, `get_agent_id()`, `get_context_id()`,
-`get_parent_run_id()` — all return `""` when unset.
-
-### `node`
-
-`node.id()` (the node's ID), `node.type()` (the registered type name).
-
-### `tools`
-
-- `call(name, argumentsJSON)` → `{parts, is_error, tool_call_id, name}`
-- `callAll([{name, arguments, id?}, ...])` → per-entry result plus `name`;
-  model-issued `id`s are forwarded verbatim
-- `list()` → allowed tool names; `definitions()` → wire-ready tool JSON
-
-`parts` is the canonical part array (`{"type":"text","text":"..."}`,
-`{"type":"image","source":{...}}`, ...), so multimodal tool results reach
-the script intact.
-
-By default **no** tool is callable until the host allow-lists it; denied
-entries become `is_error` results.
-
-### `inference`
-
-Requests/responses are the canonical `GenerateRequest` / `GenerateResponse`
-wire JSON; the bridge performs one call per invocation, so multi-turn tool
-loops live in script-land (`tools.callAll`, then `input.role = "tool"`).
-
-- `generate(request)` — exact model (`model` key required)
-- `route(request)` — router-selected target (no `model`); response gains
-  `trace`
-- `explain(request)` / `routeExplain(request)` — provider-less preflight
-  (exact model vs router selection); the route twin returns
-  `{explanation, decision, limits}`
-- `models()` / `inspect(model)` — model catalog / one descriptor
-- `embed(request)` / `routeEmbed(request)` — embedding twins of
-  generate/route
-- `explainEmbed(request)` / `routeExplainEmbed(request)` — embedding twins
-  of explain/routeExplain
-- `explainStream(request)` / `routeExplainStream(request)` — stream
-  preflight without opening a provider stream
-- `stream(request)` / `routeStream(request)` — streaming twins returning
-  `{next, result, close}`
-- `transcribe(request)` / `routeTranscribe(request)` — whole-audio
-  transcription; the route twin gains `trace`
-- `explainTranscribe(request)` / `routeExplainTranscribe(request)` —
-  transcription preflight; the route twin returns `{explanation, decision, limits}`
-- `transcribeSession(request)` / `routeTranscribeSession(request)` — duplex
-  session handle `{send, next, result, interrupt, finish, close}`; the route
-  twin attaches `trace` to the result
-- `decision(request)` / `routeDecision(request)` — evidence plus ordered
-  questions, answers in request order; the route twin gains `trace`
-- `explainDecision(request)` / `routeExplainDecision(request)` — decision
-  preflight; the route twin returns `{explanation, decision, limits}`
-
-Extensions ride an `extensions` array of `{provider, id, fields}`, resolved
-through host-registered decoders.
-
-### `stream`
-
-`stream.subscribe_node({node_id | node_ids, run_id?, buffer_size?})` →
-`{next, next_timeout_ms, current, close}`. `node_id`/`node_ids` are
-mutually exclusive; `run_id` must match the current run; `buffer_size` is
-1..4096 (default 256, `DropOldest`). Events are maps with `event`
-(`step.started` / `step.ended` / `step.skipped` / `stream.delta`),
-`envelope_id`, `id`, `subject`, `time`, `run_id`, `node_id`, `agent_id`.
-The iterator closes when every subscribed node has terminated or the
-invocation ends.
-
-### `parallel`
-
-`parallel.cancelNode(nodeID, reason)` → `bool`; false outside a parallel
-wave.
-
-### `fs`
-
-`fs.read(path)` → `(string, error)`, `fs.write(path, content)`,
-`fs.exists(path)` → `bool`, `fs.delete(path)`.
-
-### `shell`
-
-`shell.exec(cmd, args...)` → `{exit_code, stdout, stderr}` (no throw on
-non-zero exits; a rejected command returns `exit_code: -1`).
-
-### `runtime`
-
-`runtime.execScript(source, config)` — nested sub-script with inherited
-bindings; degrades to a `not_available` signal when the runtime cannot
-nest.
-
-## Sources of truth
-
-`core/graph/definition.go`, `core/graph/nodes/inference.go`,
-`core/graph/nodes/tool.go`, `core/graph/nodes/script/`,
-`core/graph/resource/resource.go`, `core/graph/resource/node_types.go`,
-`core/graph/resource/node_type.go`,
-`core/agent/bindings/`,
-`docs/guides/graph.md`.
+Conditions compile once at build, so a typo is a load error. In the environment,
+text is a string, a number or object is decoded JSON, a message list is the slice
+(`len(messages)` works), and media is its descriptor. A condition that returns a
+non-bool is a run error naming the node.

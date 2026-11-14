@@ -122,6 +122,37 @@ check-consumers:
 		echo "$$log" | head -1 | sed 's/^/    /'; \
 	done
 
+# The skill's validator is a consumer as well: its own module, pinned to a
+# released `core`, which is the only thing that runs the shipped templates. A
+# template that stops loading fails here instead of in somebody's editor, and a
+# pin that falls behind the newest tag is a checker reading an older schema.
+SKILL_VALIDATOR := skills/flowcraft-deploy/scripts/validator
+SKILL_ASSETS := skills/flowcraft-deploy/assets
+
+.PHONY: check-skill check-skill-pin
+check-skill: check-skill-pin
+	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
+	( cd $(SKILL_VALIDATOR) && GOWORK=off go mod tidy -diff && \
+		GOWORK=off go build -o "$$out/validate-config" . ); \
+	echo "==> templates"; \
+	( cd $(SKILL_ASSETS)/minimal-deploy && \
+		WORKSPACE_ROOT="$$(pwd)/workspace" "$$out/validate-config" deploy.yaml ); \
+	( cd $(SKILL_ASSETS)/minimal-graph && \
+		"$$out/validate-config" --type graph graph.yaml )
+
+# The skill documents one `core` version; a pin behind the newest tag means its
+# validator is checking a schema nobody is writing any more.
+check-skill-pin:
+	@want=$$(git describe --tags --abbrev=0 --match 'core/v*' 2>/dev/null | sed 's|^core/||' || true); \
+	got=$$( cd $(SKILL_VALIDATOR) && GOWORK=off go list -m -f '{{.Version}}' github.com/GizClaw/flowcraft/core ); \
+	if [ -n "$$want" ] && [ "$$want" != "$$got" ]; then \
+		echo "error: $(SKILL_VALIDATOR) pins $$got, the newest core tag is $$want" >&2; \
+		echo "bump it: cd $(SKILL_VALIDATOR) && GOWORK=off go get github.com/GizClaw/flowcraft/core@$$want" >&2; \
+		echo "         GOWORK=off go mod tidy" >&2; \
+		exit 1; \
+	fi; \
+	echo "==> skill pin $$got"
+
 # Correctness and stability lanes. None of these gate `make ci`: they answer
 # different questions (statistical benchmark matches, ordering-dependent bugs,
 # parser inputs, nil paths), and a developer chooses when to pay for them.

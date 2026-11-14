@@ -1,118 +1,142 @@
-# Runtime section schema (`deploy.yaml` -> `runtime:`)
+# Runtime layer
 
-Owned by `core/runtime`. `deploy.Parse` preserves the subtree opaquely;
-`runtime.DecodeConfig` decodes it strictly. `event_bus` is required when a
-`runtime` section exists (the validator enforces this).
+`runtime.layers[].path` names a YAML file: the substrate one agent runs on.
+Layers merge by `priority` (higher wins) — mappings key by key, **sequences
+replaced whole**, scalars replaced — and placeholders resolve once, after the
+merge.
 
 ```yaml
-runtime:
-  event_bus: events
-  checkpoint_store: checkpoints       # optional
-  sessions:
-    idle_timeout: 10m
-    sink_buffer: 256
-    delivery_concurrency: 8
-    speculative_buffer_events: 1024
-    speculative_buffer_bytes: 1048576
-    max_sessions: 1024
-    resume: false
-  dynamic_catalog:
-    tools:
-      default: shared_tools
-      researcher: research_tools
+version: 1
+name: assistant
+
+files:
+  roots: [/workspace/assistant]      # absolute, at least one; also the write policy
+
+sandbox:
+  backend: seatbelt                  # local | seatbelt | bwrap | windows | remote
+  workdir: /workspace/assistant      # default: the first files root
+  writes: [/workspace/assistant/out]
+  net:
+    mode: allow_list                 # default | none | allow_list | proxy
+    allow_hosts: [api.openai.com, "*.github.com"]
+  timeout: 60s
+  output_mib: 8
+
+inference:
+  providers:
+    - name: luna                     # deployment identity, referenced by models
+      driver: openai                 # a name the host compiled in
+      settings: {api_key: ${OPENAI_API_KEY}}
+  models:
+    - provider: luna                 # position = priority
+      model: gpt-5
+      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+  route:
+    attempts_per_target: 2
+    max_targets: 3
+
+tools:
+  enable: [files]                    # groups: files, exec, skills; empty = all
+  dynamic:
+    default: direct                  # always | direct | deferred | hidden
+    always: [tool_search]
+  images: false
+  middleware:
+    - {name: result_limit, settings: {max_bytes: 20000}}
+
+skills:
+  roots: [.agents/skills]
 ```
 
-## Rules
+## `sandbox`
 
-- `event_bus` must name a resource whose built value implements the
-  `event.Bus` contract (validator: field required; host build: resolves
-  the name against the built resources).
-- `checkpoint_store`, when present, must name a resource whose built
-  value implements the `agent.CheckpointStore` contract — the document
-  kind is `checkpoint.Store` (workspace) in core; alternative backends
-  are app-registered outside `core/` (host build resolves it; the
-  validator checks `resume` rules).
-- `sessions.resume: true` requires `checkpoint_store` — **validator**.
-- `sessions.sink_buffer`, `delivery_concurrency`,
-  `speculative_buffer_events`, and `speculative_buffer_bytes` are validated
-  against hard upper bounds — **validator**.
-- `sessions.max_sessions` limits distinct live session keys.
-- `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources; the
-  reserved `default` key is an optional fallback. Every deployed agent must
-  be mapped directly or covered by `default` (host build/runtime
-  registration; the validator only checks the map is non-empty). Mapping
-  keys must name deployed agents — an unknown key fails the build
-  (`no such deployed agent`). The mapping is live: agents registered at
-  runtime attach a tool assembly via `WithToolAssembly` (see below) or
-  fall back to `default`.
+| Field | Rule |
+| --- | --- |
+| `backend` | Required, no default. |
+| `workdir` | Where commands run; empty means the first files root. |
+| `writes` | Absolute paths a command may write; empty means read-only. |
+| `net.mode` | `default`, `none`, `allow_list`, `proxy`. |
+| `net.allow_hosts` | Only with `allow_list`. |
+| `net.proxy` | Only with `proxy`. |
+| `timeout` | Default per-call deadline; a tool may ask for less. |
+| `cpu_millicores` | Needs `timeout` (the budget is derived from it). |
+| `memory_mib`, `output_mib` | Caps; zero means unbounded / backend default. |
+| `journal` | A settings block; presence opts in. |
+| `bwrap`, `seatbelt`, `windows` | That backend's own construction options — on any other backend it is an error. |
+| `remote` | Client configuration for `backend: remote`, absent otherwise. |
 
-## Dynamic agent registration (core/v0.1.11+)
+The budget reaches every call: `timeout`, `cpu_millicores`, `memory_mib` and
+`writes` are projected onto each command, merged per field and taking the stricter
+side. A cap the backend cannot enforce (a cpu budget on `local`, `writes` on
+`local` or `remote`) is a build error or a warning — never silence.
 
-Agents can be registered and removed at runtime without rebuilding:
+### A backend's own block
 
-```go
-instance, err := app.RegisterAgent(ctx, "qa", agent.Definition{
-    Card:   agent.AgentCard{Name: "Ticket QA"},
-    Engine: agent.EngineRef{Kind: "agent.Engine", Impl: "graph"},
-}, runtime.WithToolAssembly("shared_tools")) // optional; needs dynamic_catalog
-if err != nil { /* Validation / Conflict / NotFound */ }
-
-// Sessions work exactly like deployed agents:
-lease, err := app.Sessions().GetOrCreate(ctx, session.Key{
-    AgentID: "qa", ContextID: "user-7",
-})
-
-// Removal drains active turns (bounded) before closing engine/hooks:
-if err := app.UnregisterAgent(ctx, "qa",
-    runtime.WithRemoveTimeout(30*time.Second)); err != nil {
-    /* DeadlineExceeded: registration restored, retryable */
-}
+```yaml
+sandbox:
+  backend: bwrap            # or seatbelt
+  bwrap:
+    binary: /usr/bin/bwrap  # resolved against the runner root
+    extra_flags: [--die-with-parent]   # bwrap only; policy-weakening flags are refused
+    readonly_root: true
 ```
 
-## Session deletion (core/v0.1.27+)
+```yaml
+sandbox:
+  backend: windows
+  windows:
+    write_confine: true     # Low-integrity token; without it the runner is lifecycle-only
+```
 
-`app.Sessions().DeleteSession(ctx, key)` removes one session's durable
-state (committed history, parked-run checkpoint, resumable request) and
-closes its live session — the by-key counterpart of `UnregisterAgent` for
-delete/archive workflows. Semantics mirror removal: new opens for the key
-are refused until deletion finishes, the live session is drained (bounded
-by ctx), and on ctx expiry the delete marker rolls back with no partial
-removal — retryable, idempotent, and a later `Open` starts with empty
-history.
+### Journal
 
-Rules:
+```yaml
+sandbox:
+  journal:
+    exclude: [.git, node_modules]   # never watched (the cost control)
+    retention: 4096                 # events kept for replay (default 4096)
+    max_watch_set: 20000            # watch budget; past it, a capacity gap
+    ops: [create, rename, remove]   # drop "write" events
+```
 
-- `RegisterAgent` uses the same assembly path as deployment
-  (`deploy.BindAgent`); a name colliding with a deployed or registered
-  agent is `Conflict`, assembly failures are `Validation`.
-- `UnregisterAgent` blocks new sessions, waits for active turns (bounded
-  by ctx or `WithRemoveTimeout`), then releases engine/hooks. Unknown
-  names are an idempotent no-op; deployed agents cannot be removed at
-  runtime (`Conflict`).
-- With `dynamic_catalog` configured and no `default`, registration must
-  carry `WithToolAssembly(<resource name>)`.
-- `runtime.agent.<id>.registered` / `.removed` lifecycle events are
-  published on success (subscribe with `PatternAgentLifecycle()`).
+A platform without a watch source fails the build when a journal is configured.
 
-## Runtime reload (core/v0.1.14+)
+### Remote
 
-`Runtime.Reload` transactionally replaces the deployment document without
-rebuilding the runtime: the previous generation keeps serving until the
-new one is built and swapped. Progress is published as
-`runtime.rebuild.started` / `.completed` / `.failed` events
-(`SubjectRuntimeRebuild*`, subscribe with `PatternRuntimeRebuild()`); a
-failed reload aborts before any swap and the old generation stays in
-service.
+```yaml
+sandbox:
+  backend: remote
+  remote:
+    transport: unix        # http (default) | unix
+    socket: /run/flowcraft/sandbox.sock
+    timeout: 30s
+    poll_hold: 15s
+```
 
-`ReloadOption`s replace the inputs a generation is built with when the
-document cannot express them: `WithReloadExternals`, `WithReloadResolver`,
-`WithReloadHostFactory` and `WithReloadResultHostFactory`. A nil value
-means none (which is how a decorator is removed); a committed swap retains
-the replacement, so a later plain `Reload` builds with it, and an aborted
-reload changes nothing.
+`transport: http` needs `endpoint` (`http(s)://…`) and rejects `socket`; `unix`
+needs `socket` and rejects `endpoint` and `insecure_skip_verify`. Files do not
+cross the wire: the file tools need that host's filesystem mounted where they run,
+which is why `tools.files` with `backend: remote` warns.
 
-## Sources of truth
+## `files`, `skills`, `tools`
 
-`core/runtime/config.go`, `core/runtime/lifecycle.go`,
-`core/runtime/reload.go`, `core/runtime/events.go`,
-`docs/guides/runtime.md`.
+| Section | Rule |
+| --- | --- |
+| `files.roots` | At least one, all absolute; also the write policy the file tools enforce. |
+| `skills.roots` | Directories scanned for `SKILL.md`; one index, shared by the tools and the host. |
+| `tools.enable` | Tool **groups** (`files`, `exec`, `skills`), not individual tool names; empty enables every registered group. |
+| `tools.dynamic` | The projection: `default`, `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`. |
+| `tools.images` | Publish the image-reading branch of the file tools. |
+| `tools.mcp` | `defer` plus `servers[]`: `transport: stdio|http`, `command`/`url`, `prefix`, `required`, `liveness`. |
+| `tools.middleware` | Ordered list of `{name, settings}`; built-ins: `telemetry`, `recover`, `result_limit`, `concurrency`, `redact`. `recover` cannot be disabled. |
+
+## `inference`
+
+Providers are `{name, driver, settings}` — `settings` is the driver's own shape,
+decoded by the host's adapter, not by the document. Models are
+`{provider, model, weight, capabilities, limits}`; position is priority. `route`
+takes `selector`, `selector_settings`, `attempts_per_target`, `max_targets`,
+`base_delay`, `max_delay`.
+
+A name the host did not register fails the build with the offered list:
+`inference.providers[luna].driver: "openai" is not available; offered: openai`.

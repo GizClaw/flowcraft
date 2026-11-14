@@ -1,17 +1,18 @@
+// Command validate-config checks one FlowCraft document without building
+// anything.
+//
+// It is the same loading code the platform runs — `deploy.Loader` for a
+// deployment document and its runtime layers, `graph.Parse`/`nodes.Validate` for
+// a graph document — so what it accepts is what the host will accept. It is not a
+// build: no provider, sandbox or tool is constructed, so a settings block's
+// semantics, its credentials and the reachability of an endpoint are the host's
+// business, not this tool's.
 package main
 
 import (
-	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"os"
-
-	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/graph"
-	"github.com/GizClaw/flowcraft/core/runtime"
-	"github.com/GizClaw/flowcraft/core/utils/decode"
 )
 
 const (
@@ -25,92 +26,33 @@ func main() {
 
 func run(args []string) int {
 	fs := flag.NewFlagSet("validate-config", flag.ContinueOnError)
-	typeName := fs.String("type", "deploy", "deploy|inference|workspace|sandbox|tool|graph|agent")
+	kind := fs.String("type", "deploy", "deploy|graph")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: validate-config [--type deploy|graph] <file>")
+		fs.PrintDefaults()
+	}
 	if err := fs.Parse(args); err != nil {
 		return exitError
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: validate-config [--type TYPE] <file>")
+		fs.Usage()
 		return exitError
 	}
+	path := fs.Arg(0)
 
-	data, err := readInput(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[parse] read input: %v\n", err)
-		return exitError
-	}
-
-	switch *typeName {
+	var err error
+	switch *kind {
 	case "deploy":
-		if err := validateDeploy(data); err != nil {
-			fmt.Fprintf(os.Stderr, "[build] %v\n", err)
-			return exitError
-		}
+		err = validateDeploy(path)
 	case "graph":
-		if err := validateGraph(data); err != nil {
-			fmt.Fprintf(os.Stderr, "[graph] %v\n", err)
-			return exitError
-		}
-	case "inference", "workspace", "sandbox", "tool", "agent":
-		if err := validateGeneric(*typeName, data); err != nil {
-			fmt.Fprintf(os.Stderr, "[parse] %v\n", err)
-			return exitError
-		}
+		err = validateGraph(path)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown --type %q\n", *typeName)
+		fmt.Fprintf(os.Stderr, "unknown --type %q\n", *kind)
+		return exitError
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] %v\n", class(err), err)
 		return exitError
 	}
 	return exitOK
-}
-
-func readInput(path string) ([]byte, error) {
-	if path == "-" {
-		return io.ReadAll(os.Stdin)
-	}
-	return os.ReadFile(path)
-}
-
-func validateDeploy(data []byte) error {
-	doc, err := deploy.Parse(data)
-	if err != nil {
-		return err
-	}
-	if doc.Runtime != nil {
-		if _, err := runtime.DecodeConfig(context.Background(), doc); err != nil {
-			return err
-		}
-	}
-	fmt.Printf("OK: deployment document (%d resources, %d agents)\n",
-		len(doc.Resources), len(doc.Agents))
-	return nil
-}
-
-func validateGraph(data []byte) error {
-	jsonData, err := decode.ToJSON(data)
-	if err != nil {
-		return err
-	}
-	var definition graph.GraphDefinition
-	if err := json.Unmarshal(jsonData, &definition); err != nil {
-		return err
-	}
-	if err := definition.Validate(); err != nil {
-		return err
-	}
-	fmt.Printf("OK: graph definition (%d nodes, %d edges)\n",
-		len(definition.Nodes), len(definition.Edges))
-	return nil
-}
-
-func validateGeneric(kind string, data []byte) error {
-	jsonData, err := decode.ToJSON(data)
-	if err != nil {
-		return err
-	}
-	var value any
-	if err := json.Unmarshal(jsonData, &value); err != nil {
-		return err
-	}
-	fmt.Printf("OK: %s sub-document\n", kind)
-	return nil
 }

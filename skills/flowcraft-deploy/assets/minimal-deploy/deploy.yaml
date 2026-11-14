@@ -1,55 +1,17 @@
-version: v1
-
-resources:
-  events:
-    kind: event.Bus
-    impl: memory
-    settings:
-      route_cache_size: 1024
-
-  ws:
-    kind: workspace.Workspace
-    impl: local
-    settings:
-      file: ./workspace.yaml
-
-  provider:
-    kind: inference.Provider
-    impl: openai
-    settings:
-      file: ./inference.yaml
-
-  infer:
-    kind: inference.Assembly
-    impl: unified
-    deps:
-      provider: provider
-
-  # Node types are resources, not engine built-ins: the graph below names
-  # "inference", so mount one. Each type declares the collaborators its
-  # nodes call.
-  node_inference:
-    kind: graph.NodeType
-    impl: inference
-    deps:
-      inference: infer
-      workspace: ws
+# The deployment document: which agents exist and what each is made of.
+#
+# `settings.path` is resolved against the process working directory, so run the
+# host (and the validator) from this directory.
+version: 1
 
 agents:
-  assistant:
-    card:
-      name: Assistant
-      description: Handles interactive requests with memory.
+  - name: assistant
     engine:
-      kind: agent.Engine
-      impl: graph
-      deps:
-        node_type.inference: node_inference
+      kind: graph
       settings:
-        graph: {file: ./graphs/assistant.json}
-
-runtime:
-  event_bus: events
-  sessions:
-    idle_timeout: 10m
-    sink_buffer: 256
+        path: ./graphs/assistant.yaml
+    runtime:
+      layers:
+        - {priority: 0, path: ./runtime.yaml}
+    observability:
+      trace: run

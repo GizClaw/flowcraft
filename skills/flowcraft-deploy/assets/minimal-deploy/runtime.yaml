@@ -1,0 +1,29 @@
+# The substrate one agent runs on. ${WORKSPACE_ROOT} is a placeholder the host
+# expands from its environment: a files root must be absolute and must exist.
+version: 1
+name: assistant
+
+files:
+  roots:
+    - ${WORKSPACE_ROOT}
+
+sandbox:
+  backend: local # seatbelt on macOS, bwrap on Linux, windows there
+  timeout: 60s
+  output_mib: 8
+
+inference:
+  providers:
+    - name: luna
+      driver: openai
+      settings:
+        api_key: ${OPENAI_API_KEY}
+  models:
+    - provider: luna
+      model: gpt-5
+      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+
+tools:
+  # `enable` names tool *groups* (files, exec, skills); which individual tools a
+  # model sees is the projection, configured per group.
+  enable: [files]

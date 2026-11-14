@@ -3,156 +3,93 @@ name: flowcraft-deploy
 description: "Author, validate, and troubleshoot a FlowCraft deployment: the deployment document (agents, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level), the runtime layer one agent runs on (sandbox boundary and its journal, files, providers and models, tools and skills), and the graph document an engine of kind graph executes (state slots, nodes, the conditions on their edges). Use when writing or reviewing a FlowCraft deployment, adding a runtime layer or session settings, writing a graph document, resolving load failures (\"is not registered\", unknown field, an unenforceable cap, a missing graph path), or copying a minimal runnable FlowCraft deployment."
 ---
 
-# FlowCraft Config Authoring
+# FlowCraft Deployment Authoring
 
-Write complete FlowCraft deployment configuration: `deploy.yaml`, the
-`runtime` section, resource sub-documents, and graph JSON. Validate with
-the L2 structural validator and fix errors against the reference cards.
+A deployment is three documents, and each one is validated without being built.
+
+| Document | Says | Card |
+| --- | --- | --- |
+| `deploy.yaml` | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level | [references/deployment.md](references/deployment.md) |
+| a runtime layer | what one agent runs on: the sandbox boundary, files, providers and models, tools, skills | [references/runtime.md](references/runtime.md) |
+| a graph document | what the `graph` engine runs: state slots, nodes, the conditions on their edges | [references/graph.md](references/graph.md) |
+
+"Not registered" nearly always means a kind, a driver, a selector or a middleware
+name the host did not compile in; [references/pitfalls.md](references/pitfalls.md)
+maps the messages the loader prints to their cause.
 
 ## Workflow
 
-1. **Scope the deployment.** Collect the agents, capabilities (chat,
-   tools, memory, scripts, sandboxing), and runtime needs (sessions,
-   resume, event bus, checkpoint stores).
-2. **Draft the deployment document.** `deploy.yaml` is the convention
-   but any filename works; pass whatever path you choose to the
-   validator. Read
-   [references/deploy.md](references/deploy.md) first. Order the areas:
-   resources → agents → runtime. Decide whole-resource vs item dep refs
-   (`infer` vs `ws/project`).
-3. **Write sub-documents.** Read
-   [references/resources.md](references/resources.md) for the owning
-   module's schema. Workspace before sandbox (custom sandbox runners may
-   depend on workspace resources). Memory implementation modules are
-   app-registered — omit implementation examples; `core/memory` contracts
-   and hooks are fine to use.
-4. **Write graph JSON.** Read [references/graph.md](references/graph.md).
-   Prefer routing: wire the `inference.Router` into the graph engine and
-   omit `model` in inference nodes; pin `model` only when no router is
-   wired. Model refs must use the nested `id` form; script nodes need
-   `runtime` and `source`; wire edges back to the inference node after
-   tool nodes.
-5. **Assemble the Craft application.** When the deployment runs inside a
-   Craft, wrap it in `craft.yaml`: an inline `deploy` (or `base_layers`),
-   plus `ui`, `plugins` (`roots`, `tool_registry`, `node_targets`) and
-   `host_tools` where they matter. Read
-   [references/craft.md](references/craft.md), then copy
-   [assets/minimal-craft](assets/minimal-craft/) as a starting point. A
-   definition is checked by the host with `craft.ParseDefinition`; the
-   standalone validator does not cover `craft.yaml` (see "Compatibility
-   and versioning").
-6. **Validate structurally with L2.** Run
-   `skills/flowcraft-deploy/scripts/validate-config.sh <deployment-file>`
-   (or the installed copy's script). The validator pins the FlowCraft
-   core module in its `go.mod` and works standalone from any directory.
-   It is structural only: it strictly decodes the document through
-   `core/deploy.Parse` (unknown fields are rejected, resource/agent
-   entries are shape-checked), strictly decodes and validates the
-   `runtime` subtree through `core/runtime.DecodeConfig` when present,
-   and structurally validates graph definitions through
-   `core/graph.GraphDefinition.Validate`. It does not build resources:
-   no factory registry, no settings `file`/`embed` resolution, no node
-   config decoding, no credentials, and no provider calls. Custom and
-   app-registered kinds pass as long as they fit the resource envelope;
-   their settings semantics are the host build's job.
+1. **Scope it.** Which agents, what each one is made of (a graph? a remote A2A
+   peer?), and what each may touch: files, a network posture, a command boundary.
+2. **Write `deploy.yaml`.** One agent is enough to start. The engine kind decides
+   whether a runtime block is required: a local engine needs one, a remote engine
+   must not have one.
+3. **Write the runtime layer** the agent's `runtime.layers` points at. Start from
+   [assets/minimal-deploy/runtime.yaml](assets/minimal-deploy/runtime.yaml):
+   `files.roots`, `sandbox.backend`, one provider, one model. Every path is
+   absolute, so use a placeholder (`${WORKSPACE_ROOT}`) and let the host expand it.
+4. **Write the graph document** if the engine is `graph`. Start from
+   [assets/minimal-deploy/graphs/assistant.yaml](assets/minimal-deploy/graphs/assistant.yaml)
+   for one model call, or [assets/minimal-graph/graph.yaml](assets/minimal-graph/graph.yaml)
+   for a ReAct loop.
+5. **Validate.** `scripts/validate-config.sh <deployment-file>` runs the same
+   loader the host does. It needs no credentials: placeholders are filled with a
+   stand-in. Fix what it reports against the cards.
+6. **Hand off what it could not check.** The validator builds nothing, so it does
+   not prove that a driver's `settings` are meaningful, that a credential works,
+   that an endpoint answers, or that a graph's node kinds exist — those are the
+   host's build. Say so instead of implying the deployment is runnable.
 
-   Sub-documents can also be validated on their own:
-   `validate-config.sh --type inference inference.yaml` (types:
-   `deploy`, `inference`, `workspace`, `sandbox`, `tool`, `graph`,
-   `agent`). Standalone types are parsed as JSON/YAML with strict YAML
-   conversion (duplicate keys rejected, single document enforced);
-   `graph` additionally runs `GraphDefinition.Validate` (unique node
-   ids, entry presence, edge endpoints). No sub-document schema is
-   decoded in standalone mode — `inference`, `workspace`, `sandbox`,
-   `tool`, and `agent` are syntax checks only.
-7. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
-   or `[build]` (`[parse]` input/syntax errors, `[graph]` graph
-   definition errors, `[build]` deploy document or runtime subtree
-   errors); validation stops at the first error.
-   Consult [references/pitfalls.md](references/pitfalls.md) for the
-   error → cause map. The validator prints no warnings: custom and
-   app-registered kinds pass structurally, and settings semantics it
-   cannot check are the host build's responsibility.
-8. **Hand off.** Report the structural validation result and what L2
-   could not verify: settings schemas, factory resolution, `file`/`embed`
-   references, and graph node configs are validated only when the host
-   builds the deployment with its own registry. Note the registration
-   code the host still needs. If the deployment relies on runtime agent
-   registration, call out that it needs the live registry API
-   (`Runtime.RegisterAgent` / `UnregisterAgent`; see
-   [references/runtime.md](references/runtime.md)) and any
-   `dynamic_catalog` `default`/`WithToolAssembly` requirement.
+## Validation
 
-## Cross-file invariants
+```bash
+skills/flowcraft-deploy/scripts/validate-config.sh deploy.yaml
+skills/flowcraft-deploy/scripts/validate-config.sh --type graph graphs/assistant.yaml
+```
 
-These invariants describe core semantics. The validator enforces the
-structural subset (see step 6); the rest are enforced when the host
-builds the deployment with its own factory registry.
+It is a small Go module pinned to a released `core` version, in
+`scripts/validator/`. Run it from the directory the deployment lives in: a graph's
+`settings.path` and a layer's `path` are resolved against the working directory.
 
-- Memory hooks bind a whole `memory.Assembly` resource; the settings
-  schema is impl-owned. Concrete implementations are app-registered.
-- Sandbox runners are `sandbox.Runner` resources; first-party impls
-  (`local`, `bwrap`, `seatbelt`) take no deps, custom impls declare
-  their own.
-- `runtime.event_bus` is required when a `runtime` section exists, and
-  `event_bus`/`checkpoint_store`/`dynamic_catalog.tools` values must name
-  resources in the document (the host build resolves them by contract).
-- `sessions.resume: true` requires `checkpoint_store`.
-- Agent `tools` is an allow-list, not a catalog declaration; `policy` is
-  harness state, not engine settings.
-- Graph `model` refs: `model: {id: {provider, name}}`.
-- Runtime-registered agents reuse the deployment assembly path; their
-  names must not collide with deployed agents, and with a `dynamic_catalog`
-  they need a tool mapping or a `default`.
-- `craft.yaml` wraps the deployment document: `deploy` and `base_layers`
-  are mutually exclusive and one is required, `craft.id` and
-  `craft.version` are required, and `min_host_version` is a compatibility
-  floor checked against the host (`craft.Version`).
-- A plugin's gated sections are fail-closed: `mcp` / `skills` / `hooks` /
-  `nodes` declared without `mcp:provide` / `skills:provide` /
-  `hooks:provide` / `nodes:provide` are dropped, and an unknown permission
-  is rejected rather than ignored.
-- `plugins.tool_registry` and `plugins.node_targets` are mounting points
-  resolved against the composed document — the named resource or agent
-  must exist — and a plugin can never register a resource kind.
+What it checks, because it is the loader:
 
-## Templates
+- strict decoding — an unknown field is an error, not a comment;
+- `version: 1`, at least one agent, unique names;
+- every `engine`/`protocol`/`hooks[].kind` is registered (the error lists what is);
+- each runtime layer is merged in `priority` order and passes the full
+  configuration validation: backends, net modes, cpu/memory/output budgets, the
+  journal, a backend's own block, a remote transport;
+- the graph document decodes, has an entry, unique node ids and edges that name
+  real nodes, and its conditions compile.
 
-Copy [assets/minimal-deploy](assets/minimal-deploy/) as a starting point:
-one agent, graph inference node, and a validated runtime section. Replace
-the model/provider references and workspace root, then extend per the
-workflow.
+What it does **not** check: provider settings semantics, credentials, endpoint
+reachability, the graph's node *kinds* (a registry only exists at build time), and
+anything a deployed turn does.
 
-Copy [assets/minimal-craft](assets/minimal-craft/) when the deployment
-runs inside a Craft: it wraps an inline `deploy` with `ui`, `plugins` and
-`host_tools`, and ships a sample plugin directory.
+## The rules that bite
 
-## Compatibility and versioning
+- **No defaults where a promise would be guessed.** `sandbox.backend` and
+  `engine.kind` are required; an unknown name fails instead of being skipped.
+- **Absolute paths.** `files.roots`, `sandbox.writes`, `skills.roots` and every
+  other path are absolute: a deployment must not mean something different
+  depending on where the process started.
+- **Sequences are replaced whole when layers merge.** A profile that lists one
+  writable path replaces the base list; it does not add to it.
+- **A budget nothing enforces is an error.** `cpu_millicores`/`memory_mib` on a
+  backend that cannot enforce them (or `cpu_millicores` without a `timeout`) fails
+  the build; `writes` on `local` or `remote` only warns, because there is no local
+  boundary to narrow.
+- **`tools.enable` names groups** (`files`, `exec`, `skills`), not individual
+  tools; the projection (`tools.dynamic`) decides what a model sees each round.
+- **A graph may loop.** There is no topological order; `limits.max_steps` is what
+  bounds a cycle, and an edge's condition is what leaves it.
 
-One skill version pins one FlowCraft version. The validator's `go.mod`
-requires exactly `github.com/GizClaw/flowcraft/core v0.4.10`; the schema
-cards in this skill document that release (no `driver` or `backends/*`
-modules are required, since the validator never constructs factories).
-When FlowCraft releases a new version, bump the pin and reconcile the
-cards in the same change. Custom kinds are structurally valid by design;
-their factories and settings schemas live in the host application.
+## Compatibility
 
-The validator pins core only and does **not** validate `craft.yaml`: no
-`craft/vX.Y.Z` release exists, so a standalone validator cannot resolve
-the craft module. A craft definition is checked by the host with
-`craft.ParseDefinition`, and its factories by the host registry.
+One skill version documents one `core` release: the validator's `go.mod` pins it,
+and `make check-skill` fails when that pin is behind the newest `core/vX.Y.Z` tag
+or when a template stops loading. When `core` releases a schema change, the pin
+and the cards move in the same change.
 
-## Reference index
-
-- [deploy.md](references/deploy.md) — deploy document schema, dep refs,
-  first-party kinds, registration.
-- [runtime.md](references/runtime.md) — runtime section, sessions,
-  dynamic registration, reload.
-- [resources.md](references/resources.md) — inference/memory/workspace/
-  sandbox/tool/event/checkpoint/delegation/script-runtime sub-documents.
-- [graph.md](references/graph.md) — graph JSON, node configs, engine
-  build settings.
-- [pitfalls.md](references/pitfalls.md) — known drift points and the
-  error → cause map.
-- [craft.md](references/craft.md) — craft.yaml and plugin.json schemas,
-  permissions and drop rules, host_tools bindings, hostmcp primitives.
+`craft.yaml` and `plugin.json` are not part of this repository and are not covered
+here.
