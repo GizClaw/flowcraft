@@ -10,6 +10,7 @@ Run from the repository root:
 
 ```sh
 make ci
+make lint
 make release-check
 git diff --check
 ```
@@ -48,7 +49,9 @@ and report them through the runtime's error path.
 A package is named for the job it does, so `go doc` reads as a list of
 capabilities rather than as a list of drawers: no `utils`, `common`, `helpers`
 or `base` at the top of a tree. Small shared helpers live under an existing
-tree (`core/utils/…`), each named for what it does; a package that would need a
+tree, each named for what it does — in `core` that is `core/internal/…`, which
+is module-private by design, so a helper another module needs is exported from
+the package that owns it, not from a drawer; a package that would need a
 vague name to cover its contents is two packages.
 
 Every package with exported symbols carries a package comment with five parts,
@@ -71,28 +74,34 @@ configure it. Cross-reference with one line; never copy.
 
 ## Modules and dependency order
 
-The independently versioned library modules are `core`, `craft`, `driver`, and
-`backends/*`.
-The Go workspace also includes `examples/forge` and `examples/anvil` (runnable
-local demos, not released), while `tools/releasegate` builds with `GOWORK=off`
-against pinned releases.
+The independently versioned library modules are `core` (the platform) and
+`driver` (provider inference adapters).
+The Go workspace also includes `examples/forge` and `examples/parallel` (runnable
+consumers, not released: each pins released module versions), while
+`tools/releasegate` builds with `GOWORK=off` against pinned releases.
 
 Module dependency order:
 
 ```text
-core -> craft / driver / backends/*
+core -> driver
 ```
 
-- `core` is the platform module and depends on nothing in-tree.
-- `craft` assembles an application over `core`: the `craft.yaml` definition,
-  compile-time capabilities, the MCP plugin host and host primitives, and the
-  process-level manager. It is the second module the release gate manages.
-- `driver` provides provider inference adapters over `core`: one module whose
-  `driver/<name>` packages are the adapters, so a new provider is a package and
-  not a module.
-- `backends/*` provides the platform-side implementations over `core` (the
-  SQLite checkpoint store and the memory backend today); sandbox backends live
-  in `core/sandbox`.
+- `core` is the platform module and depends on nothing in-tree. Everything the
+  platform ships is a package of it: contracts, inference with its two protocol
+  families, tools, sandbox, the runtime, execution (`agent`, `agent-graph`,
+  `agent-a2a`, `delegation`), deployment (`deploy`, `agent-host`), telemetry,
+  and the checkpoint store (`core/agent/checkpoint`).
+- `driver` provides the vendors that are not a protocol family over `core`, one
+  package each (`bytedance`, `dashscope`, `minimax`), so a new provider is a
+  package and not a module.
+- Sandbox backends are siblings of their contract rather than subpackages
+  (`core/sandbox-{local,bwrap,seatbelt,windows,remote}`): they need the shared
+  session and journal kit, and `core/sandbox/internal/...` is unreachable from
+  another directory tree.
+- `craft` — the planned application layer that assembles an application over
+  `core` (a `craft.yaml` definition, the plugin host, host primitives and the
+  process-level manager) — is not part of this workspace yet; the release gate
+  reserves the name. See "Declaring a module release".
 
 ## Declaring a module release
 
@@ -116,7 +125,8 @@ Allowed bumps are `patch` and `minor`; pre-1.0 breaking changes use `minor`.
 Multiple pending changesets for one module are aggregated to the highest bump.
 Never edit, rename, or delete a merged changeset. Add another changeset to
 correct release intent. `module` is `core` or `craft`; the release gate rejects
-any other value, and a changeset may name both when they release together. A
+any other value, and `craft` is reserved for the application layer described
+above, which has no tag yet. A
 module that has never been tagged has no version cell in `CHANGELOG.md` yet: its
 row carries `-` until its first release fills it in.
 
@@ -138,8 +148,8 @@ do not match the planned versions, and rejects an untidy `go.mod`.
 A dependent that imports packages no published dependency tag contains cannot
 be tagged on its own at all: `GOWORK=off go build ./...`, which the gate runs
 per module, fails before the pin is ever consulted. Ship it in the same batch
-as the dependency release that adds those packages (`craft` and `core` are the
-current pair; the details are in `.release/README.md`).
+as the dependency release that adds those packages (`craft`/`core` is the one
+pair the gate knows about today; the details are in `.release/README.md`).
 
 Before opening a coordinated release PR, run `make release-preflight`. It tidies
 each planned module against the same-batch versions (using temporary local
@@ -152,16 +162,11 @@ pin or an untidy `go.mod` fails the PR that declares the release.
 
 ### Modules outside the changeset flow
 
-`core` and `craft` are the only release-managed modules, and a changeset can
-never name another. Backends sit outside the changeset flow entirely: they
-release under their own `backends/<name>/vX.Y.Z` tags. `driver` does too, under
-its own `driver/vX.Y.Z` tags — one tag for every provider adapter.
-
-`backends/memory` and `backends/memory/eval` are workspace-only for now:
-neither is tagged, and neither will enter the changeset flow. `eval` reaches
-the backend through a local `replace`; publishing `backends/memory` would be
-its own `backends/memory/vX.Y.Z` tag, with the eval require bump and a pinned
-lane, tracked by #638.
+`core` is the only module in this workspace the changeset flow manages, and a
+changeset can never name another. `driver` releases outside it, under its own
+`driver/vX.Y.Z` tags — one tag for every provider adapter. The examples are
+never tagged: each pins released module versions and is built that way by
+`make check-consumers`.
 
 ## Release automation
 
@@ -181,14 +186,18 @@ are still missing.
 
 ## Working in the workspace
 
-- `make ci` runs `vet` + `test` across `core`, `craft`, `driver`,
-  `backends/*`, `examples/forge`, and `examples/anvil`.
+- `make ci` runs `vet` + `test` across `core`, `driver` and `examples/forge`.
+- `make lint` is the golangci-lint lane over `core` and `driver`; CI runs it
+  separately from `make ci`.
+- `make check-consumers` builds every example from its own `go.mod` with
+  `GOWORK=off`, so a change that exists only in this checkout is caught there
+  rather than at release time.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
-- Changes to `core` contracts may break `craft`, `driver`, `backends/*`,
-  `examples/forge`, or `examples/anvil`; `make ci` covers them in-tree.
-- The forge demo's scenarios are native deployment documents; changes to the
-  assembly or runtime surface should be exercised with a demo run
-  (`cd examples/forge && go run . test -test werewolf/opening_setup`).
+- Changes to `core` contracts may break `driver` and the examples; `make ci`
+  covers the first two, `make check-consumers` the examples.
+- The forge demo's scenarios are deployment documents; changes to the assembly
+  or runtime surface should be exercised with a demo run
+  (`cd examples/forge && go run . test -test werewolf/opening`).
 
 For larger work, please open a discussion or draft RFC issue first — it's much
 faster than reviewing a 5k-line PR cold.
