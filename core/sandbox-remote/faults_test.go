@@ -1,3 +1,10 @@
+//go:build unix
+
+// Sessions run on the unix spawn path. The Windows backend has its own
+// conformance file, and these bodies are POSIX scripts: making this suite run
+// there means rendering the bodies (not just the shell) through
+// sandboxtest.ForPlatform, which lands with the sessionkit port.
+
 package remote_test
 
 import (
@@ -13,6 +20,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote/wire"
 )
@@ -89,7 +97,7 @@ func remoteWithTransport(t *testing.T, wrap func(remote.Transport) *flakyTranspo
 	t.Helper()
 	root := t.TempDir()
 
-	inner := newInner(t, root)
+	inner := local.New(root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))
@@ -122,7 +130,7 @@ func TestRetryOnlyRepeatsSafeOperations(t *testing.T) {
 	client, flaky := remoteWithTransport(t, newFlaky)
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("echo hi"),
+		Argv: []string{"sh", "-c", "echo hi"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -196,7 +204,7 @@ func TestRetryOnlyRepeatsSafeOperations(t *testing.T) {
 // a cursor jump: the caller simply asks again.
 func TestHeldReadReturnsIdleWithoutMovingTheCursor(t *testing.T) {
 	root := t.TempDir()
-	inner := newInner(t, root)
+	inner := local.New(root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	// The server caps the hold below what the client asks for, which is the
@@ -220,7 +228,7 @@ func TestHeldReadReturnsIdleWithoutMovingTheCursor(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("sleep 0.4; echo late"),
+		Argv: []string{"sh", "-c", "sleep 0.4; echo late"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -263,7 +271,7 @@ func TestHeldReadReturnsIdleWithoutMovingTheCursor(t *testing.T) {
 // batch: a caller that mistook it for idle would spin.
 func TestCancelDuringHoldIsACancellation(t *testing.T) {
 	root := t.TempDir()
-	inner := newInner(t, root)
+	inner := local.New(root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))
@@ -283,7 +291,7 @@ func TestCancelDuringHoldIsACancellation(t *testing.T) {
 	t.Cleanup(func() { _ = client.Close() })
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("sleep 5"),
+		Argv: []string{"sh", "-c", "sleep 5"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -402,7 +410,7 @@ func TestRestartedServerForgetsSessions(t *testing.T) {
 	// First deployment.
 	clientA, _ := remoteWithTransport(t, newFlaky)
 	old, err := clientA.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("sleep 5"),
+		Argv: []string{"sh", "-c", "sleep 5"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -428,7 +436,7 @@ func TestRestartedServerForgetsSessions(t *testing.T) {
 // its own state, and a second Close must not retry the failed drain.
 func TestCloseWithTheServerGone(t *testing.T) {
 	root := t.TempDir()
-	inner := newInner(t, root)
+	inner := local.New(root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))
@@ -443,7 +451,7 @@ func TestCloseWithTheServerGone(t *testing.T) {
 	}
 	defer func() { _ = client.Close() }()
 
-	sess, err := client.Start(context.Background(), sandbox.SessionSpec{Argv: script("sleep 5")})
+	sess, err := client.Start(context.Background(), sandbox.SessionSpec{Argv: []string{"sh", "-c", "sleep 5"}})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

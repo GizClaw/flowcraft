@@ -1,20 +1,26 @@
+//go:build unix
+
+// Sessions run on the unix spawn path. The Windows backend has its own
+// conformance file, and these bodies are POSIX scripts: making this suite run
+// there means rendering the bodies (not just the shell) through
+// sandboxtest.ForPlatform, which lands with the sessionkit port.
+
 package exec
 
 import (
 	"context"
-	goruntime "runtime"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/sandboxtest"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
 
 func newSessionGroup(t *testing.T, opts ...SessionOption) *SessionGroup {
 	t.Helper()
-	runner := newRunnerIn(t, t.TempDir())
+	runner := local.New(t.TempDir())
 	t.Cleanup(func() { _ = runner.Close() })
 	group, err := NewSession(runner, opts...)
 	if err != nil {
@@ -180,7 +186,7 @@ func TestWriteStdinUnknownIDRejected(t *testing.T) {
 // The runner is shared; the group is not. A session started outside this tool
 // must not appear in its list, because the model can neither feed nor stop it.
 func TestListShowsOnlyOwnedSessions(t *testing.T) {
-	runner := newRunnerIn(t, t.TempDir())
+	runner := local.New(t.TempDir())
 	t.Cleanup(func() { _ = runner.Close() })
 
 	foreign, err := runner.Start(context.Background(), sandboxSessionSpec(t))
@@ -196,7 +202,7 @@ func TestListShowsOnlyOwnedSessions(t *testing.T) {
 	t.Cleanup(func() { _ = group.Close() })
 
 	payload, err := callTool(t, findTool(t, group, SessionName), map[string]any{
-		"action": "start", "argv": longRunningArgv(),
+		"action": "start", "argv": []string{"sh", "-c", "sleep 30"},
 	})
 	if err != nil {
 		t.Fatalf("start owned session: %v", err)
@@ -224,15 +230,7 @@ func TestListShowsOnlyOwnedSessions(t *testing.T) {
 // listed.
 func sandboxSessionSpec(t *testing.T) sandbox.SessionSpec {
 	t.Helper()
-	return sandbox.SessionSpec{Argv: longRunningArgv()}
-}
-
-// longRunningArgv is a command that stays alive until it is terminated, rendered
-// for the shell this platform has: the tests assert the session tool's behaviour,
-// not one shell's spelling.
-func longRunningArgv() []string {
-	shell := sandboxtest.ForPlatform(goruntime.GOOS)
-	return shell.Argv(shell.LongRunning())
+	return sandbox.SessionSpec{Argv: []string{"sh", "-c", "sleep 30"}}
 }
 
 func listedIDs(t *testing.T, payload any) []string {

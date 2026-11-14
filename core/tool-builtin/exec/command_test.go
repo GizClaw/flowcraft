@@ -1,3 +1,10 @@
+//go:build unix
+
+// Sessions run on the unix spawn path. The Windows backend has its own
+// conformance file, and these bodies are POSIX scripts: making this suite run
+// there means rendering the bodies (not just the shell) through
+// sandboxtest.ForPlatform, which lands with the sessionkit port.
+
 package exec
 
 import (
@@ -7,12 +14,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/goccy/go-json"
 )
 
 func newTool(t *testing.T) *CommandTool {
 	t.Helper()
-	runner := newRunnerIn(t, t.TempDir())
+	runner := local.New(t.TempDir())
 	t.Cleanup(func() { _ = runner.Close() })
 	command, err := NewCommand(runner)
 	if err != nil {
@@ -82,7 +90,7 @@ func TestNonZeroExitIsAResult(t *testing.T) {
 // success rather than the file.
 func TestCommandWritesInWorkdir(t *testing.T) {
 	dir := t.TempDir()
-	runner := newRunnerIn(t, dir)
+	runner := local.New(dir)
 	t.Cleanup(func() { _ = runner.Close() })
 	command, err := NewCommand(runner)
 	if err != nil {

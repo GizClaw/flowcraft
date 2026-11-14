@@ -1,3 +1,10 @@
+//go:build unix
+
+// Sessions run on the unix spawn path. The Windows backend has its own
+// conformance file, and these bodies are POSIX scripts: making this suite run
+// there means rendering the bodies (not just the shell) through
+// sandboxtest.ForPlatform, which lands with the sessionkit port.
+
 package remote_test
 
 import (
@@ -17,7 +24,7 @@ func TestWatchStreamsOutputAndExit(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("echo first-line; sleep 0.2; echo second-line"),
+		Argv: []string{"sh", "-c", "echo first-line; sleep 0.2; echo second-line"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -77,7 +84,7 @@ func TestWatchReplaysAnExitedSession(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("echo already-done"),
+		Argv: []string{"sh", "-c", "echo already-done"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -152,7 +159,7 @@ func TestWatchClosesWithTheSession(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: script("echo hi; sleep 5"),
+		Argv: []string{"sh", "-c", "echo hi; sleep 5"},
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

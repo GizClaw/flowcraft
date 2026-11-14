@@ -617,7 +617,10 @@ func (Cmd) Argv(script string) []string { return []string{"cmd", "/c", script} }
 func (Cmd) LongRunning() string { return "ping -n 31 127.0.0.1 >nul" }
 
 // StdinReader implements Shell.
-func (Cmd) StdinReader() []string { return []string{"cmd", "/c", "more"} }
+//
+// `sort` rather than `more`: the suite proves fd 0 is /dev/null by asserting the
+// child prints nothing, and `more` emits a CRLF even for empty input.
+func (Cmd) StdinReader() []string { return []string{"cmd", "/c", "sort"} }
 
 // ForPlatform returns the shell implementations this package ships for goos.
 func ForPlatform(goos string) Shell {

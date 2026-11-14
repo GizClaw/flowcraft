@@ -92,7 +92,10 @@ func (s *FileSource) Load(ctx context.Context, ref string) (Script, error) {
 	if cached != nil && s.TTL > 0 && now.Sub(cached.checked) < s.TTL {
 		return cached.script, nil
 	}
-	if cached != nil && cached.mtime.Equal(info.ModTime()) && cached.size == info.Size() {
+	// The stat shortcut is a TTL feature: with no TTL the contract is "re-read on
+	// every Load", and an edit that keeps the size inside one timestamp tick is
+	// otherwise invisible — which is what a coarse filesystem clock produces.
+	if s.TTL > 0 && cached != nil && cached.mtime.Equal(info.ModTime()) && cached.size == info.Size() {
 		s.mu.Lock()
 		if s.entries == nil {
 			s.entries = make(map[string]*fileEntry)

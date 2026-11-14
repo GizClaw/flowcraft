@@ -1,3 +1,10 @@
+//go:build unix
+
+// Sessions run on the unix spawn path. The Windows backend has its own
+// conformance file, and these bodies are POSIX scripts: making this suite run
+// there means rendering the bodies (not just the shell) through
+// sandboxtest.ForPlatform, which lands with the sessionkit port.
+
 package remote_test
 
 import (
@@ -10,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote/wire"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -132,7 +140,7 @@ func TestRemoteOverheadRatio(t *testing.T) {
 func richSpec() sandbox.SessionSpec {
 	return sandbox.SessionSpec{
 		ID:    "bench",
-		Argv:  script("echo hello"),
+		Argv:  []string{"sh", "-c", "echo hello"},
 		TTY:   true,
 		Rows:  40,
 		Cols:  120,
@@ -149,7 +157,7 @@ func richSpec() sandbox.SessionSpec {
 
 func localRunnerForBench(b *testing.B) sandbox.Runner {
 	b.Helper()
-	runner := newInner(b, b.TempDir())
+	runner := local.New(b.TempDir())
 	b.Cleanup(func() { _ = runner.Close() })
 	return runner
 }
@@ -158,7 +166,7 @@ func remoteRunnerForBench(b *testing.B) sandbox.Runner {
 	b.Helper()
 	root := b.TempDir()
 
-	inner := newInner(b, root)
+	inner := local.New(root)
 	b.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))

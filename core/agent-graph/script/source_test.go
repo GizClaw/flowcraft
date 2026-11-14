@@ -62,6 +62,37 @@ func TestFileSourceVersionFollowsContent(t *testing.T) {
 	}
 }
 
+// TestFileSourceNoTTLSeesASameSizeEdit pins the contract a coarse filesystem
+// clock exposes: with no TTL every Load re-reads, so an edit that keeps the size
+// and lands inside one timestamp tick still changes the version. The timestamp is
+// put back by hand, which is what a 2-second-granularity clock does on its own.
+func TestFileSourceNoTTLSeesASameSizeEdit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeFile(t, dir, "rule.star", "one")
+
+	source := &FileSource{BaseDir: dir}
+	first, err := source.Load(context.Background(), path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	stamp, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	writeFile(t, dir, "rule.star", "two")
+	if err := os.Chtimes(path, stamp.ModTime(), stamp.ModTime()); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	second, err := source.Load(context.Background(), path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if first.Version == second.Version {
+		t.Fatal("an edited file kept its version with no TTL, so the cache would serve stale logic")
+	}
+}
+
 func TestFileSourceTTLBoundsTheStatInterval(t *testing.T) {
 	dir := t.TempDir()
 	path := writeFile(t, dir, "rule.star", "one")
