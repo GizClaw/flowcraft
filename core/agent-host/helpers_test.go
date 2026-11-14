@@ -124,9 +124,33 @@ type stubProtocol struct{}
 func (stubProtocol) Handler() http.Handler { return http.NewServeMux() }
 func (stubProtocol) Close() error          { return nil }
 
+// testRoots is the runtime root of a test, keyed by the test itself so the
+// manager and the spec agree on one directory.
+var (
+	testRootsMu sync.Mutex
+	testRoots   = map[*testing.T]string{}
+)
+
+// rootFor returns this test's runtime root, creating it on first use.
+//
+// The manager calls it before registering its own cleanup, so the temp directory
+// is registered first and removed last: cleanup runs in reverse registration
+// order, and Windows refuses to unlink a directory whose handle is still open.
+func rootFor(t *testing.T) string {
+	t.Helper()
+	testRootsMu.Lock()
+	defer testRootsMu.Unlock()
+	if root, ok := testRoots[t]; ok {
+		return root
+	}
+	root := t.TempDir()
+	testRoots[t] = root
+	return root
+}
+
 func config(t *testing.T) runtime.Config {
 	t.Helper()
-	root := t.TempDir()
+	root := rootFor(t)
 	return runtime.Config{
 		Version: 1,
 		Sandbox: runtime.SandboxConfig{Backend: runtime.BackendLocal, Writes: []string{root}},
@@ -243,6 +267,8 @@ func engineFor(name string, runner func() agent.Runner) deploy.EngineKind {
 // newManager builds a manager and closes it with the test.
 func newManager(t *testing.T, kinds deploy.Kinds, bindings Bindings) *Manager {
 	t.Helper()
+	// Create the runtime root before this cleanup is registered (see rootFor).
+	rootFor(t)
 	manager := New(kinds, bindings)
 	t.Cleanup(func() { _ = manager.Close() })
 	return manager
