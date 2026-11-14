@@ -165,7 +165,7 @@ argument to a turn.
 | [`driver`](driver/) | Provider adapters that are not protocol families | Versioned Go module |
 | [`examples/forge`](examples/forge/) | Runnable demo: a werewolf table played by agents | Example |
 | [`tools/releasegate`](tools/releasegate/) | Release automation | Tool |
-| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill: reference cards, templates, validator | Skill |
+| [`skills/flowcraft-deploy`](skills/flowcraft-deploy/) | Codex skill: reference cards, templates, validator | Skill |
 
 ## Highlights
 
@@ -251,14 +251,15 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 - [Delegation](docs/guides/delegation.md) — one agent handing work to another,
   with derived child sessions and a lineage a chain keeps.
 
-### Configuration authoring skill
+### Deployment authoring skill
 
-[`skills/flowcraft-config/`](skills/flowcraft-config/) is a Codex skill for
-writing and reviewing FlowCraft configuration: reference cards, minimal
-templates, and a structural validator.
+[`skills/flowcraft-deploy/`](skills/flowcraft-deploy/) is a Codex skill for
+writing and reviewing a FlowCraft deployment — the deployment document, the
+runtime layer, and the graph document — with reference cards, minimal templates,
+and a structural validator.
 
 ```bash
-skills/flowcraft-config/scripts/validate-config.sh deploy.yaml
+skills/flowcraft-deploy/scripts/validate-config.sh deploy.yaml
 ```
 
 > The cards and templates in the skill still describe the pre-rebuild
@@ -266,11 +267,11 @@ skills/flowcraft-config/scripts/validate-config.sh deploy.yaml
 > being rebuilt; until then the guides above are the reference.
 
 Install it into Codex (replaces an existing copy, so remove
-`~/.codex/skills/flowcraft-config` first if present):
+`~/.codex/skills/flowcraft-deploy` first if present):
 
 ```bash
 python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
-  --repo GizClaw/flowcraft --path skills/flowcraft-config --ref main
+  --repo GizClaw/flowcraft --path skills/flowcraft-deploy --ref main
 ```
 
 The `skills/<skill-name>/SKILL.md` layout is also discoverable through

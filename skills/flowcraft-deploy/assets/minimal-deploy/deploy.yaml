@@ -1,0 +1,17 @@
+# The deployment document: which agents exist and what each is made of.
+#
+# `settings.path` is resolved against the process working directory, so run the
+# host (and the validator) from this directory.
+version: 1
+
+agents:
+  - name: assistant
+    engine:
+      kind: graph
+      settings:
+        path: ./graphs/assistant.yaml
+    runtime:
+      layers:
+        - {priority: 0, path: ./runtime.yaml}
+    observability:
+      trace: run

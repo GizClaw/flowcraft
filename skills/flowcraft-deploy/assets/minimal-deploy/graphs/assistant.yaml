@@ -1,0 +1,26 @@
+# The graph document: one model call per turn, no tools.
+version: 1
+name: assistant
+entry: model
+input: messages
+
+limits:
+  max_steps: 8
+  timeout: 2m
+
+state:
+  messages: {type: messages, merge: append, carry: true}
+  answer: {type: text}
+
+nodes:
+  - id: model
+    kind: model
+    config:
+      messages: messages
+      output: answer
+      request:
+        model: {provider: luna, name: gpt-5}
+        system: You are a careful assistant. Answer in one paragraph.
+
+output:
+  key: answer

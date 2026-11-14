@@ -4,34 +4,21 @@ title: Agent Skills
 ---
 # Agent Skills Guide
 
-`core/skill` implements the read-only half of the Agent Skills
-convention (agentskills.io): discovery and parsing of `SKILL.md`
-directories, a BM25 index over skill names and descriptions, `$name`
-mention resolution, and the per-turn `## Skills` metadata section.
-Bodies load on demand.
+`core/skill` is the read-only half of the Agent Skills convention
+(agentskills.io): it discovers `SKILL.md` directories, parses their frontmatter,
+and ranks them with the same BM25 kernel the tool catalog uses. Installing,
+authoring, usage accounting and per-turn injection are the host's decisions and
+stay out of the package.
+
+The whole surface is three calls: discover, index, ask the index.
 
 ```go
-svc := skill.NewService(ctx, skill.Options{Roots: []string{
-    filepath.Join(home, ".agents", "skills"),
-    filepath.Join(userDir, "skills"),
-}})
+outcome := skill.Discover(ctx, tree, []string{".agents/skills", userSkills})
+index, err := skill.NewIndex(outcome.Skills)   // one index per discovery pass
 
-// Per turn: explicit $mentions first, then the ranking over the
-// request text (an application merges the two lists, de-duplicating
-// by path).
-for _, sk := range svc.Mentioned(requestText) { ... }
-ranked := svc.Rank(requestText, svc.TopN(), svc.MinScore())
-section := skill.RenderSection(ranked)
-
-// On demand, when the model opens a skill:
-sk, body, err := svc.ReadFull("flowcraft-config")
+ranked := index.Rank(query, 5, 0)              // []Metadata, best first
+meta, ok := index.ByName("release-notes")
 ```
-
-The package owns no policy. Installation, authoring, usage
-accounting, retirement, and built-in shadowing are application
-concerns layered over `List`, `ByName`, and `ReadFull`: the caller
-composes the roots and decides what wins when two roots offer the
-same name.
 
 ## The SKILL.md contract
 
@@ -49,105 +36,106 @@ description: Draft release notes from a merged PR list. Use when preparing a rel
 
 | Field | Rule |
 | --- | --- |
-| `name` | lowercase letters, digits and hyphens, ≤ 64 characters. Missing or invalid names fall back to the slugified directory name, with a warning; a directory name with no ASCII left to slugify (a fully non-ASCII directory) has no fallback and is an error diagnostic. |
+| `name` | lowercase letters, digits and hyphens, ≤ 64 characters. A missing or invalid name falls back to the slugified directory name, with a warning; a directory name with no ASCII left to slugify is a parse error. |
 | `description` | required; truncated to 1024 characters (runes, not bytes). |
 | `metadata.short-description` | optional non-standard extension, surfaced for compact listings. |
-| file size | ≤ 256 KiB; larger files are refused by discovery and by the body readers. |
+| file size | ≤ 256 KiB; larger files are refused. |
 | other fields | tolerated: the frontmatter decode is lenient, so vendor extensions (`license`, `version`, …) do not fail the parse. |
-| frontmatter keys | two distinct keys spelling one JSON key (`1` beside `"1"`) are a tolerated shape issue: the file loads, with a warning naming the collision. A key the conversion cannot spell (`null`, an integer past int64) refuses the parse, named rather than left to map order. |
+| frontmatter keys | two distinct keys spelling one JSON key (`1` beside `"1"`) load with a warning naming the collision; a key the conversion cannot spell refuses the parse, named rather than left to map order. |
 | encoding | a UTF-8 BOM before the frontmatter and CRLF line endings are accepted. |
 
-The standard expects `name` to equal the directory name; a mismatch
-is accepted with a warning. Only malformed files fail the parse
-(missing frontmatter, empty body, missing description, a key the
-conversion cannot spell).
+The standard expects `name` to equal the directory name; a mismatch is accepted
+with a warning. Only malformed files fail: missing frontmatter, an empty body, a
+missing description, an unspellable key.
 
-## Roots and discovery
+`Parse(path, data)` is the per-file form, for a host that reads the file itself.
 
-`Discover(ctx, roots)` — and `NewService` underneath it — BFS-walks
-every root:
+## Discovery
 
-- roots are parameters: the caller composes the conventional personal
-  root (`~/.agents/skills`), a product directory, and
-  plugin-contributed roots; nothing is scanned implicitly;
-- a root may be one skill directory or a tree of them, and a root
-  that does not exist is silently empty;
-- hidden entries are skipped;
-- symlinks are followed only while their target stays inside one of
-  the roots, and a skill reachable through several roots (or through
-  a symlinked directory) is collected once, under its canonical path;
-  directories are tracked by canonical path too, so an alias pointing
-  back into a walked tree is not re-descended — discovery terminates
-  on any tree, however it is linked, and a root configured twice is
-  walked and listed once;
-- parse failures never fail the pass: they land in `Diagnostics`,
-  where `Warning` marks a tolerated shape issue and distinguishes it
-  from a file that could not load.
+```go
+type Outcome struct {
+    Skills      []Metadata   // sorted by name, then path
+    Diagnostics []Diagnostic // what was tolerated or skipped
+    Roots       []string     // the roots that contributed at least one skill
+}
+```
 
-Results are sorted by name, then path. Duplicate names across roots
-are all kept and all rankable; `ByName` and `Mentioned` resolve the
-first path in that canonical order, and shadowing rules (a built-in
-losing to a same-named user skill, say) are the caller's to apply.
+`Discover(ctx, tree *fsx.Tree, roots []string)` walks every root through `fsx`,
+so what a skill tree may contain is the caller's policy, not this package's:
 
-## The Service
+- roots are parameters — the conventional personal root, a product directory,
+  plugin-contributed roots — and nothing is scanned implicitly;
+- a root may be one skill directory or a tree of them, and a root that does not
+  exist is silently empty: a deployment names roots that are not on every
+  machine;
+- hidden entries are skipped, so `.git` and friends are never skills;
+- a skill reachable through several roots is collected once, under its canonical
+  path, and walked directories are tracked the same way, so an alias pointing
+  back into the tree is skipped instead of re-descended;
+- a failure never fails the pass: parse errors and read failures land in
+  `Diagnostics`, because one broken third-party skill must not hide the rest.
+  `Warning` separates a tolerated shape issue from a file that could not load.
 
-A `Service` holds an immutable snapshot of the last discovery plus
-the BM25 index over it. `Reload` re-runs discovery and swaps the
-snapshot, so skills added on disk become visible without rebuilding
-the service; the read paths are lock-free and safe for concurrent
-use.
+Duplicate names across roots are all kept and all rankable. `ByName` resolves the
+first path in canonical order, and shadowing rules — a built-in losing to a
+same-named user skill, say — are the host's to apply.
+
+## The index
+
+`NewIndex(skills []Metadata)` builds an immutable index over one discovery pass.
+A host that reloads skills builds a new index rather than mutating the old one,
+which is what keeps every read lock-free; `core/runtime` keeps exactly one per
+runtime and hands it to both the tools and `Runtime.Skills()`.
 
 | Method | Purpose |
 | --- | --- |
-| `List()` | every discovered skill, sorted by name then path |
-| `ByName(name)` | resolve one name to the canonical first path |
-| `Diagnostics()` | the non-fatal issues of the last discovery |
-| `Roots()` | the configured roots that contributed at least one skill — de-duplicated, in configuration order |
-| `TopN()` / `MinScore()` | the configured ranking defaults |
-
-`Options.Disabled` excludes skill names or absolute `SKILL.md` paths
-before the index is built, so a disabled skill cannot rank back in.
+| `Len()` | how many skills the pass found |
+| `All()` | every skill, in discovery order (a stable list, not a map) |
+| `ByName(name)` | one skill and whether it exists |
+| `RankScored(query, topN, minScore)` | skills with their scores, best first |
+| `Rank(query, topN, minScore)` | the same list without scores |
 
 ## Ranking
 
-Ranking runs over the shared `core/internal/search` kernel — the same one
-behind tool discovery — with the standard Okapi parameters
-(k1 = 1.2, b = 0.75): the name field is weighted 3× the description,
-a query term that only prefixes an index term is discounted ×0.5,
-and CJK text is tokenized into single characters and bigrams, so a
-Chinese fragment matches a Chinese description without a
-segmentation library.
+Ranking runs over the shared `core/internal/search` kernel with the standard
+Okapi parameters (`k1 = 1.2`, `b = 0.75`): the name field is weighted 3× the
+description, a query term that only prefixes an index term is discounted ×0.5,
+and CJK text is tokenized into single characters plus adjacent bigrams, so a
+Chinese fragment matches a Chinese description without a segmentation library.
 
-- `RankScored(query, topN, minScore)` returns skills with their
-  scores, best first; `Rank` is the same list without scores. A
-  `topN <= 0` falls back to `Options.TopN` (default 5); a
-  `minScore <= 0` accepts any match.
-- An empty query — or one that matches nothing — returns nil:
-  without a signal, nothing is injected.
-- `Mentioned(text)` extracts standalone `$name` mentions (`$50` and
-  mid-word dollars are not mentions) and resolves them in mention
-  order.
+`topN <= 0` asks for five; `minScore <= 0` accepts any match. An empty query — or
+one that matches nothing — returns nil: without a signal, nothing is offered.
 
-## Reads
+## Reading a body
 
-`ReadFull(name)` and `ReadByPath(path)` return the metadata plus the
-body with the frontmatter stripped. `ReadByPath` only serves paths
-from the current snapshot, so a stale path from a UI cannot read an
-arbitrary file; both re-resolve the file and refuse it when the
-symlink target has left the configured roots since discovery.
+The package never inlines a skill body. `Metadata.Path` is the absolute path the
+skill was discovered at, and the body is read through the same `fsx.Tree` the
+discovery used, so the read carries the tree's policy:
 
-## Rendering and tool pairing
-
-`RenderSection(skills)` renders the per-turn block:
-
-```text
-## Skills
-Skills relevant to this turn. To use one, search with skill_search and load its full instructions with skill_read. The user can also activate a skill by mentioning $name.
-- release-notes: Draft release notes from a merged PR list. (file: /skills/release-notes/SKILL.md)
+```go
+body, err := tree.Read(ctx, meta.Path)   // frontmatter included
 ```
 
-Bodies are never inlined. The header names `skill_search` and
-`skill_read` by convention: the application ships those tools on top
-of `RankScored` and `ReadFull` (registered on `core/tool` with the
-exposure it needs), so the model always has a discovery path and a
-body loader without paying for every skill body each turn.
+## The tool pairing
+
+`core/tool-builtin/skills` ships the two actions a model can take on the catalog,
+over the index the host already built:
+
+| Tool | Use |
+| --- | --- |
+| `skill_search` | rank the catalog against a query, returning names and descriptions |
+| `skill_read` | load one skill's full `SKILL.md` by name |
+
+The index is a parameter rather than something the tools build, which is what
+makes "what the model can search" and "what the host reports through
+`Runtime.Skills()`" the same catalog instead of two that drift.
+
+## What is not here
+
+| Not in `core/skill` | Where it belongs |
+| --- | --- |
+| Installing, updating or removing skills | The host, or whatever package manager it trusts. |
+| Authoring rules and linting beyond the frontmatter contract | The skill's own tooling. |
+| Usage accounting and retirement | The host's telemetry. |
+| The per-turn `## Skills` block | The host composes it from `Rank` (and from whatever mention syntax it wants); the package renders no prompt text. |
+| Mention resolution (`$name`) | Removed: the tools are the discovery path, and a mention syntax is a prompt decision, not a catalog one. |
