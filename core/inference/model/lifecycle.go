@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 )
 
 type ModelStatus string

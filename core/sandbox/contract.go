@@ -5,8 +5,10 @@ import (
 )
 
 // Runner is a sandbox: it starts interactive process sessions under the
-// sandbox's policy and manages their lifecycle. The one-shot form
-// [Exec] is a derived view over Start. Implementations MUST honour
+// sandbox's policy and manages their lifecycle. The one-shot form is a
+// derived view over Start — engine.Exec drains a session and truncates its
+// output, so a backend has no second code path to keep in step. Implementations
+// MUST honour
 // ExecOptions.Timeout and reject any policy they cannot enforce with
 // an errdefs.NotAvailable error rather than silently downgrading the
 // request.

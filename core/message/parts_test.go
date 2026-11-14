@@ -1,13 +1,13 @@
 package message_test
 
 import (
-	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
@@ -33,7 +33,7 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 			message.ImagePart{Source: image},
 			message.AudioPart{Source: audio},
 			message.VideoPart{Source: video},
-			message.FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
+			message.FilePart{Source: mustFileURL(t, "s3://bucket/document.pdf", "application/pdf"), Name: "document.pdf"},
 			message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
 			message.ToolCallPart{Call: call},
 			message.ToolResultPart{Result: message.NewTextToolResult("call-1", "found")},
@@ -65,11 +65,10 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 
 	clone := decoded.Clone()
 	clone.Parts[5].(message.DataPart).Value[0] = '['
-	clone.Parts[6].(message.ToolCallPart).Call.Arguments[0] = '['
 	if string(decoded.Parts[5].(message.DataPart).Value) != `{"answer":42}` {
 		t.Fatal("data part clone mutated source")
 	}
-	if string(decoded.Parts[6].(message.ToolCallPart).Call.Arguments) != `{"query":"cat"}` {
+	if decoded.Parts[6].(message.ToolCallPart).Call.Arguments.String() != `{"query":"cat"}` {
 		t.Fatal("tool call part clone mutated source")
 	}
 }
@@ -231,9 +230,10 @@ func TestDefinitionAndCallValidation(t *testing.T) {
 		t.Fatalf("NewToolCall: %v", err)
 	}
 	cloned := call.Clone()
-	cloned.Arguments[0] = '['
-	if string(call.Arguments) == string(cloned.Arguments) {
-		t.Fatal("Clone did not deep-copy arguments")
+	// Arguments is immutable by construction, so a clone is indistinguishable
+	// from the original; the probe is that both still carry the same object.
+	if cloned.Arguments.String() != call.Arguments.String() {
+		t.Fatal("Clone lost the arguments")
 	}
 	if err := (message.ToolResult{}).Validate(); err == nil {
 		t.Fatal("empty result must be invalid")
@@ -349,8 +349,8 @@ func TestNormalizePart(t *testing.T) {
 		{"video", message.VideoPart{Source: video}, &message.VideoPart{Source: video}},
 		{
 			"file",
-			message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
-			&message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
+			message.FilePart{Source: mustFileURL(t, "file:///tmp/a.txt", "text/plain")},
+			&message.FilePart{Source: mustFileURL(t, "file:///tmp/a.txt", "text/plain")},
 		},
 		{
 			"data",
@@ -557,4 +557,14 @@ func TestPartCloneDetachesInlineMedia(t *testing.T) {
 	if got := videoClone.(message.VideoPart).Source.Bytes(); len(got) == 0 || got[0] != 9 {
 		t.Fatalf("video clone shares its source buffer: %v", got)
 	}
+}
+
+// mustFileURL builds a file source or fails the test.
+func mustFileURL(t *testing.T, uri, mediaType string) media.FileSource {
+	t.Helper()
+	source, err := media.NewFileURL(uri, mediaType)
+	if err != nil {
+		t.Fatalf("NewFileURL: %v", err)
+	}
+	return source
 }

@@ -1,170 +1,171 @@
 package inference
 
 import (
-	"context"
 	"fmt"
-	"maps"
 
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// GenerateExecutionShape identifies the provider execution contract being
-// compiled. A provider may support different canonical fields for unary and
-// streaming generation.
-type GenerateExecutionShape string
-
-const (
-	GenerateExecutionUnary  GenerateExecutionShape = "unary"
-	GenerateExecutionStream GenerateExecutionShape = "stream"
-)
-
-func (s GenerateExecutionShape) Validate() error {
-	switch s {
-	case GenerateExecutionUnary, GenerateExecutionStream:
-		return nil
-	default:
-		return fmt.Errorf("unknown generate execution shape %q", s)
-	}
-}
-
-func (s GenerateExecutionShape) Field() FieldID {
-	switch s {
-	case GenerateExecutionUnary:
-		return FieldGenerateExecutionUnary
-	case GenerateExecutionStream:
-		return FieldGenerateExecutionStream
-	default:
-		return ""
-	}
-}
-
-// GenerateCompiler compiles a canonical Generate request for one explicit
-// execution shape without provider I/O.
-type GenerateCompiler[Wire any] func(
-	context.Context,
-	ModelRef,
-	GenerateRequest,
-	GenerateExecutionShape,
-) (Compiled[Wire], error)
-
-// InputRole is deliberately narrower than [message.Message].Role: only a user turn or a
-// tool continuation may be the one current input to Generate.
+// InputRole is deliberately narrower than [message.Role]: only a user turn or a
+// tool continuation may be the one current input to a generation.
 type InputRole string
 
 const (
-	InputRoleUser InputRole = "user"
-	InputRoleTool InputRole = "tool"
+	InputRoleUser InputRole = InputRole(message.RoleUser)
+	InputRoleTool InputRole = InputRole(message.RoleTool)
 )
 
+// GenerateInput is the turn being answered.
 type GenerateInput struct {
-	Role    InputRole    `json:"role"`
-	Content InputContent `json:"content"`
+	Role    InputRole       `json:"role"`
+	Content message.Content `json:"content"`
 }
 
+// Clone returns a deep copy.
 func (i GenerateInput) Clone() GenerateInput {
 	i.Content = i.Content.Clone()
 	return i
 }
 
+// Validate checks the role and the content.
 func (i GenerateInput) Validate() error {
-	var role message.Role
-	switch i.Role {
-	case InputRoleUser:
-		role = message.RoleUser
-	case InputRoleTool:
-		role = message.RoleTool
-	default:
-		return fmt.Errorf("generate input role must be user or tool")
-	}
-	if err := i.Content.Validate(); err != nil {
+	if _, err := i.messageRole(); err != nil {
 		return err
 	}
-	return (message.Message{Role: role, Content: i.Content.Content}).Validate()
+	return i.Content.Validate()
 }
 
-// Message converts an executed input into ordinary history. The returned
-// message owns a clone of the parts and cannot retain Intent by construction.
+// Message folds an executed input into ordinary history. The returned message
+// owns a clone of the parts.
 func (i GenerateInput) Message() message.Message {
-	return message.Message{Role: message.Role(i.Role), Content: i.Content.Content.Clone()}
+	return message.Message{Role: message.Role(i.Role), Content: i.Content.Clone()}
 }
 
+func (i GenerateInput) messageRole() (message.Role, error) {
+	switch i.Role {
+	case InputRoleUser:
+		return message.RoleUser, nil
+	case InputRoleTool:
+		return message.RoleTool, nil
+	default:
+		return "", fmt.Errorf("input role must be %q or %q", InputRoleUser, InputRoleTool)
+	}
+}
+
+// GenerateRequest is one generation call. It carries only what a
+// provider-agnostic caller decides per call: the turn to answer, what to
+// produce, and which tools the model may use. Everything else a provider needs
+// to know — sampling, output format, reasoning, image size, voice — is the
+// driver's deployment configuration, so that adding a provider does not widen
+// this struct.
+//
+// The split is deliberate and testable: a field belongs here when its schema is
+// provider-neutral (owned by message or this package) AND a caller sets it per
+// call. A value whose schema only one provider understands is an [Extension]; a
+// value a caller sets once per deployment is driver settings; cross-cutting
+// correlation data travels in the context as [RequestMetadata].
 type GenerateRequest struct {
-	Context    []message.Message `json:"context,omitempty" ledger:"generate.context.*.role"`
-	Input      GenerateInput     `json:"input" ledger:"generate.input.role"`
-	Extensions Extensions        `json:"-" ledger:"extension"`
-
-	// ModelHint is an optional per-call model preference consumed by the
-	// inference router's generate selection: "provider/name" or a bare
-	// model name. The router honors it only when it names a configured
-	// target that can serve the request; otherwise selection falls back
-	// to the default policy. Providers never interpret the hint — it is
-	// routing metadata, not a provider knob.
+	// Model names the provider-qualified model that should answer.
+	Model model.ModelRef `json:"model"`
+	// Context is the conversation so far, oldest first.
+	Context []message.Message `json:"context,omitempty"`
+	// Input is the turn being answered.
+	Input GenerateInput `json:"input"`
+	// Output is what to produce. Empty means [OutputText].
+	Output Output `json:"output,omitempty"`
+	// Tools is what the model may call and how the choice is constrained. It
+	// applies to [OutputText] only; a request for another output that
+	// carries tools is rejected rather than silently ignored. The zero value
+	// means no tools.
+	Tools Toolset `json:"tools,omitzero"`
+	// Extensions carries provider-specific options. Each driver applies only
+	// its own and reports the rest as inert.
+	Extensions Extensions `json:"-"`
+	// ModelHint is an optional per-call model preference ("provider/name" or
+	// a bare name) addressed to whatever selection layer a host wraps around
+	// the provider. Providers never interpret it.
 	ModelHint string `json:"model_hint,omitempty"`
-
-	// RequestMetadata carries opaque caller/host metadata whose keys and
-	// values are deployment-defined (for example conversation or turn
-	// identifiers). Core treats it as an opaque bag: it never interprets
-	// keys, and each provider driver decides whether and how to surface
-	// it on the provider request (metadata, client_metadata, or none).
-	RequestMetadata map[string]string `json:"request_metadata,omitempty"`
 }
 
+// Clone returns a deep copy that shares no mutable state.
 func (r GenerateRequest) Clone() GenerateRequest {
 	clone := r
-	clone.Context = make([]message.Message, len(r.Context))
-	for i, message := range r.Context {
-		clone.Context[i] = message.Clone()
+	if r.Context != nil {
+		clone.Context = make([]message.Message, len(r.Context))
+		for i, item := range r.Context {
+			clone.Context[i] = item.Clone()
+		}
 	}
 	clone.Input = r.Input.Clone()
+	clone.Tools = r.Tools.Clone()
 	clone.Extensions = r.Extensions.Clone()
-	clone.RequestMetadata = maps.Clone(r.RequestMetadata)
 	return clone
 }
 
+// Validate checks everything that can be checked without provider knowledge:
+// the shape of the request and the internal consistency of its fields. Whether
+// the chosen model can serve the chosen output is the driver's check, because
+// only it holds the declarations.
 func (r GenerateRequest) Validate() error {
-	for i, msg := range r.Context {
-		if err := msg.Validate(); err != nil {
-			return fmt.Errorf("context message %d: %w", i, err)
-		}
-		if message.HasStreamSource(msg.Content) {
-			return fmt.Errorf(
-				"context message %d: stream media sources are not allowed in context",
-				i,
+	if err := r.Model.Validate(); err != nil {
+		return inferenceErr(InvalidRequest, FieldModel, err)
+	}
+	for i, item := range r.Context {
+		if err := item.Validate(); err != nil {
+			return inferenceErr(
+				InvalidRequest, FieldContext,
+				fmt.Errorf("context message %d: %w", i, err),
 			)
 		}
 	}
 	if err := r.Input.Validate(); err != nil {
-		return fmt.Errorf("generate input: %w", err)
+		return inferenceErr(InvalidRequest, FieldInput, err)
 	}
-	if message.HasStreamSource(r.Input.Content.Content) {
-		return fmt.Errorf("generate input: stream media sources are not allowed")
+	if err := r.Output.Validate(); err != nil {
+		return inferenceErr(InvalidRequest, FieldOutput, err)
 	}
-	return r.Extensions.Validate()
+	if r.Output.Kind() != OutputText && !r.Tools.IsZero() {
+		return inferenceErr(
+			InvalidRequest, FieldTools,
+			fmt.Errorf("tools apply to text output only, not %q", r.Output.Kind()),
+		)
+	}
+	if err := r.Tools.Validate(); err != nil {
+		return inferenceErr(InvalidRequest, FieldTools, err)
+	}
+	if err := r.Extensions.Validate(); err != nil {
+		return inferenceErr(InvalidExtension, FieldExtensions, err)
+	}
+	return nil
 }
 
-func (r GenerateRequest) ActiveFields() []FieldID {
-	var fields []FieldID
+// ActiveFields lists the canonical fields this request actually sets. A driver
+// compares it against what it consumed; the difference is a dropped option and
+// must be reported as a [Warning] or an error.
+func (r GenerateRequest) ActiveFields() []Field {
+	var fields []Field
 	if len(r.Context) > 0 {
-		fields = append(fields, FieldGenerateContextRole)
-		fields = appendGenerateContextPartFields(fields, r.Context)
+		fields = append(fields, FieldContext)
 	}
 	if r.Input.Role != "" {
-		fields = append(fields, FieldGenerateInputRole)
+		fields = append(fields, FieldInput, FieldRole)
 	}
-	fields = appendGenerateInputPartFields(fields, r.Input.Content.Parts)
-	fields = appendGenerateIntentFields(fields, r.Input.Content.Intent)
-	if len(r.RequestMetadata) > 0 {
-		fields = append(fields, FieldGenerateRequestMetadata)
+	if len(r.Input.Content.Parts) > 0 {
+		fields = append(fields, FieldContent)
 	}
-	return r.Extensions.AppendActiveFields(fields)
-}
-
-// ActiveFieldsFor returns the complete Generate ledger for one execution
-// shape, including the shape itself.
-func (r GenerateRequest) ActiveFieldsFor(shape GenerateExecutionShape) []FieldID {
-	fields := r.ActiveFields()
-	if field := shape.Field(); field != "" {
-		fields = append(fields, field)
+	if r.Output != "" {
+		fields = append(fields, FieldOutput)
+	}
+	if !r.Tools.IsZero() {
+		fields = append(fields, FieldTools)
+	}
+	if r.Tools.Choice() != nil {
+		fields = append(fields, FieldToolChoice)
+	}
+	if len(r.Extensions) > 0 {
+		fields = append(fields, FieldExtensions)
+		fields = append(fields, r.Extensions.ActiveFields()...)
 	}
 	return fields
 }

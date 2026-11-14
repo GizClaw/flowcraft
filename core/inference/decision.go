@@ -1,390 +1,271 @@
 package inference
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-type FieldID string
+// Decider is the judgment seam: one input, a batch of typed questions, an answer
+// per question.
+//
+// It is not [Provider].Generate with a schema. A decision carries several
+// questions in one call, answers that are typed (a predicate probability, a
+// choice, a score), per-answer confidence and distributions, and per-question
+// refusals — none of which is a message. The response shape is what earns a
+// seam.
+type Decider interface {
+	// Decide answers every question in request order.
+	Decide(ctx context.Context, request DecisionRequest) (DecisionResponse, error)
+}
+
+// QuestionKind names the shape of one answer.
+type QuestionKind string
 
 const (
-	FieldGenerateExecutionUnary              FieldID = "generate.execution.unary"
-	FieldGenerateExecutionStream             FieldID = "generate.execution.stream"
-	FieldGenerateContextRole                 FieldID = "generate.context.*.role"
-	FieldGenerateContextText                 FieldID = "generate.context.*.content.parts.text"
-	FieldGenerateContextImage                FieldID = "generate.context.*.content.parts.image"
-	FieldGenerateContextAudio                FieldID = "generate.context.*.content.parts.audio"
-	FieldGenerateContextVideo                FieldID = "generate.context.*.content.parts.video"
-	FieldGenerateContextFile                 FieldID = "generate.context.*.content.parts.file"
-	FieldGenerateContextData                 FieldID = "generate.context.*.content.parts.data"
-	FieldGenerateContextToolCall             FieldID = "generate.context.*.content.parts.tool_call"
-	FieldGenerateContextToolResult           FieldID = "generate.context.*.content.parts.tool_result"
-	FieldGenerateContextReasoning            FieldID = "generate.context.*.content.parts.reasoning"
-	FieldGenerateInputRole                   FieldID = "generate.input.role"
-	FieldGenerateInputText                   FieldID = "generate.input.content.parts.text"
-	FieldGenerateInputImage                  FieldID = "generate.input.content.parts.image"
-	FieldGenerateInputAudio                  FieldID = "generate.input.content.parts.audio"
-	FieldGenerateInputVideo                  FieldID = "generate.input.content.parts.video"
-	FieldGenerateInputFile                   FieldID = "generate.input.content.parts.file"
-	FieldGenerateInputData                   FieldID = "generate.input.content.parts.data"
-	FieldGenerateInputToolCall               FieldID = "generate.input.content.parts.tool_call"
-	FieldGenerateInputToolResult             FieldID = "generate.input.content.parts.tool_result"
-	FieldGenerateInputReasoning              FieldID = "generate.input.content.parts.reasoning"
-	FieldGenerateIntentText                  FieldID = "generate.input.content.intent.text"
-	FieldGenerateIntentTextResponse          FieldID = "generate.input.content.intent.text.response"
-	FieldGenerateIntentTextResponseKind      FieldID = "generate.input.content.intent.text.response.kind"
-	FieldGenerateIntentTextResponseName      FieldID = "generate.input.content.intent.text.response.name"
-	FieldGenerateIntentTextResponseSchema    FieldID = "generate.input.content.intent.text.response.schema"
-	FieldGenerateIntentTextMaxOutputTokens   FieldID = "generate.input.content.intent.text.max_output_tokens"
-	FieldGenerateIntentImage                 FieldID = "generate.input.content.intent.image"
-	FieldGenerateIntentImageSize             FieldID = "generate.input.content.intent.image.size"
-	FieldGenerateIntentImageSizeWidth        FieldID = "generate.input.content.intent.image.size.width"
-	FieldGenerateIntentImageSizeHeight       FieldID = "generate.input.content.intent.image.size.height"
-	FieldGenerateIntentImageCount            FieldID = "generate.input.content.intent.image.count"
-	FieldGenerateIntentImageSeed             FieldID = "generate.input.content.intent.image.seed"
-	FieldGenerateIntentImageOutputFormat     FieldID = "generate.input.content.intent.image.output_format"
-	FieldGenerateIntentImageDelivery         FieldID = "generate.input.content.intent.image.delivery"
-	FieldGenerateIntentImageQuality          FieldID = "generate.input.content.intent.image.quality"
-	FieldGenerateIntentAudio                 FieldID = "generate.input.content.intent.audio"
-	FieldGenerateIntentAudioVoice            FieldID = "generate.input.content.intent.audio.voice"
-	FieldGenerateIntentAudioVoiceID          FieldID = "generate.input.content.intent.audio.voice.id"
-	FieldGenerateIntentAudioVoiceLanguage    FieldID = "generate.input.content.intent.audio.voice.language"
-	FieldGenerateIntentAudioFormat           FieldID = "generate.input.content.intent.audio.format"
-	FieldGenerateIntentAudioFormatEncoding   FieldID = "generate.input.content.intent.audio.format.encoding"
-	FieldGenerateIntentAudioFormatSampleRate FieldID = "generate.input.content.intent.audio.format.sample_rate_hz"
-	FieldGenerateIntentAudioFormatChannels   FieldID = "generate.input.content.intent.audio.format.channels"
-	FieldGenerateIntentAudioSpeed            FieldID = "generate.input.content.intent.audio.speed"
-	FieldGenerateIntentAudioCount            FieldID = "generate.input.content.intent.audio.count"
-	FieldGenerateIntentVideo                 FieldID = "generate.input.content.intent.video"
-	FieldGenerateIntentVideoDuration         FieldID = "generate.input.content.intent.video.duration_millis"
-	FieldGenerateIntentVideoResolution       FieldID = "generate.input.content.intent.video.resolution"
-	FieldGenerateIntentVideoAspectRatio      FieldID = "generate.input.content.intent.video.aspect_ratio"
-	FieldGenerateIntentVideoSeed             FieldID = "generate.input.content.intent.video.seed"
-	FieldGenerateIntentVideoWatermark        FieldID = "generate.input.content.intent.video.watermark"
-	FieldGenerateIntentTools                 FieldID = "generate.input.content.intent.text.tools"
-	FieldGenerateIntentToolChoice            FieldID = "generate.input.content.intent.text.tool_choice"
-	FieldGenerateIntentToolChoiceKind        FieldID = "generate.input.content.intent.text.tool_choice.kind"
-	FieldGenerateIntentToolChoiceName        FieldID = "generate.input.content.intent.text.tool_choice.name"
-	FieldGenerateIntentTemperature           FieldID = "generate.input.content.intent.text.temperature"
-	FieldGenerateIntentTopP                  FieldID = "generate.input.content.intent.text.top_p"
-	FieldGenerateIntentReasoning             FieldID = "generate.input.content.intent.text.reasoning"
-	FieldGenerateIntentReasoningEnabled      FieldID = "generate.input.content.intent.text.reasoning_enabled"
-	FieldGenerateIntentReasoningEffort       FieldID = "generate.input.content.intent.text.reasoning_effort"
-	FieldGenerateRequestMetadata             FieldID = "generate.request.metadata"
-	FieldEmbedItems                          FieldID = "embed.items"
-	FieldEmbedItemText                       FieldID = "embed.items.content.text"
-	FieldEmbedItemImage                      FieldID = "embed.items.content.image"
-	FieldEmbedItemAudio                      FieldID = "embed.items.content.audio"
-	FieldEmbedItemVideo                      FieldID = "embed.items.content.video"
-	FieldEmbedItemFile                       FieldID = "embed.items.content.file"
-	FieldEmbedItemData                       FieldID = "embed.items.content.data"
-	FieldEmbedItemToolCall                   FieldID = "embed.items.content.tool_call"
-	FieldEmbedItemToolResult                 FieldID = "embed.items.content.tool_result"
-	FieldEmbedItemMultiPart                  FieldID = "embed.items.content.multi_part"
-	FieldEmbedDimensions                     FieldID = "embed.dimensions"
-	FieldTranscriptionAudio                  FieldID = "transcription.audio"
-	FieldTranscriptionLanguage               FieldID = "transcription.language"
-	FieldTranscriptionPrompt                 FieldID = "transcription.prompt"
-	FieldTranscriptionTimestamps             FieldID = "transcription.timestamps"
-	FieldTranscriptionInputFormat            FieldID = "transcription.session.input_format"
-	FieldDecisionInputText                   FieldID = "decision.input.text"
-	FieldDecisionInputJSON                   FieldID = "decision.input.json"
-	FieldDecisionInputPartText               FieldID = "decision.input.parts.text"
-	FieldDecisionInputPartImage              FieldID = "decision.input.parts.image"
-	FieldDecisionQuestionName                FieldID = "decision.questions.*.name"
-	FieldDecisionQuestionKind                FieldID = "decision.questions.*.kind"
-	FieldDecisionQuestionInstructions        FieldID = "decision.questions.*.instructions"
-	FieldDecisionQuestionChoices             FieldID = "decision.questions.*.choices"
-	FieldDecisionQuestionLevels              FieldID = "decision.questions.*.levels"
-	FieldDecisionRequestMetadata             FieldID = "decision.request.metadata"
+	// QuestionPredicate asks a yes/no question; the answer carries P(true).
+	QuestionPredicate QuestionKind = "predicate"
+	// QuestionChoice asks to pick one of the declared choices.
+	QuestionChoice QuestionKind = "choice"
+	// QuestionScore asks for a value on a declared scale.
+	QuestionScore QuestionKind = "score"
 )
 
-type Disposition string
-
-const (
-	// Native means the compiler consumed the field into the provider wire.
-	Native Disposition = "native"
-	// Rejected means the field cannot be honored and the compile failed.
-	Rejected Disposition = "rejected"
-	// Dropped means the compiler intentionally discarded the field: the
-	// value cannot round-trip or has no channel, and the Reason states why.
-	// Drops are field-level audits and may appear on a successful compile
-	// or alongside a rejection on a failed one; consumers audit them
-	// through the report, so nothing is discarded silently.
-	Dropped Disposition = "dropped"
-)
-
-type Decision struct {
-	Field       FieldID     `json:"field"`
-	Disposition Disposition `json:"disposition"`
-	Reason      string      `json:"reason,omitempty"`
-	// Components carries per-component detail when a field aggregates whole
-	// content kinds across occurrences (the `*` in
-	// generate.context.*.content.parts.tool_result spans every message).
-	// A field-level disposition cannot say "the text arrived but the image
-	// did not"; these notes keep that distinction machine-readable without
-	// widening the field table or letting one field carry several terminal
-	// dispositions.
-	//
-	// The list is populated only when the field lost at least one
-	// component; it then covers every component of the field in encounter
-	// order, so Index positions stay meaningful. Disposition equals the
-	// worst component disposition.
-	Components []ComponentNote `json:"components,omitempty"`
-}
-
-// ComponentNote records how one component inside a canonical field fared.
-type ComponentNote struct {
-	// Kind is the canonical content kind this note covers.
-	Kind message.PartKind `json:"kind"`
-	// Disposition is this component's own terminal disposition.
-	Disposition Disposition `json:"disposition"`
-	// Index is the component's position in encounter order. Drivers choose
-	// the granularity the field aggregates at: for a tool result it is the
-	// position inside that result's content, and indexes are unique within
-	// one decision.
-	Index int `json:"index"`
-	// Reason states why a non-native component was degraded.
-	Reason string `json:"reason,omitempty"`
-}
-
-type CompileReport struct {
-	Operation Operation  `json:"operation"`
-	Decisions []Decision `json:"decisions"`
-}
-
-func (r CompileReport) Clone() CompileReport {
-	r.Decisions = cloneDecisions(r.Decisions)
-	return r
-}
-
-// cloneDecisions deep-copies decisions, including their component notes, so
-// callers can mutate a report without reaching into the original.
-func cloneDecisions(decisions []Decision) []Decision {
-	if decisions == nil {
+func (k QuestionKind) Validate() error {
+	switch k {
+	case QuestionPredicate, QuestionChoice, QuestionScore:
 		return nil
+	default:
+		return fmt.Errorf("unknown question kind %q", k)
 	}
-	cloned := make([]Decision, len(decisions))
-	for index, decision := range decisions {
-		decision.Components = append([]ComponentNote(nil), decision.Components...)
-		cloned[index] = decision
-	}
-	return cloned
 }
 
-func (r CompileReport) Rejects(field FieldID) bool {
-	for _, decision := range r.Decisions {
-		if decision.Field == field && decision.Disposition == Rejected {
+// ChoiceValue is one selectable option. The value is typed: a string choice and
+// a boolean choice are distinct even when their text reads the same, which is
+// how the endpoint distinguishes them.
+type ChoiceValue struct {
+	// Label is what the caller sees and what an answer echoes.
+	Label string `json:"label"`
+	// Bool, when set, makes this a boolean choice; otherwise it is a string
+	// choice with Label as its value.
+	Bool *bool `json:"bool,omitempty"`
+}
+
+// Question is one question in a decision call.
+type Question struct {
+	// Name identifies the question; answers echo it, and a refusal names it.
+	Name string `json:"name"`
+	// Kind selects the answer shape.
+	Kind QuestionKind `json:"kind"`
+	// Instructions state what to judge.
+	Instructions string `json:"instructions"`
+	// Choices are the selectable options for QuestionChoice: at least two.
+	Choices []ChoiceValue `json:"choices,omitempty"`
+	// Levels are the scale for QuestionScore, lowest first.
+	Levels []string `json:"levels,omitempty"`
+}
+
+// Validate rejects a question the contract cannot express.
+func (q Question) Validate() error {
+	if q.Name == "" {
+		return fmt.Errorf("question name is required: answers and refusals are matched by name")
+	}
+	if err := q.Kind.Validate(); err != nil {
+		return err
+	}
+	if q.Instructions == "" {
+		return fmt.Errorf("question %q has no instructions", q.Name)
+	}
+	switch q.Kind {
+	case QuestionChoice:
+		if len(q.Choices) < 2 {
+			return fmt.Errorf("question %q needs at least two choices", q.Name)
+		}
+		if len(q.Choices) > 255 {
+			return fmt.Errorf("question %q has %d choices, the limit is 255", q.Name, len(q.Choices))
+		}
+	case QuestionScore:
+		if len(q.Levels) < 2 {
+			return fmt.Errorf("question %q needs at least two score levels", q.Name)
+		}
+	default:
+		if len(q.Choices) > 0 || len(q.Levels) > 0 {
+			return fmt.Errorf("question %q: choices and levels apply to choice and score questions", q.Name)
+		}
+	}
+	return nil
+}
+
+// DecisionRequest is one judgment call.
+type DecisionRequest struct {
+	// Model names the provider-qualified model that should judge.
+	Model model.ModelRef `json:"model"`
+	// Input is the material being judged: text, or a message whose parts carry
+	// what the questions are about.
+	Input message.Content `json:"input"`
+	// Questions are answered in order; empty is rejected.
+	Questions  []Question `json:"questions"`
+	Extensions Extensions `json:"-"`
+}
+
+// Validate rejects a request before any provider I/O.
+func (r DecisionRequest) Validate() error {
+	if err := r.Model.Validate(); err != nil {
+		return inferenceErr(InvalidRequest, FieldModel, err)
+	}
+	if err := r.Input.Validate(); err != nil {
+		return inferenceErr(InvalidRequest, FieldInput, err)
+	}
+	if len(r.Questions) == 0 {
+		return inferenceErr(InvalidRequest, FieldQuestions, fmt.Errorf("at least one question is required"))
+	}
+	seen := make(map[string]bool, len(r.Questions))
+	for i, question := range r.Questions {
+		if err := question.Validate(); err != nil {
+			return inferenceErr(InvalidRequest, FieldQuestions, fmt.Errorf("question %d: %w", i, err))
+		}
+		if seen[question.Name] {
+			return inferenceErr(InvalidRequest, FieldQuestions,
+				fmt.Errorf("question name %q appears twice: answers are matched by name", question.Name))
+		}
+		seen[question.Name] = true
+	}
+	if err := r.Extensions.Validate(); err != nil {
+		return inferenceErr(InvalidExtension, FieldExtensions, err)
+	}
+	return nil
+}
+
+// ActiveFields names the knobs this request uses.
+func (r DecisionRequest) ActiveFields() []Field {
+	fields := []Field{FieldModel, FieldInput, FieldQuestions}
+	return append(fields, r.Extensions.ActiveFields()...)
+}
+
+// AnswerKind names how one question was answered.
+type AnswerKind string
+
+const (
+	// AnswerRefusal means the model declined this question. Other questions in
+	// the same call may still be answered.
+	AnswerRefusal AnswerKind = "refusal"
+)
+
+// Answer is one judgment.
+type Answer struct {
+	// Name echoes the question's name.
+	Name string `json:"name"`
+	// Kind matches the question's kind, or is AnswerRefusal.
+	Kind AnswerKind `json:"kind"`
+	// Probability is P(true) for a predicate question.
+	Probability *float64 `json:"probability,omitempty"`
+	// Choice is the selected option for a choice question.
+	Choice *ChoiceValue `json:"choice,omitempty"`
+	// Score is the value for a score question.
+	Score *float64 `json:"score,omitempty"`
+	// Confidence is the model's confidence in this answer.
+	Confidence float64 `json:"confidence,omitempty"`
+	// Probabilities is the distribution over the alternatives, when reported.
+	Probabilities []Probability `json:"probabilities,omitempty"`
+	// Refusal explains a declined question. Set only for AnswerRefusal.
+	Refusal string `json:"refusal,omitempty"`
+}
+
+// Probability is one entry of a reported distribution.
+type Probability struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+}
+
+// DecisionResponse is one batch of judgments.
+type DecisionResponse struct {
+	// Answers are in request order.
+	Answers  []Answer    `json:"answers"`
+	Usage    usage.Usage `json:"usage,omitzero"`
+	Metadata Metadata    `json:"metadata,omitzero"`
+	Warnings []Warning   `json:"warnings,omitempty"`
+}
+
+// ValidateFor reports whether the answer can be the answer to request.
+//
+// A refusal is a valid answer: it is per question, and the others still count.
+// A kind that does not match its question is not valid — that answer belongs to
+// a different question, and attributing it would silently corrupt the judgment.
+func (r DecisionResponse) ValidateFor(request DecisionRequest) error {
+	if len(r.Answers) != len(request.Questions) {
+		return inferenceErr(InvalidProviderResponse, FieldAnswers,
+			fmt.Errorf("got %d answers for %d questions", len(r.Answers), len(request.Questions)))
+	}
+	// Match by name, not by position: answers echo the question name, and a
+	// provider that reorders them would otherwise have its answers attributed to
+	// the wrong questions — silently, because the count still matches.
+	byName := make(map[string]Question, len(request.Questions))
+	for _, question := range request.Questions {
+		byName[question.Name] = question
+	}
+	seen := make(map[string]bool, len(r.Answers))
+	for i, answer := range r.Answers {
+		question, ok := byName[answer.Name]
+		if !ok {
+			return inferenceErr(InvalidProviderResponse, FieldAnswers,
+				fmt.Errorf("answer %d names %q, which no question asked", i, answer.Name))
+		}
+		if seen[answer.Name] {
+			return inferenceErr(InvalidProviderResponse, FieldAnswers,
+				fmt.Errorf("answer %q appears twice", answer.Name))
+		}
+		seen[answer.Name] = true
+
+		// A refusal is a valid answer: it is per question, and the others still
+		// count.
+		if answer.Kind == AnswerRefusal {
+			continue
+		}
+		if string(answer.Kind) != string(question.Kind) {
+			return inferenceErr(InvalidProviderResponse, FieldAnswers,
+				fmt.Errorf("answer %q has kind %q, want %q", answer.Name, answer.Kind, question.Kind))
+		}
+		switch question.Kind {
+		case QuestionPredicate:
+			if answer.Probability == nil || *answer.Probability < 0 || *answer.Probability > 1 {
+				return inferenceErr(InvalidProviderResponse, FieldAnswers,
+					fmt.Errorf("answer %q needs a probability in [0, 1]", answer.Name))
+			}
+		case QuestionChoice:
+			if answer.Choice == nil {
+				return inferenceErr(InvalidProviderResponse, FieldAnswers,
+					fmt.Errorf("answer %q has no choice", answer.Name))
+			}
+			if !declares(question.Choices, *answer.Choice) {
+				return inferenceErr(InvalidProviderResponse, FieldAnswers,
+					fmt.Errorf("answer %q picked %q, which the question did not offer", answer.Name, answer.Choice.Label))
+			}
+		case QuestionScore:
+			if answer.Score == nil {
+				return inferenceErr(InvalidProviderResponse, FieldAnswers,
+					fmt.Errorf("answer %q has no score", answer.Name))
+			}
+		}
+	}
+	return nil
+}
+
+// declares reports whether value is one of the offered choices, comparing the
+// typed value rather than its label.
+func declares(choices []ChoiceValue, value ChoiceValue) bool {
+	for _, choice := range choices {
+		if choice.Label != value.Label {
+			continue
+		}
+		if (choice.Bool == nil) != (value.Bool == nil) {
+			continue
+		}
+		if choice.Bool == nil || *choice.Bool == *value.Bool {
 			return true
 		}
 	}
 	return false
-}
-
-// Dropped reports whether the field was dropped with a reason while the
-// compile otherwise succeeded.
-func (r CompileReport) Dropped(field FieldID) bool {
-	for _, decision := range r.Decisions {
-		if decision.Field == field && decision.Disposition == Dropped {
-			return true
-		}
-	}
-	return false
-}
-
-// Components returns the per-component notes recorded for field, or nil when
-// the decision carried none. The notes are meaningful only when the field
-// lost at least one component: the driver then reports every component in
-// encounter order.
-func (r CompileReport) Components(field FieldID) []ComponentNote {
-	for _, decision := range r.Decisions {
-		if decision.Field == field {
-			return append([]ComponentNote(nil), decision.Components...)
-		}
-	}
-	return nil
-}
-
-func (r CompileReport) Metadata(model ModelRef) Metadata {
-	return Metadata{
-		Model:     model.ID,
-		Operation: r.Operation,
-		Decisions: cloneDecisions(r.Decisions),
-	}
-}
-
-// ValidateSuccess proves that a successful compile covers every active
-// canonical field with exactly one terminal disposition: Native, or Dropped
-// with a reason. Rejections invalidate a successful report.
-func (r CompileReport) ValidateSuccess(operation Operation, active []FieldID) error {
-	if r.Operation != operation {
-		return contractViolation(operation, "", "compiler reported the wrong operation")
-	}
-	activeSet := make(map[FieldID]struct{}, len(active))
-	for _, field := range active {
-		activeSet[field] = struct{}{}
-	}
-	seen := make(map[FieldID]struct{}, len(r.Decisions))
-	for _, decision := range r.Decisions {
-		if _, ok := activeSet[decision.Field]; !ok {
-			return contractViolation(r.Operation, decision.Field, "decision covers an inactive field")
-		}
-		if _, ok := seen[decision.Field]; ok {
-			return contractViolation(r.Operation, decision.Field, "duplicate field disposition")
-		}
-		seen[decision.Field] = struct{}{}
-		switch decision.Disposition {
-		case Native:
-		case Dropped:
-			if decision.Reason == "" {
-				return contractViolation(r.Operation, decision.Field, "dropped field carries no reason")
-			}
-		case Rejected:
-			return contractViolation(r.Operation, decision.Field, "successful compile contains rejection")
-		default:
-			return contractViolation(r.Operation, decision.Field, "unknown disposition")
-		}
-		if err := validateComponents(r.Operation, decision); err != nil {
-			return err
-		}
-	}
-	for _, field := range active {
-		if _, ok := seen[field]; !ok {
-			return contractViolation(r.Operation, field, "active field has no disposition")
-		}
-	}
-	return nil
-}
-
-// ValidateFailure proves that a failed compile rejects at least one active
-// field and contains no duplicate or out-of-ledger decisions. Dropped
-// decisions are field-level audits: a driver may both reject one field
-// and drop another (for example an image input rejected by a text model
-// while the reasoning effort folds onto the model's wire level), so a
-// valid dropped disposition with a reason does not invalidate the report.
-func (r CompileReport) ValidateFailure(operation Operation, active []FieldID) error {
-	if r.Operation != operation {
-		return contractViolation(operation, "", "compiler reported the wrong operation")
-	}
-	activeSet := make(map[FieldID]struct{}, len(active))
-	for _, field := range active {
-		activeSet[field] = struct{}{}
-	}
-	seen := make(map[FieldID]struct{}, len(r.Decisions))
-	rejected := false
-	for _, decision := range r.Decisions {
-		if _, ok := activeSet[decision.Field]; !ok {
-			return contractViolation(operation, decision.Field, "decision covers an inactive field")
-		}
-		if _, ok := seen[decision.Field]; ok {
-			return contractViolation(operation, decision.Field, "duplicate field disposition")
-		}
-		seen[decision.Field] = struct{}{}
-		switch decision.Disposition {
-		case Native:
-		case Dropped:
-			if decision.Reason == "" {
-				return contractViolation(operation, decision.Field, "dropped field carries no reason")
-			}
-		case Rejected:
-			if decision.Reason == "" {
-				return contractViolation(operation, decision.Field, "rejected disposition requires a reason")
-			}
-			rejected = true
-		default:
-			return contractViolation(operation, decision.Field, "unknown disposition")
-		}
-		if err := validateComponents(operation, decision); err != nil {
-			return err
-		}
-	}
-	if !rejected {
-		return contractViolation(operation, "", "failed compile has no rejected field")
-	}
-	return nil
-}
-
-// validateComponents checks a decision's per-component notes. The notes are
-// optional — a decision without them keeps the field-level contract — but
-// when present they must be well formed and must fold onto the field's own
-// disposition, so a report can never claim "native" for a field that lost an
-// image.
-func validateComponents(operation Operation, decision Decision) error {
-	if len(decision.Components) == 0 {
-		return nil
-	}
-	seen := make(map[int]struct{}, len(decision.Components))
-	worst := Native
-	for _, note := range decision.Components {
-		if err := note.Kind.Validate(); err != nil {
-			return contractViolation(
-				operation,
-				decision.Field,
-				"component names an invalid content kind",
-			)
-		}
-		if _, duplicate := seen[note.Index]; duplicate {
-			return contractViolation(
-				operation,
-				decision.Field,
-				"duplicate component index",
-			)
-		}
-		seen[note.Index] = struct{}{}
-		switch note.Disposition {
-		case Native:
-		case Dropped:
-			if note.Reason == "" {
-				return contractViolation(
-					operation,
-					decision.Field,
-					"dropped component carries no reason",
-				)
-			}
-			if worst == Native {
-				worst = Dropped
-			}
-		case Rejected:
-			if note.Reason == "" {
-				return contractViolation(
-					operation,
-					decision.Field,
-					"rejected component carries no reason",
-				)
-			}
-			worst = Rejected
-		default:
-			return contractViolation(
-				operation,
-				decision.Field,
-				"unknown component disposition",
-			)
-		}
-	}
-	if worst != decision.Disposition {
-		return contractViolation(
-			operation,
-			decision.Field,
-			"component dispositions do not fold onto the field disposition",
-		)
-	}
-	return nil
-}
-
-func contractViolation(operation Operation, field FieldID, message string) error {
-	err := NewError(
-		CompilerContractViolation,
-		operation,
-		field,
-		fmt.Errorf("%s", message),
-	)
-	// The message names the exact check that failed, and several checks
-	// share a field path while pointing at different owners (a missing
-	// disposition is a driver bug, an inactive decision is a caller bug).
-	// It is a static stage label, so it belongs in Detail where Error(),
-	// logs, and spans can reach it; the cause keeps the chain for
-	// errors.Is/errors.As.
-	err.Detail = message
-	return err
 }

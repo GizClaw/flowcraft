@@ -2,12 +2,12 @@ package message
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"slices"
 
+	"github.com/GizClaw/flowcraft/core/internal/ptr"
 	"github.com/GizClaw/flowcraft/core/message/media"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/goccy/go-json"
 )
 
 type PartKind string
@@ -116,10 +116,10 @@ func MarshalPart(part Part) ([]byte, error) {
 		}{PartImage, value.Source}
 	case AudioPart:
 		wire = struct {
-			Type           PartKind           `json:"type"`
-			Source         media.AudioSource  `json:"source"`
-			Format         *media.AudioFormat `json:"format,omitempty"`
-			DurationMillis *int64             `json:"duration_millis,omitempty"`
+			Type           PartKind          `json:"type"`
+			Source         media.AudioSource `json:"source"`
+			Format         media.AudioFormat `json:"format,omitzero"`
+			DurationMillis int64             `json:"duration_millis,omitzero"`
 		}{PartAudio, value.Source, value.Format, value.DurationMillis}
 	case VideoPart:
 		wire = struct {
@@ -128,11 +128,10 @@ func MarshalPart(part Part) ([]byte, error) {
 		}{PartVideo, value.Source}
 	case FilePart:
 		wire = struct {
-			Type      PartKind `json:"type"`
-			URI       string   `json:"uri"`
-			MediaType string   `json:"media_type,omitempty"`
-			Name      string   `json:"name,omitempty"`
-		}{PartFile, value.URI, value.MediaType, value.Name}
+			Type   PartKind         `json:"type"`
+			Source media.FileSource `json:"source"`
+			Name   string           `json:"name,omitempty"`
+		}{PartFile, value.Source, value.Name}
 	case DataPart:
 		wire = struct {
 			Type      PartKind        `json:"type"`
@@ -197,10 +196,10 @@ func UnmarshalPart(data []byte) (Part, error) {
 		return ImagePart{Source: item.Source}, nil
 	case PartAudio:
 		var item struct {
-			Type           PartKind           `json:"type"`
-			Source         media.AudioSource  `json:"source"`
-			Format         *media.AudioFormat `json:"format,omitempty"`
-			DurationMillis *int64             `json:"duration_millis,omitempty"`
+			Type           PartKind          `json:"type"`
+			Source         media.AudioSource `json:"source"`
+			Format         media.AudioFormat `json:"format,omitzero"`
+			DurationMillis int64             `json:"duration_millis,omitzero"`
 		}
 		if err := decodeStrict(data, &item); err != nil {
 			return nil, fmt.Errorf("content part: %w", err)
@@ -220,15 +219,14 @@ func UnmarshalPart(data []byte) (Part, error) {
 		return VideoPart{Source: item.Source}, nil
 	case PartFile:
 		var item struct {
-			Type      PartKind `json:"type"`
-			URI       string   `json:"uri"`
-			MediaType string   `json:"media_type,omitempty"`
-			Name      string   `json:"name,omitempty"`
+			Type   PartKind         `json:"type"`
+			Source media.FileSource `json:"source"`
+			Name   string           `json:"name,omitempty"`
 		}
 		if err := decodeStrict(data, &item); err != nil {
 			return nil, fmt.Errorf("content part: %w", err)
 		}
-		return FilePart{URI: item.URI, MediaType: item.MediaType, Name: item.Name}, nil
+		return FilePart{Source: item.Source, Name: item.Name}, nil
 	case PartData:
 		var item struct {
 			Type      PartKind        `json:"type"`
@@ -292,26 +290,31 @@ type ImagePart struct {
 
 func (ImagePart) Kind() PartKind { return PartImage }
 func (p ImagePart) Clone() Part {
-	// The source owns the inline payload ([]byte for a data source, a stream
-	// handle). Sharing it would let a "clone" mutate its original, which a
-	// board snapshot, a checkpoint record or a retry rollback cannot tolerate.
+	// A clone must not share the inline payload: a caller that edits the copy
+	// would otherwise mutate a message that is already stored in history, and a
+	// checkpoint would silently record the edit.
 	p.Source = p.Source.Clone()
 	return p
 }
 func (p ImagePart) Validate() error { return p.Source.Validate() }
 func (ImagePart) messagePart()      {}
 
+// AudioPart carries one audio payload.
+//
+// Format and DurationMillis are values, not pointers: a pointer is a mutable
+// field on an otherwise immutable part, so a reader could write through it and
+// change a message that is already in a transcript. Their zero values mean "not
+// stated", which is why the JSON form omits them.
 type AudioPart struct {
-	Source         media.AudioSource  `json:"source"`
-	Format         *media.AudioFormat `json:"format,omitempty"`
-	DurationMillis *int64             `json:"duration_millis,omitempty"`
+	Source         media.AudioSource `json:"source"`
+	Format         media.AudioFormat `json:"format,omitzero"`
+	DurationMillis int64             `json:"duration_millis,omitzero"`
 }
 
 func (AudioPart) Kind() PartKind { return PartAudio }
+
 func (p AudioPart) Clone() Part {
 	p.Source = p.Source.Clone()
-	p.Format = clonePointer(p.Format)
-	p.DurationMillis = clonePointer(p.DurationMillis)
 	return p
 }
 
@@ -319,7 +322,7 @@ func (p AudioPart) Validate() error {
 	if err := p.Source.Validate(); err != nil {
 		return err
 	}
-	if p.Format != nil {
+	if p.Format != (media.AudioFormat{}) {
 		if err := p.Format.Validate(); err != nil {
 			return err
 		}
@@ -328,7 +331,7 @@ func (p AudioPart) Validate() error {
 			return fmt.Errorf("audio source media type does not match its format")
 		}
 	}
-	if p.DurationMillis != nil && *p.DurationMillis < 0 {
+	if p.DurationMillis < 0 {
 		return fmt.Errorf("audio duration must not be negative")
 	}
 	return nil
@@ -348,16 +351,21 @@ func (p VideoPart) Validate() error { return p.Source.Validate() }
 func (VideoPart) messagePart()      {}
 
 type FilePart struct {
-	URI       string `json:"uri"`
-	MediaType string `json:"media_type,omitempty"`
-	Name      string `json:"name,omitempty"`
+	// Source is where the payload lives: a URL, or the bytes themselves when a
+	// protocol sends them inline. A file is not special enough to need a second
+	// shape beside the media parts.
+	Source media.FileSource `json:"source"`
+	Name   string           `json:"name,omitempty"`
 }
 
 func (FilePart) Kind() PartKind { return PartFile }
-func (p FilePart) Clone() Part  { return p }
+func (p FilePart) Clone() Part {
+	p.Source = p.Source.Clone()
+	return p
+}
 func (p FilePart) Validate() error {
-	if p.URI == "" {
-		return fmt.Errorf("file URI is required")
+	if err := p.Source.Validate(); err != nil {
+		return fmt.Errorf("file source: %w", err)
 	}
 	return nil
 }
@@ -448,11 +456,3 @@ func (p ReasoningPart) Validate() error {
 	return nil
 }
 func (ReasoningPart) messagePart() {}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}

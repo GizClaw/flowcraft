@@ -7,7 +7,10 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // RateLimit paces calls per tool according to the tool's declared
@@ -28,9 +31,17 @@ func RateLimit(catalog tool.Catalog) tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			if p := limiters.forTool(call.Name); p != nil {
+				start := time.Now()
 				if err := p.wait(ctx); err != nil {
+					tool.RecordFailure(ctx, tool.FailureCanceled)
 					return message.NewErrorToolResult(call.ID,
 						fmt.Sprintf("tool %q rate-limit wait interrupted: %v", call.Name, err))
+				}
+				// A wait shorter than a millisecond is scheduling noise, not
+				// backpressure; recording it would bury the real stalls.
+				if waited := time.Since(start); waited >= time.Millisecond {
+					annotate(ctx, attribute.Int64(
+						telemetry.AttrRateLimitBlockedMs, waited.Milliseconds()))
 				}
 			}
 			return next(ctx, call)

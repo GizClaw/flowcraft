@@ -1,0 +1,96 @@
+# One runtime: the boundary commands run inside, the directories the file tools
+# may write, the model access resolved by name, and which tools are wired.
+version: 1
+name: forge
+
+sandbox:
+  # local (no OS boundary) | seatbelt (macOS) | bwrap (Linux) | windows
+  backend: local
+  workdir: ${RUNTIME_ROOT}
+  # Empty means read-only. Every entry must exist and be absolute.
+  writes:
+    - ${RUNTIME_ROOT}
+  net:
+    # default | none | allow_list | proxy
+    mode: allow_list
+    allow_hosts:
+      - api.openai.com
+  # Default per-call deadline. A tool may ask for less; this is the ceiling.
+  timeout: 60s
+  output_mib: 8
+  # cpu_millicores and memory_mib are enforced by a backend that samples the
+  # process group (bwrap / seatbelt) or the kernel (windows). "local" enforces
+  # neither, so declaring one here fails the build rather than being ignored —
+  # which is also why this example leaves them out.
+  # journal:            # presence enables it; absence means no journal
+  #   exclude: [.git, node_modules]
+  #   retention: 4096
+
+files:
+  roots:
+    - ${RUNTIME_ROOT}
+
+inference:
+  # One block per account or endpoint: the driver, its credentials, and every
+  # model it serves. Declaring it once keeps the key and base_url from being
+  # repeated per model.
+  providers:
+    - name: luna             # deployment identity, public and secret-free
+      driver: openai         # constructor, and the public vendor identity
+      settings: {}
+
+  # Position is priority: the first model is tried first.
+  models:
+    - provider: luna
+      model: gpt-6-luna      # API model name
+      # Fill in only what the driver's catalog does not declare; a
+      # contradiction is an assembly error, not an override.
+      capabilities: {inputs: [text, image]}
+      limits: {max_input_tokens: 128000, max_output_tokens: 8192}
+
+  route:
+    attempts_per_target: 2
+    max_targets: 2
+    base_delay: 250ms
+    max_delay: 5s
+
+tools:
+  enable: [files, exec, skills]
+  tty: true
+  # Lets read_file hand an image to the model. Fill it only for a model
+  # that takes image input; a text-only model refuses the part at the
+  # provider.
+  images: true
+  # Omit this block and every wired tool is visible from the first round.
+  dynamic:
+    default: deferred        # always | direct | deferred | hidden
+    always: [read_file, edit, bash]   # stay visible every round
+    budget: 24               # definitions per round
+    idle_rounds: 3           # evict after this many idle rounds
+
+  # Dispatch chain, outermost first. Omitted means [recover, telemetry]:
+  # a tool call must produce a span and must not be able to stop the process.
+  middleware:
+    - name: recover
+    - name: telemetry
+    - name: result_limit
+      settings: {max_bytes: 262144}
+
+  # MCP servers are one more tool source.
+  mcp:
+    # true (default) starts a server only when a tool from it is loaded.
+    defer: true
+    servers: []
+    # - name: github
+    #   transport: stdio
+    #   command: npx
+    #   args: ["-y", "@modelcontextprotocol/server-github"]
+    #   env: {GITHUB_TOKEN: "${GITHUB_TOKEN}"}
+    #   prefix: gh
+    #   required: true
+    #   # What the model can search for before the server starts.
+    #   description: GitHub issues, pull requests and repositories.
+
+skills:
+  roots:
+    - ${RUNTIME_ROOT}/.skills

@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
-	corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
-	"github.com/GizClaw/flowcraft/core/utils/pathsafe"
+	"github.com/GizClaw/flowcraft/core/internal/paths"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
 // ExecRequest is a snapshot of one Runner.Exec call (or one
@@ -73,190 +72,10 @@ type ApprovalRequest struct {
 // executes the command.
 type ApprovalFunc func(ctx context.Context, req ApprovalRequest) (Decision, error)
 
-// WithApproval returns a Runner that consults approve before
-// delegating to inner, but only when the call is out-of-bounds.
-// Calls matching allowlist are pre-approved and pass straight through
-// without any approver round-trip. When allowlist is non-nil, every
-// other call consults the approver (reason "command not in sandbox
-// allowlist"); predicates add extra tripwires on top of that (workdir
-// escapes, non-default network posture, …). When several predicates
-// match, only the first one's reason is reported — one call, one
-// decision. With allowlist nil, only predicate-matching calls reach
-// the approver.
-//
-// Contract:
-//
-//   - allowlist may be nil (no pre-approved commands) or an empty
-//     list (every call goes through the approver).
-//   - Matching the allowlist bypasses the predicates as well: it is a
-//     blanket pre-authorization of the call. Deployments that also
-//     want per-call approval on other dimensions (network posture,
-//     workdir) should keep those calls out of the allowlist.
-//   - Denied decisions surface as errdefs.PolicyDenied and the inner
-//     runner is never invoked.
-//   - ApprovalFunc errors are fail-closed: the call does not run.
-//   - An approved call proceeds with byte-identical ExecOptions; the
-//     backend may still reject it on its own grounds (approval does
-//     not widen policy, it gates the attempt).
-//   - A nil approve with a matching predicate denies the call
-//     (fail-closed) rather than panicking.
-//
-// Composition: place WithDefaults outside WithApproval so defaults are
-// merged before this decorator sees the call and the approver receives
-// the effective policy. Reversing them makes the approver see only the
-// caller's pre-merge options. The recommended local chain uses the
-// former ordering.
-func WithApproval(inner Runner, approve ApprovalFunc, allowlist *Allowlist, preds ...Predicate) Runner {
-	return &approvalRunner{inner: inner, approve: approve, allowlist: allowlist, preds: preds}
-}
+// The approval *decorator* (WithApproval) and its Allowlist ship with the
+// implementation layer: the contract keeps the request shape and the
+// predicates a host composes, not the wrapper that runs them.
 
-type approvalRunner struct {
-	inner     Runner
-	approve   ApprovalFunc
-	allowlist *Allowlist
-	preds     []Predicate
-}
-
-func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
-	req := ExecRequest{Command: cmd, Args: args, Opts: opts, Stdin: len(opts.Stdin) > 0}
-	if err := r.authorize(ctx, req); err != nil {
-		return nil, err
-	}
-	return Exec(ctx, r.inner, cmd, args, opts)
-}
-
-// authorize runs the allowlist / predicate / approver chain for one
-// request. It is shared by Exec and Runner.Start so interactive
-// sessions go through exactly the same fail-closed tripwire.
-func (r *approvalRunner) authorize(ctx context.Context, req ExecRequest) error {
-	if r.allowlist != nil && r.allowlist.Matches(req) {
-		return nil
-	}
-	for _, p := range r.preds {
-		if p == nil {
-			return errdefs.PolicyDeniedf(
-				"sandbox: nil approval predicate configured (fail-closed)")
-		}
-		if predicateFunc, ok := p.(PredicateFunc); ok && predicateFunc == nil {
-			return errdefs.PolicyDeniedf(
-				"sandbox: nil approval predicate function configured (fail-closed)")
-		}
-		reason, matched := p.Match(cloneExecRequest(req))
-		if !matched {
-			continue
-		}
-		return r.requestApproval(ctx, req, reason)
-	}
-	if r.allowlist != nil {
-		return r.requestApproval(ctx, req, "command not in sandbox allowlist")
-	}
-	return nil
-}
-
-func (r *approvalRunner) requestApproval(ctx context.Context, req ExecRequest, reason string) error {
-	if r.approve == nil {
-		return errdefs.PolicyDeniedf(
-			"sandbox: %s (no approver configured)", reason)
-	}
-	decision, err := r.approve(ctx, ApprovalRequest{
-		Exec:   cloneExecRequest(req),
-		Reason: reason,
-	})
-	if err != nil {
-		return fmt.Errorf(
-			"sandbox: approval for %q failed; not executed (fail-closed): %w", req.Command, err)
-	}
-	if decision != Allow {
-		return errdefs.PolicyDeniedf(
-			"sandbox: execution of %q denied: %s", req.Command, reason)
-	}
-	return nil
-}
-
-// Start implements Runner: an interactive session crosses the
-// same predicate / approver chain as an Exec call, with TTY surfaced
-// on the request so the approver sees it is authorising a persistent
-// command channel. Once Start is approved, Read/Write/Resize/Terminate
-// never re-enter approval — the policy is fixed at Start.
-func (r *approvalRunner) Start(ctx context.Context, spec SessionSpec) (Session, error) {
-	if len(spec.Argv) == 0 {
-		return nil, errdefs.Validationf("sandbox: SessionSpec.Argv must name a command")
-	}
-	req := ExecRequest{
-		Command: spec.Argv[0],
-		Args:    spec.Argv[1:],
-		Opts:    spec.Opts,
-		TTY:     spec.TTY,
-		Stdin:   spec.Stdin || spec.TTY,
-	}
-	if err := r.authorize(ctx, req); err != nil {
-		return nil, err
-	}
-	return r.inner.Start(ctx, spec)
-}
-
-// List forwards the inner runner.s session list.
-func (r *approvalRunner) List(ctx context.Context) ([]SessionInfo, error) {
-	return r.inner.List(ctx)
-}
-
-// Terminate forwards to the inner runner's session manager.
-func (r *approvalRunner) Terminate(ctx context.Context, id string) error {
-	return r.inner.Terminate(ctx, id)
-}
-
-// cloneExecRequest prevents predicates / approvers from mutating the
-// arguments or option maps/slices that are later delegated to the
-// backend. Approval observes a snapshot; it is never a policy rewrite
-// hook.
-func cloneExecRequest(req ExecRequest) ExecRequest {
-	out := req
-	out.Args = cloneSlice(req.Args)
-	out.Opts.Stdin = cloneSlice(req.Opts.Stdin)
-	out.Opts.Env.Allow = cloneSlice(req.Opts.Env.Allow)
-	if req.Opts.Env.Inject != nil {
-		out.Opts.Env.Inject = make(map[string]string, len(req.Opts.Env.Inject))
-		for key, value := range req.Opts.Env.Inject {
-			out.Opts.Env.Inject[key] = value
-		}
-	}
-	out.Opts.Net.AllowHosts = cloneSlice(req.Opts.Net.AllowHosts)
-	return out
-}
-
-func cloneSlice[T any](src []T) []T {
-	if src == nil {
-		return nil
-	}
-	out := make([]T, len(src))
-	copy(out, src)
-	return out
-}
-
-// Capabilities forwards the inner runner's declaration: approval gates
-// calls but does not itself enforce any policy dimension or add a
-// session feature.
-func (r *approvalRunner) Capabilities() Capabilities {
-	return r.inner.Capabilities()
-}
-
-// Close forwards to the inner runner so lifecycle survives decoration.
-func (r *approvalRunner) Close() error {
-	return r.inner.Close()
-}
-
-// OpenJournal forwards to the inner runner: approval gates whether a
-// call runs, not what the backend watches afterwards, so the decorated
-// runner exposes exactly the inner journal (or NotAvailable when there
-// is none).
-func (r *approvalRunner) OpenJournal(ctx context.Context) (FileJournal, error) {
-	return OpenJournal(ctx, r.inner)
-}
-
-// CommandPatterns returns a predicate that matches when the command's
-// base name glob-matches any of the patterns (e.g. "rm", "dd",
-// "git"). It inspects the command string only — a shell invocation
-// hides the real program behind "sh".
 func CommandPatterns(patterns ...string) Predicate {
 	return PredicateFunc(func(req ExecRequest) (string, bool) {
 		base := filepath.Base(req.Command)
@@ -288,7 +107,7 @@ func Interactive() Predicate {
 // network posture other than NetDefault.
 func NetNonDefault() Predicate {
 	return PredicateFunc(func(req ExecRequest) (string, bool) {
-		if req.Opts.Net.Mode != corenet.NetDefault {
+		if req.Opts.Net.Mode != permission.NetDefault {
 			return fmt.Sprintf("non-default network policy requested (mode %d)", req.Opts.Net.Mode), true
 		}
 		return "", false
@@ -300,7 +119,7 @@ func NetNonDefault() Predicate {
 // WorkDir values always stay under the runner root and never match.
 // Note the approval flow this enables: the approver is *asked* about
 // the escape; whether the escape then actually runs is still the
-// backend's decision (sandbox/local rejects out-of-root WorkDir
+// backend's decision (sandbox-local rejects out-of-root WorkDir
 // outright).
 func WorkDirOutsideRoot(root string) Predicate {
 	real, err := filepath.Abs(root)
@@ -315,7 +134,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		if !pathsafe.RealWithin(real, abs) {
+		if !paths.RealWithin(real, abs) {
 			return fmt.Sprintf("workdir %q resolves outside root %q", wd, real), true
 		}
 		return "", false

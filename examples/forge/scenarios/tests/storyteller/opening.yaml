@@ -1,0 +1,8 @@
+name: storyteller_opening
+description: >-
+  Open the arc in the ruined temple, let the narrator and the cast play a beat,
+  and let the reader interrupt once.
+raid: storyteller
+turns:
+  - 我们四个在破庙里避雨，门外忽然有人敲门。
+  - 悟空，去把门打开，看看外面是谁。

@@ -6,7 +6,8 @@ import (
 )
 
 // loadDotEnv parses a minimal KEY=VALUE .env file into the process
-// environment. Existing environment values win.
+// environment. Existing environment values win, so a shell export is never
+// overridden by a checked-out file.
 func loadDotEnv(path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {

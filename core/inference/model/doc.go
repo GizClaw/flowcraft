@@ -14,7 +14,7 @@
 //
 // In scope: everything a provider spec must name to describe a model, plus
 // the Operation enum those declarations are written against. The package
-// depends on core/message and on core/utils/ptr — a leaf
+// depends on core/message and on core/internal/ptr — a leaf
 // that imports nothing beyond the standard library — for the shared
 // defensive-copy helper its Clone methods use; it never imports the inference
 // contract that re-exports it.

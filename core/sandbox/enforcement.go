@@ -1,6 +1,6 @@
 package sandbox
 
-import corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
+import "github.com/GizClaw/flowcraft/core/permission"
 
 // Enforcement reports which policy dimensions a Runner can actually
 // enforce on the current platform, so callers and UIs never have to
@@ -32,18 +32,17 @@ import corenet "github.com/GizClaw/flowcraft/core/utils/netpolicy"
 //   - DiskCap: DiskBytes is enforced. No local backend reports this
 //     today.
 //   - FilesystemBounds: writes are confined to the runner root at the
-//     OS level (Seatbelt profile, namespace mounts). sandbox/local's
+//     OS level (Seatbelt profile, namespace mounts). sandbox-local's
 //     WorkDir check is call-time validation only — once the child is
 //     running it can chdir anywhere — so it does not qualify.
-//   - WriteModes: the set of WritePolicy values this backend can
-//     enforce per call. Isolation backends list WriteWorkspace (writes
-//     confined to the root plus explicit writable paths) and
-//     WriteReadOnly (root read-only). sandbox/local reports none —
-//     "unrestricted" is not an enforced mode, and WriteReadOnly is
-//     rejected with NotAvailable there.
+//   - WriteConfinement: the backend can enforce a per-call file boundary,
+//     i.e. it can make exactly ExecOptions.Permission's writable paths
+//     writable and everything else read-only. sandbox-local reports false:
+//     it has no OS boundary, so it refuses such a call instead of running
+//     it unconfined.
 type Enforcement struct {
 	EnvAllowList     bool
-	NetModes         []corenet.NetMode
+	NetModes         []permission.NetMode
 	Socks5           bool
 	MITM             bool
 	UnixSocketPolicy bool
@@ -51,16 +50,5 @@ type Enforcement struct {
 	CPUCap           bool
 	DiskCap          bool
 	FilesystemBounds bool
-	WriteModes       []WritePolicy
+	WriteConfinement bool
 }
-
-// GroupCapsSupported reports whether the shared process-group watcher
-// (StartGroupCapsWatcher) can enforce MemoryCap/CPUCap in this process:
-// unix, with a working ps(1). Backends that delegate resource caps to
-// that watcher — core/sandbox/local, core/sandbox/seatbelt — must gate the
-// MemoryCap/CPUCap fields of their Enforcement on it instead of
-// hardcoding true, otherwise they advertise caps that silently never
-// fire in a restricted environment where ps cannot be executed.
-//
-// The probe result is cached for the process lifetime.
-func GroupCapsSupported() bool { return groupCapsAvailable() }

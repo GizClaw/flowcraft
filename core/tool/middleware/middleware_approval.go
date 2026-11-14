@@ -5,7 +5,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // Approver decides whether a gated tool call may proceed. A nil
@@ -47,9 +50,12 @@ func Approval(approver Approver, tools ...string) tool.Middleware {
 				return next(ctx, call)
 			}
 			if err := approver.Approve(ctx, call); err != nil {
+				tool.RecordFailure(ctx, tool.FailurePolicyDenied)
+				annotate(ctx, attribute.String(telemetry.AttrPolicyDecision, "deny"))
 				return message.NewErrorToolResult(call.ID,
 					errdefs.PolicyDeniedf("tool %q call denied: %w", call.Name, err).Error())
 			}
+			annotate(ctx, attribute.String(telemetry.AttrPolicyDecision, "allow"))
 			return next(ctx, call)
 		}
 	}

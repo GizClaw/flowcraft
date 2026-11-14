@@ -4,14 +4,15 @@ package media
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"net/url"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/goccy/go-json"
 )
 
 type SourceKind string
@@ -19,16 +20,11 @@ type SourceKind string
 const (
 	SourceURL    SourceKind = "url"
 	SourceInline SourceKind = "inline"
-	// SourceStream marks a live, pull-based source of typed items (see
-	// [Stream]). It is the transport form of a media part: valid while a
-	// message is in flight, never in durable context or history — callers
-	// materialize it (message.MaterializeContent) before storage.
-	SourceStream SourceKind = "stream"
 )
 
 func (k SourceKind) Validate() error {
 	switch k {
-	case SourceURL, SourceInline, SourceStream:
+	case SourceURL, SourceInline:
 		return nil
 	default:
 		return fmt.Errorf("unknown media source kind %q", k)
@@ -40,17 +36,16 @@ type source struct {
 	url       string
 	data      []byte
 	mediaType string
-	// stream carries the live [Stream] handle for stream-kind sources. It
-	// is stored as any because the item type is caller-defined; the typed
-	// constructors (NewAudioStream / NewVideoStream) keep the
-	// instantiation at the call site.
-	stream any
 }
 
 type (
 	ImageSource struct{ source }
 	AudioSource struct{ source }
 	VideoSource struct{ source }
+	// FileSource is any other payload: a document, an archive, a data file. It
+	// carries the same URL/inline payload an image does, without the media-type
+	// prefix restriction.
+	FileSource struct{ source }
 )
 
 func (s ImageSource) Validate() error { return validateTypedSource(s.source, "image/") }
@@ -70,6 +65,11 @@ func (s VideoSource) Clone() VideoSource {
 	s.source = s.clone()
 	return s
 }
+func (s FileSource) Validate() error { return validateTypedSource(s.source, "") }
+func (s FileSource) Clone() FileSource {
+	s.source = s.clone()
+	return s
+}
 
 func (s source) clone() source {
 	s.data = bytes.Clone(s.data)
@@ -86,6 +86,10 @@ func (s *AudioSource) UnmarshalJSON(data []byte) error {
 
 func (s *VideoSource) UnmarshalJSON(data []byte) error {
 	return unmarshalTypedSource(data, &s.source, "video/")
+}
+
+func (s *FileSource) UnmarshalJSON(data []byte) error {
+	return unmarshalTypedSource(data, &s.source, "")
 }
 
 func NewImageURL(rawURL, mediaType string) (ImageSource, error) {
@@ -118,49 +122,31 @@ func NewVideoBytes(data []byte, mediaType string) (VideoSource, error) {
 	return VideoSource{source: value}, err
 }
 
-// NewAudioStream wraps a live, pull-based stream as an audio source. The
-// stream's item type is caller-defined (the message package instantiates it
-// as message.Stream, i.e. media.Stream[Part]); mediaType declares the audio
-// codec family and is required.
-func NewAudioStream[T any](stream Stream[T], mediaType string) (AudioSource, error) {
-	value, err := newStream(stream, mediaType, "audio/")
-	return AudioSource{source: value}, err
+func NewFileURL(rawURL, mediaType string) (FileSource, error) {
+	value, err := newURL(rawURL, mediaType, "")
+	return FileSource{source: value}, err
 }
 
-// NewVideoStream wraps a live, pull-based stream as a video source. The
-// stream's item type is caller-defined; mediaType declares the video
-// container family and is required.
-func NewVideoStream[T any](stream Stream[T], mediaType string) (VideoSource, error) {
-	value, err := newStream(stream, mediaType, "video/")
-	return VideoSource{source: value}, err
+func NewFileBytes(data []byte, mediaType string) (FileSource, error) {
+	value, err := newBytes(data, mediaType, "")
+	return FileSource{source: value}, err
 }
 
 func newURL(rawURL, mediaType, prefix string) (source, error) {
 	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+	if err != nil || parsed.Scheme == "" {
 		return source{}, fmt.Errorf("media URL must be absolute")
+	}
+	// A file URL legitimately has no host: file:///tmp/a.txt is the canonical
+	// spelling, and a deployment that keeps bytes on disk passes exactly that.
+	if parsed.Host == "" && parsed.Scheme != "file" {
+		return source{}, fmt.Errorf("media URL must name a host")
 	}
 	normalized, err := normalizeMediaType(mediaType, prefix, false)
 	if err != nil {
 		return source{}, err
 	}
 	value := source{kind: SourceURL, url: rawURL, mediaType: normalized}
-	return value, value.Validate()
-}
-
-func newStream[T any](stream Stream[T], mediaType, prefix string) (source, error) {
-	if ptr.IsNil(stream) {
-		return source{}, fmt.Errorf("stream media source requires a stream")
-	}
-	normalized, err := normalizeMediaType(mediaType, prefix, true)
-	if err != nil {
-		return source{}, err
-	}
-	value := source{
-		kind:      SourceStream,
-		stream:    stream,
-		mediaType: normalized,
-	}
 	return value, value.Validate()
 }
 
@@ -203,7 +189,7 @@ func validateTypedSource(value source, prefix string) error {
 	return validateMediaType(
 		value.mediaType,
 		prefix,
-		value.kind == SourceInline || value.kind == SourceStream,
+		value.kind == SourceInline,
 	)
 }
 
@@ -218,7 +204,7 @@ func unmarshalTypedSource(data []byte, target *source, prefix string) error {
 	normalized, err := normalizeMediaType(
 		value.mediaType,
 		prefix,
-		value.kind == SourceInline || value.kind == SourceStream,
+		value.kind == SourceInline,
 	)
 	if err != nil {
 		return err
@@ -231,12 +217,6 @@ func unmarshalTypedSource(data []byte, target *source, prefix string) error {
 func (s source) Kind() SourceKind { return s.kind }
 func (s source) URL() string      { return s.url }
 func (s source) Bytes() []byte    { return bytes.Clone(s.data) }
-
-// Stream returns the live item stream carried by a stream-kind source, or
-// nil for URL and inline sources. The concrete item type is
-// caller-defined; a message.Stream caller asserts the returned handle to
-// message.Stream.
-func (s source) Stream() any { return s.stream }
 
 func (s source) MediaType() string {
 	return s.mediaType
@@ -263,10 +243,6 @@ func (s source) Validate() error {
 		if s.mediaType == "" {
 			return fmt.Errorf("inline media source media type is required")
 		}
-	case SourceStream:
-		if ptr.IsNil(s.stream) || s.url != "" || len(s.data) != 0 {
-			return fmt.Errorf("stream media source has invalid payload")
-		}
 		if s.mediaType == "" {
 			return fmt.Errorf("stream media source media type is required")
 		}
@@ -279,9 +255,6 @@ func (s source) Validate() error {
 func (s source) MarshalJSON() ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
-	}
-	if s.kind == SourceStream {
-		return nil, fmt.Errorf("stream media source cannot be serialized")
 	}
 	return json.Marshal(struct {
 		Kind      SourceKind `json:"kind"`
@@ -320,11 +293,46 @@ func decodeStrict(data []byte, value any) error {
 	if err := decoder.Decode(value); err != nil {
 		return err
 	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return fmt.Errorf("unexpected trailing JSON value")
 		}
 		return err
 	}
 	return nil
+}
+
+// This file holds the exact-encoding helpers providers and drivers share. A
+// payload that travels inline is re-rendered on every request that carries it —
+// the same screenshot in a ten-turn conversation is encoded ten times — so the
+// rendering is written once, with the buffer sized up front, instead of once per
+// provider with the temporary string base64.Encoding.EncodeToString materializes.
+
+const (
+	dataURLScheme = "data:"
+	dataURLBase64 = ";base64,"
+)
+
+// DataURL renders inline bytes as a media data URL (RFC 2397):
+// "data:<media type>;base64,<payload>".
+//
+// The returned string is exact: it is byte-identical to concatenating the three
+// pieces with base64.StdEncoding. That matters because a provider compares what
+// it sent against what it recorded.
+func DataURL(mediaType string, data []byte) string {
+	header := len(dataURLScheme) + len(mediaType) + len(dataURLBase64)
+	buf := make([]byte, header, header+base64.StdEncoding.EncodedLen(len(data)))
+	n := copy(buf, dataURLScheme)
+	n += copy(buf[n:], mediaType)
+	copy(buf[n:], dataURLBase64)
+	buf = base64.StdEncoding.AppendEncode(buf, data)
+	return string(buf)
+}
+
+// Base64 renders inline bytes as standard base64, for the wires that take the
+// payload as its own field rather than as a data URL.
+func Base64(data []byte) string {
+	buf := make([]byte, 0, base64.StdEncoding.EncodedLen(len(data)))
+	buf = base64.StdEncoding.AppendEncode(buf, data)
+	return string(buf)
 }

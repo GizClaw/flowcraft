@@ -1,218 +1,235 @@
+// Package inferencetest is the conformance suite every driver runs.
+//
+// It pins the rules that are true of a driver regardless of which provider it
+// speaks: that every active field is accounted for, that unsupported options are
+// refused instead of dropped, that answers are decoded into a valid response, and
+// that a stream assembles into the same answer a unary call would return.
+//
+// It deliberately does not know any provider's wire format. A driver supplies
+// samples — canned native payloads and per-field requests — and the suite applies
+// the rules to them. The suite therefore never has to be updated when a provider
+// adds a parameter; the driver's own fixture carries that knowledge.
 package inferencetest
 
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
 )
 
-// CompilerRejection describes one canonical field a provider must reject
-// explicitly rather than silently dropping.
-type CompilerRejection[Request any] struct {
+// FieldCase opens exactly one canonical field on an otherwise minimal request and
+// names a marker that must appear in the rendered wire. The marker is how the
+// suite proves the field reached the wire rather than merely being reported.
+type FieldCase struct {
+	// Field is the canonical field this case exercises.
+	Field inference.Field
+	// Request is minimal plus that one field.
+	Request inference.GenerateRequest
+	// Marker is a distinctive substring expected in the rendered wire.
+	Marker string
+}
+
+// Rejection is a request the driver must refuse, with the kind and field the
+// caller needs in order to act on it.
+type Rejection struct {
 	Name    string
-	Request func() Request
-	Field   inference.FieldID
-	Kind    inference.ErrorKind
+	Request inference.GenerateRequest
+	// Kind is the expected error kind.
+	Kind inference.ErrorKind
+	// Field is the field the error must name, or empty when the refusal is not
+	// about one field.
+	Field inference.Field
 }
 
-// CompilerDrop describes one canonical field a provider intentionally
-// discards while succeeding: the compile must succeed, the report must
-// mark the field Dropped, and the decision must state the reason.
-type CompilerDrop[Request any] struct {
-	Name    string
-	Request func() Request
-	Field   inference.FieldID
+// CompilerFixture describes one driver's compiler to the suite.
+type CompilerFixture[Wire any] struct {
+	// ProviderID is the identity the driver answers to; extensions addressed to
+	// other providers are dropped before compilation.
+	ProviderID string
+	// Compile is the driver's compiler, exactly as bound into its pipeline.
+	Compile func(
+		ctx context.Context,
+		request inference.GenerateRequest,
+		shape protocol.Shape,
+	) (protocol.Compiled[Wire], error)
+	// Baseline is the smallest request this driver compiles.
+	Baseline inference.GenerateRequest
+	// Supported lists every canonical field the driver claims to accept. The suite
+	// requires one FieldCase per entry, so a field cannot be claimed and untested.
+	Supported []inference.Field
+	// Cases exercises each supported field in isolation.
+	Cases []FieldCase
+	// Render turns a compiled wire into JSON text for marker assertions.
+	Render func(Wire) (string, error)
+	// Rejections are the refusals this driver promises.
+	Rejections []Rejection
 }
 
-// CompilerSuite verifies field-ledger completeness and provider-native wire
-// compilation independently from transport.
-type CompilerSuite[Request, Wire any] struct {
-	Operation model.Operation
-	Model     model.ModelRef
-	Request   func() Request
-	Snapshot  func(Request) any
-	Fields    func(Request) []inference.FieldID
-	Compile   inference.Compiler[Request, Wire]
-
-	AssertWire func(*testing.T, Wire)
-	Rejections []CompilerRejection[Request]
-	Drops      []CompilerDrop[Request]
-}
-
-// GenerateCompilerSuite fixes the canonical request type while retaining the
-// provider wire type selected by a conformance test.
-type GenerateCompilerSuite[Wire any] struct {
-	Model      model.ModelRef
-	Shape      inference.GenerateExecutionShape
-	Request    func() inference.GenerateRequest
-	Snapshot   func(inference.GenerateRequest) any
-	Compile    inference.GenerateCompiler[Wire]
-	AssertWire func(*testing.T, Wire)
-	Rejections []CompilerRejection[inference.GenerateRequest]
-	Drops      []CompilerDrop[inference.GenerateRequest]
-}
-
-// RunGenerateCompiler applies the common compiler completeness suite to the
-// unified Generate operation.
-func RunGenerateCompiler[Wire any](
-	t *testing.T,
-	suite GenerateCompilerSuite[Wire],
-) {
+// RunCompiler runs the accounting and rejection suites.
+//
+// The accounting rules are the same ones the pipeline enforces at run time; the
+// suite checks them against the driver's compiler directly so a regression names
+// the field that broke instead of surfacing as a runtime contract violation.
+func RunCompiler[Wire any](t *testing.T, fixture CompilerFixture[Wire]) {
 	t.Helper()
-	if err := suite.Shape.Validate(); err != nil {
-		t.Fatalf("Shape: %v", err)
-	}
-	RunCompiler(t, CompilerSuite[inference.GenerateRequest, Wire]{
-		Operation: model.OperationGenerate,
-		Model:     suite.Model,
-		Request:   suite.Request,
-		Snapshot:  suite.Snapshot,
-		Fields: func(request inference.GenerateRequest) []inference.FieldID {
-			return request.ActiveFieldsFor(suite.Shape)
-		},
-		Compile: func(
-			ctx context.Context,
-			ref model.ModelRef,
-			request inference.GenerateRequest,
-		) (inference.Compiled[Wire], error) {
-			return suite.Compile(ctx, ref, request, suite.Shape)
-		},
-		AssertWire: suite.AssertWire,
-		Rejections: suite.Rejections,
-		Drops:      suite.Drops,
-	})
-}
-
-func RunCompiler[Request, Wire any](
-	t *testing.T,
-	suite CompilerSuite[Request, Wire],
-) {
-	t.Helper()
-	if suite.Request == nil ||
-		suite.Snapshot == nil ||
-		suite.Fields == nil ||
-		suite.Compile == nil {
-		t.Fatal("CompilerSuite requires request, snapshot, active fields, and compiler")
-	}
-	if err := suite.Operation.Validate(); err != nil {
-		t.Fatalf("Operation: %v", err)
-	}
-	if err := suite.Model.Validate(); err != nil {
-		t.Fatalf("Model: %v", err)
+	if fixture.Compile == nil || fixture.Render == nil {
+		t.Fatalf("inferencetest: compiler fixture needs Compile and Render")
 	}
 
-	t.Run("complete_success_ledger", func(t *testing.T) {
-		request := suite.Request()
-		expected := suite.Snapshot(request)
-		active := append([]inference.FieldID(nil), suite.Fields(request)...)
-		compiled, err := suite.Compile(context.Background(), suite.Model, request)
+	t.Run("baseline compiles and accounts for its fields", func(t *testing.T) {
+		compiled, err := fixture.Compile(context.Background(), fixture.Baseline, protocol.ShapeUnary)
 		if err != nil {
-			t.Fatalf("Compile: %v", err)
+			t.Fatalf("baseline: %v", err)
 		}
-		if err := compiled.Report.ValidateSuccess(suite.Operation, active); err != nil {
-			t.Fatalf("CompileReport: %v", err)
+		checkAccounting(t, fixture.Baseline, compiled.Fields, compiled.Warnings)
+	})
+
+	t.Run("every supported field has a case", func(t *testing.T) {
+		covered := make(map[inference.Field]int, len(fixture.Cases))
+		for _, testCase := range fixture.Cases {
+			covered[testCase.Field]++
 		}
-		assertUnchanged(t, expected, suite.Snapshot(request))
-		if suite.AssertWire != nil {
-			suite.AssertWire(t, compiled.Wire)
+		for _, field := range fixture.Supported {
+			switch covered[field] {
+			case 1:
+			case 0:
+				t.Errorf("field %q is claimed but has no case", field)
+			default:
+				t.Errorf("field %q has %d cases, want 1", field, covered[field])
+			}
 		}
 	})
 
-	for _, rejection := range suite.Rejections {
-		rejection := rejection
-		t.Run("reject_"+rejection.Name, func(t *testing.T) {
-			if rejection.Request == nil {
-				t.Fatal("rejection request is required")
-			}
-			switch rejection.Kind {
-			case inference.UnsupportedFeature,
-				inference.InvalidExtension:
-			default:
-				t.Fatalf(
-					"rejection kind %q is not accepted from provider compilers",
-					rejection.Kind,
+	t.Run("each field alone reaches the wire", func(t *testing.T) {
+		for _, testCase := range fixture.Cases {
+			t.Run(string(testCase.Field), func(t *testing.T) {
+				compiled, err := fixture.Compile(
+					context.Background(), testCase.Request, protocol.ShapeUnary,
 				)
-			}
-			request := rejection.Request()
-			expected := suite.Snapshot(request)
-			active := append([]inference.FieldID(nil), suite.Fields(request)...)
-			compiled, err := suite.Compile(context.Background(), suite.Model, request)
-			if err == nil {
-				t.Fatal("Compile succeeded, want structured rejection")
-			}
-			if !inference.IsKind(err, rejection.Kind) {
-				t.Fatalf("Compile error = %v, want %s", err, rejection.Kind)
-			}
-			var inferenceErr *inference.Error
-			if !errors.As(err, &inferenceErr) ||
-				inferenceErr.Operation != suite.Operation ||
-				inferenceErr.Field != rejection.Field {
-				t.Fatalf(
-					"Compile error context = %+v, want operation=%s field=%s",
-					inferenceErr,
-					suite.Operation,
-					rejection.Field,
-				)
-			}
-			if reportErr := compiled.Report.ValidateFailure(
-				suite.Operation,
-				active,
-			); reportErr != nil {
-				t.Fatalf("rejection report: %v", reportErr)
-			}
-			if !compiled.Report.Rejects(rejection.Field) {
-				t.Fatalf("report did not reject %q: %+v", rejection.Field, compiled.Report)
-			}
-			assertUnchanged(t, expected, suite.Snapshot(request))
-		})
-	}
-
-	for _, drop := range suite.Drops {
-		drop := drop
-		t.Run("drop_"+drop.Name, func(t *testing.T) {
-			if drop.Request == nil {
-				t.Fatal("drop request is required")
-			}
-			request := drop.Request()
-			expected := suite.Snapshot(request)
-			active := append([]inference.FieldID(nil), suite.Fields(request)...)
-			compiled, err := suite.Compile(context.Background(), suite.Model, request)
-			if err != nil {
-				t.Fatalf("Compile: %v, want success with a dropped field", err)
-			}
-			if err := compiled.Report.ValidateSuccess(
-				suite.Operation,
-				active,
-			); err != nil {
-				t.Fatalf("CompileReport: %v", err)
-			}
-			reason := ""
-			for _, decision := range compiled.Report.Decisions {
-				if decision.Field == drop.Field &&
-					decision.Disposition == inference.Dropped {
-					reason = decision.Reason
+				if err != nil {
+					t.Fatalf("compile: %v", err)
 				}
+				checkAccounting(t, testCase.Request, compiled.Fields, compiled.Warnings)
+				if !honored(testCase.Field, compiled.Fields, compiled.Warnings) {
+					t.Fatalf("field %q is active but neither honored nor warned", testCase.Field)
+				}
+				rendered, err := fixture.Render(compiled.Wire)
+				if err != nil {
+					t.Fatalf("render: %v", err)
+				}
+				if !strings.Contains(rendered, testCase.Marker) {
+					t.Fatalf("wire does not contain %q: %s", testCase.Marker, rendered)
+				}
+			})
+		}
+	})
+
+	t.Run("inactive fields are absent from the wire", func(t *testing.T) {
+		compiled, err := fixture.Compile(context.Background(), fixture.Baseline, protocol.ShapeUnary)
+		if err != nil {
+			t.Fatalf("baseline: %v", err)
+		}
+		rendered, err := fixture.Render(compiled.Wire)
+		if err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		active := activeSet(fixture.Baseline)
+		for _, testCase := range fixture.Cases {
+			if _, ok := active[testCase.Field]; ok {
+				continue
 			}
-			if reason == "" {
-				t.Fatalf(
-					"report did not drop %q with a reason: %+v",
-					drop.Field,
-					compiled.Report,
+			if testCase.Marker == "" {
+				continue
+			}
+			if strings.Contains(rendered, testCase.Marker) {
+				t.Errorf("baseline wire carries the marker for inactive field %q: %q",
+					testCase.Field, testCase.Marker)
+			}
+		}
+	})
+
+	t.Run("rejections name what they refuse", func(t *testing.T) {
+		for _, rejection := range fixture.Rejections {
+			t.Run(rejection.Name, func(t *testing.T) {
+				_, err := fixture.Compile(
+					context.Background(), rejection.Request, protocol.ShapeUnary,
 				)
-			}
-			assertUnchanged(t, expected, suite.Snapshot(request))
-		})
+				if err == nil {
+					t.Fatalf("request accepted, want %v", rejection.Kind)
+				}
+				if !inference.IsKind(err, rejection.Kind) {
+					t.Fatalf("kind = %v, want %v", err, rejection.Kind)
+				}
+				inferenceErr := &inference.Error{}
+				ok := errors.As(err, &inferenceErr)
+				if !ok {
+					t.Fatalf("error is %T, want *inference.Error", err)
+				}
+				if rejection.Field != "" && inferenceErr.Field != rejection.Field {
+					t.Fatalf("field = %q, want %q", inferenceErr.Field, rejection.Field)
+				}
+			})
+		}
+	})
+}
+
+// checkAccounting applies the contract rules to one compilation.
+func checkAccounting(
+	t *testing.T,
+	request inference.GenerateRequest,
+	fields []inference.Field,
+	warnings []inference.Warning,
+) {
+	t.Helper()
+	active := activeSet(request)
+	for _, field := range fields {
+		if !field.Valid() {
+			t.Errorf("honored field %q is not a valid field identity", field)
+		}
+		if _, ok := active[field]; !ok {
+			t.Errorf("honored field %q is not active on the request", field)
+		}
+	}
+	for field := range active {
+		if !honored(field, fields, warnings) {
+			t.Errorf("active field %q is neither honored nor warned", field)
+		}
+	}
+	for _, warning := range warnings {
+		if warning.Field != "" && !warning.Field.Valid() {
+			t.Errorf("warning names invalid field %q", warning.Field)
+		}
 	}
 }
 
-func NativeReport(
-	operation model.Operation,
-	fields ...inference.FieldID,
-) inference.CompileReport {
-	// The convenience suites have no drops or rejections to report, so this is
-	// the ledger with no decisions recorded: every active field stays Native.
-	return inference.NewLedger(operation, "inferencetest", fields).Report()
+func activeSet(request inference.GenerateRequest) map[inference.Field]struct{} {
+	active := request.ActiveFields()
+	set := make(map[inference.Field]struct{}, len(active))
+	for _, field := range active {
+		set[field] = struct{}{}
+	}
+	return set
+}
+
+// honored reports whether the field was either compiled or explained.
+func honored(
+	field inference.Field,
+	fields []inference.Field,
+	warnings []inference.Warning,
+) bool {
+	for _, candidate := range fields {
+		if candidate == field {
+			return true
+		}
+	}
+	for _, warning := range warnings {
+		if warning.Field == field {
+			return true
+		}
+	}
+	return false
 }

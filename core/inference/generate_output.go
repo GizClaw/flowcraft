@@ -1,124 +1,66 @@
 package inference
 
 import (
-	"encoding/json"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// ProviderOutput is a typed, provider-owned structured value attached to a
-// Generate response but deliberately kept out of Message. Message is the only
-// channel that becomes conversation context on the next request, so
-// ProviderOutputs are observational data (citations, search-call records,
-// code-interpreter output, MCP metadata) and never auto-injected into a later
-// model request. Provider packages implement this interface for each output
-// family; the response envelope carries any number of them.
-type ProviderOutput interface {
-	// ProviderID addresses the provider that produced the output.
-	ProviderID() string
-	// ExtensionID names the output family within the provider.
-	ExtensionID() string
-	Validate() error
-	Clone() ProviderOutput
-}
+// Output names what a call asks the model to produce. It is the only modality
+// switch in the contract: the same request type, the same response type and the
+// same [Provider] method serve every output, because the answer is always a
+// [message.Content] whose parts tell the caller what arrived.
+//
+// Everything modality-specific that is not the modality itself — an image's
+// size and quality, a voice, a duration — is deployment configuration carried by
+// the driver's own settings, or a per-call override carried by [Extensions]. It
+// never becomes a field on this package's request.
+type Output string
 
-// ProviderOutputs is the ordered collection of provider outputs attached to a
-// Generate response or stream event.
-type ProviderOutputs []ProviderOutput
+const (
+	// OutputText asks for the next assistant turn: text, tool calls, or
+	// both. It is the default when the field is empty.
+	OutputText Output = "text"
+	// OutputImage asks for generated images.
+	OutputImage Output = "image"
+	// OutputAudio asks for synthesized speech.
+	OutputAudio Output = "audio"
+	// OutputVideo asks for generated video.
+	OutputVideo Output = "video"
+)
 
-type providerOutputEnvelope struct {
-	Provider  string         `json:"provider"`
-	Extension string         `json:"extension"`
-	Value     ProviderOutput `json:"value"`
-}
-
-// MarshalJSON wraps every output with its provider/extension identity so wire
-// consumers can distinguish output families without type-switching on the Go
-// value. Unmarshal is intentionally not supported: outputs are produced by
-// provider packages, not decoded from generic response JSON.
-func (outputs ProviderOutputs) MarshalJSON() ([]byte, error) {
-	entries := make([]providerOutputEnvelope, len(outputs))
-	for i, output := range outputs {
-		if ptr.IsNil(output) {
-			return nil, fmt.Errorf("provider output %d is nil", i)
-		}
-		entries[i] = providerOutputEnvelope{
-			Provider:  output.ProviderID(),
-			Extension: output.ExtensionID(),
-			Value:     output,
-		}
-	}
-	return json.Marshal(entries)
-}
-
-func (outputs ProviderOutputs) Clone() ProviderOutputs {
-	if outputs == nil {
+// Validate reports whether the output is one the contract names. The empty
+// string is valid: it means [OutputText].
+func (o Output) Validate() error {
+	switch o {
+	case "", OutputText, OutputImage, OutputAudio, OutputVideo:
 		return nil
+	default:
+		return fmt.Errorf("unknown output %q", o)
 	}
-	cloned := make(ProviderOutputs, len(outputs))
-	for i, output := range outputs {
-		if !ptr.IsNil(output) {
-			cloned[i] = output.Clone()
-		}
-	}
-	return cloned
 }
 
-func (outputs ProviderOutputs) Validate() error {
-	for i, output := range outputs {
-		if ptr.IsNil(output) {
-			return fmt.Errorf("provider output %d is nil", i)
-		}
-		if !extensionIDPattern.MatchString(output.ProviderID()) ||
-			!extensionIDPattern.MatchString(output.ExtensionID()) {
-			return fmt.Errorf("provider output %d has invalid identity", i)
-		}
-		if err := output.Validate(); err != nil {
-			return fmt.Errorf("provider output %q: %w",
-				output.ProviderID()+"/"+output.ExtensionID(), err)
-		}
+// Kind returns the effective modality, folding the empty default onto
+// [OutputText].
+func (o Output) Kind() Output {
+	if o == "" {
+		return OutputText
 	}
-	return nil
+	return o
 }
 
-// Replace inserts output, replacing any existing entry with the same
-// provider/extension identity. Streaming providers use this to publish a
-// cumulative snapshot per output family, matching Usage's replace semantics.
-func (outputs *ProviderOutputs) Replace(output ProviderOutput) {
-	if ptr.IsNil(output) {
-		return
+// PartKind is the content part kind this output produces. It is what a driver
+// compares against a model's declared [model.ModelCapabilities].Outputs, and
+// what a caller looks for in the response.
+func (o Output) PartKind() message.PartKind {
+	switch o.Kind() {
+	case OutputImage:
+		return message.PartImage
+	case OutputAudio:
+		return message.PartAudio
+	case OutputVideo:
+		return message.PartVideo
+	default:
+		return message.PartText
 	}
-	for i, existing := range *outputs {
-		if !ptr.IsNil(existing) &&
-			existing.ProviderID() == output.ProviderID() &&
-			existing.ExtensionID() == output.ExtensionID() {
-			(*outputs)[i] = output
-			return
-		}
-	}
-	*outputs = append(*outputs, output)
-}
-
-// WebSearchCall records one provider-executed web search invocation. Hosted
-// search tools run inside the provider, so these calls never need a
-// ToolResultPart round-trip; they exist for tracing and audit.
-type WebSearchCall struct {
-	ID      string   `json:"id,omitempty"`
-	Status  string   `json:"status,omitempty"`
-	Action  string   `json:"action,omitempty"` // search | open_page | find_in_page
-	Queries []string `json:"queries,omitempty"`
-	Sources []string `json:"sources,omitempty"`
-}
-
-// Citation is one source reference attached to generated text. StartIndex and
-// EndIndex are character offsets into the corresponding TextPart when the
-// provider reports them (OpenAI does; Ark currently does not).
-type Citation struct {
-	URL         string `json:"url"`
-	Title       string `json:"title,omitempty"`
-	StartIndex  *int64 `json:"start_index,omitempty"`
-	EndIndex    *int64 `json:"end_index,omitempty"`
-	SiteName    string `json:"site_name,omitempty"`
-	PublishTime string `json:"publish_time,omitempty"`
 }

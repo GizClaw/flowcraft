@@ -12,8 +12,9 @@ retrieval, runtime orchestration, and voice. Source on
 
 ### Runtime
 
-- [Graph Runtime](guides/graph.md) — `core/graph`: declarative DAG
-  engine, node I/O roles, parallel branches, custom node types.
+- [Graph Engine](guides/graph.md) — `core/agent-graph`: an agent as a
+  frontier loop over nodes — declared state with merge rules, conditions
+  compiled at build, node kinds, checkpoints and replay.
 - [Tool System](guides/tool.md) — `core/tool`: LLM function-calling
   contract, Registry / Catalog / Executor split, middleware chain,
   built-in tool adapters and the MCP bridge.
@@ -21,60 +22,43 @@ retrieval, runtime orchestration, and voice. Source on
   and parsing, BM25 ranking over names and descriptions, and the
   per-turn `## Skills` section; lifecycle and authoring stay with the
   caller.
-- [Event Bus](guides/event.md) — `core/event`: subject-routed
-  publish/subscribe, in-process `MemoryBus`, host capability
-  wiring, backpressure policies.
-- [Application Runtime](guides/runtime.md) — `core/runtime` +
-  `core/runtime/session`: process-level services and leased,
-  interruptible streaming sessions above a built deployment.
-- [Checkpoints](guides/checkpoint.md) — `core/agent`: the checkpoint
-  store contract, incremental records, and the board write record an
-  engine persists at a boundary.
-- [Prompt Lifecycle Events](guides/prompt.md) — the
-  `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
-- [External Hooks](guides/hooks.md) — `core/hooks`: the `hooks.json`
-  command-hook runner, the frozen event vocabulary, the invocation
-  contract, and the trust rules for plugin-contributed sources.
-- [Media & Attachments](guides/media.md) — `core/media`:
-  attachment classification, image normalization budgets, and the
-  `media.attachments` prepare hook; the vocabulary stays in
-  `core/message/media`.
+- [Application Runtime](guides/runtime.md) — `core/runtime`: one runtime per
+  configuration document (provider, tools, sandbox, files, skills, journal)
+  and everything it built.
+- [Checkpoints](guides/checkpoint.md) — `core/agent`: the store contract —
+  a task projection plus an append-only event log, two version counters,
+  blobs, and the SQLite backend.
+- [Hooks](guides/hooks.md) — `agent.Hooks`: the three host boundaries of a
+  turn (`OnSession`, `BeforeTurn`, `AfterTurn`), their failure policy, and
+  how a deployment declares its own hook kinds.
+- [Media & Attachments](guides/media.md) — `core/message`: the sealed part
+  vocabulary, the `core/message/media` value types, and the budgets a
+  payload meets on its way into a request.
 
 ### State and execution boundary
 
-- [Workspace](guides/workspace.md) — `core/workspace`: per-run
-  filesystem abstraction, backends, capabilities, the
-  `state vs policy` split vs Sandbox.
 - [Sandbox](guides/sandbox.md) — `core/sandbox`: agent execution
-  boundary, env / net / resources policy, runners (local /
-  seatbelt / bwrap), decorators and approval.
-- [Memory Stack](guides/memory.md) — the three-layer memory stack:
-  `core/memory` contracts, deploy/runtime glue, and app-registered
-  implementations.
+  boundary, env / net / resources policy, backends (local / seatbelt /
+  bwrap / windows), per-call permission, decorators, escalation, and the
+  file journal.
+- [Remote Sandbox](guides/sandbox-remote.md) — `core/sandbox-remote`: the
+  same `Runner` across a host boundary — HTTP or unix socket, cursor reads,
+  SSE events, retry rules.
 
 ### Assembly
 
-- [Inference Runtime](guides/inference.md) — unified Generate / Embed /
-  Transcription (Realtime reserved): deployment config, routing, extensions,
-  streaming, media intents, hot reload.
-- [Deployment Assembly](guides/deploy.md) — `core/deploy`: one YAML
-  document + one `Build` call to wire shared resources, named agents,
-  engines, and lifecycle hooks.
-- [Resource Protocol](guides/resource.md) — `core/resource`: the
-  provider-neutral factory, dependency DAG, loader, and lifecycle phases
-  that every deployment resource uses.
+- [Inference Runtime](guides/inference.md) — generate / embed / decide over one
+  addressing scheme: the deployment block, host-supplied drivers and selectors,
+  model declarations, routing and retry, typed extensions.
+- [Deployment Assembly](guides/deploy.md) — `core/deploy`: the deployment
+  document, the engine / protocol / hook kind tables, and one `Loader` that
+  validates a deployment without building it.
 
 ### Delegation
 
-- [Delegation](guides/delegation.md) — `core/delegation`: backend-neutral
-  target discovery, sync / async execution, and the session-bound
-  delegation lifecycle.
-
-### Application assembly
-
-- [Craft Assembly](guides/craft.md) — `craft`: the `craft.yaml` definition
-  and capability set, the plugin manifest and permissions, the host-primitive
-  protocol, and the process-level manager.
+- [Delegation](guides/delegation.md) — `core/delegation`: one agent handing work
+  to another — a policy over the session table, derived child sessions,
+  sync / async execution, and the lineage a chain keeps.
 
 ## Migrations
 
@@ -104,26 +88,30 @@ historical reference and are not part of the current core migration path.
 
 ## Layered architecture
 
-The repository is organised as independently released Go modules:
+The repository is organised as independently released Go modules, and `core` is
+layered: a package imports only from the layers below it.
 
-| Layer                | Package                                            | Responsibility                                                                                 |
-| -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Execution contracts | `core/agent`                                        | `Engine` / Board / Run / Host / Interrupt / Checkpoint contracts                               |
-| DAG executor         | `core/graph`                                        | Declarative graph runtime (`*Graph` implements `agent.Engine`)                                 |
-| Agent runtime        | `core/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
-| Delegation contracts | `core/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
-| Async delegation     | `core/delegation/kanban`                            | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
-| Application assembly | `craft`                                             | craft.yaml definitions, compile-time capabilities, the plugin host and host primitives          |
-| Adapters             | `driver`, `backends/*`                              | Concrete provider / protocol bindings layered on core contracts                                |
+| Layer | Packages | Responsibility |
+| --- | --- | --- |
+| Contracts | `core/message` (+`media`), `core/errdefs`, `core/permission`, `core/fsx`, `core/skill`, `core/search` | The vocabulary every other layer speaks: messages, error classes, permissions, file handles, skills, ranking. |
+| Inference | `core/inference` (+`model`, `protocol`, `route`, `usage`), `core/inference-openai`, `core/inference-anthropic` | Model contracts, routing, and the two protocol families that ship with the platform. |
+| Tools | `core/tool` (+`engine`, `middleware`), `core/tool-builtin/*`, `core/tool-mcp` | The function-calling contract, the projection, and the built-in adapters. |
+| Sandbox | `core/sandbox` (+`engine`, `journal`, `netpolicy`), `core/sandbox-*` | The command boundary: contract, policy decorators, backends. |
+| Execution | `core/agent` (+`checkpoint`), `core/agent-graph`, `core/agent-a2a`, `core/delegation` | Runs: the engine contract, the graph engine, the A2A client, delegation. |
+| Assembly | `core/runtime` | One runtime per configuration document, owning what it built. |
+| Deployment | `core/deploy` (+`a2aprotocol`), `core/agent-host` | Documents and kind tables; host bindings, sessions, lifecycle. |
+| Observability | `core/telemetry` | Tracing, run records, attributes. |
+
+`core/internal/...` holds module-private helpers and is never importable outside
+`core`.
 
 ## Repository layout
 
-```
-core/            Platform module (contracts, deploy, runtime, built-in resources)
-craft/           Application assembly (craft.yaml, capabilities, plugins, host primitives)
-driver/          Provider inference adapters (one module)
-backends/        SQLite checkpoints and the memory backend (sandbox and keychain backends live in core/)
-examples/        Reference assemblies: forge (workspace demo), anvil (craft host)
+```text
+core/            Platform module (contracts, inference, tools, sandbox, runtime, deploy)
+driver/          Provider adapters that are not protocol families (bytedance, dashscope, minimax)
+examples/        Reference assemblies: forge (graph demo)
+tools/           Release gate, fuzz and stress scripts
 ```
 
 ## Getting started
@@ -132,6 +120,5 @@ examples/        Reference assemblies: forge (workspace demo), anvil (craft host
 go get github.com/GizClaw/flowcraft/core@latest
 ```
 
-See the package-level `doc.go` files for runnable usage snippets:
-`core/agent/doc.go`, `core/graph/doc.go`, and
-the focused packages under `core/`.
+Every package carries a `doc.go` stating what it is and what it deliberately is
+not; start there, then read the guide above for the layer you are wiring.

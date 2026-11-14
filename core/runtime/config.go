@@ -1,327 +1,1034 @@
-// Package runtime assembles and owns a deployment, its event routing,
-// and transport-neutral sessions.
 package runtime
 
 import (
-	"context"
-	"fmt"
+	"net/url"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/permission"
+	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
+	toolmcp "github.com/GizClaw/flowcraft/core/tool-mcp"
+	"github.com/GizClaw/flowcraft/core/tool/engine"
+	"github.com/goccy/go-json"
 )
 
+// Backend names accepted by [SandboxConfig.Backend].
 const (
-	defaultIdleTimeout             = 10 * time.Minute
-	defaultSinkBuffer              = 256
-	defaultSpeculativeBufferEvents = 1024
-	defaultSpeculativeBufferBytes  = 1 << 20
-	defaultDeliveryConcurrency     = 8
-	defaultMaxSessions             = 1024
-	maxSinkBuffer                  = 1 << 20
-	maxSpeculativeBufferEvents     = 1 << 20
-	maxSpeculativeBufferBytes      = 256 << 20
-	maxDeliveryConcurrency         = 1024
+	BackendLocal    = "local"
+	BackendSeatbelt = "seatbelt"
+	BackendBwrap    = "bwrap"
+	BackendWindows  = "windows"
+	// BackendRemote runs commands on a server that owns the boundary; the
+	// backend value in this document describes that server, not a local
+	// implementation.
+	BackendRemote = "remote"
 )
 
-// Config is the strictly decoded deploy.Document.Runtime subtree.
-type Config struct {
-	// EventBus names the deployment resource providing event.Bus.
-	EventBus string
-	// CheckpointStore names the deployment resource providing
-	// agent.CheckpointStore; empty keeps checkpoints as a host no-op.
-	CheckpointStore string
-	// Sessions configures the runtime-owned session manager.
-	Sessions SessionConfig
-	// DynamicCatalog governs the tool assembly dynamically registered
-	// agents run with.
-	DynamicCatalog *DynamicCatalogConfig
-	// Agents configures the runtime's handling of dynamically registered
-	// agents beyond the catalog.
-	Agents AgentConfig
-	// ExternalDeps declares caller-owned dependency values that the
-	// application injects through Builder.WithExternalResource.
-	ExternalDeps []ExternalDependency
-}
+// Tool names accepted by [ToolsConfig.Enable].
+const (
+	ToolFiles  = "files"
+	ToolExec   = "exec"
+	ToolSkills = "skills"
+)
 
-// SessionConfig configures the runtime-owned session manager.
-type SessionConfig struct {
-	IdleTimeout             time.Duration
-	SinkBuffer              int
-	SpeculativeBufferEvents int
-	SpeculativeBufferBytes  int
-	DeliveryConcurrency     int
-	MaxSessions             int
-	Resume                  bool
-}
-
-// DynamicCatalogConfig maps agent IDs to tool.Assembly resource names;
-// the reserved "default" key is the fallback for agents without an
-// explicit entry. The injection policy itself lives in each
-// tool.Assembly's dynamic settings — the runtime only wires the
-// assembly and creates per-session views.
-type DynamicCatalogConfig struct {
-	Tools map[string]string
-}
-
-// AgentConfig configures how the runtime treats dynamically registered
-// agents.
-type AgentConfig struct {
-	// RemoveTimeout is the bound UnregisterAgent puts on the drain of a
-	// dynamic agent removal when the call gives no WithRemoveTimeout.
-	// Zero means the removal is bounded only by the caller's context.
-	RemoveTimeout time.Duration
-}
-
-type configWire struct {
-	EventBus        string                    `json:"event_bus"`
-	CheckpointStore string                    `json:"checkpoint_store,omitempty"`
-	Sessions        sessionConfigWire         `json:"sessions,omitempty"`
-	DynamicCatalog  *dynamicCatalogConfigWire `json:"dynamic_catalog,omitempty"`
-	Agents          agentConfigWire           `json:"agents,omitempty"`
-	ExternalDeps    []externalDependencyWire  `json:"external_deps,omitempty"`
-}
-
-type externalDependencyWire struct {
-	Name     string `json:"name"`
-	Contract string `json:"contract"`
-}
-
-type sessionConfigWire struct {
-	IdleTimeout             *string        `json:"idle_timeout,omitempty"`
-	SinkBuffer              *resource.Int  `json:"sink_buffer,omitempty"`
-	SpeculativeBufferEvents *resource.Int  `json:"speculative_buffer_events,omitempty"`
-	SpeculativeBufferBytes  *resource.Int  `json:"speculative_buffer_bytes,omitempty"`
-	DeliveryConcurrency     *resource.Int  `json:"delivery_concurrency,omitempty"`
-	MaxSessions             *resource.Int  `json:"max_sessions,omitempty"`
-	Resume                  *resource.Bool `json:"resume,omitempty"`
-}
-
-type dynamicCatalogConfigWire struct {
-	Tools map[string]string `json:"tools,omitempty"`
-}
-
-type agentConfigWire struct {
-	RemoveTimeout *string `json:"remove_timeout,omitempty"`
-}
-
-// DecodeConfig strictly decodes and validates the runtime subtree.
+// Config is one runtime's configuration document.
 //
-// Decoding is one pass per section — sessions, agents, dynamic catalog,
-// external dependencies — and a final cross-section check that no
-// dependency name collides with a reserved runtime slot. Each section
-// decoder owns its defaults and its bounds, so a new field lands in one
-// place with its validation next to it.
-func DecodeConfig(ctx context.Context, doc deploy.Document) (Config, error) {
-	if doc.Runtime == nil {
-		return Config{}, errdefs.Validationf("runtime config: runtime section is required")
-	}
-	var wire configWire
-	if err := resource.DecodeSettings(ctx, &wire, doc.Runtime.Bytes(), resource.ExpandEnv()); err != nil {
-		return Config{}, errdefs.Validation(fmt.Errorf("runtime config: decode: %w", err))
-	}
-	cfg := Config{
-		EventBus:        strings.TrimSpace(wire.EventBus),
-		CheckpointStore: strings.TrimSpace(wire.CheckpointStore),
-	}
-	if cfg.EventBus == "" {
-		return Config{}, errdefs.Validationf("runtime config: event_bus is required")
-	}
-	sessions, err := decodeSessionConfig(wire.Sessions)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.Sessions = sessions
-	if cfg.Sessions.Resume && cfg.CheckpointStore == "" {
-		return Config{}, errdefs.Validationf(
-			"runtime config: sessions.resume requires checkpoint_store")
-	}
-	agents, err := decodeAgentConfig(wire.Agents)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.Agents = agents
-	catalog, err := decodeDynamicCatalog(wire.DynamicCatalog)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.DynamicCatalog = catalog
-	externalDeps, err := decodeExternalDeps(wire.ExternalDeps)
-	if err != nil {
-		return Config{}, err
-	}
-	cfg.ExternalDeps = externalDeps
-	if err := validateExternalConflicts(cfg); err != nil {
-		return Config{}, err
-	}
-	return cfg, nil
+// It is a mirror of the contract types, not a serialization of them: the values
+// are the ones a person writes (mebibytes, mode names, paths), and [Config]
+// converts them. That keeps YAML out of the contracts' public API and puts the
+// validation where the units are still visible.
+type Config struct {
+	// Version is the schema version. It is required so a future format change
+	// has an anchor to reject or migrate against, instead of being discovered
+	// as a field that silently means something else.
+	Version   int             `json:"version"`
+	Name      string          `json:"name"`
+	Sandbox   SandboxConfig   `json:"sandbox"`
+	Files     FilesConfig     `json:"files"`
+	Inference InferenceConfig `json:"inference"`
+	Tools     ToolsConfig     `json:"tools"`
+	Skills    SkillsConfig    `json:"skills"`
 }
 
-// decodeSessionConfig applies the session defaults and decodes every
-// declared override. Each bound is checked where the value is read, so a
-// rejected document names the field instead of the clamp that failed
-// later.
-func decodeSessionConfig(wire sessionConfigWire) (SessionConfig, error) {
-	cfg := SessionConfig{
-		IdleTimeout:             defaultIdleTimeout,
-		SinkBuffer:              defaultSinkBuffer,
-		SpeculativeBufferEvents: defaultSpeculativeBufferEvents,
-		SpeculativeBufferBytes:  defaultSpeculativeBufferBytes,
-		DeliveryConcurrency:     defaultDeliveryConcurrency,
-		MaxSessions:             defaultMaxSessions,
-		Resume:                  false,
-	}
-	if wire.IdleTimeout != nil {
-		timeout, err := positiveDuration("sessions.idle_timeout", *wire.IdleTimeout)
-		if err != nil {
-			return SessionConfig{}, err
-		}
-		cfg.IdleTimeout = timeout
-	}
-	bounded := []struct {
-		field string
-		value *resource.Int
-		limit int
-		into  *int
-		// positive drops the upper bound: max_sessions is bounded only by
-		// what the host can serve, while the buffers have a hard ceiling.
-		positive bool
-	}{
-		{"sessions.sink_buffer", wire.SinkBuffer, maxSinkBuffer, &cfg.SinkBuffer, false},
-		{
-			"sessions.speculative_buffer_events", wire.SpeculativeBufferEvents,
-			maxSpeculativeBufferEvents, &cfg.SpeculativeBufferEvents, false,
-		},
-		{
-			"sessions.speculative_buffer_bytes", wire.SpeculativeBufferBytes,
-			maxSpeculativeBufferBytes, &cfg.SpeculativeBufferBytes, false,
-		},
-		{
-			"sessions.delivery_concurrency", wire.DeliveryConcurrency,
-			maxDeliveryConcurrency, &cfg.DeliveryConcurrency, false,
-		},
-		{"sessions.max_sessions", wire.MaxSessions, 0, &cfg.MaxSessions, true},
-	}
-	for _, field := range bounded {
-		if field.value == nil {
-			continue
-		}
-		value := int(*field.value)
-		if field.positive {
-			if value <= 0 {
-				return SessionConfig{}, errdefs.Validationf(
-					"runtime config: %s must be positive", field.field)
-			}
-		} else if value <= 0 || value > field.limit {
-			return SessionConfig{}, errdefs.Validationf(
-				"runtime config: %s must be between 1 and %d",
-				field.field, field.limit)
-		}
-		*field.into = value
-	}
-	if wire.Resume != nil {
-		cfg.Resume = bool(*wire.Resume)
-	}
-	return cfg, nil
+// SandboxConfig describes the process boundary: which backend enforces it, what
+// it may write, how it reaches the network, and what it may consume.
+type SandboxConfig struct {
+	// Backend is one of local, seatbelt, bwrap, windows. There is no default:
+	// a boundary that gets picked by guessing is a boundary nobody chose.
+	Backend string `json:"backend"`
+	// WorkDir is the directory commands run in. Empty means the first files
+	// root: a deployment that lists one root should not have to say it twice.
+	WorkDir string `json:"workdir"`
+	// Writes lists absolute paths a command may write. Empty means read-only.
+	Writes []string `json:"writes"`
+	// Net is the outbound posture.
+	Net NetConfig `json:"net"`
+	// Timeout is the default per-call command deadline ("30s"). A tool may ask
+	// for a shorter one; this is the ceiling. It is also what a cpu budget is
+	// derived from, which is why cpu_millicores without it is rejected.
+	Timeout string `json:"timeout"`
+	// CPU is a millicore budget; zero means unbounded.
+	CPU int `json:"cpu_millicores"`
+	// MemoryMiB caps address space; zero means unbounded.
+	MemoryMiB int `json:"memory_mib"`
+	// OutputMiB caps captured output per call; zero means the backend default.
+	OutputMiB int `json:"output_mib"`
+	// Journal records filesystem events under the runner root. Its presence is
+	// the opt-in; the zero settings block is a fully enabled journal with every
+	// implementation default. The shape is shared with the backends, so switching
+	// a deployment from one to another does not change its journal configuration.
+	Journal *journal.Settings `json:"journal"`
+	// Bwrap carries the bwrap backend's own construction options. It is
+	// meaningful only with backend: bwrap.
+	Bwrap *BwrapConfig `json:"bwrap"`
+	// Seatbelt carries the seatbelt backend's own construction options. It is
+	// meaningful only with backend: seatbelt.
+	Seatbelt *SeatbeltConfig `json:"seatbelt"`
+	// Windows carries the windows backend's own construction options. It is
+	// meaningful only with backend: windows.
+	Windows *WindowsConfig `json:"windows"`
+	// Remote is the client configuration for BackendRemote, and must be absent
+	// for every other backend: a boundary is either local or reached over a
+	// connection, and silently ignoring half of the settings is how a deployment
+	// ends up running somewhere nobody intended.
+	Remote RemoteConfig `json:"remote"`
 }
 
-// decodeAgentConfig decodes the runtime's agent-wide settings.
-func decodeAgentConfig(wire agentConfigWire) (AgentConfig, error) {
-	var cfg AgentConfig
-	if wire.RemoveTimeout != nil {
-		timeout, err := positiveDuration("agents.remove_timeout", *wire.RemoveTimeout)
-		if err != nil {
-			return AgentConfig{}, err
-		}
-		cfg.RemoveTimeout = timeout
-	}
-	return cfg, nil
+// BwrapConfig is the bwrap backend's own surface: the binary, extra flags it
+// accepts, and whether the runner root stays read-only.
+type BwrapConfig struct {
+	// Binary overrides the bwrap executable, resolved against the runner root.
+	Binary string `json:"binary"`
+	// ExtraFlags are passed to bwrap before the command. Flags that weaken the
+	// policy are rejected by the backend at construction.
+	ExtraFlags []string `json:"extra_flags"`
+	// ReadOnlyRoot keeps the runner root read-only for every exec; explicit
+	// writable paths stay writable.
+	ReadOnlyRoot bool `json:"readonly_root"`
 }
 
-// decodeDynamicCatalog decodes the dynamic tool catalog: per-agent tool
-// resource names, with neither side empty.
-func decodeDynamicCatalog(wire *dynamicCatalogConfigWire) (*DynamicCatalogConfig, error) {
-	if wire == nil {
-		return nil, nil
-	}
-	cfg := &DynamicCatalogConfig{Tools: wire.Tools}
-	if len(cfg.Tools) == 0 {
-		return nil, errdefs.Validationf(
-			"runtime config: dynamic_catalog.tools must not be empty")
-	}
-	for agentID, resourceName := range cfg.Tools {
-		if strings.TrimSpace(agentID) == "" {
-			return nil, errdefs.Validationf(
-				"runtime config: dynamic_catalog.tools has an empty agent key")
-		}
-		if strings.TrimSpace(resourceName) == "" {
-			return nil, errdefs.Validationf(
-				"runtime config: dynamic_catalog.tools[%q] has an empty tool resource",
-				agentID)
-		}
-	}
-	return cfg, nil
+// SeatbeltConfig is the seatbelt backend's own surface.
+type SeatbeltConfig struct {
+	// Binary overrides the sandbox-exec executable, resolved against the root.
+	Binary string `json:"binary"`
+	// ReadOnlyRoot keeps the runner root read-only for every exec.
+	ReadOnlyRoot bool `json:"readonly_root"`
 }
 
-// decodeExternalDeps decodes the external dependency declarations and
-// validates the list as a whole (duplicates, empty names).
-func decodeExternalDeps(wire []externalDependencyWire) ([]ExternalDependency, error) {
-	var deps []ExternalDependency
-	for _, dep := range wire {
-		deps = append(deps, ExternalDependency{
-			Name:     strings.TrimSpace(dep.Name),
-			Contract: strings.TrimSpace(dep.Contract),
-		})
-	}
-	if _, err := validateExternalDependencyList(deps); err != nil {
-		return nil, err
-	}
-	return deps, nil
+// WindowsConfig is the windows backend's own surface.
+type WindowsConfig struct {
+	// WriteConfine runs children with a Low-integrity token so only the runner
+	// root and the writable paths are writable.
+	WriteConfine bool `json:"write_confine"`
 }
 
-// validateExternalConflicts rejects a document whose external dependency
-// shadows a reserved runtime slot: the bus, the checkpoint store, or a
-// dynamic catalog's tool resource.
-func validateExternalConflicts(cfg Config) error {
-	externalNames := make(map[string]struct{}, len(cfg.ExternalDeps))
-	for _, dep := range cfg.ExternalDeps {
-		externalNames[dep.Name] = struct{}{}
+// RemoteConfig is the client side of a remote sandbox: where the server is and
+// how to authenticate to it. It describes the connection, not the boundary —
+// the server's own configuration decides what it can enforce, and the client's
+// Capabilities report that decision verbatim.
+type RemoteConfig struct {
+	// Transport is how the connection travels: "http" (default) or "unix" for a
+	// unix domain socket on this host. A socket needs no port and, on unix, no
+	// token: the file's permissions are the credential.
+	Transport string `json:"transport"`
+	// Endpoint is the server URL ("https://sandbox.internal:8443"). Required for
+	// transport: http, meaningless for unix.
+	Endpoint string `json:"endpoint"`
+	// Socket is the unix domain socket path ("/run/flowcraft/sandbox.sock").
+	// Required for transport: unix, meaningless otherwise.
+	Socket string `json:"socket"`
+	// Token authenticates every request. It is a credential, so prefer
+	// ${env:...} over a literal.
+	Token string `json:"token"`
+	// Timeout bounds one request ("30s"). It has to exceed poll_hold, or a long
+	// poll is cut short by the transport instead of answering.
+	Timeout string `json:"timeout"`
+	// PollHold is how long a read or a wait asks the server to hold ("20s").
+	PollHold string `json:"poll_hold"`
+	// InsecureSkipVerify disables TLS verification. Name it out loud: it is for
+	// a loopback or a test listener, never for a real boundary.
+	InsecureSkipVerify bool `json:"insecure_skip_verify"`
+}
+
+// NetConfig is the outbound posture in the words a person uses.
+type NetConfig struct {
+	// Mode is one of default, none, allow_list, proxy.
+	Mode string `json:"mode"`
+	// AllowHosts is meaningful for allow_list: hostname suffixes and IP
+	// literals, optionally with a port.
+	AllowHosts []string `json:"allow_hosts"`
+	// Proxy is the address used by proxy mode.
+	Proxy string `json:"proxy"`
+}
+
+// FilesConfig describes the file boundary the tools work inside.
+type FilesConfig struct {
+	// Roots are absolute directories writes may touch. They must exist when the
+	// runtime is built: a handle that cannot be opened cannot enforce anything.
+	Roots []string `json:"roots"`
+}
+
+// InferenceConfig declares the models this runtime may call and how it fails
+// over between them.
+//
+// The list is ordered: position is priority, so the deployment states its
+// preference once instead of encoding it in weights or in a selector. A model
+// appears once per deployment it can run in — the same API model twice, with two
+// credentials, is the ordinary failover shape.
+type InferenceConfig struct {
+	// Providers are reusable construction blocks: one driver, one set of
+	// credentials and endpoints, many models. Declaring them separately keeps a
+	// deployment from repeating the same api_key and base_url for every model.
+	Providers []ProviderConfig `json:"providers"`
+	// Models are callable endpoints: a provider, an API model name, and the
+	// facts the driver's catalog does not declare. Order is priority.
+	Models []ModelConfig `json:"models"`
+	Route  RouteConfig   `json:"route"`
+}
+
+// ProviderConfig is one construction block: which driver, with which settings,
+// under which name the deployment refers to it.
+type ProviderConfig struct {
+	// Name is the deployment identity: it becomes model.ModelRef.Profile and the
+	// target name, and it is what distinguishes the same vendor model deployed
+	// through two accounts.
+	Name string `json:"name"`
+	// Driver is the constructor, resolved by the host's driver table. Its name is
+	// also the public vendor identity, model.ModelID.Provider.
+	Driver string `json:"driver"`
+	// Settings is passed to the driver verbatim.
+	Settings json.RawMessage `json:"settings"`
+}
+
+// ModelConfig is one callable model: which API model, through which driver, with
+// which credentials.
+type ModelConfig struct {
+	// Provider names the construction block this model runs on. The block owns
+	// the driver, the credentials and the endpoints; one block serves many
+	// models.
+	Provider string `json:"provider"`
+	// Model is the API model name: model.ModelID.Name.
+	Model string `json:"model"`
+	// Weight is used by selectors that weigh targets; the order of this list is
+	// the default preference.
+	Weight int `json:"weight"`
+	// Capabilities and Limits fill in what the driver's catalog does not
+	// declare. A declaration that contradicts the catalog fails assembly.
+	Capabilities *CapabilitiesConfig `json:"capabilities"`
+	Limits       *LimitsConfig       `json:"limits"`
+}
+
+// CapabilitiesConfig is the written form of model.ModelCapabilities. Only the
+// content kinds are expressible: the remaining bits are driver facts.
+type CapabilitiesConfig struct {
+	Inputs  []string `json:"inputs"`
+	Outputs []string `json:"outputs"`
+}
+
+// LimitsConfig is the written form of model.ModelLimits; zero means undeclared.
+type LimitsConfig struct {
+	MaxInputTokens  int   `json:"max_input_tokens"`
+	MaxOutputTokens int   `json:"max_output_tokens"`
+	MaxInputBytes   int64 `json:"max_input_bytes"`
+}
+
+// RouteConfig mirrors route.RetryPolicy plus a selector name.
+type RouteConfig struct {
+	// Selector names a selector from the host's table. Empty means "every
+	// candidate, in the order models declares".
+	Selector string `json:"selector"`
+	// SelectorSettings is handed to the named selector's factory verbatim; the
+	// runtime does not interpret it.
+	SelectorSettings json.RawMessage `json:"selector_settings"`
+	// AttemptsPerTarget is how often one model is retried on a transient
+	// failure; zero means once.
+	AttemptsPerTarget int `json:"attempts_per_target"`
+	// MaxTargets caps how many models are tried; zero means every candidate.
+	MaxTargets int `json:"max_targets"`
+	// BaseDelay is the first backoff, doubling per attempt; empty means no wait.
+	BaseDelay string `json:"base_delay"`
+	// MaxDelay caps the backoff; empty means no cap.
+	MaxDelay string `json:"max_delay"`
+}
+
+// ToolsConfig selects which built-in tools are wired.
+type ToolsConfig struct {
+	// Enable lists files, exec and skills. Empty means all three.
+	Enable []string `json:"enable"`
+	// TTY publishes pseudo-terminal parameters on the session tool.
+	TTY bool `json:"tty"`
+	// Dynamic defers tools instead of sending all of them every round. Omitted
+	// means static: every wired tool is visible to the model from the first
+	// round, which is the behaviour a small tool set wants.
+	Dynamic *DynamicConfig `json:"dynamic"`
+	// Images lets read_file return an image part. It belongs here because it
+	// describes what a tool may hand the model, not what the filesystem is or
+	// what the driver supports: a deployment that lists it wrong gets refused
+	// parts, and the fix is a tool setting.
+	Images bool `json:"images"`
+	// MCP declares MCP servers, which are one more tool source. Declaring a
+	// server is what enables it; there is no separate name in enable.
+	MCP MCPConfig `json:"mcp"`
+	// Middleware lists the dispatch chain, outermost first. Omitted means
+	// [recover, telemetry]: a tool call should produce a span and must not be
+	// able to stop the process.
+	Middleware []MiddlewareConfig `json:"middleware"`
+}
+
+// MiddlewareConfig names one entry of the dispatch chain and its settings.
+type MiddlewareConfig struct {
+	Name     string          `json:"name"`
+	Settings json.RawMessage `json:"settings"`
+}
+
+// DynamicConfig enables deferred tool exposure: the model sees a bounded set
+// each round and calls tool_search to load what else it needs.
+//
+// It mirrors engine.Policy rather than exposing it: a policy is a contract
+// value, and giving its fields serialization tags would make YAML part of its
+// public API. It also omits the policy's deprecated fields, so there is exactly
+// one way to express the idle horizon.
+type DynamicConfig struct {
+	// Default is the exposure for tools with no explicit entry: always, direct,
+	// deferred or hidden. Omitted means deferred, the engine's default.
+	Default string `json:"default"`
+	// Always names tools that stay visible every round.
+	Always []string `json:"always"`
+	// Hidden names tools that never appear; tool_search cannot surface them.
+	Hidden []string `json:"hidden"`
+	// Budget caps how many definitions one round can carry.
+	Budget int `json:"budget"`
+	// MaxBytes caps the serialized size of one round's definitions.
+	MaxBytes int `json:"max_bytes"`
+	// IdleRounds evicts a discovered tool that goes unused this long.
+	IdleRounds int `json:"idle_rounds"`
+	// SearchWithLoad makes tool_search load every deferred source before
+	// ranking. Off by default: a search must not spawn processes it does not
+	// need.
+	SearchWithLoad bool `json:"search_with_load"`
+}
+
+// SkillsConfig points at SKILL.md trees.
+type SkillsConfig struct {
+	Roots []string `json:"roots"`
+}
+
+// Validate rejects a configuration that cannot be built, with the YAML path in
+// every error so the reader knows which line to change.
+func (c Config) Validate() error {
+	if err := c.Sandbox.validate(); err != nil {
+		return err
 	}
-	if _, reserved := externalNames[cfg.EventBus]; reserved {
-		return errdefs.Validationf(
-			"runtime config: event_bus %q cannot be an external dependency",
-			cfg.EventBus)
+	if err := c.Files.validate(); err != nil {
+		return err
 	}
-	if _, reserved := externalNames[cfg.CheckpointStore]; cfg.CheckpointStore != "" && reserved {
-		return errdefs.Validationf(
-			"runtime config: checkpoint_store %q cannot be an external dependency",
-			cfg.CheckpointStore)
+	if err := c.validateVersion(); err != nil {
+		return err
 	}
-	if cfg.DynamicCatalog == nil {
-		return nil
+	if err := c.Tools.validate(); err != nil {
+		return err
 	}
-	for agentID, resourceName := range cfg.DynamicCatalog.Tools {
-		if _, reserved := externalNames[resourceName]; reserved {
-			return errdefs.Validationf(
-				"runtime config: dynamic_catalog.tools[%q] resource %q cannot be an external dependency",
-				agentID, resourceName)
+
+	if err := c.Inference.validate(); err != nil {
+		return err
+	}
+	for _, root := range c.Skills.Roots {
+		if !filepath.IsAbs(root) {
+			return errdefs.Validationf("skills.roots: %q is not an absolute path", root)
 		}
 	}
 	return nil
 }
 
-// positiveDuration parses a Go duration string and rejects non-positive
-// ones, naming the field so the document knows what to fix.
-func positiveDuration(field, value string) (time.Duration, error) {
-	parsed, err := time.ParseDuration(value)
+func (c SandboxConfig) validate() error {
+	switch c.Backend {
+	case BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows, BackendRemote:
+	case "":
+		return errdefs.Validationf(
+			"sandbox.backend is required; one of %s, %s, %s, %s, %s",
+			BackendLocal, BackendSeatbelt, BackendBwrap, BackendWindows, BackendRemote)
+	default:
+		return errdefs.Validationf("sandbox.backend: unknown backend %q", c.Backend)
+	}
+	if err := c.Remote.validate(c.Backend); err != nil {
+		return err
+	}
+	if c.WorkDir != "" && !filepath.IsAbs(c.WorkDir) {
+		return errdefs.Validationf("sandbox.workdir: %q is not an absolute path", c.WorkDir)
+	}
+	if err := (permission.Writes{Paths: c.Writes}).Validate(); err != nil {
+		return errdefs.Validationf("sandbox.writes: %w", err)
+	}
+	if c.CPU < 0 || c.MemoryMiB < 0 || c.OutputMiB < 0 {
+		return errdefs.Validationf(
+			"sandbox: cpu_millicores, memory_mib and output_mib must not be negative")
+	}
+	if _, err := c.timeout(); err != nil {
+		return err
+	}
+	if err := c.validateBackendOptions(); err != nil {
+		return err
+	}
+	if err := c.validateJournal(); err != nil {
+		return err
+	}
+	if c.CPU > 0 && c.Timeout == "" {
+		return errdefs.Validationf(
+			"sandbox.cpu_millicores requires sandbox.timeout: the cpu budget is derived from the deadline")
+	}
+	return c.Net.validate()
+}
+
+// validate rejects a remote block that is absent where it is needed, present
+// where it is meaningless, or unparseable.
+func (c RemoteConfig) validate(backend string) error {
+	if backend != BackendRemote {
+		if c != (RemoteConfig{}) {
+			return errdefs.Validationf(
+				"sandbox.remote is only meaningful with sandbox.backend: %s", BackendRemote)
+		}
+		return nil
+	}
+	transport, err := c.transport()
 	if err != nil {
-		return 0, errdefs.Validation(
-			fmt.Errorf("runtime config: %s %q: %w", field, value, err))
+		return err
 	}
-	if parsed <= 0 {
-		return 0, errdefs.Validationf("runtime config: %s %q: must be positive", field, value)
+	if err := c.validateTransport(transport); err != nil {
+		return err
 	}
-	return parsed, nil
+	if _, err := c.timeout(); err != nil {
+		return err
+	}
+	_, err = c.pollHold()
+	return err
+}
+
+// transport is the written name mapped to a transport family.
+func (c RemoteConfig) transport() (string, error) {
+	switch strings.ToLower(strings.TrimSpace(c.Transport)) {
+	case "", "http", "https", "tcp":
+		return remoteTransportHTTP, nil
+	case "unix", "socket":
+		return remoteTransportUnix, nil
+	default:
+		return "", errdefs.Validationf(
+			"sandbox.remote.transport: unknown transport %q; one of http, unix", c.Transport)
+	}
+}
+
+const (
+	remoteTransportHTTP = "http"
+	remoteTransportUnix = "unix"
+)
+
+// validateTransport requires the field the chosen transport needs and rejects the
+// one it does not use: an endpoint beside a socket path is configuration that
+// silently does nothing.
+func (c RemoteConfig) validateTransport(transport string) error {
+	if transport == remoteTransportUnix {
+		if c.Socket == "" {
+			return errdefs.Validationf(
+				"sandbox.remote.socket is required with sandbox.remote.transport: unix")
+		}
+		if c.Endpoint != "" {
+			return errdefs.Validationf(
+				"sandbox.remote.endpoint is not used with sandbox.remote.transport: unix")
+		}
+		if c.InsecureSkipVerify {
+			return errdefs.Validationf(
+				"sandbox.remote.insecure_skip_verify is meaningless over a unix socket, which carries no TLS")
+		}
+		return nil
+	}
+	if c.Endpoint == "" {
+		return errdefs.Validationf(
+			"sandbox.remote.endpoint is required with sandbox.backend: %s", BackendRemote)
+	}
+	u, err := url.Parse(c.Endpoint)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return errdefs.Validationf(
+			"sandbox.remote.endpoint: %q is not an http(s) URL", c.Endpoint)
+	}
+	if c.Socket != "" {
+		return errdefs.Validationf(
+			"sandbox.remote.socket is only meaningful with sandbox.remote.transport: unix")
+	}
+	return nil
+}
+
+// timeout is the per-request timeout, zero meaning the client's default.
+func (c RemoteConfig) timeout() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.remote.timeout", c.Timeout)
+}
+
+// pollHold is how long a read or a wait asks the server to hold.
+func (c RemoteConfig) pollHold() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.remote.poll_hold", c.PollHold)
+}
+
+func parseOptionalDuration(field, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, errdefs.Validationf("%s: %q is not a duration: %w", field, value, err)
+	}
+	if d <= 0 {
+		return 0, errdefs.Validationf("%s: %q must be positive", field, value)
+	}
+	return d, nil
+}
+
+func (n NetConfig) validate() error {
+	if _, err := n.mode(); err != nil {
+		return err
+	}
+	if len(n.AllowHosts) > 0 && n.mode0() != permission.NetAllowList {
+		return errdefs.Validationf(
+			"net.allow_hosts is only meaningful with net.mode: allow_list (got %q)", n.Mode)
+	}
+	return nil
+}
+
+func (n NetConfig) mode0() permission.NetMode {
+	mode, _ := n.mode()
+	return mode
+}
+
+// validateBackendOptions rejects a backend's settings block on any other backend:
+// a block that does nothing is a deployment that runs somewhere its author did not
+// describe.
+func (c SandboxConfig) validateBackendOptions() error {
+	for _, option := range []struct {
+		name   string
+		set    bool
+		holder string
+	}{
+		{"bwrap", c.Bwrap != nil, BackendBwrap},
+		{"seatbelt", c.Seatbelt != nil, BackendSeatbelt},
+		{"windows", c.Windows != nil, BackendWindows},
+	} {
+		if option.set && c.Backend != option.holder {
+			return errdefs.Validationf(
+				"sandbox.%s is only meaningful with sandbox.backend: %s (got %q)",
+				option.name, option.holder, c.Backend)
+		}
+	}
+	return nil
+}
+
+// validateJournal checks the journal block's cheap invariants. Root resolution and
+// the platform's watch source are the build's business — a deployment that asks for
+// a journal on a platform without one fails at build time — but a typo has to fail
+// here, where the field is still visible.
+func (c SandboxConfig) validateJournal() error {
+	if c.Journal == nil {
+		return nil
+	}
+	if c.Journal.Retention < 0 {
+		return errdefs.Validationf("sandbox.journal.retention: %d must not be negative", c.Journal.Retention)
+	}
+	if c.Journal.MaxWatchSet < 0 {
+		return errdefs.Validationf("sandbox.journal.max_watch_set: %d must not be negative", c.Journal.MaxWatchSet)
+	}
+	for _, name := range c.Journal.Ops {
+		if _, ok := sandbox.ParseFileOp(name); !ok {
+			return errdefs.Validationf(
+				"sandbox.journal.ops: unknown op %q (want create, write, rename or remove)", name)
+		}
+	}
+	return nil
+}
+
+// timeout is the default per-call deadline, zero meaning none.
+func (c SandboxConfig) timeout() (time.Duration, error) {
+	return parseOptionalDuration("sandbox.timeout", c.Timeout)
+}
+
+// mode maps the written name to the contract value.
+func (n NetConfig) mode() (permission.NetMode, error) {
+	switch strings.ToLower(strings.TrimSpace(n.Mode)) {
+	case "", "default":
+		return permission.NetDefault, nil
+	case "none", "deny", "deny_all":
+		return permission.NetDenyAll, nil
+	case "allow_list", "allowlist":
+		return permission.NetAllowList, nil
+	case "proxy", "proxies":
+		return permission.NetProxy, nil
+	default:
+		return permission.NetDefault, errdefs.Validationf(
+			"net.mode: unknown mode %q; one of default, none, allow_list, proxy", n.Mode)
+	}
+}
+
+// policy converts the written network posture into the contract value.
+func (n NetConfig) policy() (permission.NetPolicy, error) {
+	mode, err := n.mode()
+	if err != nil {
+		return permission.NetPolicy{}, err
+	}
+	policy := permission.NetPolicy{Mode: mode, AllowHosts: n.AllowHosts, Proxy: n.Proxy}
+	if err := policy.Validate(); err != nil {
+		return permission.NetPolicy{}, errdefs.Validationf("net: %w", err)
+	}
+	return policy, nil
+}
+
+func (f FilesConfig) validate() error {
+	if len(f.Roots) == 0 {
+		return errdefs.Validationf(
+			"files.roots is required: at least one absolute directory the tools may write")
+	}
+	for _, root := range f.Roots {
+		if !filepath.IsAbs(root) {
+			return errdefs.Validationf("files.roots: %q is not an absolute path", root)
+		}
+	}
+	if err := (permission.Writes{Paths: f.Roots}).Validate(); err != nil {
+		return errdefs.Validationf("files.roots: %w", err)
+	}
+	return nil
+}
+
+func (t ToolsConfig) validate() error {
+	if t.Dynamic != nil {
+		if err := t.Dynamic.validate(); err != nil {
+			return err
+		}
+	}
+	if err := t.MCP.validate(); err != nil {
+		return err
+	}
+	for _, name := range t.Enable {
+		switch name {
+		case ToolFiles, ToolExec, ToolSkills:
+		default:
+			return errdefs.Validationf(
+				"tools.enable: unknown tool %q; one of %s, %s, %s",
+				name, ToolFiles, ToolExec, ToolSkills)
+		}
+	}
+	return nil
+}
+
+// enabled reports whether one built-in tool set is wired. An empty list means
+// every set: a runtime assembled with no tools would be a configuration that
+// looks complete and does nothing.
+func (t ToolsConfig) enabled(name string) bool {
+	if len(t.Enable) == 0 {
+		return true
+	}
+	for _, candidate := range t.Enable {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+// workDir is the directory commands run in.
+func (c Config) workDir() string {
+	if c.Sandbox.WorkDir != "" {
+		return c.Sandbox.WorkDir
+	}
+	if len(c.Files.Roots) > 0 {
+		return c.Files.Roots[0]
+	}
+	return ""
+}
+
+// permission converts the sandbox section into the contract policy.
+func (c SandboxConfig) permission() (permission.Policy, error) {
+	writes := permission.Writes{Paths: c.Writes}
+	if err := writes.Validate(); err != nil {
+		return permission.Policy{}, errdefs.Validationf("sandbox.writes: %w", err)
+	}
+	net, err := c.Net.policy()
+	if err != nil {
+		return permission.Policy{}, err
+	}
+	return permission.Policy{Writes: writes, Net: net}, nil
+}
+
+// limits converts the written budgets into the contract limits.
+func (c SandboxConfig) limits() (sandbox.ResourceLimits, error) {
+	if c.CPU < 0 || c.MemoryMiB < 0 || c.OutputMiB < 0 {
+		return sandbox.ResourceLimits{}, errdefs.Validationf(
+			"sandbox: cpu_millicores, memory_mib and output_mib must not be negative")
+	}
+	return sandbox.ResourceLimits{
+		CPUMillicores:  c.CPU,
+		MemoryBytes:    int64(c.MemoryMiB) << 20,
+		MaxOutputBytes: int64(c.OutputMiB) << 20,
+	}, nil
+}
+
+func (d DynamicConfig) validate() error {
+	if d.Default != "" {
+		if _, err := parseExposure(d.Default); err != nil {
+			return errdefs.Validationf("tools.dynamic.default: %w", err)
+		}
+	}
+	if d.Budget < 0 || d.MaxBytes < 0 || d.IdleRounds < 0 {
+		return errdefs.Validationf(
+			"tools.dynamic: budget, max_bytes and idle_rounds must not be negative")
+	}
+	always := make(map[string]struct{}, len(d.Always))
+	for _, name := range d.Always {
+		always[name] = struct{}{}
+	}
+	for _, name := range d.Hidden {
+		if _, both := always[name]; both {
+			return errdefs.Validationf(
+				"tools.dynamic: %q is listed in both always and hidden", name)
+		}
+	}
+	return nil
+}
+
+// parseExposure maps the written name to the engine's exposure level.
+func parseExposure(name string) (engine.Exposure, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case string(engine.ExposureAlways):
+		return engine.ExposureAlways, nil
+	case string(engine.ExposureDirect):
+		return engine.ExposureDirect, nil
+	case string(engine.ExposureDeferred):
+		return engine.ExposureDeferred, nil
+	case string(engine.ExposureHidden):
+		return engine.ExposureHidden, nil
+	default:
+		return "", errdefs.Validationf(
+			"unknown exposure %q; one of always, direct, deferred, hidden", name)
+	}
+}
+
+// policy converts the written block into the engine's policy. Zero fields are
+// left zero on purpose: the engine normalizes them against DefaultPolicy, and a
+// second default here would drift from it.
+func (d DynamicConfig) policy() (engine.Policy, error) {
+	policy := engine.Policy{
+		Budget:         engine.Budget{MaxDefinitions: d.Budget, MaxBytes: int64(d.MaxBytes)},
+		Discovery:      engine.DiscoveryPolicy{IdleRounds: d.IdleRounds},
+		SearchWithLoad: d.SearchWithLoad,
+	}
+	if d.Default != "" {
+		exposure, err := parseExposure(d.Default)
+		if err != nil {
+			return engine.Policy{}, errdefs.Validationf("tools.dynamic.default: %w", err)
+		}
+		policy.Default = exposure
+	}
+	if len(d.Always) > 0 || len(d.Hidden) > 0 {
+		policy.Exposures = make(map[string]engine.Exposure, len(d.Always)+len(d.Hidden))
+		for _, name := range d.Always {
+			policy.Exposures[name] = engine.ExposureAlways
+		}
+		for _, name := range d.Hidden {
+			policy.Exposures[name] = engine.ExposureHidden
+		}
+	}
+	return policy, nil
+}
+
+// MCPConfig declares the MCP servers a runtime attaches.
+type MCPConfig struct {
+	// Defer starts a server only when a tool from it is loaded. Omitted means
+	// true: a configured server that the model never uses should not cost a
+	// process or a connection.
+	Defer   *bool             `json:"defer"`
+	Servers []MCPServerConfig `json:"servers"`
+}
+
+// deferred reports whether servers start on demand.
+func (m MCPConfig) deferred() bool {
+	if m.Defer == nil {
+		return true
+	}
+	return *m.Defer
+}
+
+// MCPServerConfig is one server attachment. The pointers keep "absent" distinct
+// from "false": an absent value keeps the package default, an explicit value
+// overrides it.
+type MCPServerConfig struct {
+	Name        string            `json:"name"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args"`
+	Env         map[string]string `json:"env"`
+	URL         string            `json:"url"`
+	Headers     map[string]string `json:"headers"`
+	HTTPTimeout string            `json:"http_timeout"`
+	Liveness    string            `json:"liveness"`
+	Prefix      string            `json:"prefix"`
+	// Description is what a model sees before the server is connected. It is
+	// the only thing search can rank on, because the real tools are unknown
+	// until the server starts.
+	Description string `json:"description"`
+	Resources   *bool  `json:"resources"`
+	Required    *bool  `json:"required"`
+}
+
+func (m MCPConfig) validate() error {
+	if len(m.Servers) == 0 {
+		return nil
+	}
+	if _, err := m.spec(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// spec converts the written servers into the MCP package's own spec.
+//
+// Validation is delegated: the MCP package already rejects the combinations it
+// cannot honour (stdio without a command, http with one), and duplicating those
+// rules here would let the two copies drift.
+func (m MCPConfig) spec() (toolmcp.Spec, error) {
+	spec := toolmcp.Spec{Servers: make([]toolmcp.ServerSpec, 0, len(m.Servers))}
+	for _, server := range m.Servers {
+		converted := toolmcp.ServerSpec{
+			Name:        server.Name,
+			Transport:   server.Transport,
+			Command:     server.Command,
+			Args:        server.Args,
+			Env:         server.Env,
+			URL:         server.URL,
+			Headers:     server.Headers,
+			Resources:   server.Resources,
+			Required:    server.Required,
+			Description: server.Description,
+		}
+		if server.HTTPTimeout != "" {
+			value := server.HTTPTimeout
+			converted.HTTPTimeout = &value
+		}
+		if server.Liveness != "" {
+			value := server.Liveness
+			converted.Liveness = &value
+		}
+		if server.Prefix != "" {
+			value := server.Prefix
+			converted.Prefix = &value
+		}
+		spec.Servers = append(spec.Servers, converted)
+	}
+	if err := spec.Validate(); err != nil {
+		return toolmcp.Spec{}, errdefs.Validationf("mcp: %w", err)
+	}
+	return spec, nil
+}
+
+func (c Config) validateVersion() error {
+	switch c.Version {
+	case 1:
+		return nil
+	case 0:
+		return errdefs.Validationf(
+			"version is required; this build understands version 1")
+	default:
+		return errdefs.Validationf(
+			"unsupported version %d; this build understands version 1", c.Version)
+	}
+}
+
+func (c InferenceConfig) validate() error {
+	if len(c.Models) == 0 {
+		if c.Route.Selector != "" {
+			return errdefs.Validationf(
+				"inference.route.selector: no models are declared, so there is nothing to select")
+		}
+		return nil
+	}
+	providers := make(map[string]ProviderConfig, len(c.Providers))
+	for i, provider := range c.Providers {
+		if strings.TrimSpace(provider.Name) == "" {
+			return errdefs.Validationf("inference.providers[%d]: name is required", i)
+		}
+		if _, duplicate := providers[provider.Name]; duplicate {
+			return errdefs.Validationf(
+				"inference.providers[%d]: duplicate name %q", i, provider.Name)
+		}
+		if strings.TrimSpace(provider.Driver) == "" {
+			return errdefs.Validationf(
+				"inference.providers[%s].driver is required", provider.Name)
+		}
+		providers[provider.Name] = provider
+	}
+
+	used := make(map[string]struct{}, len(c.Providers))
+	seen := make(map[string]struct{}, len(c.Models))
+	for i, entry := range c.Models {
+		provider, declared := providers[entry.Provider]
+		if !declared {
+			return errdefs.Validationf(
+				"inference.models[%d].provider: %q is not a declared provider; declared: %s",
+				i, entry.Provider, strings.Join(providerNames(c.Providers), ", "))
+		}
+		used[entry.Provider] = struct{}{}
+		key := entry.Provider + "|" + entry.Model
+		if _, duplicate := seen[key]; duplicate {
+			return errdefs.Validationf(
+				"inference.models[%d]: provider %q already serves model %q",
+				i, entry.Provider, entry.Model)
+		}
+		seen[key] = struct{}{}
+		if strings.TrimSpace(entry.Model) == "" {
+			return errdefs.Validationf("inference.models[%d]: model is required", i)
+		}
+		if entry.Weight < 0 {
+			return errdefs.Validationf(
+				"inference.models[%d]: weight must not be negative", i)
+		}
+		if _, err := entry.descriptor(provider); err != nil {
+			return errdefs.Validationf("inference.models[%d]: %w", i, err)
+		}
+	}
+	for _, provider := range c.Providers {
+		if _, ok := used[provider.Name]; !ok {
+			return errdefs.Validationf(
+				"inference.providers[%s]: declared but serves no model", provider.Name)
+		}
+	}
+	return c.Route.validate()
+}
+
+// lookupProvider finds a declared block by name.
+func (c InferenceConfig) lookupProvider(name string) (ProviderConfig, bool) {
+	for _, provider := range c.Providers {
+		if provider.Name == name {
+			return provider, true
+		}
+	}
+	return ProviderConfig{}, false
+}
+
+func providerNames(providers []ProviderConfig) []string {
+	names := make([]string, 0, len(providers))
+	for _, provider := range providers {
+		names = append(names, provider.Name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func (r RouteConfig) validate() error {
+	if r.AttemptsPerTarget < 0 || r.MaxTargets < 0 {
+		return errdefs.Validationf(
+			"inference.route: attempts_per_target and max_targets must not be negative")
+	}
+	for name, value := range map[string]string{"base_delay": r.BaseDelay, "max_delay": r.MaxDelay} {
+		if value == "" {
+			continue
+		}
+		if _, err := time.ParseDuration(value); err != nil {
+			return errdefs.Validationf("inference.route.%s: %v", name, err)
+		}
+	}
+	return nil
+}
+
+// retry converts the written backoff into the dispatcher's policy.
+func (r RouteConfig) retry() (route.RetryPolicy, error) {
+	policy := route.RetryPolicy{
+		AttemptsPerTarget: r.AttemptsPerTarget,
+		MaxTargets:        r.MaxTargets,
+	}
+	if r.BaseDelay != "" {
+		delay, err := time.ParseDuration(r.BaseDelay)
+		if err != nil {
+			return route.RetryPolicy{}, errdefs.Validationf("inference.route.base_delay: %v", err)
+		}
+		policy.BaseDelay = delay
+	}
+	if r.MaxDelay != "" {
+		delay, err := time.ParseDuration(r.MaxDelay)
+		if err != nil {
+			return route.RetryPolicy{}, errdefs.Validationf("inference.route.max_delay: %v", err)
+		}
+		policy.MaxDelay = delay
+	}
+	return policy, nil
+}
+
+// descriptor converts one entry into the model facts routing and the compiler
+// consult.
+func (m ModelConfig) descriptor(provider ProviderConfig) (model.ModelDescriptor, error) {
+	// The driver name is the public vendor identity, so the descriptor needs no
+	// restamping later: it is already what a catalog reports.
+	id := model.ModelID{Provider: provider.Driver, Name: m.Model}
+	descriptor := model.ModelDescriptor{ID: id}
+	if m.Capabilities != nil {
+		inputs, err := parsePartKinds(m.Capabilities.Inputs)
+		if err != nil {
+			return model.ModelDescriptor{}, errdefs.Validationf("capabilities.inputs: %w", err)
+		}
+		outputs, err := parsePartKinds(m.Capabilities.Outputs)
+		if err != nil {
+			return model.ModelDescriptor{}, errdefs.Validationf("capabilities.outputs: %w", err)
+		}
+		descriptor.Capabilities.Inputs = inputs
+		descriptor.Capabilities.Outputs = outputs
+	}
+	if m.Limits != nil {
+		if m.Limits.MaxInputTokens > 0 {
+			value := m.Limits.MaxInputTokens
+			descriptor.Limits.MaxInputTokens = &value
+		}
+		if m.Limits.MaxOutputTokens > 0 {
+			value := m.Limits.MaxOutputTokens
+			descriptor.Limits.MaxOutputTokens = &value
+		}
+		if m.Limits.MaxInputBytes > 0 {
+			value := m.Limits.MaxInputBytes
+			descriptor.Limits.MaxInputBytes = &value
+		}
+	}
+	return descriptor, nil
+}
+
+// targetName is the deployment identity shown in traces and errors:
+// profile/vendor:model, with the profile omitted when there is only one
+// deployment of that model.
+func (m ModelConfig) targetName() string {
+	return m.Provider + ":" + m.Model
+}
+
+// parsePartKinds maps the written content kinds to the contract vocabulary.
+func parsePartKinds(names []string) ([]message.PartKind, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	out := make([]message.PartKind, 0, len(names))
+	for _, name := range names {
+		var kind message.PartKind
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case string(message.PartText):
+			kind = message.PartText
+		case string(message.PartImage):
+			kind = message.PartImage
+		case string(message.PartAudio):
+			kind = message.PartAudio
+		case string(message.PartVideo):
+			kind = message.PartVideo
+		case string(message.PartFile):
+			kind = message.PartFile
+		case string(message.PartData):
+			kind = message.PartData
+		default:
+			return nil, errdefs.Validationf("unknown content kind %q", name)
+		}
+		out = append(out, kind)
+	}
+	return out, nil
 }

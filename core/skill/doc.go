@@ -1,22 +1,19 @@
-// Package skill discovers, parses and ranks Agent Skills — directories
-// whose SKILL.md carries YAML frontmatter (agentskills.io) — for
-// per-turn injection and on-demand reads by an agent loop.
+// Package skill discovers and parses SKILL.md documents and renders the
+// per-turn skills section.
 //
-// The engine is read-only and policy-free. Roots are parameters: the
-// caller composes them (a personal root like ~/.agents/skills, a
-// product or plugin directory); nothing is scanned implicitly. Parse
-// failures and tolerated shape issues land in [Outcome.Diagnostics];
-// discovery never fails hard. Ranking runs over the shared
-// [github.com/GizClaw/flowcraft/core/utils/bm25] kernel, so skill
-// names and descriptions are scored exactly like tool catalogs.
+// A skill is a directory holding a SKILL.md: YAML frontmatter (name,
+// description) plus a Markdown body the model reads on demand. This package
+// never inlines a body — the section carries one line per skill, and a tool
+// loads a body when the model asks for it.
 //
-// Lifecycle policies stay with the caller: installation, authoring,
-// usage accounting, retirement and built-in shadowing are layered over
-// [Service.List], [Service.ByName] and [Service.ReadFull]. Duplicate
-// names across roots are all listed and rankable; [Service.ByName]
-// resolves the first path in the canonical (name, path) order.
+// Reading goes through fsx, so a skill tree is whatever an fsx.Tree can reach
+// and the policy that governs it is the caller's. Parsing is pure: Parse takes
+// bytes, so a caller can test it without a filesystem.
 //
-// A [Service] holds an immutable snapshot swapped by [Service.Reload],
-// so the hot read paths (per-turn ranking, mention resolution,
-// rendering) are lock-free and safe for concurrent use.
+// Not carried over from the previous implementation: the duplicate-key analysis
+// of the frontmatter (two YAML keys collapsing onto one JSON key). It needs a
+// second YAML decoder and a decode helper that no longer exists; the parser here
+// refuses malformed documents and warns on shape issues, which covers the common
+// failure, but a frontmatter carrying duplicate keys now loads silently. Add it
+// back if a real skill is caught by it.
 package skill

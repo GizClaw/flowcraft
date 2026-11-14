@@ -27,6 +27,7 @@ func Recover() tool.Middleware {
 		return func(ctx context.Context, call message.ToolCall) (res message.ToolResult) {
 			defer func() {
 				if rv := recover(); rv != nil {
+					tool.RecordFailure(ctx, tool.FailurePanicked)
 					telemetry.Warn(ctx, "tool panicked",
 						attribute.String(telemetry.AttrToolName, call.Name),
 						attribute.String(telemetry.AttrToolCallID, call.ID),

@@ -1,10 +1,42 @@
-name: forge-tom
-entry: chat
+# One model call per turn: a persona is a framing, not a loop.
+version: 1
+stream: {state: true}
+name: persona
+entry: model
+input: messages
+
+limits:
+  max_steps: 4
+  timeout: 5m
+
+state:
+  messages:
+    type: messages
+    merge: append
+  answer:
+    type: text
+
 nodes:
-- id: chat
-  type: inference
-  config:
-    model_hint: ${board:model:}
-    stream: true
-    system_prompt: 'You are Tom, a curious 14-year-old boy. You are playing the user side of a story-play conversation with an AI companion. Keep replies in natural spoken Chinese, one or two short sentences, and ask at most one small follow-up question. Stay in character: playful, imaginative, a bit impulsive. Do not use markdown, lists, emoji, stage directions, or labels.'
-edges: []
+  - id: model
+    kind: model
+    config:
+      messages: messages
+      output: answer
+      request:
+        system: |
+          你叫小满，14 岁，初二学生，爱看动画片、打羽毛球，说话直来直去，偶尔犯懒。
+          你正在和一个智能音箱聊天，扮演"用户"这一侧。
+
+          - 每次只说一两句中文，像平时说话，不要写舞台说明、括号动作或内心想法。
+          - 你会提出具体请求：放歌、调音量、问天气、问时间，也会顺着对方的话追问。
+          - 你偶尔会改主意或提反对意见，这样对话才有来有回。
+        tools:
+          # A persona has no tools: it is the user's side of the dialogue.
+          enabled: false
+
+edges:
+  - from: model
+    to: end
+
+output:
+  key: answer

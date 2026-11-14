@@ -1,0 +1,499 @@
+package httpkit
+
+import (
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"math/rand"
+	"net"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// This file carries the HTTP conveniences provider clients use: a tuned
+// connection-pooling transport, a bounded retry RoundTripper for transient
+// failures, and an option-driven client builder hardening HTTP/1.1 and
+// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
+// dependency was dropped during the core migration).
+
+// Protocol selects the transport family built by [NewRoundTripper].
+type Protocol int
+
+const (
+	// ProtocolHTTP1 is the default: HTTP/1.1 with ResponseHeaderTimeout,
+	// so a stalled connection is bounded and retried on a fresh one.
+	ProtocolHTTP1 Protocol = iota
+	// ProtocolHTTP2 keeps multiplexing and bounds the write path with
+	// periodic PING health checks and WriteByteTimeout.
+	ProtocolHTTP2
+)
+
+// Config carries every knob for [NewRoundTripper] / [NewHTTPClient]. Zero
+// values select the defaults below.
+type Config struct {
+	Protocol Protocol
+
+	// ClientTimeout bounds the whole request (http.Client.Timeout).
+	ClientTimeout time.Duration
+
+	// TLSClientConfig is used for TLS dialing. Nil uses system roots. It
+	// is cloned before use, so one config may back several clients.
+	TLSClientConfig *tls.Config
+
+	// ResponseHeaderTimeout bounds the wait for HTTP/1.1 response headers.
+	ResponseHeaderTimeout time.Duration
+
+	// HTTP/2 health checks.
+	PingInterval     time.Duration // quiet-connection PING cadence
+	PingTimeout      time.Duration // close if a PING goes unanswered
+	WriteByteTimeout time.Duration // close if the write path blocks
+
+	// Connection pooling (HTTP/1.1).
+	MaxIdleConns        int
+	MaxIdleConnsPerHost int
+	IdleConnTimeout     time.Duration
+
+	// Retry wraps the base transport; disabled with WithoutRetry.
+	Retry        RetryConfig
+	RetryEnabled bool
+}
+
+// DefaultConfig returns the recommended hardened defaults.
+func DefaultConfig() Config {
+	return Config{
+		Protocol:              ProtocolHTTP1,
+		ClientTimeout:         10 * time.Minute,
+		ResponseHeaderTimeout: 5 * time.Minute,
+		PingInterval:          30 * time.Second,
+		PingTimeout:           15 * time.Second,
+		WriteByteTimeout:      30 * time.Second,
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   32,
+		IdleConnTimeout:       90 * time.Second,
+		Retry:                 DefaultRetry,
+		RetryEnabled:          true,
+	}
+}
+
+// Option mutates a Config.
+type Option func(*Config)
+
+// WithProtocol selects the transport protocol.
+func WithProtocol(protocol Protocol) Option {
+	return func(config *Config) { config.Protocol = protocol }
+}
+
+// WithHTTP1 selects the hardened HTTP/1.1 transport.
+func WithHTTP1() Option { return WithProtocol(ProtocolHTTP1) }
+
+// WithHTTP2 selects the hardened HTTP/2 transport.
+func WithHTTP2() Option { return WithProtocol(ProtocolHTTP2) }
+
+// WithTimeout sets the whole-request client timeout.
+func WithTimeout(timeout time.Duration) Option {
+	return func(config *Config) { config.ClientTimeout = timeout }
+}
+
+// WithTLSClientConfig supplies the TLS configuration used for dialing.
+func WithTLSClientConfig(config *tls.Config) Option {
+	return func(cfg *Config) { cfg.TLSClientConfig = config }
+}
+
+// WithResponseHeaderTimeout bounds the wait for response headers.
+func WithResponseHeaderTimeout(timeout time.Duration) Option {
+	return func(config *Config) { config.ResponseHeaderTimeout = timeout }
+}
+
+// WithHTTP2Timeouts sets the HTTP/2 health-check knobs.
+func WithHTTP2Timeouts(pingInterval, pingTimeout, writeByteTimeout time.Duration) Option {
+	return func(config *Config) {
+		config.PingInterval = pingInterval
+		config.PingTimeout = pingTimeout
+		config.WriteByteTimeout = writeByteTimeout
+	}
+}
+
+// WithRetry sets the retry config and enables retrying.
+func WithRetry(config RetryConfig) Option {
+	return func(cfg *Config) {
+		cfg.Retry = config
+		cfg.RetryEnabled = true
+	}
+}
+
+// WithRetryAttempts sets the total wire attempts including the first,
+// keeping the default backoff curve. Zero or negative disables transport
+// retries so an outer retry owner (route.Router) controls the full budget.
+func WithRetryAttempts(maxAttempts int) Option {
+	if maxAttempts <= 0 {
+		return WithoutRetry()
+	}
+	config := DefaultRetry
+	config.MaxAttempts = maxAttempts
+	return WithRetry(config)
+}
+
+// WithoutRetry disables transport retries.
+func WithoutRetry() Option {
+	return func(config *Config) { config.RetryEnabled = false }
+}
+
+// WithConnectionPool tunes HTTP/1.1 keep-alive pooling.
+func WithConnectionPool(maxIdleConns, maxIdleConnsPerHost int, idleConnTimeout time.Duration) Option {
+	return func(config *Config) {
+		config.MaxIdleConns = maxIdleConns
+		config.MaxIdleConnsPerHost = maxIdleConnsPerHost
+		config.IdleConnTimeout = idleConnTimeout
+	}
+}
+
+// NewRoundTripper builds the hardened base transport per Config, wraps it with
+// the retry transport unless disabled, and adds trace-context propagation.
+//
+// Propagation is part of the client, not an optional extra: a request that
+// leaves without traceparent produces a second trace on the far side, and two
+// well-formed traces that join nothing are harder to notice than one missing
+// trace.
+func NewRoundTripper(options ...Option) http.RoundTripper {
+	config := applyOptions(options)
+	var base = buildBaseTransport(config)
+	if config.RetryEnabled {
+		base = newRetryTransport(base, config.Retry)
+	}
+	return propagatingTransport{base: base}
+}
+
+// propagatingTransport injects the caller's trace context (W3C traceparent /
+// tracestate, plus baggage) into every outgoing request.
+//
+// It is a value type, not a pointer: it carries no state, and a caller that
+// layers its own transport above this one gets the clone semantics for free.
+type propagatingTransport struct {
+	base http.RoundTripper
+}
+
+func (t propagatingTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	ctx := request.Context()
+	// Clone before mutating: the request belongs to the caller, and the retry
+	// transport above may replay it.
+	if trace.SpanContextFromContext(ctx).IsValid() || baggage.FromContext(ctx).Len() > 0 {
+		request = request.Clone(ctx)
+		otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(request.Header))
+	}
+	return t.base.RoundTrip(request)
+}
+
+// NewHTTPClient builds an http.Client over [NewRoundTripper] with the
+// configured whole-request timeout.
+func NewHTTPClient(options ...Option) *http.Client {
+	config := applyOptions(options)
+	return &http.Client{
+		Transport: NewRoundTripper(options...),
+		Timeout:   config.ClientTimeout,
+	}
+}
+
+func applyOptions(options []Option) Config {
+	config := DefaultConfig()
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
+	return config
+}
+
+func buildBaseTransport(config Config) http.RoundTripper {
+	// The transport writes NextProtos in place, so hand each transport its
+	// own copy: a config shared by an HTTP/2 and an HTTP/1.1 client would
+	// otherwise leave the HTTP/1.1 client offering h2. (Server.ServeTLS
+	// clones for the same reason; Transport does not.)
+	tlsConfig := config.TLSClientConfig.Clone()
+	switch config.Protocol {
+	case ProtocolHTTP2:
+		transport := newTransport()
+		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+		transport.TLSClientConfig = tlsConfig
+		transport.IdleConnTimeout = config.IdleConnTimeout
+		// HTTP/2 comes from the standard library now: the cloned default
+		// transport keeps ForceAttemptHTTP2, so ALPN negotiates h2, and
+		// HTTP2Config takes the health-check knobs the x/net transport
+		// used to own (ReadIdleTimeout maps to SendPingTimeout).
+		transport.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout:  config.PingInterval,
+			PingTimeout:      config.PingTimeout,
+			WriteByteTimeout: config.WriteByteTimeout,
+		}
+		return transport
+	case ProtocolHTTP1:
+		transport := newTransport()
+		transport.ForceAttemptHTTP2 = false
+		transport.ResponseHeaderTimeout = config.ResponseHeaderTimeout
+		transport.TLSClientConfig = tlsConfig
+		return transport
+	default:
+		panic("utils: unknown protocol")
+	}
+}
+
+// newTransport returns a connection-pooling base transport tuned for a
+// small number of provider hosts.
+//
+// http.DefaultTransport is cloned while it still is the standard
+// *http.Transport. Once something wrapped it (an httpprobe, a test
+// transport), the assertion the clone needs would panic and a wrapper's
+// semantics cannot be carried through the RoundTripper interface, so
+// the fallback builds a fresh transport with the same defaults net/http
+// ships in DefaultTransport.
+func newTransport() *http.Transport {
+	var transport *http.Transport
+	if base, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = base.Clone()
+	} else {
+		warnWrappedTransport()
+		transport = &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		}
+	}
+	transport.MaxIdleConns = 128
+	transport.MaxIdleConnsPerHost = 32
+	transport.IdleConnTimeout = 90 * time.Second
+	return transport
+}
+
+// warnWrappedTransportOnce keeps the warning to one per process: the
+// fallback runs for every client the process builds.
+var warnWrappedTransportOnce sync.Once
+
+// warnWrappedTransport reports what the fallback cannot carry: once
+// something wrapped http.DefaultTransport (an httpprobe, an
+// application's TLS or dialer wrapper), the clone is impossible through
+// the RoundTripper interface and every client built here stays
+// invisible to that wrapper.
+func warnWrappedTransport() {
+	warnWrappedTransportOnce.Do(func() {
+		telemetry.Warn(context.Background(),
+			"utils: http.DefaultTransport is wrapped; building a fresh provider transport without the wrapper",
+			attribute.String("wrapped_type", fmt.Sprintf("%T", http.DefaultTransport)))
+	})
+}
+
+// RetryConfig bounds the retry behaviour.
+type RetryConfig struct {
+	// MaxAttempts is the total number of tries including the first.
+	MaxAttempts int
+	// BaseDelay seeds the exponential backoff.
+	BaseDelay time.Duration
+	// MaxDelay caps one exponential backoff sleep. Zero or negative
+	// means the exponential path never sleeps.
+	MaxDelay time.Duration
+	// MaxHintDelay caps one sleep taken from a Retry-After hint. The
+	// hint gets a wider ceiling than the exponential path — the server
+	// is naming the rate it will enforce, and answering a 429's "wait a
+	// minute" with a two-second sleep just burns attempts — but stays
+	// bounded, so a hostile or misconfigured hint cannot park the caller
+	// for hours. Zero or negative falls back to MaxDelay.
+	MaxHintDelay time.Duration
+}
+
+// DefaultRetry retries transient failures twice after the first attempt
+// with a 200ms-seeded exponential backoff; a Retry-After hint is honored
+// up to 30s.
+var DefaultRetry = RetryConfig{
+	MaxAttempts:  3,
+	BaseDelay:    200 * time.Millisecond,
+	MaxDelay:     2 * time.Second,
+	MaxHintDelay: 30 * time.Second,
+}
+
+// newRetryTransport decorates base with bounded retries for transient
+// failures: network errors, 408, 429, and 5xx responses.
+func newRetryTransport(base http.RoundTripper, config RetryConfig) http.RoundTripper {
+	if base == nil {
+		base = newTransport()
+	}
+	if config.MaxAttempts < 1 {
+		config.MaxAttempts = 1
+	}
+	return &retryTransport{base: base, config: config}
+}
+
+type retryTransport struct {
+	base   http.RoundTripper
+	config RetryConfig
+}
+
+// retryCountHeader is the internal response header carrying the total wire
+// attempts (1-based) that produced the response.
+const retryCountHeader = "X-Flowcraft-Retry-Count"
+
+// RetryCountOf reports the wire attempts that produced a response. It
+// returns 0 for responses the retry transport did not stamp.
+func RetryCountOf(response *http.Response) int {
+	if response == nil {
+		return 0
+	}
+	return errdefs.ParseRetryCount(response.Header.Get(retryCountHeader))
+}
+
+func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	// Without GetBody the body cannot be replayed: one attempt, exactly
+	// like a bare transport.
+	if request.Body != nil && request.GetBody == nil {
+		return t.base.RoundTrip(request)
+	}
+
+	var (
+		response *http.Response
+		err      error
+	)
+	for attempt := 1; ; attempt++ {
+		attemptRequest := request.Clone(request.Context())
+		if request.Body != nil {
+			body, bodyErr := request.GetBody()
+			if bodyErr != nil {
+				return nil, bodyErr
+			}
+			attemptRequest.Body = body
+		}
+
+		response, err = t.base.RoundTrip(attemptRequest)
+		if attempt >= t.config.MaxAttempts || !retryable(response, err) {
+			if err != nil {
+				err = errdefs.WithRetryCount(err, attempt)
+			}
+			if response != nil {
+				response.Header.Set(retryCountHeader, strconv.Itoa(attempt))
+			}
+			return response, err
+		}
+		if response != nil && response.Body != nil {
+			// Drain so the pooled connection can be reused.
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
+			if err := response.Body.Close(); err != nil {
+				telemetry.WarnErr(request.Context(),
+					"httpkit: close drained response body failed", err)
+			}
+		}
+
+		delay := t.backoff(attempt, response)
+		recordRetry(request.Context(), attempt+1, response)
+		timer := time.NewTimer(delay)
+		select {
+		case <-timer.C:
+		case <-request.Context().Done():
+			timer.Stop()
+			return nil, errdefs.WithRetryCount(
+				request.Context().Err(),
+				attempt,
+			)
+		}
+	}
+}
+
+// recordRetry notes one scheduled retry on the caller's span. Retries are the
+// first sign of a provider degrading, and without the event a slow request looks
+// like one slow call instead of three attempts plus two waits.
+func recordRetry(ctx context.Context, attempt int, response *http.Response) {
+	span := trace.SpanFromContext(ctx)
+	if !span.SpanContext().IsValid() {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		// No semconv key exists for a transport retry; the status code uses
+		// the HTTP convention so it joins the other HTTP attributes.
+		attribute.Int("http.retry.attempt", attempt),
+	}
+	if response != nil {
+		attrs = append(attrs,
+			attribute.Int("http.response.status_code", response.StatusCode))
+	}
+	span.AddEvent("http.retry", trace.WithAttributes(attrs...))
+}
+
+// retryable reports whether the failure is transient: a transport error
+// (dial reset, EOF, timeout — context cancellation is the caller's own
+// doing and never retries) or a throttling/server status.
+func retryable(response *http.Response, err error) bool {
+	if err != nil {
+		if strings.Contains(err.Error(), "context canceled") ||
+			strings.Contains(err.Error(), "context deadline exceeded") {
+			return false
+		}
+		return true
+	}
+	if response == nil {
+		return false
+	}
+	switch {
+	case response.StatusCode == http.StatusRequestTimeout,
+		response.StatusCode == http.StatusTooManyRequests:
+		return true
+	case response.StatusCode >= 500:
+		return true
+	}
+	return false
+}
+
+// backoff computes the sleep before the next attempt: exponential growth
+// from BaseDelay with full jitter, superseded by a Retry-After hint when
+// the server sends one — a hint is honored up to its own ceiling
+// (MaxHintDelay), so a misconfigured or hostile one cannot outlast it.
+func (t *retryTransport) backoff(attempt int, response *http.Response) time.Duration {
+	if response != nil {
+		if hint := retryAfter(response.Header.Get("Retry-After")); hint > 0 {
+			// A hint is an input, not an override: it gets the wider
+			// MaxHintDelay ceiling — the server knows the rate it will
+			// enforce — but a hostile or misconfigured Retry-After (say
+			// one year) still cannot park the caller past it. Without a
+			// hint ceiling of its own, MaxDelay bounds the hint.
+			ceiling := t.config.MaxHintDelay
+			if ceiling <= 0 {
+				ceiling = t.config.MaxDelay
+			}
+			if ceiling <= 0 {
+				return 0
+			}
+			return min(hint, ceiling)
+		}
+	}
+	delay := min(t.config.BaseDelay<<(attempt-1), t.config.MaxDelay)
+	if delay <= 0 {
+		return 0
+	}
+	// Full jitter: uniform in [0, delay], avoiding synchronized retries.
+	return time.Duration(rand.Int63n(int64(delay) + 1))
+}
+
+// retryAfter parses the Retry-After header's seconds form.
+func retryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	seconds, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || seconds < 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}

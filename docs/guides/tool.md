@@ -31,43 +31,24 @@ type Tool interface {
 `Definition` carries `Name`, `Description`, and `InputSchema`. `arguments`
 is a JSON-encoded object.
 
-## Deployment resources
+## Tool sources and the dynamic catalog
 
-Tool sources feed an assembly:
+Tool sources feed the runtime's registry: the built-ins, the MCP servers above, and
+anything the host passes to `runtime.WithToolSource`.
 
-```yaml
-resources:
-  sim:
-    kind: tool.Source
-    impl: sim
-  tools:
-    kind: tool.Assembly
-    impl: memory
-    deps:
-      tool: sim
-```
-
-Dynamic injection is configured in the assembly settings:
+Dynamic injection is configured under `tools.dynamic`:
 
 ```yaml
-resources:
-  tools:
-    kind: tool.Assembly
-    impl: memory
-    deps:
-      tool: sim
-    settings:
-      dynamic:
-        default: deferred
-        exposures:
-          tool_search: always
-        budget:                   # per-round visible set
-          max_definitions: 32
-          max_bytes: 16384
-        discovery:                # persistent discovery pool
-          max_tools: 32
-          max_bytes: 16384        # independent byte cap
-          idle_rounds: 10
+tools:
+  enable: [read, write, exec, tool_search]   # empty = every registered tool
+  dynamic:
+    default: deferred          # always | direct | deferred | hidden
+    always: [tool_search]      # forced visible every round
+    hidden: [write]            # never projected
+    budget: 32                 # visible definitions per round
+    max_bytes: 16384           # their encoded size
+    idle_rounds: 10            # pool eviction
+    search_with_load: false    # tool_search returns and loads in one step
 ```
 
 `tool_search` is the discovery tool: a query plus an optional limit.
@@ -80,7 +61,7 @@ reason `visible_budget`. Hits are ranked, so a batch's first (best) hit
 wins when the budget cuts the set, and an oversized definition is
 skipped instead of truncating everything behind it.
 
-Hits are ranked by the shared BM25 kernel (`core/utils/bm25`): a name
+Hits are ranked by the shared BM25 kernel (`core/internal/search`): a name
 match outweighs a description match, an exact term outweighs a term it
 merely prefixes, one query term contributes its best match and never the
 sum of everything it prefixes, and equal scores keep name order. ASCII
@@ -88,154 +69,135 @@ terms shorter than two runes are ignored on both sides, so a filler word
 like `a` neither matches nor widens the hit set, while CJK splits into
 single characters plus adjacent bigrams, so `会话` matches `清理会话`
 without a segmentation dictionary. `limit` is capped at
-`discovery.max_tools`: hits beyond the pool could never be exposed, and
+`dynamic.max_definitions`: hits beyond the pool could never be exposed, and
 loading them would only evict tools the session is using.
 
 Pool entries stay visible while they are used: every executed call
 refreshes the entry, idle entries are evicted after
-`discovery.idle_rounds`, and the pool never exceeds
-`discovery.max_tools` / `discovery.max_bytes`. Those two bounds default
-to the effective `budget.max_definitions` / `budget.max_bytes`, so
-raising `budget.*` raises the pool with it; set them explicitly to keep
-a different pool size. A pool kept larger than the per-round budget acts
-as a loaded cache that costs no tokens: those entries return to the
-visible set when used or re-searched.
+`dynamic.idle_rounds`, and the pool is bounded by `dynamic.budget` and
+`dynamic.max_bytes`. A pool kept larger than the per-round budget acts as a
+loaded cache that costs no tokens: those entries return to the visible set when
+used or re-searched.
 `tool_search` must stay `always`; a different exposure is rejected at
-assembly build time. The legacy `selected_retention` and `recent_window`
-policy keys are deprecated and only seed `discovery.idle_rounds` when it
-is unset.
+assembly build time.
 
-MCP servers are registered as a `tool.Source/mcp` resource. Attach is
-best-effort: a server that is unreachable at startup is retried in the
-background with exponential backoff, and its tools are published to the
-registry the moment it connects. A server that dies later is
-reconnected the same way; its tools stay registered and calls fail with
-a per-server `NotAvailable` error until the connection is restored.
-Configuration errors (a rejected connection, an invalid spec) still
-fail the deployment. The settings subtree declares one or more servers:
+MCP servers are declared in the runtime document, under `tools.mcp`. Two modes,
+one visible difference: eager starts every server at assembly, deferred starts one
+when a tool from it is loaded.
 
 ```yaml
-resources:
-  sim:
-    kind: tool.Source
-    impl: mcp
-    settings:
-      servers:
-        - name: filesystem
-          transport: stdio           # stdio | http
-          command: npx
-          args: ["-y", "@modelcontextprotocol/server-filesystem"]
-          env: {TOKEN: ${env:MCP_TOKEN}}
-          prefix: fs                  # tool namespace; default "<name>__"
-          resources: true             # bridge list_resources / read_resource tools
-          required: true              # host should WaitReady before serving
-          liveness: 30s               # probe interval; "off" disables pings
-        - name: remote
-          transport: http
-          url: https://mcp.example.com/mcp
-          headers: {Authorization: "Bearer ${env:MCP_TOKEN}"}
-          http_timeout: 30s
+tools:
+  mcp:
+    defer: false                   # eager: every server starts with the runtime
+    servers:
+      - name: filesystem
+        transport: stdio           # stdio | http
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem"]
+        env: {TOKEN: "${MCP_TOKEN}"}
+        prefix: fs                 # tool namespace; default "<name>__"
+        description: "Workspace files"   # what search can rank before connecting
+        resources: true            # bridge list_resources / read_resource tools
+        required: true             # the runtime fails if it cannot connect
+        liveness: 30s              # probe interval; "off" disables pings
+      - name: remote
+        transport: http
+        url: https://mcp.example.com/mcp
+        headers: {Authorization: "Bearer ${MCP_TOKEN}"}
+        http_timeout: 30s
 ```
 
-`required: true` marks a server the host cannot start without; hosts
-await `Source.WaitReady` so a background give-up surfaces as an error
-instead of a silent missing tool set. Middleware lives in
-`core/tool/middleware`.
+`required: true` means the runtime cannot be built without that server; without
+it an unreachable server is retried in the background with backoff, and its tools
+appear in the registry the moment it connects. A server that dies later is
+reconnected the same way: its tools stay registered and calls fail with a
+per-server `NotAvailable` until the connection is restored. A configuration error
+— a rejected spec, an invalid transport — still fails the build.
 
-`liveness` overrides the source-wide probe interval for one server
-(`WithLivenessInterval` / `WithServerLiveness` in Go). Servers on
-protocol `2026-07-28` or later are never pinged, because those revisions
-removed the method: they reconnect when their connection closes. A
-probe-less server (`"off"`) behaves the same way by choice.
+The `prefix` is what keeps two servers from claiming one name, and it is the
+namespace part of `<prefix>__<tool>`; a model-visible tool name has to match
+`^[a-zA-Z0-9_-]+$`, which is why the separator is `__` and not `/`.
 
-For a runnable anonymous search and fetch example using the HTTP bridge, see
-[Parallel Search MCP](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel). It loads a server
-spec through the MCP factory and executes the discovered tools through the
-ordinary registry and executor, without a model provider or Parallel API key.
+Before a server connects, only its `description` exists, which is all the search
+kernel has to rank on. `liveness` overrides the source-wide probe interval for one
+server. Servers on protocol `2026-07-28` or later are never pinged — those
+revisions removed the method — they reconnect when their connection closes.
+
+For a runnable anonymous search and fetch example over the HTTP bridge, see
+[`examples/parallel`](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel):
+it connects a server, discovers its tools and executes them through the ordinary
+registry and executor, with no model provider.
 
 ## Middleware chain
 
-`tool.Assembly/middleware` is the memory assembly plus a
-settings-declared middleware chain:
+`tools.middleware` is the list above, applied in written order — first written is
+outermost, which is what makes "recover outermost" expressible.
 
 ```yaml
-resources:
-  tools:
-    kind: tool.Assembly
-    impl: middleware
-    deps:
-      tool: sim
-    settings:
-      middlewares:
-        telemetry: {enabled: true}
-        result_limit: {max: 20000}
-        truncate: {enabled: true, max_chars: 4000, dir: ${base:cache/tools}}
-        timeout: {default: 30s}
-        concurrency: {limit: 8}
+tools:
+  middleware:
+    - name: telemetry
+    - name: result_limit
+      settings: {max_bytes: 20000}
+    - name: concurrency
+      settings: {limit: 8}
 ```
 
-The `middlewares` block itself is optional: an assembly document without one
-gets this chain with every entry at its default, not an empty chain. Within
-the block each entry is optional; absent entries are skipped, with two
-exceptions.
-`recover` is installed by default — a tool is foreign code (a plugin, an MCP
-server), and a panic inside it is a bug in that tool, not a reason to lose
-every session in the host — so it converts a panicking tool (or inner
-middleware) into an `IsError` result unless the document says
-`recover: {enabled: false}`; turning it off drops the attribution and the
-warning, while `tool.Executor.Execute` still turns a panic escaping the chain
-into an `IsError` result. The second exception is the default non-text
-part budget, described below. `telemetry.enabled` records an
-OpenTelemetry span, executions/duration/error metrics, and a warning log
-for each call; `timeout.default` bounds each call with a Go duration (calls
-that already carry a deadline pass through); `concurrency.limit` caps
-in-flight executions, with excess callers waiting (respecting context
-cancellation), and must be positive — a `concurrency` block that omits the
-limit or sets it to zero or less fails the build, so leave the block out to run
-without the middleware; `result_limit.max` caps the text of one result in runes and
-`result_limit.part_budget_bytes` caps the encoded size of its non-text parts
-(images, audio, file references, structured data) — absent means 1 MiB, `0`
-lifts the cap. Whatever exceeds a budget is dropped and the truncation
-marker (`result_limit.marker`, default `…[result truncated]`) is appended, so
-the model learns the result was shortened, and text never exceeds
-`result_limit.max` runes once anything was cut: the marker's runes are
-reserved rather than added on top.
+An empty list is not "no middleware": the runtime installs `recover` then
+`telemetry`, because a panicking tool is foreign code (an MCP server, a plugin) and
+losing the host to it is not a deployment choice. `recover` cannot be disabled
+either — when the list omits it, it is prepended and the substitution is logged.
+It converts a panicking tool (or inner middleware) into an `IsError` result, and
+`Executor.Execute` still catches a panic escaping the whole chain.
 
-Non-text parts are bounded by default, even without a `result_limit`: a tool
-result rides every later turn's context, and an inline image or audio payload
-has no natural size. `result_part_budget_bytes` at the `middlewares` level
-moves that default (absent means 1 MiB, `0` lifts it); when `result_limit`
-declares its own `part_budget_bytes`, that value is the one that applies. The
-plain `memory` impl runs no middleware at all, so a deployment that uses it
-bounds tool results in its own tools.
+| Name | Settings | Effect |
+| --- | --- | --- |
+| `telemetry` | — | an OpenTelemetry span per call, plus execution/duration/error metrics |
+| `recover` | — | a panic becomes an `IsError` result instead of a process exit |
+| `result_limit` | `max_bytes`, `marker`, `part_budget_bytes` | caps one result's text and the encoded size of its non-text parts |
+| `concurrency` | `limit` (must be positive) | caps in-flight executions; excess callers wait, respecting cancellation |
+| `redact` | `patterns` (required) | masks secret-shaped substrings in results and arguments |
 
-`truncate` adds the recoverable half: each non-error result beyond
-`truncate.max_chars` is persisted whole under `<dir>/<call_id>.output` (a id
-that is not a safe file name is replaced by a digest of it, so an
-attacker-influenced call id cannot name a file outside the directory) and
-the context carries a head+tail excerpt plus a pointer to the file, so the
-model can read the rest on demand. `truncate.dir` is the spill directory,
-and `truncate.work_dir` (optional) anchors the pointer as a path relative
-to it. It runs inside `result_limit`, so the spill file holds the tool's
-full output while the limiter keeps the hard bound; keep `max_chars` at or
-below `result_limit.max`, or the limiter can cut the pointer away. JSON
-results stay parseable: oversized top-level string fields are excerpted in
-place, a structural value (a long match array) becomes a small
-`{truncated, full_output, preview}` envelope, and `is_truncated` /
-`truncated` flags are flipped to true; a `max_chars` smaller than the
-marker plus pointer overhead is the one budget where a JSON result degrades
-to the plain-text excerpt. A failed spill (an unwritable directory) does
-not fail the call — it is logged through telemetry and the excerpt still
-leaves without a pointer. The spill file holds the tool's raw output in
-plaintext, so it is only as private as `truncate.dir` itself, and nothing
-deletes it later: retention is the host's business.
+Non-text parts are bounded even without a `result_limit`: a tool result rides every
+later turn's context, and an inline image has no natural size.
+`DefaultResultPartBudget` is 1 MiB; `part_budget_bytes` moves it and `0` lifts it.
+Whatever exceeds a budget is dropped and `DefaultResultMarker`
+(`…[result truncated]`) is appended, so the model learns the result was shortened —
+the marker's runes are reserved rather than added on top.
 
-A model that calls a deferred tool before `tool_search` has exposed it is
-rejected at response validation with a distinguishable `undefined_tool`
-error rather than the generic `provider_response_unusable`. The inference
-node's `undefined_tool_recovery` config turns that rejection into board
-feedback that sends the model back to `tool_search` on the next round,
-without writing an engine-generated turn into the conversation transcript;
-see [graph.md](graph.md) for the recovery loop.
+Middleware that needs a Go value is registered by the host and named by the
+document: `middleware.Approval`, `middleware.Audit`, `middleware.RateLimit`,
+`middleware.RecordCalls`, `middleware.Redact` and their kin, through
+`runtime.WithMiddleware(runtime.MiddlewareOption{Name, Build})`. An unregistered
+name is a build error with the offered list.
 
-See [runtime.md](runtime.md) for per-session dynamic catalogs.
+A model that calls a deferred tool before `tool_search` exposed it is rejected at
+response validation with a distinguishable `undefined_tool` error rather than the
+generic `provider_response_unusable`; the model node's recovery config turns that
+into feedback that sends it back to `tool_search` on the next round (see
+[graph.md](graph.md)).
+
+See [runtime.md](runtime.md) for the per-session dynamic catalog.
+
+## Catalog index reuse
+
+`tool_search` ranks with BM25 over the searchable definitions, and building that
+index means tokenizing every name and description. The assembly therefore keeps
+one built index and shares it across the views it hands out, rebuilding only when
+the catalog's definitions change. A catalog tells it so through an **optional**
+capability, not through the `tool.Catalog` contract:
+
+```go
+// DefinitionsEpoch reports a counter that moves whenever the definition set may
+// have changed (a tool registered, removed, or a deferred tool finishing its
+// load). It is a hint for readers that cache something derived from
+// Definitions; it is not part of Catalog.
+DefinitionsEpoch() uint64
+```
+
+`tool.Registry` implements it. A catalog that does not — a fixture, a wrapper, a
+third-party source — is still searchable; its index is simply rebuilt on every
+`tool_search` call, which is what every catalog did before the cache existed. The
+cache is per assembly, so a deployment keeps one index no matter how many
+conversations it serves, and it holds only definitions: a tool list change is
+visible on the next search rather than at the next restart.

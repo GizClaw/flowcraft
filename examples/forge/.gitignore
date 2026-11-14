@@ -1,4 +1,7 @@
-/.out/
-/workspaces/
-/run.pid
-/forge
+# forge writes its run artifacts, workspaces and session stores here.
+.out/
+workspaces/
+.forge/
+
+# Provider credentials stay local.
+.env

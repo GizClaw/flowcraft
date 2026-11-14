@@ -1,0 +1,76 @@
+# The substrate one agent runs on: the process boundary, the directories its
+# file tools may touch, the models it may call, and which built-in tools are
+# wired.
+#
+# Nothing here belongs to a conversation: history, task state and usage live in
+# the session store, which is why this file is the same for every turn.
+version: 1
+name: companion
+
+sandbox:
+  # local (no OS boundary) | seatbelt (macOS) | bwrap (Linux) | windows.
+  # The demo asks for a boundary explicitly; there is no default, because a
+  # boundary picked by guessing is a boundary nobody chose.
+  backend: local
+  workdir: ${workspace:root}
+  # Empty means read-only. The file tools below are handed the same root.
+  writes:
+    - ${workspace:root}
+  output_mib: 8
+
+files:
+  roots:
+    - ${workspace:root}
+
+inference:
+  # One block per account or endpoint: the driver, its settings, and the models
+  # it serves. Declaring it once keeps the key and the base URL from being
+  # repeated per model.
+  providers:
+    - name: openai
+      # The driver name is what this binary compiles in; see
+      # internal/app/drivers.go.
+      driver: openai
+      settings:
+        base_url: https://api.openai.com/v1
+        api: chat
+        api_key: ${env:OPENAI_API_KEY}
+
+    # A second account is a second block, and the models below decide the
+    # preference. Uncomment both blocks to fail over to DeepSeek: the first
+    # model in the list is tried first.
+    #
+    # - name: deepseek
+    #   driver: openai
+    #   settings:
+    #     base_url: https://api.deepseek.com/v1
+    #     api: chat
+    #     api_key: ${env:DEEPSEEK_API_KEY}
+
+  # Position is priority: the first model is tried first. The driver ships no
+  # line-up, so a model exists because this block declares it.
+  models:
+    - provider: openai
+      model: gpt-4o-mini
+      limits:
+        max_input_tokens: 128000
+        max_output_tokens: 4096
+    # - provider: deepseek
+    #   model: deepseek-chat
+    #   limits:
+    #     max_input_tokens: 128000
+    #     max_output_tokens: 8192
+
+  route:
+    attempts_per_target: 2
+    max_targets: 1
+    base_delay: 250ms
+    max_delay: 5s
+
+tools:
+  # The built-in sets this runtime wires. The simulated device tools are a host
+  # source, not a built-in: they are mounted whether or not they are named here,
+  # and the graph decides which of them the model may call.
+  enable: [files]
+  tty: false
+  images: false

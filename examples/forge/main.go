@@ -1,3 +1,9 @@
+// Command forge is the runnable local demo for the FlowCraft stack: it assembles
+// a deployment document into a host manager, drives it from a TUI or a scripted
+// test, and keeps every scenario fact in plain files under scenarios/.
+//
+// It expects a OPENAI_API_KEY in the environment or in ./.env; the credential
+// is only read when the runtime layer that names it is expanded.
 package main
 
 import (

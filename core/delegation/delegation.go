@@ -2,27 +2,26 @@ package delegation
 
 import (
 	"context"
-	"errors"
-	"fmt"
+	"iter"
 	"strings"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// Mode selects the lifecycle expected by a delegation request.
+// Mode is how long the caller waits for the delegated work.
 type Mode string
 
 const (
-	// ToolName is the canonical LLM-facing delegation tool name.
-	ToolName = "delegate"
-
-	// ModeSync waits for the delegated work and returns its terminal response.
+	// ModeSync waits for the child's terminal result.
 	ModeSync Mode = "sync"
-	// ModeAsync admits work and returns before it reaches a terminal state.
+	// ModeAsync admits the work and returns; the first slice rejects it.
 	ModeAsync Mode = "async"
 )
 
-// Validate checks that m is a defined delegation mode.
+// Validate reports whether the mode is defined.
 func (m Mode) Validate() error {
 	switch m {
 	case ModeSync, ModeAsync:
@@ -32,187 +31,149 @@ func (m Mode) Validate() error {
 	}
 }
 
-// Target describes a backend-neutral delegation destination. Modes is an
-// explicit allowlist; an empty Modes list means unrestricted support for every
-// defined delegation mode.
-type Target struct {
-	ID          string            `json:"id"`
-	Description string            `json:"description,omitempty"`
-	Modes       []Mode            `json:"modes,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-}
-
-// Validate checks the target identity and any advertised modes.
-func (t Target) Validate() error {
-	if strings.TrimSpace(t.ID) == "" {
-		return errdefs.Validationf("delegation: target id is required")
-	}
-	seen := make(map[Mode]struct{}, len(t.Modes))
-	for _, mode := range t.Modes {
-		if err := mode.Validate(); err != nil {
-			return err
-		}
-		if _, ok := seen[mode]; ok {
-			return errdefs.Validationf("delegation: target %q repeats mode %q", t.ID, mode)
-		}
-		seen[mode] = struct{}{}
-	}
-	return nil
-}
-
-// Request is the portable input accepted by a Service.
-type Request struct {
-	Mode     Mode              `json:"mode"`
-	Target   string            `json:"target"`
-	Input    string            `json:"input"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-	// Attributes are caller-declared run attributes for the delegated run
-	// (execution policy keys, tenant hints, …). Core treats them as
-	// opaque: they are copied onto the subagent's run attributes, below
-	// the lineage keys the service owns. Declaring a lineage key
-	// (tool.call_id) is a validation error rather than a silent override:
-	// the key identifies the one tool call behind this delegation.
-	//
-	// Declare them explicitly; the caller's own run attributes are not
-	// propagated, because deployments keep run-scoped payloads there
-	// (e.g. checkpoint recovery blobs) that must not leak into a
-	// subagent. Unlike Metadata they never become graph inputs, but like
-	// Metadata they do take part in identity: both idempotent replay and
-	// resume of a parked run compare the map verbatim, so a retry under a
-	// different attribute map is a different request. The lineage keys are
-	// the exception — a retry is a new tool call, so resume identity
-	// ignores them.
-	Attributes     map[string]string `json:"attributes,omitempty"`
-	IdempotencyKey string            `json:"idempotency_key,omitempty"`
-}
-
-// Validate checks fields required by every delegation backend.
-func (r Request) Validate() error {
-	if err := r.Mode.Validate(); err != nil {
-		return err
-	}
-	if strings.TrimSpace(r.Target) == "" {
-		return errdefs.Validationf("delegation: request target is required")
-	}
-	if strings.TrimSpace(r.Input) == "" {
-		return errdefs.Validationf("delegation: request input is required")
-	}
-	if err := validateAttributes(r.Attributes); err != nil {
-		return err
-	}
-	if r.IdempotencyKey != "" && strings.TrimSpace(r.IdempotencyKey) == "" {
-		return errdefs.Validationf("delegation: request idempotency key must not be blank")
-	}
-	return nil
-}
-
-// Status describes the backend-neutral lifecycle of delegated work.
+// Status is the caller-visible lifecycle of one delegation.
 type Status string
 
 const (
-	StatusAccepted  Status = "accepted"
-	StatusRunning   Status = "running"
-	StatusSucceeded Status = "succeeded"
-	StatusFailed    Status = "failed"
-	StatusCanceled  Status = "canceled"
+	// StatusAccepted means an async job is stored and not yet claimed.
+	StatusAccepted Status = "accepted"
+	// StatusRunning means the child is still working.
+	StatusRunning Status = "running"
+	// StatusCompleted means the child produced a final answer.
+	StatusCompleted Status = "completed"
+	// StatusInputRequired means the child asked the caller a question.
+	StatusInputRequired Status = "input_required"
+	// StatusFailed means the child failed or was rejected.
+	StatusFailed Status = "failed"
+	// StatusCanceled means the child was stopped.
+	StatusCanceled Status = "canceled"
 )
 
-// Validate checks that s is a defined delegation status.
-func (s Status) Validate() error {
-	switch s {
-	case StatusAccepted, StatusRunning, StatusSucceeded, StatusFailed, StatusCanceled:
-		return nil
-	default:
-		return errdefs.Validationf("delegation: unknown status %q", s)
-	}
+// Policy is what the calling agent is allowed to delegate and how much.
+type Policy struct {
+	// Targets is an allowlist; empty means every deployed agent except self.
+	Targets []string
+	// Modes is an allowlist; empty means sync only.
+	Modes []Mode
+	// MaxDepth bounds nested delegations. Zero means four.
+	MaxDepth int
+	// MaxConcurrent bounds in-flight sync delegations. Zero means four.
+	MaxConcurrent int
+	// Timeout bounds one delegation. Zero means the caller's context only.
+	Timeout time.Duration
+	// MaxInputBytes bounds the input text. Zero means 64 KiB.
+	MaxInputBytes int
 }
 
-// Terminal reports whether no further status transition is expected.
-func (s Status) Terminal() bool {
-	switch s {
-	case StatusSucceeded, StatusFailed, StatusCanceled:
-		return true
-	default:
+// Session is the child handle a host exposes. It mirrors deploy/host Session
+// without importing either package.
+type Session interface {
+	Run(ctx context.Context, msg message.Message, opts ...agent.TurnOption) iter.Seq2[agent.Event, error]
+	State(ctx context.Context) (agent.TaskState, error)
+	Cancel(ctx context.Context, reason string) error
+	Result(ctx context.Context) (agent.Result, error)
+}
+
+// Sessions resolves deployed agents by name.
+type Sessions interface {
+	Session(name, sessionID string) (Session, bool)
+	Names() []string
+}
+
+// Request is one delegation.
+type Request struct {
+	Mode   Mode
+	Target string
+	Input  string
+}
+
+// Outcome is what the caller gets back.
+type Outcome struct {
+	Status       Status
+	ID           string
+	Target       string
+	ChildSession string
+	Content      message.Content
+	Question     *message.Content
+	Error        string
+	Depth        int
+	ChainID      string
+}
+
+// Call is the delegation lineage a child run inherits. It is a value so a
+// later field (a budget, a root session id, an eval marker) can be added
+// without inventing another context key.
+type Call struct {
+	// Depth is the number of delegation edges above this run. The root caller
+	// sees zero.
+	Depth int
+	// ChainID identifies the root delegation of this chain. Every descendant
+	// keeps it; async jobs persist it so a resumed child stays in the chain.
+	ChainID string
+}
+
+// Child returns the call a delegated run inherits.
+func (c Call) Child() Call {
+	c.Depth++
+	return c
+}
+
+type callKey struct{}
+
+// WithCall stamps the delegation lineage on a context.
+func WithCall(ctx context.Context, call Call) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, callKey{}, call)
+}
+
+// CallFrom returns the delegation lineage; absent means the root caller.
+func CallFrom(ctx context.Context) (Call, bool) {
+	if ctx == nil {
+		return Call{}, false
+	}
+	call, ok := ctx.Value(callKey{}).(Call)
+	return call, ok
+}
+
+// DepthFromContext is the common read for tools and trace attributes.
+func DepthFromContext(ctx context.Context) int {
+	call, _ := CallFrom(ctx)
+	return call.Depth
+}
+
+func (s *Service) allowedTarget(target, caller string, names []string) bool {
+	if !contains(names, target) {
 		return false
 	}
+	if len(s.policy.Targets) == 0 {
+		return target != caller
+	}
+	return contains(s.policy.Targets, target)
 }
 
-// Response is a snapshot of delegated work.
-type Response struct {
-	ID       string            `json:"id"`
-	Status   Status            `json:"status"`
-	Output   string            `json:"output,omitempty"`
-	Error    string            `json:"error,omitempty"`
-	Metadata map[string]string `json:"metadata,omitempty"`
-}
-
-// Validate checks lifecycle-dependent response invariants.
-func (r Response) Validate() error {
-	if strings.TrimSpace(r.ID) == "" {
-		return errdefs.Validationf("delegation: response id is required")
+func (s *Service) allowedMode(mode Mode) bool {
+	if len(s.policy.Modes) == 0 {
+		return mode == ModeSync
 	}
-	if err := r.Status.Validate(); err != nil {
-		return err
-	}
-	if !r.Status.Terminal() && (r.Output != "" || r.Error != "") {
-		return errdefs.Validationf("delegation: non-terminal response %q cannot carry output or error", r.Status)
-	}
-	switch r.Status {
-	case StatusSucceeded:
-		if r.Error != "" {
-			return errdefs.Validationf("delegation: succeeded response cannot carry an error")
-		}
-	case StatusFailed:
-		if strings.TrimSpace(r.Error) == "" {
-			return errdefs.Validationf("delegation: failed response requires an error")
-		}
-	case StatusCanceled:
-		if r.Output != "" {
-			return errdefs.Validationf("delegation: canceled response cannot carry output")
+	for _, allowed := range s.policy.Modes {
+		if allowed == mode {
+			return true
 		}
 	}
-	return nil
+	return false
 }
 
-// Directory discovers delegation targets independently of execution.
-type Directory interface {
-	List(ctx context.Context) ([]Target, error)
-	Get(ctx context.Context, id string) (Target, error)
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
-// Service starts delegated work and retrieves its latest response.
-// Implementations must declare and guarantee a finite idempotency retention
-// window. Within that window, requests with the same non-empty idempotency key
-// and business fields must safely replay the same operation, and its response
-// must remain queryable; reusing the key for a semantically different request
-// must return a conflict-classified error. After the declared window expires,
-// the key may start a new operation: this contract is bounded idempotency, not
-// permanent exactly-once execution.
-type Service interface {
-	Delegate(ctx context.Context, req Request) (Response, error)
-	Get(ctx context.Context, id string) (Response, error)
-}
-
-var (
-	// ErrTargetNotFound identifies an unknown target.
-	ErrTargetNotFound = errors.New("delegation: target not found")
-	// ErrRequestNotFound identifies an unknown delegation request.
-	ErrRequestNotFound = errors.New("delegation: request not found")
-	// ErrUnsupportedMode identifies a valid mode unsupported by a backend.
-	ErrUnsupportedMode = errors.New("delegation: mode not supported")
-)
-
-// TargetNotFound returns a not-found-classified target lookup error.
-func TargetNotFound(id string) error {
-	return errdefs.NotFound(fmt.Errorf("%w: %s", ErrTargetNotFound, id))
-}
-
-// RequestNotFound returns a not-found-classified request lookup error.
-func RequestNotFound(id string) error {
-	return errdefs.NotFound(fmt.Errorf("%w: %s", ErrRequestNotFound, id))
-}
-
-// UnsupportedMode returns a not-available-classified backend capability error.
-func UnsupportedMode(mode Mode) error {
-	return errdefs.NotAvailable(fmt.Errorf("%w: %s", ErrUnsupportedMode, mode))
+func cleanID(value string) string {
+	return strings.NewReplacer("/", "_", "\\", "_").Replace(value)
 }

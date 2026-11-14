@@ -7,12 +7,18 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ConflictPolicy decides what happens when two sources contribute a
@@ -61,6 +67,13 @@ type Registry struct {
 	conflict  ConflictPolicy
 	closed    bool
 	detachers []RegistryDetacher
+	// defs caches the sorted definitions; nil means rebuild. Atomic because a
+	// deferred tool invalidates it while holding its own lock.
+	defs atomic.Pointer[[]message.ToolDefinition]
+	// defsEpoch moves whenever the definition set may have changed, so a reader
+	// that caches something derived from it (a search index) can tell whether
+	// its copy is still the current one.
+	defsEpoch atomic.Uint64
 }
 
 // NewRegistry builds a registry from sources in order. With the
@@ -98,7 +111,7 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 			if err := lt.Validate(); err != nil {
 				return nil, err
 			}
-			if err := r.add(newLazyProxy(lt)); err != nil {
+			if err := r.add(newLazyProxy(r, lt)); err != nil {
 				return nil, err
 			}
 		}
@@ -142,6 +155,7 @@ func (r *Registry) Remove(name string) {
 		r.mu.Unlock()
 		return
 	}
+	r.invalidateDefinitions()
 	delete(r.tools, name)
 	for i, n := range r.order {
 		if n == name {
@@ -169,6 +183,7 @@ func (r *Registry) add(t Tool) error {
 }
 
 func (r *Registry) addLocked(t Tool) error {
+	r.invalidateDefinitions()
 	def := t.Definition()
 	if strings.TrimSpace(def.Name) == "" {
 		return errdefs.Validationf("tool: tool definition name is required")
@@ -198,15 +213,60 @@ func (r *Registry) Get(name string) (Tool, bool) {
 }
 
 // Definitions implements Catalog, sorted by name.
+//
+// The list is cached: every builtin tool rebuilds and re-marshals its schema in
+// Definition(), and the loop asks for the whole set once per round. The cache is
+// dropped whenever the set can change — Add, Remove, or a deferred tool finishing
+// its load (its definition replaces the placeholder) — and the pointer is atomic
+// so that a load, which holds the proxy lock, can invalidate without taking the
+// registry lock and inverting the lock order.
 func (r *Registry) Definitions() []message.ToolDefinition {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]message.ToolDefinition, 0, len(r.tools))
-	for _, name := range r.order {
-		out = append(out, r.tools[name].Definition())
+	if cached := r.defs.Load(); cached != nil {
+		return cloneDefinitions(*cached)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	r.mu.RLock()
+	defs := make([]message.ToolDefinition, 0, len(r.tools))
+	for _, name := range r.order {
+		defs = append(defs, r.tools[name].Definition())
+	}
+	r.mu.RUnlock()
+	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
+	r.defs.Store(&defs)
+	return cloneDefinitions(defs)
+}
+
+// cloneDefinitions returns a copy, so a caller that appends cannot corrupt the
+// cache.
+func cloneDefinitions(defs []message.ToolDefinition) []message.ToolDefinition {
+	out := make([]message.ToolDefinition, len(defs))
+	copy(out, defs)
 	return out
+}
+
+// DefinitionsEpoch reports a counter that moves whenever the definition set may
+// have changed: an Add, a Remove, or a deferred tool finishing its load.
+//
+// It is a hint for readers that cache something derived from [Definitions] — a
+// BM25 index over the catalog, say — so they can tell whether their copy is
+// still the current one. It is deliberately not a method on [Catalog]: a fixture
+// or a wrapper that cannot answer it keeps recomputing, which is what a failed
+// [tool/engine] probe falls back to. A caller still needs one Definitions call
+// after the epoch changes to see the new set; the epoch only rules out reuse.
+func (r *Registry) DefinitionsEpoch() uint64 { return r.defsEpoch.Load() }
+
+// invalidateDefinitions drops the cached definitions. It is safe to call while
+// holding any lock: the pointer is atomic.
+//
+// The data goes before the version, and the order is load bearing. A reader that
+// derives something from Definitions — the BM25 index tool_search keeps — reads
+// the epoch and then calls Definitions, so publishing the epoch first would let
+// it observe the new version together with the pre-mutation cached slice and
+// then cache a stale derivation under the current epoch, permanently. Clearing
+// first makes "observed epoch E+1" imply "the cache is already empty"; the
+// opposite interleaving costs one redundant rebuild at the old epoch.
+func (r *Registry) invalidateDefinitions() {
+	r.defs.Store(nil)
+	r.defsEpoch.Add(1)
 }
 
 // Names returns the registered tool names in sorted order.
@@ -262,7 +322,8 @@ func (r *Registry) Close() error {
 // (serialised, so concurrent callers share one load), and refuses to
 // load after the registry closes.
 type lazyProxy struct {
-	spec LazyTool
+	registry *Registry
+	spec     LazyTool
 
 	mu     sync.Mutex
 	inner  Tool
@@ -271,8 +332,8 @@ type lazyProxy struct {
 	closed bool
 }
 
-func newLazyProxy(spec LazyTool) *lazyProxy {
-	return &lazyProxy{spec: spec}
+func newLazyProxy(registry *Registry, spec LazyTool) *lazyProxy {
+	return &lazyProxy{registry: registry, spec: spec}
 }
 
 func (p *lazyProxy) Definition() message.ToolDefinition {
@@ -321,13 +382,61 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 	if p.loaded {
 		return p.inner, p.err
 	}
-	p.inner, p.err = p.spec.Load(ctx)
+	p.inner, p.err = p.loadLazy(ctx)
 	p.loaded = true
+	// The real definition replaces the placeholder: the cached set is stale.
+	if p.registry != nil {
+		p.registry.invalidateDefinitions()
+	}
 	if p.err != nil {
 		telemetry.WarnErr(ctx, "tool registry: lazy tool load failed", p.err,
 			attribute.String(telemetry.AttrToolName, p.spec.Name))
 	}
 	return p.inner, p.err
+}
+
+// loadLazy materialises a deferred tool under its own span.
+//
+// It is the miss path only: a cache hit returns above this function, so the span
+// measures real work — an MCP handshake, a process spawn, a schema fetch —
+// instead of adding a span to every executed call.
+func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
+	ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, "tool.load",
+		trace.WithAttributes(attribute.String(telemetry.AttrToolName, p.spec.Name)))
+	// The runtime identity the host attached, so a lazy load is attributable to
+	// the runtime that triggered it.
+	span.SetAttributes(runctx.Attrs(ctx)...)
+	defer span.End()
+
+	start := time.Now()
+	inner, err := p.spec.Load(ctx)
+	duration := time.Since(start)
+
+	status := "success"
+	if err != nil {
+		status = "error"
+		// The load error is local (a file, a process, a handshake); the
+		// message goes to the warn log below, not onto the span.
+		span.SetStatus(codes.Error, "load_failed")
+	}
+	recordLoadMetrics(ctx, p.spec.Name, status, duration)
+	return inner, err
+}
+
+// recordLoadMetrics emits the deferred-load series.
+func recordLoadMetrics(ctx context.Context, name, status string, duration time.Duration) {
+	meter := telemetry.MeterWithSuffix("tool")
+	nameAttr := metric.WithAttributes(attribute.String(telemetry.AttrToolName, name))
+	if counter, err := meter.Int64Counter("loads.total",
+		metric.WithDescription("Deferred tool loads by outcome")); err == nil {
+		counter.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(telemetry.AttrToolName, name),
+			attribute.String("status", status)))
+	}
+	if histogram, err := meter.Float64Histogram("load.duration.seconds",
+		metric.WithDescription("Deferred tool load duration")); err == nil {
+		histogram.Record(ctx, duration.Seconds(), nameAttr)
+	}
 }
 
 func (p *lazyProxy) Close() error {

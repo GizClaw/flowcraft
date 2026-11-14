@@ -1,0 +1,46 @@
+name: Sandbox fault injection
+
+# Nightly repeat of the sandbox's failure paths.
+#
+# The merge gate runs the fault-injection tests once. They are the tests that
+# inject a transport failure, hold a read past the caller's patience, overflow
+# an event queue, restart a server under a live client, or race Terminate
+# against a child's own exit — so they are exactly the tests whose bugs are
+# timing dependent, and exactly the ones a single pass can miss. This lane
+# under the race detector, on both platforms that carry the stacked code
+# (linux for pipes and the group sampler, macOS for the kqueue and pty paths).
+#
+# It is diagnostic: not a required check, and not part of make ci. A red run
+# here means a flake or a real ordering bug to investigate, not a blocked merge.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 18:40 UTC — 02:40 Asia/Shanghai, thirty minutes after the Windows stress
+    # lane, so the two do not start together.
+    - cron: "40 18 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  repeat:
+    name: Repeat sandbox failure paths (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # Ten passes under the race detector: the retry matrix, the held read, the
+      # slow event consumer, the restarted server, and the spawn/reap races.
+      - name: Race + repeat
+        working-directory: core
+        run: |
+          go test -race -count=10 -timeout 900s \
+            ./sandbox-remote/... ./sandbox/sessionkit/ ./sandbox-local/

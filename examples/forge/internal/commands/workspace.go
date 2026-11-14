@@ -3,7 +3,6 @@ package commands
 import (
 	"flag"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -55,14 +54,48 @@ func workspaceInspectCmd(args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	info, err := app.Inspect(*workspaceDir)
+	infos, missing, err := app.Inspect(*workspaceDir)
 	if err != nil {
 		return err
 	}
 	var out strings.Builder
 	fmt.Fprintf(&out, "workspace: %s\n", filepath.Clean(*workspaceDir))
-	fmt.Fprintf(&out, "agent: %s (%s)\n", info.AgentID, info.AgentName)
-	fmt.Fprintf(&out, "context: %s\n", info.ContextID)
+	fmt.Fprintf(&out, "agents: %d\n", len(infos))
+	for _, info := range infos {
+		// A director plans or referees and has no line of its own, so the header
+		// says which mode the agent is in before the fields say anything else.
+		if info.Director {
+			fmt.Fprintf(&out, "\n%s (director)\n", info.Agent)
+		} else {
+			fmt.Fprintf(&out, "\n%s (speaker: %s)\n", info.Agent, info.Label)
+		}
+		fmt.Fprintf(&out, "  engine: %s", info.Engine)
+		if info.Graph != "" {
+			fmt.Fprintf(&out, "  graph: %s", info.Graph)
+		}
+		fmt.Fprintln(&out)
+		if info.Runtime != "" {
+			fmt.Fprintf(&out, "  runtime layer: %s\n", info.Runtime)
+		}
+		fmt.Fprintf(&out, "  session: %s\n", info.Session)
+		if len(info.Models) > 0 {
+			fmt.Fprintf(&out, "  models: %s\n", strings.Join(info.Models, ", "))
+		}
+		if len(info.Tools) > 0 {
+			fmt.Fprintf(&out, "  tools: %s\n", strings.Join(info.Tools, ", "))
+		}
+		if len(info.Delegates) > 0 {
+			fmt.Fprintf(&out, "  delegates: %s\n", strings.Join(info.Delegates, ", "))
+		}
+		if len(info.Hooks) > 0 {
+			fmt.Fprintf(&out, "  hooks: %s\n", strings.Join(info.Hooks, ", "))
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(&out, "missing env: %s\n", strings.Join(missing, ", "))
+	} else {
+		fmt.Fprintln(&out, "missing env: none")
+	}
 	fmt.Print(out.String())
 	return nil
 }
@@ -74,5 +107,3 @@ Usage:
   forge workspace inspect --workspace <dir>
 `, "\n")
 }
-
-var _ = os.Stdout

@@ -55,11 +55,25 @@ type ConcurrencySettings struct {
 	Limit int `json:"limit"`
 }
 
-// TelemetrySettings enables the standard per-call observability
-// middleware: one span per execution plus executions/duration/error
-// metrics and a warning log for failed calls.
+// TelemetrySettings declares the standard per-call observability middleware: one
+// span per execution plus executions/duration/error metrics and a warning log for
+// failed calls.
+//
+// It is on by default. An opt-in default meant a fresh deployment observed
+// nothing, and this is the only span a tool call has; a deployment that measured
+// the whole catalog observes a span per call it did not ask for, which is the
+// cheaper mistake. Set enabled:false to drop it.
 type TelemetrySettings struct {
-	Enabled bool `json:"enabled"`
+	// Enabled turns the middleware off. Absent means on.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// telemetryEnabled resolves the default-on rule for the telemetry block.
+func telemetryEnabled(settings *TelemetrySettings) bool {
+	if settings == nil || settings.Enabled == nil {
+		return true
+	}
+	return *settings.Enabled
 }
 
 // ResultLimitSettings caps how large a tool result may be, the
@@ -87,7 +101,7 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 	if recoverEnabled(s.Recover) {
 		mws = append(mws, Recover())
 	}
-	if s.Telemetry != nil && s.Telemetry.Enabled {
+	if telemetryEnabled(s.Telemetry) {
 		mws = append(mws, Telemetry())
 	}
 	if s.ResultLimit != nil {

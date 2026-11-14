@@ -1,128 +1,79 @@
-// Package minimax implements the MiniMax provider for the unified
-// inference runtime.
+// Package minimax implements MiniMax's media surfaces for the unified inference
+// runtime: speech synthesis on t2a_v2 and video generation on the v2
+// MiniMax-H3 task pipeline.
 //
 // # Protocol
 //
-// MiniMax serves an Anthropic-compatible Messages API
-// (https://api.minimaxi.com/anthropic for China,
-// https://api.minimax.io/anthropic internationally). Its thinking blocks
-// carry verification signatures that must round-trip verbatim — exactly
-// the Messages protocol's reasoning policy — so the generate pipeline
-// hosts its own copy of the Messages kernel (compiler, transports, and
-// decoders) rather than importing another provider driver. The provider's
-// OpenAI-compatible surface is deliberately not used: there, thinking
-// round-trips as free-form reasoning_details with no signature
-// verification, a strictly weaker contract.
+// MiniMax serves an Anthropic-compatible Messages API, and that surface is
+// owned by the anthropic driver: its thinking blocks carry verification
+// signatures that must round-trip verbatim, which is exactly the Messages
+// protocol's reasoning policy, so the driver that speaks Messages keeps the
+// kernel for it. This package serves the media APIs, which are plain JSON with
+// Bearer auth and a base_resp status envelope on the v1 surfaces:
 //
-// The OpenAI-compatible surfaces (Chat Completions and Responses) were
-// evaluated and rejected: their reasoning round-trips are free-form text
-// (reasoning_details, reasoning summary segments) with no signature or
-// encrypted content, a strictly weaker contract than signed thinking
-// blocks; the Responses effort levels (minimal/low/medium/high) are
-// accepted for compatibility but do not tune reasoning depth, so the
-// control surface is the same binary thinking with a misleading shape;
-// and their reasoning items cannot feed the openai kernel (no
-// item_reference, no encrypted_content), so reuse would cost the same
-// dialect knob for a weaker guarantee.
+//   - Speech synthesis: t2a_v2, one JSON request, audio back as hex — unary in
+//     one payload, streaming as server-sent events of the same shape.
+//   - Video generation: the async v2 task pipeline (create, poll, then surface
+//     the finished artifact's URL).
 //
-// Beyond Messages, the provider serves MiniMax's media APIs over plain
-// JSON with a base_resp status envelope:
+// Both surfaces are the platform's own shapes, so BaseURL points at a MiniMax
+// media root (api.minimaxi.com or api.minimax.io). A gateway that normalizes
+// speech onto the OpenAI wire — POST /v1/audio/speech with {model, input,
+// voice} and raw audio back — is not this driver: that is the OpenAI speech
+// surface, served by core/inference-openai. A gateway that forwards the video
+// task API unchanged (/v2/video_generation plus its query endpoint) needs no
+// adapter at all, because that is already this driver's wire.
 //
-//   - Generate AudioIntent: t2a_v2 speech synthesis (speech-2.8/2.6/02
-//     HD and turbo tiers), unary hex payloads and SSE hex streaming.
-//   - Generate ImageIntent: image_generation (image-01, image-01-live),
-//     unary; URL deliveries expire after 24 hours on the provider side.
-//   - Generate VideoIntent: the async video task pipeline. The Hailuo
-//     2.3/2.3-Fast/02 trio rides the v1 API (create, poll, retrieve; the
-//     download URL expires one hour after retrieval); MiniMax-H3 rides the
-//     v2 API and returns the artifact URL from the query directly.
-//   - Generate TextIntent on MiniMax-H3-Context-IR: the v2 H3-Context-IR
-//     task returns an enhanced video prompt (text), never a video. The
-//     target duration/ratio ride the ContextIROptions extension.
-//   - Generate AudioIntent without a voice: music_generation
-//     (music-3.0/2.6 and their -free tiers). The canonical voice is
-//     optional: speech models require one, music models reject one.
-//     Lyrics, the instrumental switch, and the AIGC watermark ride the
-//     MusicOptions extension. music-cover stays out: its reference-audio
-//     plus two-step cover_feature_id flow has no canonical surface.
+// The v1 video API the Hailuo 2.x/02 trio rides is deliberately not served.
+// Only MiniMax-H3 is declared here, and its API differs in every dimension that
+// matters — multimodal content roles instead of flat first/last-frame fields,
+// 768P/2K instead of 768P/1080P/512P, 4-15s instead of 6s/10s, and a ratio
+// control the v1 API does not have. Compiling one family onto the other would
+// be a silent lie, so a Hailuo declaration fails closed at the endpoint instead.
 //
 // # Models
 //
-// The driver ships no model line-up: every media model is declared through
-// the spec's models list, and a kind the driver does not serve stays fail
-// closed. Text generation moved to the anthropic driver, which serves
-// MiniMax's Messages surface with the same declaration shape.
+// The driver ships no model line-up: every media model is a deployment
+// declaration, and a name no declaration covers fails closed with
+// unknown_model. A declaration states its kind ("tts" or "video"), its
+// capabilities, and — for speech — the payload defaults the endpoint should
+// apply when a call names none.
 //
 // # Behavior mapping
 //
-//   - Thinking is binary on this surface — no effort levels. The
-//     canonical switch maps directly: reasoning_enabled: true emits
-//     thinking: {type: "adaptive"}, and false emits disabled on
-//     MiniMax-M3 while the always-thinking M2.x series rejects it at
-//     compile time. A requested reasoning effort turns thinking on and
-//     lands Dropped on the ledger — the level itself cannot be honored.
-//     With no reasoning intent, nothing is sent: M3 stays non-thinking
-//     by default.
-//   - Thinking blocks decode into canonical reasoning parts with their
-//     signature; assistant turns hoist them first when context compiles
-//     back, and unsigned reasoning drops — the self-hosted kernel's
-//     policy, which matches MiniMax's requirement to preserve thinking
-//     blocks unchanged across tool-use turns.
-//   - Image and video input compile for MiniMax-M3 (URL or base64; the
-//     video content block rides a raw union until the SDK models it) and
-//     reject on the text-only M2.x series.
-//   - MiniMax ignores top_k and stop_sequences on this endpoint; the
-//     canonical request has no surface for either, so nothing is lost.
-//   - service_tier (standard/priority) is MiniMax-specific and has no
-//     canonical or extension surface yet.
-//   - Speech speed maps only inside MiniMax's [0.5, 2] band; pcm output
-//     is 16-bit, so PCM24/float32/AAC encodings reject at compile time.
-//     Voice language rides language_boost verbatim.
-//   - Image output is always JPEG, so other requested formats reject.
-//     Image parts compile into character subject references
-//     (image-to-image); custom sizes must be 512–2048 and divisible
-//     by 8. The API's shape-only mode (aspect_ratio, provider-chosen
-//     pixel size) rides the ImageOptions extension and conflicts with a
-//     canonical size.
-//   - Video durations are model-bound. The Hailuo trio serves 6s, and 10s
-//     at 768P on the 2.3/2.3-Fast/02 models; Hailuo-2.3-Fast is
-//     image-to-video only, and Hailuo-02 adds 512P (single-first-frame
-//     image-to-video only; first/last-frame tasks cap at 768P/1080P) and
-//     first/last-frame input. MiniMax-H3 rides the v2 API: 4-15s
-//     durations, 768P/2K, a ratio knob (text-only tasks default to 16:9
-//     and reject adaptive), and multimodal reference inputs. The v1-only
-//     prompt_optimizer / fast_pretreatment controls and the shared
-//     callback_url ride the VideoOptions extension, which also carries
-//     last_frame_only to mark a single v2 input image as the closing
-//     frame. The task APIs have no seed knob — it rejects.
-//   - H3-Context-IR shares the v2 content roles and the 4-15s duration /
-//     ratio rules, but returns an enhanced video prompt as text; the
-//     target duration/ratio ride ContextIROptions.
-//   - Music encodes mp3 or 16-bit pcm at 16/24/32/44.1kHz; bitrate and
-//     channel layout are model-fixed, so those canonical knobs reject.
-//     Speech synthesis requires a voice; music generation requires none.
-//
-// # Wiring
-//
-// Wire the factory into the deployment config by provider id:
-//
-//	builder := config.NewBuilder(
-//		map[string]config.Factory{"minimax": minimax.Factory()},
-//		resolvers,
-//	)
-//
-// Each profile resolves one api_key secret; the spec optionally overrides
-// base_url (Anthropic endpoint) and media_base_url (media API root, which
-// defaults to base_url with the /anthropic suffix trimmed), paces video
-// polling, and declares extra models.
+//   - Speech voice, language, speed, encoding, sample rate and channel layout
+//     ride the TTSOptions extension, because the canonical request models no
+//     voice at all. The voice is required: t2a_v2 refuses a request without
+//     one. Speed maps only inside MiniMax's [0.5, 2] band, so a rate outside it
+//     is rejected rather than clamped. pcm output is 16-bit, so PCM24,
+//     float32 and AAC encodings reject, and pcm16 requires an explicit sample
+//     rate and channel count whether they come from the call or the
+//     declaration. Voice language rides language_boost verbatim, defaulting to
+//     "auto".
+//   - Streamed speech emits one chunk part per SSE audio event and closes on
+//     the terminal status. The negotiated format is fixed at compile time and
+//     travels with every chunk, so the response describes its payload without
+//     decoding it.
+//   - Video generation is MiniMax-H3 only: a multimodal content array (text
+//     plus image/video/audio items carrying first_frame, last_frame and
+//     reference_* roles), durations of 4-15 whole seconds, 768P or 2K, and a
+//     ratio control. Text-only tasks must name a non-adaptive ratio and default
+//     to 16:9; image and reference tasks default to adaptive. First/last-frame
+//     input and reference input are mutually exclusive. The API has no seed
+//     knob, so nothing offers one.
+//   - Video output URLs expire one hour after retrieval. The driver returns the
+//     URL verbatim; downloading and persisting is the caller's job.
 //
 // # Retries
 //
-// The provider Spec accepts `http_retries` (total wire attempts including
-// the first). It maps to option.WithMaxRetries on the Anthropic Messages
-// client and to the httpkit retry budget on the media client. Nil keeps the
-// SDK/httpkit defaults; 0 disables provider-level retries so the route
-// Router owns the budget. Retry-After and wire attempts are propagated onto
-// ProviderFailure so Router backoff and trace wire_attempts can observe
-// them.
+// The settings accept a poll interval for the video task pipeline, an HTTP
+// client or timeout, and a retries count. Retries are left at zero by default
+// so the route Router owns the whole budget; a non-zero value belongs to a
+// deployment whose gateway is the only retry layer.
+//
+// The budget only covers reads. Every paid surface here is a create — a video
+// task and a speech synthesis — and both are billed per call, so re-sending one
+// after a transient failure would buy the work twice: the server may already
+// have accepted the request when the response was lost. The video task poll is
+// a read and does retry, which is where the budget earns its keep.
 package minimax

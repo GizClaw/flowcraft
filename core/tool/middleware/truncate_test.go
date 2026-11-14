@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // singleToolCatalog is a one-tool catalog whose tool answers with fixed
@@ -41,7 +41,7 @@ func runThroughChain(t *testing.T, mws []tool.Middleware, text string) message.T
 	t.Helper()
 	exec := tool.NewExecutor(singleToolCatalog{text: text}, mws...)
 	return exec.Execute(context.Background(),
-		message.ToolCall{ID: "call-1", Name: "big", Arguments: []byte(`{}`)})
+		message.ToolCall{ID: "call-1", Name: "big", Arguments: message.NewArguments([]byte(`{}`))})
 }
 
 func TestTruncatePersistsFullOutputAndTruncates(t *testing.T) {
@@ -503,8 +503,8 @@ func TestFromSettingsTruncate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 2 {
-		t.Fatalf("chain has %d middleware, want recover + truncate", len(mws))
+	if len(mws) != 3 {
+		t.Fatalf("chain has %d middleware, want recover + telemetry + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, strings.Repeat("y", 300))
 	if got := len([]rune(res.Content.Text())); got > 50 {
@@ -535,8 +535,8 @@ func TestFromSettingsTruncateRunsInsideResultLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	if len(mws) != 3 {
-		t.Fatalf("chain has %d middleware, want recover + result limit + truncate", len(mws))
+	if len(mws) != 4 {
+		t.Fatalf("chain has %d middleware, want recover + telemetry + result limit + truncate", len(mws))
 	}
 	res := runThroughChain(t, mws, full)
 	if got := len([]rune(res.Content.Text())); got > 1000 {

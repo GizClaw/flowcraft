@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -197,8 +199,8 @@ func TestFromSettings_HostileValues(t *testing.T) {
 		{"empty settings", Settings{}, false},
 		{"recover disabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(false)}}, false},
 		{"recover enabled", Settings{Recover: &RecoverSettings{Enabled: boolPtr(true)}}, false},
-		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: false}}, false},
-		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: true}}, false},
+		{"telemetry disabled", Settings{Telemetry: &TelemetrySettings{Enabled: boolPtr(false)}}, false},
+		{"telemetry enabled", Settings{Telemetry: &TelemetrySettings{Enabled: boolPtr(true)}}, false},
 		{
 			"timeout empty default",
 			Settings{Timeout: &TimeoutSettings{Default: ""}},
@@ -394,4 +396,67 @@ func fromSettingsRecovering(s Settings) (mws []tool.Middleware, recovered any, e
 	}()
 	mws, err = FromSettings(s)
 	return mws, nil, err
+}
+
+// TestFromSettingsOrder pins the full chain order, not just one pair. The order is
+// load-bearing: Recover must be outermost so a panicking tool cannot escape,
+// Telemetry must see the call before any limit rewrites the result, and Truncate
+// must run inside the limiter — so a reordering is a behaviour change and should
+// fail here rather than surface as a subtler bug elsewhere.
+//
+// The properties are asserted by behaviour rather than by comparing the closures
+// each slot holds: a middleware is a function value, and Go is free to inline and
+// duplicate one, which makes a code-pointer comparison pass on one architecture
+// and fail on the next. Which constructor each *setting* builds is covered by its
+// own test (resultlimit_test.go, truncate_test.go, timeout_test.go, …).
+func TestFromSettingsOrder(t *testing.T) {
+	dir := t.TempDir()
+	settings := Settings{
+		Recover:     &RecoverSettings{},
+		Telemetry:   &TelemetrySettings{Enabled: boolPtr(true)},
+		ResultLimit: &ResultLimitSettings{Max: 128},
+		Truncate:    &TruncateSettings{Enabled: true, MaxChars: 64, Dir: dir},
+		Timeout:     &TimeoutSettings{Default: "30s"},
+		Concurrency: &ConcurrencySettings{Limit: 2},
+	}
+	chain, err := FromSettings(settings)
+	if err != nil {
+		t.Fatalf("FromSettings: %v", err)
+	}
+	// recover, telemetry, result_limit, truncate, timeout, concurrency.
+	if len(chain) != 6 {
+		t.Fatalf("chain has %d entries, want 6", len(chain))
+	}
+	ctx := context.Background()
+
+	// Recover is outermost: a panic in the innermost stage becomes a result.
+	res := dispatchThrough(chain, func(context.Context, message.ToolCall) message.ToolResult {
+		panic("boom")
+	})(ctx, message.ToolCall{ID: "call", Name: "boom"})
+	if !res.IsError {
+		t.Fatalf("a panic escaped the chain: %#v", res)
+	}
+
+	// Truncate runs inside the limiter: it spills the tool's full output and hands
+	// back an excerpt plus a pointer, and the limiter's own bound is wide enough to
+	// keep that pointer. With the two reversed the limiter would cut the pointer
+	// away and the spill file would hold the excerpt instead of the whole result.
+	full := strings.Repeat("x", 1000)
+	res = dispatchThrough(chain, func(_ context.Context, call message.ToolCall) message.ToolResult {
+		return message.ToolResult{CallID: call.ID, Content: message.NewTextContent(full)}
+	})(ctx, message.ToolCall{ID: "call", Name: "big"})
+	if got := len([]rune(res.Content.Text())); got > 128 {
+		t.Fatalf("content = %d runes, want the limiter's 128 bound", got)
+	}
+	if !strings.Contains(res.Content.Text(), "truncated; full output:") {
+		t.Fatalf("limiter cut the truncation pointer away: %q", res.Content.Text())
+	}
+	spilled, err := os.ReadFile(filepath.Join(dir, "call.output"))
+	if err != nil {
+		t.Fatalf("spill file missing: %v", err)
+	}
+	if string(spilled) != full {
+		t.Fatalf("spill file = %d bytes, want the full %d: truncate ran outside the limiter",
+			len(spilled), len(full))
+	}
 }

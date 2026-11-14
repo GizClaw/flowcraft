@@ -1,0 +1,42 @@
+# One substrate for the whole table: the referee and every seat share it.
+#
+# Seats differ by their graph (a persona prompt), not by their deployment: a
+# runtime describes the boundary, the files and the models, and none of that
+# changes per player.
+version: 1
+name: storyteller
+
+sandbox:
+  backend: local
+  workdir: ${workspace:root}
+  writes:
+    - ${workspace:root}
+  output_mib: 8
+
+files:
+  # Seat memory lives under .forge/memory; the story state under .forge.
+  roots:
+    - ${workspace:root}
+
+inference:
+  providers:
+    - name: openai
+      driver: openai
+      settings:
+        base_url: https://api.openai.com/v1
+        api: chat
+        api_key: ${env:OPENAI_API_KEY}
+  models:
+    - provider: openai
+      model: gpt-6.1-sol
+      limits:
+        max_input_tokens: 128000
+        max_output_tokens: 2048
+  route:
+    attempts_per_target: 2
+    base_delay: 250ms
+
+tools:
+  # Built-in sets the runtime wires. The delegate tool a seat call needs is
+  # mounted by the manager from the agent's delegation policy, not here.
+  enable: [files]

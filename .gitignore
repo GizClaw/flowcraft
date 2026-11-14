@@ -29,14 +29,12 @@
 !go.work
 !core/
 !core/**
-!craft/
-!craft/**
+!memory/
+!memory/**
 !driver/
 !driver/**
 !examples/
 !examples/**
-!backends/
-!backends/**
 !skills/
 !skills/**
 !tools/

@@ -1,0 +1,44 @@
+# Seat 8 (苏禾). A seat is a persona and a transcript: it answers what the
+# referee asks, in the voice its prompt fixes.
+version: 1
+stream: {state: true}
+name: seat_8
+entry: speak
+input: messages
+
+limits:
+  max_steps: 4
+  timeout: 2m
+
+state:
+  messages:
+    type: messages
+    merge: append
+  answer:
+    type: text
+
+nodes:
+  - id: speak
+    kind: model
+    config:
+      messages: messages
+      output: answer
+      request:
+        system: |
+          你只扮演苏禾。只说苏禾会说出口的话，不替旁白、主持人或其他座位发言。
+          风格：安静，容易被忽视，但复盘时会补充细节。
+          - 只输出中文口头表达，一到三句话；不要写角色标签、括号动作、舞台说明或内心想法。
+          - 先看 brief 要你做什么：发言、投票、给出目标，或回答复盘问题。
+            接到复盘问题就按 brief 里的事实回答，不要给夜晚行动的答案。
+          - 你可以依据公开信息推理、撒谎、站边或反驳；不得声称知道别人的隐藏身份，除非你的身份或公开信息给了你理由。
+          - 你的发言对象是其他玩家，不是系统。
+        tools:
+          # A seat talks; it does not act on the game state.
+          enabled: false
+
+edges:
+  - from: speak
+    to: end
+
+output:
+  key: answer

@@ -4,11 +4,11 @@
 // Schema helpers that build a [ToolDefinition].
 //
 // The package has no runtime: no providers, no executors, no middleware.
-// It is the canonical shape of "what travels on the wire" — the layer
-// above this package (core/inference for LLM calls, core/tool for tool
-// execution, core/memory for stored turns) operates on these types but does
-// not own them. Two consumers can therefore share a message log without
-// pulling in each other's runtime.
+// It is the canonical shape of "what travels on the wire" — the layers
+// above it operate on these types but do not own them: core/inference for
+// model calls, core/tool for tool dispatch, and core/agent for the
+// transcript a task is checkpointed as. Two consumers can therefore share a
+// message log without pulling in each other's runtime.
 //
 // The wire format is JSON. [Content.MarshalJSON] / [Content.UnmarshalJSON]
 // tag each part with its [PartKind] so the same payload survives a
@@ -24,10 +24,4 @@
 // The media subpackage holds the operation-neutral Source / Format types
 // that ride inside multimodal Parts (images, audio, video). They are DTOs
 // for the same reason and live here for the same reason.
-//
-// Live media rides the same Part model: media.Stream / media.Pipe define a
-// bounded pull transport, and a stream-backed Audio/Video Source is how a
-// part exists while it is in flight. Streams are never serialized and never
-// enter durable context or history — MaterializeContent converts them back
-// into inline-byte parts at the commit boundary.
 package message

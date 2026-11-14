@@ -1,0 +1,810 @@
+package netpolicy
+
+import (
+	"bufio"
+	"context"
+	"crypto/x509"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/GizClaw/flowcraft/core/permission"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/net/proxy"
+)
+
+const (
+	// proxyReadHeaderTimeout bounds how long a local client may take
+	// to send HTTP request headers (slowloris guard).
+	proxyReadHeaderTimeout = 30 * time.Second
+	// proxyIdleTimeout bounds keep-alive connections between requests.
+	proxyIdleTimeout = 2 * time.Minute
+	// proxyMaxHeaderBytes bounds one HTTP request header block.
+	proxyMaxHeaderBytes = 1 << 20
+	// proxyUpstreamResponseTimeout bounds how long an upstream proxy
+	// may take to answer a CONNECT request.
+	proxyUpstreamResponseTimeout = 30 * time.Second
+)
+
+// MITMConnectInfo describes one CONNECT attempt before tunnel or TLS
+// termination.
+type MITMConnectInfo struct {
+	Host string
+	Port int
+}
+
+// MITMRequestInfo is a decrypted request as seen by hooks.
+type MITMRequestInfo struct {
+	Method string
+	Scheme string
+	Host   string
+	Path   string
+	Header http.Header
+	Body   []byte
+}
+
+// MITMResponseInfo is a decrypted response as seen by hooks.
+type MITMResponseInfo struct {
+	StatusCode int
+	Header     http.Header
+	Body       []byte
+}
+
+// MITMHooks observes decrypted traffic.
+type MITMHooks interface {
+	OnConnect(ctx context.Context, info *MITMConnectInfo) error
+	OnRequest(ctx context.Context, req *MITMRequestInfo) error
+	OnResponse(ctx context.Context, resp *MITMResponseInfo) error
+}
+
+// MITMEngine is the MITM termination seam injected by a backend.
+type MITMEngine interface {
+	PEM() []byte
+	ShouldMITM(host string) bool
+	Serve(client net.Conn, serverName, dialHostport string) error
+}
+
+// MITMFactory builds a MITMEngine.
+type MITMFactory func(
+	policy *permission.MITMPolicy,
+	hooks MITMHooks,
+	dial func(context.Context, string) (net.Conn, error),
+	roots *x509.CertPool,
+) (MITMEngine, error)
+
+// ProxyConfig configures one enforcement proxy instance. It is named
+// ProxyConfig (not Config) because httpkit already owns Config for the
+// transport builder.
+type ProxyConfig struct {
+	// Mode is permission.NetAllowList or permission.NetProxy.
+	Mode permission.NetMode
+	// AllowHosts is the deprecated allow-list: hostname suffixes and
+	// exact IP literals. Compiled as trailing allow rules (see
+	// Matcher); explicit Rules deny rules always win.
+	AllowHosts []string
+	// Rules are explicit host/port allow or deny rules. In
+	// permission.NetAllowList mode they define what is reachable; in permission.NetProxy
+	// mode deny rules override the upstream and everything else is
+	// delegated to the upstream.
+	Rules []permission.NetRule
+	// Upstream is the proxy-mode upstream URL: "http://host:port" or
+	// "socks5://[user:pass@]host:port". Ignored in allow-list mode.
+	Upstream string
+	// TCPLoopback binds 127.0.0.1:0 (an ephemeral loopback TCP port)
+	// instead of a unix socket. The seatbelt backend uses this because
+	// its child shares the host network stack and reaches the proxy
+	// through the single SBPL-allowed loopback port. The bwrap backend
+	// leaves it false and uses the unix socket for its bridge.
+	TCPLoopback bool
+	// MITM enables TLS termination for CONNECT tunnels (opt-in).
+	MITM *permission.MITMPolicy
+	// OnDecision receives one audit record per allow/deny decision.
+	// It must not block the proxy; keep it fast and non-throwing.
+	OnDecision func(ProxyDecision)
+	// Hooks observe/block traffic. OnConnect applies to every CONNECT;
+	// OnRequest / OnResponse run only on MITM-decrypted traffic.
+	Hooks       MITMHooks
+	MITMFactory MITMFactory
+	// OutboundRoots overrides the roots used to verify the real
+	// target's TLS certificate during MITM. Nil means system roots.
+	OutboundRoots *x509.CertPool
+}
+
+// ProxyDecision is one audit record: which destination was decided,
+// with which action, and which rule ("" = mode default) decided it.
+type ProxyDecision struct {
+	Host   string
+	Port   int
+	Action permission.NetAction
+	Mode   permission.NetMode
+	Rule   string
+	// Reason is the deny rule's model-facing explanation ("" when the
+	// mode default or an allow rule decided).
+	Reason string
+}
+
+// Proxy is a host-side enforcement proxy listening on a unix socket
+// (default) or TCP loopback (ProxyConfig.TCPLoopback). Create it with
+// Start and stop it with Close.
+type Proxy struct {
+	cfg       ProxyConfig
+	ln        net.Listener
+	srv       *http.Server
+	transport *http.Transport
+	upstream  *url.URL
+	socksDial proxy.ContextDialer
+	mitm      MITMEngine
+
+	mux *muxListener
+
+	matcherOnce sync.Once
+	compiled    *Matcher
+	matcherErr  error
+
+	dir  string
+	path string
+}
+
+// Start serves the enforcement proxy in the background and returns
+// immediately. With ProxyConfig.TCPLoopback it binds an ephemeral
+// loopback TCP port (Addr reports it); otherwise it binds a unix
+// socket in a fresh per-run temp directory (mode 0600 — advisory on
+// Windows, where access is governed by the directory ACL) whose path
+// is available via SocketPath for bind-mounting into a
+func Start(cfg ProxyConfig) (*Proxy, error) {
+	if cfg.Mode != permission.NetAllowList && cfg.Mode != permission.NetProxy {
+		return nil, fmt.Errorf(
+			"netproxy: mode must be allow_list or proxy, got %d", int(cfg.Mode))
+	}
+	if err := (permission.NetPolicy{
+		Mode:       cfg.Mode,
+		AllowHosts: cfg.AllowHosts,
+		Rules:      cfg.Rules,
+		Proxy:      cfg.Upstream,
+		MITM:       cfg.MITM,
+	}).Validate(); err != nil {
+		return nil, err
+	}
+
+	p := &Proxy{cfg: cfg}
+	// Compile the rule set now. A malformed host pattern is a configuration
+	// error, and deferring it to the first request turns it into an opaque
+	// "matcher unavailable" denial of every exec instead of a build failure.
+	if p.matcher() == nil {
+		return nil, p.matcherErr
+	}
+	if cfg.Upstream != "" {
+		u, err := url.Parse(cfg.Upstream)
+		if err != nil {
+			return nil, fmt.Errorf("netproxy: parse upstream %q: %w", cfg.Upstream, err)
+		}
+		switch u.Scheme {
+		case "http":
+			p.transport = &http.Transport{Proxy: http.ProxyURL(u)}
+		case "socks5":
+			dialer, err := socks5Dialer(u)
+			if err != nil {
+				return nil, err
+			}
+			p.socksDial = dialer
+			p.transport = &http.Transport{DialContext: dialer.DialContext}
+		default:
+			return nil, fmt.Errorf("netproxy: unsupported upstream scheme %q", u.Scheme)
+		}
+		p.upstream = u
+	} else {
+		p.transport = &http.Transport{Proxy: nil}
+	}
+
+	if cfg.MITM != nil && cfg.MITM.Enabled {
+		if cfg.MITMFactory == nil {
+			return nil, fmt.Errorf("netproxy: MITM enabled but no MITMFactory injected")
+		}
+		engine, err := cfg.MITMFactory(cfg.MITM, cfg.Hooks, p.dialTarget, cfg.OutboundRoots)
+		if err != nil {
+			return nil, err
+		}
+		p.mitm = engine
+	}
+
+	if cfg.TCPLoopback {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, fmt.Errorf("netproxy: listen tcp loopback: %w", err)
+		}
+		p.ln = ln
+	} else {
+		dir, err := os.MkdirTemp("", "flowcraft-netproxy-")
+		if err != nil {
+			return nil, fmt.Errorf("netproxy: temp dir: %w", err)
+		}
+		path := filepath.Join(dir, "proxy.sock")
+		ln, err := net.Listen("unix", path)
+		if err != nil {
+			if rerr := os.RemoveAll(dir); rerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: remove temp dir after listen failure", rerr)
+			}
+			return nil, fmt.Errorf("netproxy: listen: %w", err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			if cerr := ln.Close(); cerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: close listener after chmod failure", cerr)
+			}
+			if rerr := os.RemoveAll(dir); rerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: remove temp dir after chmod failure", rerr)
+			}
+			return nil, fmt.Errorf("netproxy: chmod socket: %w", err)
+		}
+		p.ln = ln
+		p.dir = dir
+		p.path = path
+	}
+	p.srv = &http.Server{
+		Handler:           p,
+		ReadHeaderTimeout: proxyReadHeaderTimeout,
+		IdleTimeout:       proxyIdleTimeout,
+		MaxHeaderBytes:    proxyMaxHeaderBytes,
+	}
+	p.mux = newMuxListener(p.ln.Addr())
+	go p.acceptLoop()
+	go func() {
+		if err := p.srv.Serve(p.mux); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			telemetry.WarnErr(context.Background(), "netproxy: serve failed", err)
+		}
+	}()
+	return p, nil
+}
+
+// acceptLoop accepts raw connections, classifies the first byte, and
+// routes SOCKS5 (0x05) to the SOCKS5 handler while handing every
+// other byte stream to http.Server through the mux listener. One
+// listener serves both protocols, so the seatbelt loopback hole and
+// the Windows WFP proxy-port permit stay single-port.
+func (p *Proxy) acceptLoop() {
+	for {
+		c, err := p.ln.Accept()
+		if err != nil {
+			_ = p.mux.Close()
+			if !errors.Is(err, net.ErrClosed) {
+				telemetry.WarnErr(context.Background(), "netproxy: accept failed", err)
+			}
+			return
+		}
+		go p.handleConn(c)
+	}
+}
+
+// handleConn peeks the first byte to split SOCKS5 from HTTP on the
+// shared listener.
+func (p *Proxy) handleConn(c net.Conn) {
+	// The peek happens before http.Server's ReadHeaderTimeout applies,
+	// so bound it explicitly: a client that connects and sends nothing
+	// must not pin a goroutine and connection forever.
+	_ = c.SetReadDeadline(time.Now().Add(proxyReadHeaderTimeout))
+	br := bufio.NewReader(c)
+	b, err := br.Peek(1)
+	// The classifier deadline has served its purpose; the HTTP server
+	// and the SOCKS5 handler install their own deadlines.
+	_ = c.SetReadDeadline(time.Time{})
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	if b[0] == socks5Version {
+		p.serveSOCKS5(c, br)
+		return
+	}
+	if !p.mux.enqueue(&bufferedConn{Conn: c, r: br}) {
+		_ = c.Close()
+	}
+}
+
+// serveSOCKS5 runs a SOCKS5 session on a connection whose first byte
+// was 0x05. br carries any classifier-buffered bytes. CONNECT targets
+// go through the same policy decision, audit, OnConnect hook, and dial
+// path as HTTP CONNECT, so allow-list and upstream modes behave
+// identically for SOCKS5-aware clients (ssh ProxyCommand, curl
+// --socks5-hostname, tools that honor ALL_PROXY=socks5://...).
+func (p *Proxy) serveSOCKS5(conn net.Conn, br *bufio.Reader) {
+	srv := &socks5Server{connect: func(ctx context.Context, hostport string) (net.Conn, error) {
+		host, port := splitHostPort(hostport, 0)
+		action, rule, reason, dialHost, err := p.decide(ctx, hostport, 0)
+		if err != nil {
+			p.audit(host, port, permission.NetDeny, rule, reason)
+			return nil, err
+		}
+		p.audit(host, port, action, rule, reason)
+		if action != permission.NetAllow {
+			return nil, errDestinationNotAllowed
+		}
+		if p.cfg.Hooks != nil {
+			if err := p.cfg.Hooks.OnConnect(ctx, &MITMConnectInfo{Host: host, Port: port}); err != nil {
+				return nil, err
+			}
+		}
+		return p.dialTarget(ctx, dialHost)
+	}}
+	srv.Serve(conn, br)
+}
+
+// errDestinationNotAllowed marks a policy-denied SOCKS5 CONNECT; the
+// socks5 server maps it to a generic failure reply.
+var errDestinationNotAllowed = errors.New("netproxy: destination not allowed")
+
+// denyReasonSuffix appends a deny rule's model-facing reason to an
+// HTTP denial body.
+func denyReasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
+}
+
+// bufferedConn replays classifier-buffered bytes so http.Server sees
+// the complete request stream.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// muxListener delivers HTTP-classified connections to http.Server.
+// SOCKS5 connections never enter the channel. Accept fails with
+// net.ErrClosed once the accept loop exits, so Close unblocks Serve.
+type muxListener struct {
+	addr net.Addr
+	ch   chan net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newMuxListener(addr net.Addr) *muxListener {
+	return &muxListener{addr: addr, ch: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (l *muxListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.ch:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *muxListener) Addr() net.Addr { return l.addr }
+
+// enqueue delivers one HTTP-classified connection to http.Server,
+// closing it if the server is already shut down.
+func (l *muxListener) enqueue(c net.Conn) bool {
+	select {
+	case l.ch <- c:
+		return true
+	case <-l.done:
+		_ = c.Close()
+		return false
+	}
+}
+
+// SocketPath returns the unix socket path to bind into the
+// It is empty when the proxy was started with TCPLoopback.
+func (p *Proxy) SocketPath() string { return p.path }
+
+// Addr returns the bound listener address. For a TCP-loopback proxy
+// this is the 127.0.0.1:<port> the sandboxed child must be allowed to
+// dial; for a unix-socket proxy it is the socket path address.
+func (p *Proxy) Addr() net.Addr { return p.ln.Addr() }
+
+// CAPEM returns the temporary MITM root CA in PEM form, for bundle
+// injection into the  Nil when MITM is disabled.
+func (p *Proxy) CAPEM() []byte {
+	if p.mitm == nil {
+		return nil
+	}
+	return p.mitm.PEM()
+}
+
+// Close stops the server, closes the listener, and removes the temp
+// directory (including the socket file) when one was created.
+func (p *Proxy) Close() error {
+	if err := p.srv.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		telemetry.WarnErr(context.Background(), "netproxy: close server failed", err)
+	}
+	if err := p.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		telemetry.WarnErr(context.Background(), "netproxy: close listener failed", err)
+	}
+	if p.mux != nil {
+		_ = p.mux.Close()
+	}
+	p.transport.CloseIdleConnections()
+	if p.dir != "" {
+		err := os.RemoveAll(p.dir)
+		if err != nil {
+			telemetry.WarnErr(context.Background(), "netproxy: remove temp dir failed", err)
+		}
+		return err
+	}
+	return nil
+}
+
+// ServeHTTP implements http.Handler for both HTTP absolute-form
+// requests and CONNECT tunnels.
+func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodConnect {
+		p.serveConnect(w, r)
+		return
+	}
+	p.serveHTTP(w, r)
+}
+
+func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	host, port := splitHostPort(r.URL.Host, 80)
+	action, rule, reason, dialHost, err := p.decide(r.Context(), r.URL.Host, 80)
+	if err != nil {
+		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	p.audit(host, port, action, rule, reason)
+	if action != permission.NetAllow {
+		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
+		return
+	}
+	out := r
+	if dialHost != r.URL.Host {
+		clone := r.Clone(r.Context())
+		clone.Host = r.Host
+		if clone.Host == "" {
+			clone.Host = r.URL.Host
+		}
+		clone.URL.Host = dialHost
+		out = clone
+	}
+	resp, err := p.transport.RoundTrip(out)
+	if err != nil {
+		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close upstream response body failed", err)
+		}
+	}()
+	copyHeader(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
+	host, port := splitHostPort(r.Host, 443)
+	action, rule, reason, dialHost, err := p.decide(r.Context(), r.Host, 443)
+	if err != nil {
+		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	p.audit(host, port, action, rule, reason)
+	if action != permission.NetAllow {
+		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
+		return
+	}
+	if p.cfg.Hooks != nil {
+		if err := p.cfg.Hooks.OnConnect(r.Context(), &MITMConnectInfo{Host: host, Port: port}); err != nil {
+			http.Error(w, "netproxy: connect blocked by hook", http.StatusForbidden)
+			return
+		}
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "netproxy: hijacking unsupported", http.StatusInternalServerError)
+		return
+	}
+	client, _, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close hijacked client failed", err)
+		}
+	}()
+
+	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		return
+	}
+	if p.mitm != nil && p.mitm.ShouldMITM(host) {
+		if err := p.mitm.Serve(client, host, dialHost); err != nil {
+			return
+		}
+		return
+	}
+
+	target, err := p.dialTarget(r.Context(), dialHost)
+	if err != nil {
+		return
+	}
+	defer func() {
+		if err := target.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close tunnel target failed", err)
+		}
+	}()
+	go func() {
+		if _, err := io.Copy(target, client); err != nil {
+			telemetry.Debug(r.Context(), "netproxy: tunnel upstream copy ended with error",
+				attribute.String(telemetry.AttrErrorMessage, err.Error()))
+		}
+		if err := target.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close tunnel target after copy failed", err)
+		}
+	}()
+	_, _ = io.Copy(client, target)
+}
+
+// decide evaluates the policy for one destination. It returns the
+// verdict, the decisive rule description ("" = mode default), the
+// deny rule's model-facing reason ("" = none), and the concrete dial
+// target. When IP/CIDR rules exist the hostname is resolved locally
+// and the dial target is pinned to an address the rule set covered, so
+// neither the upstream nor a rebinding DNS response can bypass the
+// rule set: see [Proxy.decideAddrs].
+func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (permission.NetAction, string, string, string, error) {
+	host, port := splitHostPort(hostport, defaultPort)
+	dialHost := hostport
+	m := p.matcher()
+	if m == nil {
+		return permission.NetDeny, "", "", dialHost, fmt.Errorf("netproxy: policy matcher unavailable")
+	}
+	if ip, err := netip.ParseAddr(host); err == nil {
+		action, rule, reason, matched := m.MatchIP(ip.Unmap(), port)
+		if action == permission.NetDeny {
+			return action, rule, reason, dialHost, nil
+		}
+		if matched {
+			return action, rule, reason, dialHost, nil
+		}
+		if p.cfg.Mode == permission.NetAllowList {
+			return permission.NetDeny, "", "", dialHost, nil
+		}
+		return permission.NetAllow, "", "", dialHost, nil
+	}
+
+	action, rule, reason, matched := m.Match(host, port)
+	if action == permission.NetDeny {
+		return action, rule, reason, dialHost, nil
+	}
+	if !m.HasIPRules() {
+		if matched {
+			return permission.NetAllow, rule, reason, dialHost, nil
+		}
+		if p.cfg.Mode == permission.NetAllowList {
+			return permission.NetDeny, "", "", dialHost, nil
+		}
+		return permission.NetAllow, "", "", dialHost, nil
+	}
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		// With IP rules present we cannot prove the destination is
+		// not denied, so we fail closed.
+		return permission.NetDeny, "", "", dialHost, fmt.Errorf(
+			"netproxy: resolve %s for IP rules: %w", host, err)
+	}
+	action, rule, reason, dialHost = p.decideAddrs(port, dialHost, addrs, hostVerdict{
+		matched: matched,
+		rule:    rule,
+		reason:  reason,
+	})
+	return action, rule, reason, dialHost, nil
+}
+
+// hostVerdict is the hostname-rule half of a decision, carried into the
+// address pass so the final verdict can combine both. matched is false
+// when no hostname rule decided the destination, in which case the mode
+// default applies.
+type hostVerdict struct {
+	matched bool
+	rule    string
+	reason  string
+}
+
+// decideAddrs applies the IP/CIDR rules to every address a hostname
+// resolved to and returns the verdict plus the dial target.
+//
+// Two rules shape the result:
+//
+//   - A deny match on any address denies the destination outright. With
+//     several answers we cannot know which one a dial would have
+//     reached, so none of them may pass.
+//   - The dial target is pinned to the first address an allow rule
+//     actually covers, never to an address the rule set leaves
+//     uncovered while another one is allowed: the previous form took
+//     the first address of the answer whatever the rules said, so a
+//     rebinding answer (or a server that reorders one) steered the
+//     connection to an address the checks never validated.
+//
+// When no allow rule covers any address — the operator declared only
+// deny rules, or none of the answers falls in an allowed range — the
+// hostname rule (or the mode default) is the only authority, so the
+// first address is pinned instead. Pinning either way matters: it is
+// what keeps the dial from resolving a second time into an address
+// these checks never saw.
+func (p *Proxy) decideAddrs(
+	port int,
+	dialHost string,
+	addrs []netip.Addr,
+	host hostVerdict,
+) (permission.NetAction, string, string, string) {
+	m := p.matcher()
+	var pinned netip.Addr
+	pinRule := ""
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		action, rule, reason, matched := m.MatchIP(addr, port)
+		if !matched {
+			continue
+		}
+		if action == permission.NetDeny {
+			return permission.NetDeny, rule, reason, dialHost
+		}
+		if !pinned.IsValid() {
+			pinned, pinRule = addr, rule
+		}
+	}
+	ipAllow := pinned.IsValid()
+	if !ipAllow && len(addrs) > 0 {
+		pinned = addrs[0].Unmap()
+	}
+	if pinned.IsValid() {
+		dialHost = net.JoinHostPort(pinned.String(), strconv.Itoa(port))
+	}
+	switch {
+	case host.matched:
+		return permission.NetAllow, host.rule, host.reason, dialHost
+	case ipAllow:
+		// The address itself is what the rule set allowed.
+		return permission.NetAllow, pinRule, "", dialHost
+	case p.cfg.Mode == permission.NetAllowList:
+		return permission.NetDeny, "", "", dialHost
+	default:
+		return permission.NetAllow, "", "", dialHost
+	}
+}
+
+// audit emits one decision record when OnDecision is configured.
+func (p *Proxy) audit(host string, port int, action permission.NetAction, rule, reason string) {
+	if p.cfg.OnDecision != nil {
+		p.cfg.OnDecision(ProxyDecision{
+			Host:   host,
+			Port:   port,
+			Action: action,
+			Mode:   p.cfg.Mode,
+			Rule:   rule,
+			Reason: reason,
+		})
+	}
+}
+
+// dialTarget dials the CONNECT target directly (allow-list mode),
+// establishes a CONNECT tunnel through an HTTP upstream, or dials
+// through a SOCKS5 upstream (proxy mode).
+func (p *Proxy) dialTarget(ctx context.Context, hostport string) (net.Conn, error) {
+	if p.upstream != nil {
+		switch p.upstream.Scheme {
+		case "http":
+			up, err := (&net.Dialer{}).DialContext(ctx, "tcp", p.upstream.Host)
+			if err != nil {
+				return nil, err
+			}
+			req := "CONNECT " + hostport + " HTTP/1.1\r\nHost: " + hostport
+			if p.upstream.User != nil {
+				user := p.upstream.User.Username()
+				pass, _ := p.upstream.User.Password()
+				req += "\r\nProxy-Authorization: Basic " +
+					base64.StdEncoding.EncodeToString([]byte(user+":"+pass))
+			}
+			req += "\r\n\r\n"
+			if _, err := io.WriteString(up, req); err != nil {
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after write failure", cerr)
+				}
+				return nil, err
+			}
+			if err := up.SetReadDeadline(time.Now().Add(proxyUpstreamResponseTimeout)); err != nil {
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after deadline failure", cerr)
+				}
+				return nil, fmt.Errorf("netproxy: set upstream read deadline: %w", err)
+			}
+			br := bufio.NewReader(up)
+			resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+			// The deadline was only for the CONNECT handshake; the
+			// tunnel itself is long-lived and must not inherit it.
+			_ = up.SetReadDeadline(time.Time{})
+			if err != nil {
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after response failure", cerr)
+				}
+				return nil, err
+			}
+			if resp.StatusCode != http.StatusOK {
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after refusal", cerr)
+				}
+				return nil, fmt.Errorf("netproxy: upstream refused CONNECT: %d", resp.StatusCode)
+			}
+			return up, nil
+		case "socks5":
+			return p.socksDial.DialContext(ctx, "tcp", hostport)
+		}
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", hostport)
+}
+
+func (p *Proxy) matcher() *Matcher {
+	p.matcherOnce.Do(func() {
+		p.compiled, p.matcherErr = NewMatcher(permission.NetPolicy{
+			Mode:       p.cfg.Mode,
+			AllowHosts: p.cfg.AllowHosts,
+			Rules:      p.cfg.Rules,
+		})
+	})
+	return p.compiled
+}
+
+func socks5Dialer(u *url.URL) (proxy.ContextDialer, error) {
+	var auth *proxy.Auth
+	if u.User != nil {
+		auth = &proxy.Auth{User: u.User.Username()}
+		if pass, ok := u.User.Password(); ok {
+			auth.Password = pass
+		}
+	}
+	dialer, err := proxy.SOCKS5("tcp", u.Host, auth, proxy.Direct)
+	if err != nil {
+		return nil, fmt.Errorf("netproxy: socks5 dialer: %w", err)
+	}
+	cd, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, fmt.Errorf("netproxy: socks5 dialer does not implement DialContext")
+	}
+	return cd, nil
+}
+
+func splitHostPort(hostport string, defaultPort int) (string, int) {
+	host, portStr, err := net.SplitHostPort(hostport)
+	if err != nil {
+		return strings.Trim(hostport, "[]"), defaultPort
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		port = defaultPort
+	}
+	return strings.Trim(host, "[]"), port
+}
+
+func copyHeader(dst, src http.Header) {
+	for k, vs := range src {
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+}

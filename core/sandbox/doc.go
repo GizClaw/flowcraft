@@ -1,100 +1,70 @@
-// Package sandbox is the agent's execution boundary: where commands run,
-// what they can reach (net), what they can see (env), and how much they
-// can consume (resources). Sandbox is daemon-level shared policy; per-run
-// state lives in core/workspace.
+// Package sandbox is the command execution boundary: the contract every
+// backend implements, and nothing else.
 //
-// The package centres on the [Runner] interface: a process session
-// manager, with the one-shot [Exec] as a derived view over Start.
-// Concrete runners differ in *where* the work happens (local process,
-// bubblewrap namespace, container, microVM) but share the same policy
-// surface so a caller can be retargeted between backends without
-// changing call sites. Every Runner declares [Capabilities] up front —
-// policy enforcement and session features — and every started [Session]
-// declares its own [SessionCapabilities], so tools never discover
-// abilities through interface assertions. Lifecycle is part of the
-// contract too: every Runner implements Close, which terminates active
-// sessions and releases backend-owned resources, and the decorators
-// forward it so wrapping never hides the backend's cleanup.
+// # What the contract promises
 //
-// ExecOptions carries four policy groups beyond the obvious WorkDir /
-// Stdin / Timeout knobs:
+// A [Runner] starts interactive or streaming process sessions under a policy and
+// manages their lifecycle. A [Session] is the unified handle to one running
+// process — output is an append-only log read by cursor, input is a stream, and
+// exit is a cached value. The one-shot form is derived, not part of the
+// interface: engine.Exec drains a session, so a new backend gets one-shot
+// execution for free and has no second code path to keep in step.
 //
-//   - Env (EnvPolicy): explicit allow-list of host environment variables
-//     plus an Inject map. Replaces "inherit the entire daemon's env" which
-//     is unsafe in a multi-tenant agent harness.
-//   - Net (NetPolicy): mode + (future) allow-list / proxy URL. The local
-//     only accepts NetDefault; non-default modes require a sandboxing
-//     backend (namespace-based, container-based, or microVM-based) that
-//     can actually enforce the policy at the kernel level.
-//   - Write (WritePolicy): per-call filesystem write mode. The zero
-//     value applies the runner's construction-time boundary;
-//     WriteReadOnly keeps the runner root read-only for that call.
-//     sandbox/local has no OS boundary and rejects WriteReadOnly.
-//   - Resources (ResourceLimits): CPU / memory / disk caps plus
-//     MaxOutputBytes. On unix, sandbox/local enforces group-wide memory
-//     and cpu-time caps with a sampling watcher and kills the whole
-//     process group on overflow. DiskBytes still needs a quota-capable
-//     backend and is rejected with errdefs.NotAvailable.
+// Two rules make a backend honest, and both are enforced by review rather than
+// by the type system:
 //
-// Runner.Capabilities lets callers inspect the honest policy surface
-// before execution. sandbox/local reports env + process-group resource
-// enforcement but not filesystem or network confinement. Concrete
-// backends backends add those OS-level boundaries:
+//   - [Capabilities] is the explicit, wire-safe declaration of what the backend
+//     can do. Callers and tools never discover features through interface
+//     assertions; an unsupported operation fails with errdefs.NotAvailable, and
+//     Capabilities says up front why. A backend that advertises a capability it
+//     does not enforce turns the declaration into a lie.
+//   - A policy a backend cannot enforce is rejected, never silently downgraded.
+//     Narrowing is allowed everywhere — a call may ask for a stricter boundary
+//     than the runner was built with — but nothing widens a boundary.
 //
-//	                             local     seatbelt/macOS  bubblewrap/Linux
-//	Env allow-list                yes           yes             yes
-//	Filesystem write bounds        no           yes             yes
-//	NetDenyAll                     no           yes             yes
-//	MemoryBytes                   yes           yes             yes
-//	CPUMillicores                 yes           yes             yes
-//	DiskBytes                      no            no              no
+// # Layering
 //
-// WithDefaults fixes daemon-owned policy, AllowCommands adds a hard
-// command-name gate, and WithApproval adds a fail-closed human decision
-// tripwire; [Escalation] adds the second question a refusal needs:
-// whether this one command may leave the confine. The recommended
-// local composition lives in core/sandbox.ComposeLocal.
+// Four layers, in dependency order:
 //
-// # Sessions and Exec
+//  1. This package: contracts and the value types they are made of. Zero
+//     behavior: no OS probing, no process spawning, no HTTP, no filesystem
+//     access. If a symbol would need any of those, it belongs one layer down.
+//  2. engine: the SDK over the contract — policy decorators (command gates,
+//     approval, defaults), escalation, resource-limit validation, the one-shot
+//     Exec, and platform shell selection.
+//  3. Support packages that a backend needs but that are not the contract:
+//     journal (filesystem event sources), netpolicy (proxy, MITM, SOCKS5), and
+//     sessionkit (process spawning, the session registry, the group resource
+//     sampler).
+//  4. Backends: core/sandbox-local, core/sandbox-bwrap, core/sandbox-seatbelt,
+//     core/sandbox-windows — and core/sandbox-remote, which wraps another runner
+//     instead of spawning processes. A backend is a sibling directory, not a
+//     subpackage, because it is an implementation of the contract rather than
+//     part of it.
 //
-// Every Runner is a process session manager: Start spawns interactive
-// or streaming processes under the same ExecOptions policy, and the
-// one-shot Exec is a derived view over Start. Policy is fixed once at
-// Start — env, network posture, resource caps, and approval are never
-// re-negotiated per Read/Write. Output is a byte-cursor log:
-// Read(afterSeq) replays from any retained position, bounded by
-// Resources.MaxOutputBytes, so a reconnecting client resumes without
-// re-running the process. The decorators forward Start as well, so
-// interactive sessions cannot bypass the defaults / approval /
-// allow-list chain. Signal / Watch / Resize are part of the Session
-// interface itself; unsupported operations return
-// errdefs.NotAvailable rather than failing at discovery time.
+// A backend is an implementation, not part of the contract. It may import
+// engine and any support package; nothing above it may import a backend except
+// the host that selects one (core/runtime).
 //
-// # File journal
+// # Why the support packages are public
 //
-// A runner can also report the writes that happen inside its boundary:
-// [OpenJournal] returns a cursor-based, replayable stream of net state
-// changes — one create for "created and written", one rename for a move,
-// nothing for a chmod or a read — with bounded retention and an explicit
-// [JournalGap] whenever coverage is incomplete. It is opt-in per runner,
-// costs nothing when it is not requested, and is an observation stream
-// rather than a boundary: enforcement stays with the backend. The
-// concrete engine lives in core/sandbox/journal; the contract (types,
-// semantics, deployment settings) lives in journal.go.
+// Go's internal rule bounds visibility by directory: core/sandbox/internal/...
+// is importable only from inside core/sandbox. Every shared mechanism a backend
+// needs therefore has to live in a public package: sessionkit, sandboxtest and
+// journal/journaltest are public for that reason, rather than internal/session,
+// internal/sandboxtest and internal/journaltest. core/sandbox/internal is
+// reserved for things no backend may ever need — the bwrap package keeps its own
+// bridge under its own internal/.
 //
-// # Files
+// # Verifying a backend
 //
-//   - Contract: contract.go (Runner / Capabilities), session.go (Session /
-//     SessionSpec / SessionExit / event types), session_registry.go,
-//     journal.go (FileJournal / WriteEvent / JournalGap)
-//   - Policy: policy.go (env / net / resource limits), enforcement.go
-//   - Sessions: session_unix.go / session_other.go
-//   - Local backend: local/ (core/sandbox/local)
-//   - Resource watcher: watcher_unix.go / watcher_other.go
-//   - File journal engine: journal/ (core/sandbox/journal)
-//   - One-shot view: exec.go (Exec / ExecOptions / ExecResult)
-//   - Composition: decorator.go, approval.go, compose.go
-//   - Escalation: escalation.go (Denied / Escalator / Escalation)
-//   - Resource: local/resource.go (sandbox.Runner/local)
-//   - Wire transport: transport/ (replaceable Protocol + framed client/server)
+// A backend is verified against [sandboxtest], not against its own reading of
+// this documentation: the suite drives a real runner and asserts the promises
+// made here (capability honesty, cursor semantics, EOF, idempotent lifecycle,
+// the /dev/null stdin rule). A one-shot Exec, a new transport, or a new
+// platform does not need a new interpretation of the contract — it needs the
+// suite to pass.
+//
+// The behavioural guide is docs/guides/sandbox.md; journal semantics are
+// documented on [JournalProvider] and in the journal package.
 package sandbox

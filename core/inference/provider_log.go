@@ -2,21 +2,26 @@ package inference
 
 import (
 	"context"
+	"errors"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
 )
 
-// Provider transports log one event per round trip at the boundary they own:
-// failures at Warn (with the provider's error and any request id it carried),
-// successes at Debug so per-call correlation stays cheap. The runtime's own
-// spans and metrics come from core/inference's assembly instrumentation; these
-// events are the driver-side record of what the endpoint actually answered.
+// Provider-boundary logging: one record per provider round trip.
 //
-// The helpers live here rather than in each driver because they are identical
-// apart from the provider name, which the caller passes.
+// These helpers live here rather than in each driver because they are identical
+// apart from the provider name. They answer "which call did the endpoint
+// answer/refuse", which the funnel's span does not: the span says how long it
+// took and what it cost, the log record carries the provider's own request id and
+// whatever it said when it refused. Failures log at Warn, successes at Debug so
+// per-call correlation stays cheap enough to leave on.
+//
+// The protocol execution funnel calls them for every driver and every modality:
+// unary calls and stream termination are adjacent to the one place that knows
+// whether the provider was actually contacted. A driver may also call them
+// directly when it has a richer provider id than the response metadata exposes.
 
 // LogProviderCall records one unary provider round trip.
 func LogProviderCall(
@@ -58,39 +63,51 @@ func LogProviderStreamEnd(
 		return
 	}
 	telemetry.Debug(ctx, provider+" inference stream completed",
-		ProviderLogAttrs(provider, operation, "", nil, "", responseID)...)
+		attribute.String(telemetry.AttrGenAIProviderName, provider),
+		attribute.String(telemetry.AttrInferenceOperation, operation),
+		attribute.String(telemetry.AttrGenAIResponseID, responseID))
 }
 
-// ProviderLogAttrs builds the standard attribute set for one provider call:
-// the provider, the operation, the model, the provider's request and response
-// ids (the request id is read from the error when the caller does not have it),
-// and the error message. Transports that emit their own provider events extend
-// this set instead of rebuilding it.
+// ProviderLogAttrs builds the attribute set shared by the helpers above.
+//
+// The keys follow the same namespace rule as spans (see telemetry/semconv.go):
+// the facts the GenAI conventions define are gen_ai.*, the ones they do not
+// define (a provider's request id, the error text) stay in flowcraft's own
+// namespace. A driver that logs here and a funnel that spans the same call then
+// join on the same keys.
 func ProviderLogAttrs(
 	provider, operation, model string,
 	err error,
 	requestID, responseID string,
 ) []attribute.KeyValue {
-	attrs := []attribute.KeyValue{
-		attribute.String(telemetry.AttrLLMProvider, provider),
-	}
-	if operation != "" {
-		attrs = append(attrs, attribute.String("inference.operation", operation))
-	}
+	attrs := make([]attribute.KeyValue, 0, 8)
+	attrs = append(attrs,
+		attribute.String(telemetry.AttrGenAIProviderName, provider),
+		attribute.String(telemetry.AttrInferenceOperation, operation),
+	)
 	if model != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrLLMModel, model))
+		attrs = append(attrs, attribute.String(telemetry.AttrGenAIRequestModel, model))
 	}
-	if requestID == "" {
-		requestID, _ = errdefs.RequestID(err)
+	if err != nil {
+		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, err.Error()))
+		var classified *Error
+		if errors.As(err, &classified) {
+			attrs = append(attrs,
+				attribute.String(telemetry.AttrErrorKind, string(classified.Kind)))
+			if classified.Detail != "" {
+				attrs = append(attrs,
+					attribute.String(telemetry.AttrInferenceErrorDetail, classified.Detail))
+			}
+			if requestID == "" {
+				requestID = classified.RequestID
+			}
+		}
 	}
 	if requestID != "" {
 		attrs = append(attrs, attribute.String(telemetry.AttrLLMRequestID, requestID))
 	}
 	if responseID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrLLMResponseID, responseID))
-	}
-	if err != nil {
-		attrs = append(attrs, attribute.String(telemetry.AttrErrorMessage, err.Error()))
+		attrs = append(attrs, attribute.String(telemetry.AttrGenAIResponseID, responseID))
 	}
 	return attrs
 }

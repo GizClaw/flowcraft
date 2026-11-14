@@ -1,0 +1,6 @@
+name: companion_opening
+description: Ask the companion for music, then for a quieter volume.
+raid: companion
+turns:
+  - 你好，帮我放一首轻音乐吧。
+  - 声音有点大，调小一点。

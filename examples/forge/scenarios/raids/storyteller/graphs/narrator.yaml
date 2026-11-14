@@ -1,0 +1,153 @@
+# The narrator: a director that speaks.  A refereed raid (werewolf) has a silent
+# director: rules own the truth and every line comes from a seat. This raid has
+# a talking one - the same shape, with a model node in the director's own graph
+# for the narration and for the choice of who speaks next.  The rules stay the
+# authority: they decide which speakers the phase allows, they reject a choice
+# outside that list, and they end the run when the arc pauses for the reader.
+# The model only picks within the list and writes the words.
+version: 1
+entry: input
+input: messages
+
+limits:
+  max_steps: 60
+
+state:
+  # The story: blueprint, phase, who has spoken in it, and the transcript so
+  # far.
+  story:
+    type: json
+  # The reader's line, carried so the arc continues across turns of a session.
+  messages:
+    type: messages
+    merge: append
+    carry: true
+  # The beat's brief, for inspection: phase, goal, candidates, who spoke.
+  plan:
+    type: json
+  # What each model call is asked. A rule composes the text; the node reads it
+  # as the call's one user message. Merge "last": each beat asks a new
+  # question, it does not continue the previous one.
+  plan_messages:
+    type: messages
+    merge: last
+  narrate_messages:
+    type: messages
+    merge: last
+  choice:
+    type: text
+  narrated:
+    type: text
+  # What a character is asked, and what it said.
+  brief:
+    type: text
+  spoken:
+    type: text
+  # What the reader is told at the end of the turn.
+  prompt:
+    type: text
+
+nodes:
+  - id: input
+    kind: script
+    config:
+      backend: starlark
+      path: rules/seed.star
+      reads: [story, messages]
+      writes: [story]
+
+  - id: prepare
+    kind: script
+    config:
+      backend: starlark
+      path: rules/prepare.star
+      reads: [story, messages]
+      writes: [story, plan, plan_messages]
+
+  # The model picks a speaker from the candidates and writes the cue the speaker
+  # gets.
+  - id: schedule
+    kind: model
+    config:
+      messages: plan_messages
+      output: choice
+      request:
+        # The answer is a control line, not speech: one response is all
+        # this call needs, and deltas would only wake the reader per token.
+        stream: false
+        system: |
+          你在给一个固定班底的中文短篇故事排下一句台词。
+          你不写故事正文，只输出一行控制指令，格式必须严格是：
+          speaker=<候选之一>; guidance=<一句中文提示>
+          - 候选只有下面列出的 allowed_speakers，不要选别的。
+          - guidance 是给被选中角色的一句提示，必须落在当前阶段的目标和边界内。
+          - 不给旁白写台词：轮到旁白时，guidance 只描述镜头或动作，不要写人物对白。
+          - 不要引入候选之外的新角色、新地点、新敌人或别的剧情分支。
+          - 不要重复同一个人，除非候选里只剩它。
+        tools:
+          enabled: false
+
+  - id: commit
+    kind: script
+    config:
+      backend: starlark
+      path: rules/commit.star
+      reads: [story, plan, choice]
+      writes: [story, brief, narrate_messages]
+
+  # Every speaker the story has is a seat, the narrator included: the difference
+  # is that the narrator is this graph's own model call, not a delegated agent.
+  - id: narrate
+    kind: model
+    config:
+      messages: narrate_messages
+      output: narrated
+      request:
+        system: |
+          你是这个故事的旁白。只写镜头、环境、动作和声音，不替任何角色说话，
+          不引用角色的台词，不总结刚才发生了什么。
+          - 只输出中文，一到三句话，一个自然段。
+          - 不要写“旁白：”、括号、Markdown 或任何标签。
+        tools:
+          enabled: false
+
+  - id: perform
+    kind: script
+    config:
+      backend: starlark
+      path: rules/perform.star
+      reads: [story, brief]
+      writes: [spoken]
+      # The one rule that acts: it asks a character through the delegate tool.
+      allow: [tool:delegate]
+
+  - id: publish
+    kind: script
+    config:
+      backend: starlark
+      path: rules/publish.star
+      reads: [story, narrated, spoken]
+      writes: [story, prompt]
+
+edges:
+  - {from: input, to: prepare}
+  - {from: prepare, to: schedule}
+  - {from: schedule, to: commit}
+  - from: commit
+    to: narrate
+    when: 'state.story != nil and state.story.speaker == "narrator"'
+  - from: commit
+    to: perform
+    when: 'state.story != nil and state.story.speaker != "narrator"'
+  - {from: narrate, to: publish}
+  - {from: perform, to: publish}
+  # A pause for the reader ends the turn; otherwise the arc keeps playing.
+  - from: publish
+    to: end
+    when: 'state.story != nil and state.story.awaiting_user == true'
+  - from: publish
+    to: prepare
+    when: 'state.story == nil or state.story.awaiting_user != true'
+
+output:
+  key: prompt

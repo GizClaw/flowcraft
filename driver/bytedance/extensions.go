@@ -4,7 +4,8 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/driver/internal/ptr"
 )
 
 // Provider-specific settings ride on canonical requests as typed extensions
@@ -74,8 +75,31 @@ type GenerateOptions struct {
 	// email or account id.
 	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 	// WebSearch attaches the provider's web search tool; the model decides
-	// when to search.
+	// when to search. Citations are not surfaced by the new response shape.
 	WebSearch *GenerateWebSearch `json:"web_search,omitempty"`
+	// Temperature and TopP are sampling controls.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	// MaxOutputTokens caps the answer length.
+	MaxOutputTokens *int64 `json:"max_output_tokens,omitempty"`
+	// ReasoningEnabled switches thinking explicitly.
+	ReasoningEnabled *bool `json:"reasoning_enabled,omitempty"`
+	// ReasoningEffort selects a reasoning depth.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ResponseFormat constrains the answer shape.
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
+}
+
+// ResponseFormat is the structured-output control for the Responses API.
+type ResponseFormat struct {
+	// Kind is "json_object" or "json_schema".
+	Kind string `json:"kind"`
+	// Name identifies a json_schema.
+	Name string `json:"name,omitempty"`
+	// Schema is the JSON Schema document.
+	Schema []byte `json:"schema,omitempty"`
+	// Strict asks the provider to enforce the schema.
+	Strict bool `json:"strict,omitempty"`
 }
 
 // GenerateCaching is the caching half of GenerateOptions.
@@ -143,6 +167,24 @@ func (o GenerateOptions) ActiveFields() []inference.ExtensionField {
 	if o.WebSearch != nil {
 		fields = append(fields, "web_search")
 	}
+	if o.Temperature != nil {
+		fields = append(fields, "temperature")
+	}
+	if o.TopP != nil {
+		fields = append(fields, "top_p")
+	}
+	if o.MaxOutputTokens != nil {
+		fields = append(fields, "max_output_tokens")
+	}
+	if o.ReasoningEnabled != nil {
+		fields = append(fields, "reasoning_enabled")
+	}
+	if o.ReasoningEffort != "" {
+		fields = append(fields, "reasoning_effort")
+	}
+	if o.ResponseFormat != nil {
+		fields = append(fields, "response_format")
+	}
 	return fields
 }
 
@@ -157,6 +199,31 @@ func (o GenerateOptions) Validate() error {
 	}
 	if o.MaxToolCalls != nil && *o.MaxToolCalls <= 0 {
 		return fmt.Errorf("max_tool_calls must be positive, not %d", *o.MaxToolCalls)
+	}
+	if o.Temperature != nil && (*o.Temperature < 0 || *o.Temperature > 2) {
+		return fmt.Errorf("temperature must be within [0, 2]")
+	}
+	if o.TopP != nil && (*o.TopP < 0 || *o.TopP > 1) {
+		return fmt.Errorf("top_p must be within [0, 1]")
+	}
+	if o.MaxOutputTokens != nil && *o.MaxOutputTokens <= 0 {
+		return fmt.Errorf("max_output_tokens must be positive")
+	}
+	switch o.ReasoningEffort {
+	case "", "minimal", "low", "medium", "high", "xhigh":
+	default:
+		return fmt.Errorf("unknown reasoning effort %q", o.ReasoningEffort)
+	}
+	if o.ResponseFormat != nil {
+		switch o.ResponseFormat.Kind {
+		case "json_object":
+		case "json_schema":
+			if o.ResponseFormat.Name == "" || len(o.ResponseFormat.Schema) == 0 {
+				return fmt.Errorf("json_schema response needs a name and schema")
+			}
+		default:
+			return fmt.Errorf("unknown response format %q", o.ResponseFormat.Kind)
+		}
 	}
 	if search := o.WebSearch; search != nil {
 		if search.Limit != nil && *search.Limit <= 0 {
@@ -177,6 +244,15 @@ func (o GenerateOptions) Validate() error {
 }
 
 func (o GenerateOptions) Clone() inference.Extension {
+	o.Temperature = ptr.Clone(o.Temperature)
+	o.TopP = ptr.Clone(o.TopP)
+	o.MaxOutputTokens = ptr.Clone(o.MaxOutputTokens)
+	o.ReasoningEnabled = ptr.Clone(o.ReasoningEnabled)
+	if o.ResponseFormat != nil {
+		format := *o.ResponseFormat
+		format.Schema = append([]byte(nil), o.ResponseFormat.Schema...)
+		o.ResponseFormat = &format
+	}
 	o.Store = ptr.Clone(o.Store)
 	o.ParallelToolCalls = ptr.Clone(o.ParallelToolCalls)
 	o.MaxToolCalls = ptr.Clone(o.MaxToolCalls)
@@ -205,6 +281,14 @@ type ImageOptions struct {
 	// Attempts for any other provider leave the extension inert rather than
 	// rejecting it, so mixed-provider routes keep working.
 	Provider string `json:"-"`
+	// Canonical image controls now travel as extensions because the unified
+	// request no longer carries a per-modality intent.
+	Size         *media.ImageSize   `json:"size,omitempty"`
+	Count        *int               `json:"count,omitempty"`
+	Seed         *int64             `json:"seed,omitempty"`
+	OutputFormat media.ImageFormat  `json:"output_format,omitempty"`
+	Delivery     media.SourceKind   `json:"delivery,omitempty"`
+	Quality      media.ImageQuality `json:"quality,omitempty"`
 	// GuidanceScale controls prompt adherence; must be positive. Older
 	// Seedream generations honor it; newer ones ignore it.
 	GuidanceScale *float64 `json:"guidance_scale,omitempty"`
@@ -249,6 +333,24 @@ func (o ImageOptions) ExtensionID() string { return extensionImage }
 
 func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
+	if o.Size != nil {
+		fields = append(fields, "size")
+	}
+	if o.Count != nil {
+		fields = append(fields, "count")
+	}
+	if o.Seed != nil {
+		fields = append(fields, "seed")
+	}
+	if o.OutputFormat != "" {
+		fields = append(fields, "output_format")
+	}
+	if o.Delivery != "" {
+		fields = append(fields, "delivery")
+	}
+	if o.Quality != "" {
+		fields = append(fields, "quality")
+	}
 	if o.GuidanceScale != nil {
 		fields = append(fields, "guidance_scale")
 	}
@@ -280,6 +382,24 @@ func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 }
 
 func (o ImageOptions) Validate() error {
+	if o.Size != nil {
+		if err := o.Size.Validate(); err != nil {
+			return err
+		}
+	}
+	if o.Count != nil && *o.Count <= 0 {
+		return fmt.Errorf("count must be positive")
+	}
+	switch o.OutputFormat {
+	case "", media.ImageFormatPNG, media.ImageFormatJPEG, media.ImageFormatWebP:
+	default:
+		return fmt.Errorf("image format %q is not supported", o.OutputFormat)
+	}
+	switch o.Delivery {
+	case "", media.SourceURL, media.SourceInline:
+	default:
+		return fmt.Errorf("unknown image delivery %q", o.Delivery)
+	}
 	if o.GuidanceScale != nil && *o.GuidanceScale <= 0 {
 		return fmt.Errorf("guidance_scale must be positive, not %g", *o.GuidanceScale)
 	}
@@ -329,6 +449,9 @@ func (o ImageOptions) Validate() error {
 }
 
 func (o ImageOptions) Clone() inference.Extension {
+	o.Size = ptr.Clone(o.Size)
+	o.Count = ptr.Clone(o.Count)
+	o.Seed = ptr.Clone(o.Seed)
 	o.GuidanceScale = ptr.Clone(o.GuidanceScale)
 	o.Watermark = ptr.Clone(o.Watermark)
 	o.Sequential = ptr.Clone(o.Sequential)
@@ -356,6 +479,12 @@ type VideoOptions struct {
 	// Attempts for any other provider leave the extension inert rather than
 	// rejecting it, so mixed-provider routes keep working.
 	Provider string `json:"-"`
+	// Canonical video controls now travel as extensions.
+	DurationMillis *int64            `json:"duration_millis,omitempty"`
+	Resolution     string            `json:"resolution,omitempty"`
+	AspectRatio    media.AspectRatio `json:"aspect_ratio,omitempty"`
+	Seed           *int64            `json:"seed,omitempty"`
+	Watermark      *bool             `json:"watermark,omitempty"`
 	// CameraFixed keeps the camera static while the subject moves.
 	CameraFixed *bool `json:"camera_fixed,omitempty"`
 	// GenerateAudio lets Seedance 2.x synthesize a matching audio track.
@@ -391,6 +520,21 @@ func (o VideoOptions) ExtensionID() string { return extensionVideo }
 
 func (o VideoOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
+	if o.DurationMillis != nil {
+		fields = append(fields, "duration_millis")
+	}
+	if o.Resolution != "" {
+		fields = append(fields, "resolution")
+	}
+	if o.AspectRatio != "" {
+		fields = append(fields, "aspect_ratio")
+	}
+	if o.Seed != nil {
+		fields = append(fields, "seed")
+	}
+	if o.Watermark != nil {
+		fields = append(fields, "watermark")
+	}
 	if o.CameraFixed != nil {
 		fields = append(fields, "camera_fixed")
 	}
@@ -425,6 +569,12 @@ func (o VideoOptions) ActiveFields() []inference.ExtensionField {
 }
 
 func (o VideoOptions) Validate() error {
+	if o.DurationMillis != nil && *o.DurationMillis <= 0 {
+		return fmt.Errorf("duration_millis must be positive")
+	}
+	if o.Seed != nil && (*o.Seed < -1 || *o.Seed > 2147483647) {
+		return fmt.Errorf("seed must be within [-1, 2147483647]")
+	}
 	switch o.ServiceTier {
 	case "", "default", "flex":
 	default:
@@ -458,6 +608,9 @@ func (o VideoOptions) Validate() error {
 }
 
 func (o VideoOptions) Clone() inference.Extension {
+	o.DurationMillis = ptr.Clone(o.DurationMillis)
+	o.Seed = ptr.Clone(o.Seed)
+	o.Watermark = ptr.Clone(o.Watermark)
 	o.CameraFixed = ptr.Clone(o.CameraFixed)
 	o.GenerateAudio = ptr.Clone(o.GenerateAudio)
 	o.ExecutionExpiresAfter = ptr.Clone(o.ExecutionExpiresAfter)

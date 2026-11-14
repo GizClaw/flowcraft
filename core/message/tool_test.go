@@ -1,11 +1,11 @@
 package message_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/goccy/go-json"
 )
 
 // A result carries parts, never a flattened string, so a payload that
@@ -53,5 +53,21 @@ func TestToolResultRoundTripsMultimodalContent(t *testing.T) {
 	}
 	if _, ok := decoded.Content.Parts[1].(message.ImagePart); !ok {
 		t.Fatalf("part 1 = %T, want message.ImagePart", decoded.Content.Parts[1])
+	}
+}
+
+// Arguments is immutable by construction: the constructor copies, so a caller
+// that keeps editing its source cannot change a call already in a transcript.
+func TestArgumentsCopyOnConstruction(t *testing.T) {
+	source := json.RawMessage(`{"query":"cat"}`)
+	arguments := message.NewArguments(source)
+	source[2] = 'X'
+	if got := arguments.String(); got != `{"query":"cat"}` {
+		t.Fatalf("arguments = %q, want the original object", got)
+	}
+	exported := arguments.Raw()
+	exported[2] = 'Y'
+	if got := arguments.String(); got != `{"query":"cat"}` {
+		t.Fatalf("Raw exposed the backing bytes: %q", got)
 	}
 }

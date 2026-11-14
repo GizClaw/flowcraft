@@ -8,7 +8,6 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	otellog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -31,9 +30,14 @@ func Disable() { disabled.Store(true) }
 // Enable re-enables convenience log functions.
 func Enable() { disabled.Store(false) }
 
-// emit is the core logging function. It creates an OTel LogRecord, injects
-// trace_id/span_id from ctx when available, and emits it through the global
-// LoggerProvider.
+// emit is the core logging function. It creates an OTel LogRecord and emits it
+// through the global LoggerProvider.
+//
+// The record carries no trace_id/span_id attributes: the SDK's log bridge reads
+// the span context from ctx itself (sdk/log logger.newRecord) and sets the
+// record's native trace/span ids. Duplicating them as attributes would put the
+// same fact in two places, and only the native fields are what a backend joins
+// logs and traces on.
 func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...attribute.KeyValue) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -47,13 +51,6 @@ func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...a
 	l := Logger(name)
 	if !l.Enabled(ctx, otellog.EnabledParameters{Severity: severity}) {
 		return
-	}
-
-	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
-		attrs = append(attrs,
-			attribute.String("trace_id", sc.TraceID().String()),
-			attribute.String("span_id", sc.SpanID().String()),
-		)
 	}
 
 	var rec otellog.Record

@@ -3,7 +3,6 @@ package dashscope
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,8 +11,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/httpkit"
+	"github.com/goccy/go-json"
 )
 
 // The protocol headers the platform switches behaviour on. async is
@@ -52,65 +50,14 @@ func (p ProfileSpec) Validate() error {
 	return nil
 }
 
-// profileMaterial is one profile's resolved credentials and profile-level
-// settings, validated once at factory build time.
-type profileMaterial struct {
-	spec     ProfileSpec
-	apiKey   resource.Secret
-	resolver *resource.SecretResolver
-}
-
-// clients carries the handles one profile opens drivers with. Every surface
-// this driver serves is a plain JSON API, so one HTTP client rooted at the
-// profile's host is all it takes.
+// clients carries the handles one deployment opens drivers with.
 type clients struct {
 	media *mediaClient
 }
 
-func newProfileMaterial(
-	ctx context.Context,
-	profile ProfileSettings,
-	secrets *resource.SecretResolver,
-) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(ctx, profile.Spec)
-	if err != nil {
-		return profileMaterial{}, fmt.Errorf("profile %q: %w", profile.ID, err)
-	}
-	material := profileMaterial{spec: spec, resolver: secrets}
-	for name := range profile.Secrets {
-		switch name {
-		case SecretAPIKey:
-		default:
-			return profileMaterial{}, fmt.Errorf(
-				"profile %q carries unknown secret %q", profile.ID, name)
-		}
-	}
-	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = secret
-	}
-	return material, nil
-}
-
-func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
-	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
-	if err != nil {
-		return nil, errdefs.Validationf("dashscope profile: resolve api_key: %w", err)
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return nil, errdefs.Validationf("dashscope profile resolves no api_key secret")
-	}
-	base := spec.baseURL()
-	if m.spec.BaseURL != "" {
-		base = strings.TrimRight(m.spec.BaseURL, "/")
-	}
-	workspace := spec.WorkspaceID
-	if m.spec.WorkspaceID != "" {
-		workspace = m.spec.WorkspaceID
-	}
-	return &clients{
-		media: newMediaClient(apiKey, base, workspace, spec),
-	}, nil
+func newClients(settings Spec) (*clients, error) {
+	base := settings.baseURL()
+	return &clients{media: newMediaClient(settings.APIKey, base, settings.WorkspaceID, settings)}, nil
 }
 
 // mediaClient speaks the DashScope native API: plain JSON over HTTP with
@@ -121,26 +68,32 @@ type mediaClient struct {
 	key       string
 	base      string
 	workspace string
+	poll      time.Duration
 }
 
 func newMediaClient(key, base, workspace string, spec Spec) *mediaClient {
-	options := []httpkit.Option{
-		httpkit.WithTimeout(10 * time.Minute),
-		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
-	}
-	if spec.HTTPRetries != nil {
-		options = append(options, httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
+	client := spec.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Minute}
 	}
 	return &mediaClient{
-		http:      httpkit.NewHTTPClient(options...),
-		key:       key,
+		http:      client,
+		key:       strings.TrimSpace(key),
 		base:      strings.TrimRight(base, "/"),
 		workspace: workspace,
+		poll:      spec.pollInterval(),
 	}
 }
 
 // requestOptions carries the protocol switches a call asks for: async on the
 // task-creating calls, sse on the streamed ones.
+func (c *mediaClient) pollInterval() time.Duration {
+	if c.poll <= 0 {
+		return defaultPollInterval
+	}
+	return c.poll
+}
+
 type requestOptions struct {
 	async bool
 	sse   bool
@@ -201,12 +154,9 @@ func (c *mediaClient) request(
 		if envelope.RequestID != "" {
 			failure = errdefs.WithRequestID(failure, envelope.RequestID)
 		}
-		return nil, errdefs.WithRetryCount(
-			errdefs.WithRetryAfter(
-				failure,
-				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
-			),
-			httpkit.RetryCountOf(resp),
+		return nil, errdefs.WithRetryAfter(
+			failure,
+			errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
 		)
 	}
 	return resp, nil

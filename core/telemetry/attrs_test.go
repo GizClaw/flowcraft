@@ -18,6 +18,7 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrEngineKind, "engine.kind"},
 		{AttrRunStatus, "run.status"},
 		{AttrGraphName, "graph.name"},
+		{AttrGraphStep, "graph.step"},
 		{AttrNodeID, "node.id"},
 		{AttrToolName, "tool.name"},
 		{AttrToolCallID, "tool.call_id"},
@@ -54,7 +55,7 @@ func TestAttrConstants_Unique(t *testing.T) {
 	all := []string{
 		AttrAgentID, AttrTenantID,
 		AttrRunID, AttrParentRunID, AttrTaskID, AttrEngineKind, AttrRunStatus,
-		AttrGraphName, AttrNodeID,
+		AttrGraphName, AttrGraphStep, AttrNodeID,
 		AttrToolName, AttrToolCallID,
 		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,

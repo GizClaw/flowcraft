@@ -1,178 +1,61 @@
 package bytedance
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"strings"
-	"time"
-
-	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/core/utils/httpkit"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 )
 
-// defaultResponseHeaderTimeout bounds how long Ark may take before
-// response headers arrive; HTTP/1.1 + this timeout keeps a stalled
-// request from wedging the shared connection.
-const defaultResponseHeaderTimeout = 5 * time.Minute
-
-// defaultClientTimeout is the whole-request budget (mirrors the SDK
-// default of 10m).
-const defaultClientTimeout = 10 * time.Minute
-
-// defaultArkBaseURL mirrors the SDK's default when the profile does not
-// override it; the raw images path derives its URL from the same value.
-const defaultArkBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
-
-// profileMaterial is one credential profile after secret resolution: the
-// decoded profile Spec plus the secret values this provider recognizes.
-type profileMaterial struct {
-	spec     ProfileSpec
-	apiKey   resource.Secret
-	resolver *resource.SecretResolver
-}
-
-// clients bundles the service clients one profile needs. ark is nil when the
-// profile has no Ark credential. Drivers check the client they need at open
-// time.
+// clients bundles the Ark SDK client and the deployment-wide request options.
 type clients struct {
-	ark *arkruntime.Client
-	// arkRequestOptions carries the deployment's static headers, query
-	// parameters, and project attribution. The SDK takes them per call, so
-	// every transport replays this list.
+	ark               *arkruntime.Client
 	arkRequestOptions []arkruntime.RequestOption
-	// endpoints binds model names to this account's deployment addresses
-	// (ProfileSpec.Endpoints); empty maps resolve to the declared name.
-	endpoints map[string]string
-	// Raw request support: the pinned SDK cannot encode every official
-	// parameter (the image background field), so the image transport falls
-	// back to a direct POST carrying the same credentials, base URL, and
-	// HTTP client.
-	apiKey     string
-	baseURL    string
-	httpClient *http.Client
+	endpoints         map[string]string
+	apiKey            string
+	baseURL           string
+	httpClient        *http.Client
 }
 
-// endpoint resolves the wire address for one declared model within this
-// profile's account: the mapped endpoint when present, the declared name
-// otherwise.
+func newClients(settings Settings) (*clients, error) {
+	built := &clients{
+		endpoints:  settings.Endpoints,
+		apiKey:     settings.APIKey,
+		baseURL:    settings.BaseURL,
+		httpClient: settings.HTTPClient,
+	}
+	if built.httpClient == nil {
+		built.httpClient = &http.Client{Timeout: settings.Timeout}
+	}
+	options := []arkruntime.ConfigOption{
+		arkruntime.WithHTTPClient(built.httpClient),
+		arkruntime.WithRetryTimes(settings.Retries),
+	}
+	if settings.BaseURL != "" {
+		options = append(options, arkruntime.WithBaseUrl(settings.BaseURL))
+	}
+	if settings.Region != "" {
+		options = append(options, arkruntime.WithRegion(settings.Region))
+	}
+	if len(settings.Headers) > 0 {
+		built.arkRequestOptions = append(built.arkRequestOptions,
+			arkruntime.WithCustomHeaders(settings.Headers))
+	}
+	for key, value := range settings.Query {
+		built.arkRequestOptions = append(built.arkRequestOptions,
+			arkruntime.WithQuery(key, value))
+	}
+	if settings.Project != "" {
+		built.arkRequestOptions = append(built.arkRequestOptions,
+			arkruntime.WithProjectName(settings.Project))
+	}
+	built.ark = arkruntime.NewClientWithApiKey(strings.TrimSpace(settings.APIKey), options...)
+	return built, nil
+}
+
 func (c *clients) endpoint(name string) string {
 	if endpoint, ok := c.endpoints[name]; ok {
 		return endpoint
 	}
 	return name
-}
-
-func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(ctx, profile.Spec)
-	if err != nil {
-		return profileMaterial{}, err
-	}
-	material := profileMaterial{spec: spec, resolver: secrets}
-	for name := range profile.Secrets {
-		switch name {
-		case SecretAPIKey:
-		default:
-			return profileMaterial{}, fmt.Errorf(
-				"bytedance profile %q carries unknown secret %q",
-				profile.ID,
-				name,
-			)
-		}
-	}
-	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = secret
-	}
-	return material, nil
-}
-
-// newClients builds the service clients for one profile.
-func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
-	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
-	if err != nil {
-		return nil, errdefs.Validationf("bytedance profile: resolve api_key: %w", err)
-	}
-	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" {
-		return nil, errdefs.Validationf(
-			"bytedance profile needs an Ark credential (%q)", SecretAPIKey)
-	}
-	built := &clients{endpoints: m.spec.Endpoints}
-	built.apiKey = apiKey
-	built.baseURL = spec.BaseURL
-	if built.baseURL == "" {
-		built.baseURL = defaultArkBaseURL
-	} else {
-		built.baseURL = strings.TrimSuffix(built.baseURL, "/")
-	}
-	options := []arkruntime.ConfigOption{}
-	timeout := defaultClientTimeout
-	if spec.Timeout != "" {
-		parsed, err := time.ParseDuration(spec.Timeout)
-		if err != nil {
-			return nil, fmt.Errorf("bytedance: parse timeout: %w", err)
-		}
-		timeout = parsed
-	}
-	httpOptions := []httpkit.Option{
-		httpkit.WithHTTP2(),
-		httpkit.WithTimeout(timeout),
-		httpkit.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
-	}
-	if spec.HTTPRetries != nil {
-		httpOptions = append(httpOptions,
-			httpkit.WithRetryAttempts(int(*spec.HTTPRetries)))
-	}
-	httpClient := httpkit.NewHTTPClient(httpOptions...)
-	built.httpClient = httpClient
-	if spec.BaseURL != "" {
-		options = append(options, arkruntime.WithBaseUrl(spec.BaseURL))
-	}
-	if spec.Region != "" {
-		options = append(options, arkruntime.WithRegion(spec.Region))
-	}
-	options = append(options,
-		arkruntime.WithHTTPClient(httpClient),
-		// SDK-internal retries are disabled; the retry transport above owns
-		// replayable transient failures so attempts do not multiply.
-		arkruntime.WithRetryTimes(0),
-	)
-	// Static headers, query parameters, and project attribution are
-	// deployment-wide here, but the SDK only accepts them per call
-	// (RequestOption), so they are compiled once and replayed by every
-	// transport call.
-	if len(spec.Headers) > 0 {
-		built.arkRequestOptions = append(
-			built.arkRequestOptions, arkruntime.WithCustomHeaders(spec.Headers),
-		)
-	}
-	for key, value := range spec.Query {
-		built.arkRequestOptions = append(
-			built.arkRequestOptions, arkruntime.WithQuery(key, value),
-		)
-	}
-	if spec.Project != "" {
-		built.arkRequestOptions = append(
-			built.arkRequestOptions, arkruntime.WithProjectName(spec.Project),
-		)
-	}
-	if apiKey != "" {
-		built.ark = arkruntime.NewClientWithApiKey(apiKey, options...)
-	}
-	return built, nil
-}
-
-// requireArk returns the Ark client or a profile-scoped error.
-func (c *clients) requireArk(profile string) (*arkruntime.Client, error) {
-	if c.ark == nil {
-		return nil, fmt.Errorf(
-			"bytedance profile %q has no Ark credential (%q)",
-			profile,
-			SecretAPIKey,
-		)
-	}
-	return c.ark, nil
 }

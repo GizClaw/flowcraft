@@ -2,32 +2,19 @@ package bytedance
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
-// ---------------------------------------------------------------------------
-// Ark Responses API request construction. The compiler lowers canonical
-// requests straight into the protobuf request shape through these
-// constructors, so this file is the only place the driver speaks its unions.
-// ---------------------------------------------------------------------------
-
-// Each constructor owns one input shape, so the compile loop reads as what the
-// part means.
-
-// appendInputItem adds one input item, creating the list on first use.
-func appendInputItem(
-	ark *arkresponses.ResponsesRequest,
-	item *arkresponses.InputItem,
-) {
+func appendInputItem(ark *arkresponses.ResponsesRequest, item *arkresponses.InputItem) {
 	if ark.Input == nil || ark.Input.GetListValue() == nil {
 		ark.Input = &arkresponses.ResponsesInput{
 			Union: &arkresponses.ResponsesInput_ListValue{
@@ -39,10 +26,7 @@ func appendInputItem(
 	list.ListValue = append(list.ListValue, item)
 }
 
-func arkMessageItem(
-	role string,
-	content []*arkresponses.ContentItem,
-) *arkresponses.InputItem {
+func arkMessageItem(role string, content []*arkresponses.ContentItem) *arkresponses.InputItem {
 	return &arkresponses.InputItem{
 		Union: &arkresponses.InputItem_EasyMessage{
 			EasyMessage: &arkresponses.ItemEasyMessage{
@@ -127,7 +111,6 @@ func arkToolResultItem(callID, output string) *arkresponses.InputItem {
 	}
 }
 
-// arkTool lowers one canonical tool definition.
 func arkTool(definition message.ToolDefinition) *arkresponses.ResponsesTool {
 	tool := &arkresponses.ToolFunction{
 		Type:       arkresponses.ToolType_function,
@@ -143,14 +126,7 @@ func arkTool(definition message.ToolDefinition) *arkresponses.ResponsesTool {
 	}
 }
 
-// setArkThinking applies one reasoning decision: an explicit canonical switch
-// wins, otherwise thinking follows the effort level. Neither set leaves the
-// provider default in place.
-func setArkThinking(
-	ark *arkresponses.ResponsesRequest,
-	enabled *bool,
-	effort string,
-) {
+func setArkThinking(ark *arkresponses.ResponsesRequest, enabled *bool, effort string) {
 	switch {
 	case enabled != nil && !*enabled:
 		ark.Thinking = &arkresponses.ResponsesThinking{
@@ -168,8 +144,6 @@ func setArkThinking(
 	}
 }
 
-// arkServiceTier maps the extension token to the serving tier enum; the
-// extension's Validate has already restricted values to auto/default.
 func arkServiceTier(tier string) *arkresponses.ResponsesServiceTier_Enum {
 	if tier == "auto" {
 		return arkresponses.ResponsesServiceTier_auto.Enum()
@@ -177,8 +151,6 @@ func arkServiceTier(tier string) *arkresponses.ResponsesServiceTier_Enum {
 	return arkresponses.ResponsesServiceTier_default.Enum()
 }
 
-// arkWebSearchTool lowers the web search extension. The location is attached
-// only when at least one field is set; the provider treats it as approximate.
 func arkWebSearchTool(search *GenerateWebSearch) *arkresponses.ResponsesTool {
 	tool := &arkresponses.ToolWebSearch{
 		Type:       arkresponses.ToolType_web_search,
@@ -213,7 +185,6 @@ func arkWebSearchTool(search *GenerateWebSearch) *arkresponses.ResponsesTool {
 	}
 }
 
-// arkSearchSource maps one extension source token to its enum.
 func arkSearchSource(source string) arkresponses.SourceType_Enum {
 	switch source {
 	case "toutiao":
@@ -222,7 +193,7 @@ func arkSearchSource(source string) arkresponses.SourceType_Enum {
 		return arkresponses.SourceType_douyin
 	case "moji":
 		return arkresponses.SourceType_moji
-	default: // "search_engine"
+	default:
 		return arkresponses.SourceType_search_engine
 	}
 }
@@ -234,11 +205,7 @@ func arkMessageRole(role string) arkresponses.MessageRole_Enum {
 	return arkresponses.MessageRole_user
 }
 
-func arkTextFormat(
-	kind, name string,
-	schema []byte,
-	strict bool,
-) *arkresponses.TextFormat {
+func arkTextFormat(kind, name string, schema []byte, strict bool) *arkresponses.TextFormat {
 	switch kind {
 	case "json_object":
 		return &arkresponses.TextFormat{Type: arkresponses.TextType_json_object}
@@ -255,9 +222,13 @@ func arkTextFormat(
 
 func arkReasoningEffort(effort string) arkresponses.ReasoningEffort_Enum {
 	switch effort {
+	case "minimal":
+		return arkresponses.ReasoningEffort_minimal
 	case "low":
 		return arkresponses.ReasoningEffort_low
 	case "high":
+		return arkresponses.ReasoningEffort_high
+	case "xhigh":
 		return arkresponses.ReasoningEffort_high
 	default:
 		return arkresponses.ReasoningEffort_medium
@@ -265,7 +236,7 @@ func arkReasoningEffort(effort string) arkresponses.ReasoningEffort_Enum {
 }
 
 func arkToolChoice(choice inference.ToolChoice) *arkresponses.ResponsesToolChoice {
-	switch choice.Kind {
+	switch choice.Mode {
 	case inference.ToolChoiceNone:
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_none},
@@ -274,7 +245,7 @@ func arkToolChoice(choice inference.ToolChoice) *arkresponses.ResponsesToolChoic
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_required},
 		}
-	case inference.ToolChoiceNamed:
+	case inference.ToolChoiceFunction:
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_FunctionToolChoice{
 				FunctionToolChoice: &arkresponses.FunctionToolChoice{
@@ -290,79 +261,52 @@ func arkToolChoice(choice inference.ToolChoice) *arkresponses.ResponsesToolChoic
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Unary transport and decode.
-// ---------------------------------------------------------------------------
-
 func transportGenerate(
 	client *arkruntime.Client,
 	options []arkruntime.RequestOption,
-) inference.Transport[*arkresponses.ResponsesRequest, generateRaw] {
-	return func(ctx context.Context, request *arkresponses.ResponsesRequest) (generateRaw, error) {
+) protocol.Transport[inference.GenerateRequest, *arkresponses.ResponsesRequest, generateRaw] {
+	return func(
+		ctx context.Context,
+		_ inference.GenerateRequest,
+		request *arkresponses.ResponsesRequest,
+	) (generateRaw, error) {
 		response, err := client.CreateResponses(ctx, request, options...)
 		if err != nil {
-			classified := classifyError(err)
-			inference.LogProviderCall(ctx, providerID, "generate", request.Model, classified, "", "")
-			return generateRaw{}, classified
+			return generateRaw{}, classifyError(err)
 		}
-		raw, err := arkToRaw(response)
-		if err != nil {
-			inference.LogProviderCall(ctx, providerID, "generate", request.Model, err, "", "")
-			return generateRaw{}, err
-		}
-		inference.LogProviderCall(ctx, providerID, "generate", request.Model, nil, "", raw.id)
-		return raw, nil
+		return arkToRaw(response)
 	}
 }
 
-// arkToRaw converts the protobuf response into the provider-owned raw model,
-// rejecting provider failures with classified errors.
 func arkToRaw(response *arkresponses.ResponseObject) (generateRaw, error) {
 	if response == nil {
 		return generateRaw{}, fmt.Errorf("bytedance: empty responses object")
 	}
 	if failure := response.GetError(); failure != nil {
-		return generateRaw{}, classifyResponseError(
-			failure.GetCode(),
-			failure.GetMessage(),
-		)
+		return generateRaw{}, classifyResponseError(failure.GetCode(), failure.GetMessage())
 	}
 	raw := generateRaw{id: response.GetId()}
 	for _, item := range response.GetOutput() {
 		if reasoning := item.GetReasoning(); reasoning != nil {
 			text := reasoningSummaryText(reasoning.GetSummary())
-			// An id-only item carries no visible trace and ark signs
-			// nothing, so it is pure noise — the canonical part requires
-			// content.
 			if text == "" {
 				continue
 			}
-			raw.reasonings = append(raw.reasonings, rawReasoning{
-				id:   reasoning.GetId(),
-				text: text,
-			})
+			raw.reasonings = append(raw.reasonings, rawReasoning{id: reasoning.GetId(), text: text})
 			continue
 		}
 		if message := item.GetOutputMessage(); message != nil {
 			for _, content := range message.GetContent() {
 				if text := content.GetText(); text != nil {
 					raw.texts = append(raw.texts, text.GetText())
-					raw.citations = append(raw.citations,
-						arkCitations(text.GetAnnotations())...)
 				}
 			}
 			continue
 		}
 		if call := item.GetFunctionToolCall(); call != nil {
 			raw.toolCalls = append(raw.toolCalls, rawToolCall{
-				id:   call.GetCallId(),
-				name: call.GetName(),
-				args: []byte(call.GetArguments()),
+				id: call.GetCallId(), name: call.GetName(), args: []byte(call.GetArguments()),
 			})
-		}
-		if call := item.GetFunctionWebSearch(); call != nil {
-			raw.webSearchCalls = append(raw.webSearchCalls,
-				arkWebSearchCall(call))
 		}
 	}
 	raw.usage = arkUsage(response.GetUsage())
@@ -370,75 +314,39 @@ func arkToRaw(response *arkresponses.ResponseObject) (generateRaw, error) {
 	return raw, nil
 }
 
-func arkWebSearchCall(call *arkresponses.ItemFunctionWebSearch) inference.WebSearchCall {
-	record := inference.WebSearchCall{
-		ID:     call.GetId(),
-		Status: call.GetStatus().String(),
+func arkUsage(raw *arkresponses.Usage) rawUsage {
+	if raw == nil {
+		return rawUsage{}
 	}
-	if action := call.GetAction(); action != nil {
-		record.Action = action.GetType().String()
-		record.Queries = append(record.Queries, action.GetQuery())
+	out := rawUsage{
+		inputTokens:      raw.GetInputTokens(),
+		outputTokens:     raw.GetOutputTokens(),
+		cachedTokens:     raw.GetInputTokensDetails().GetCachedTokens(),
+		reasoningTokens:  raw.GetOutputTokensDetails().GetReasoningTokens(),
+		inputAudioTokens: raw.GetInputTokensDetails().GetAudioTokens(),
 	}
-	return record
+	if tool := raw.GetToolUsage(); tool != nil {
+		out.webSearchRequests = tool.GetWebSearch()
+		out.mcpRequests = tool.GetMcp()
+	}
+	return out
 }
 
-func arkCitations(annotations []*arkresponses.Annotation) []inference.Citation {
-	citations := make([]inference.Citation, 0, len(annotations))
-	for _, annotation := range annotations {
-		citation := inference.Citation{
-			URL:         annotation.GetUrl(),
-			Title:       annotation.GetTitle(),
-			SiteName:    annotation.GetSiteName(),
-			PublishTime: annotation.GetPublishTime(),
-		}
-		if citation.URL == "" {
-			continue
-		}
-		citations = append(citations, citation)
-	}
-	return citations
-}
-
-func arkUsage(usage *arkresponses.Usage) rawUsage {
-	raw := rawUsage{
-		inputTokens:      usage.GetInputTokens(),
-		outputTokens:     usage.GetOutputTokens(),
-		totalTokens:      usage.GetTotalTokens(),
-		cachedTokens:     usage.GetInputTokensDetails().GetCachedTokens(),
-		reasoningTokens:  usage.GetOutputTokensDetails().GetReasoningTokens(),
-		inputAudioTokens: usage.GetInputTokensDetails().GetAudioTokens(),
-	}
-	if tool := usage.GetToolUsage(); tool != nil {
-		raw.webSearchRequests = tool.GetWebSearch()
-		raw.mcpRequests = tool.GetMcp()
-	}
-	if raw.totalTokens == 0 {
-		raw.totalTokens = raw.inputTokens + raw.outputTokens
-	}
-	return raw
-}
-
-func arkFinishReason(
-	response *arkresponses.ResponseObject,
-	hasToolCalls bool,
-) inference.FinishReason {
+func arkFinishReason(response *arkresponses.ResponseObject, hasToolCalls bool) inference.FinishReason {
 	if hasToolCalls {
 		return inference.FinishToolCalls
 	}
 	if incomplete := response.GetIncompleteDetails(); incomplete != nil {
 		switch incomplete.GetReason() {
 		case "max_output_tokens", "max_tokens":
-			return inference.FinishMaxOutput
+			return inference.FinishLength
 		case "content_filter":
 			return inference.FinishContentFilter
 		}
 	}
-	return inference.FinishCompleted
+	return inference.FinishStop
 }
 
-// reasoningSummaryText joins one reasoning item's summary entries. The
-// canonical part is item-granular, so visible summary text joins with a
-// blank line.
 func reasoningSummaryText(summary []*arkresponses.ReasoningSummaryPart) string {
 	texts := make([]string, 0, len(summary))
 	for _, entry := range summary {
@@ -451,15 +359,14 @@ func reasoningSummaryText(summary []*arkresponses.ReasoningSummaryPart) string {
 
 func classifyResponseError(code, message string) error {
 	err := fmt.Errorf("bytedance: response failed: %s %s", code, message)
-	switch lower := strings.ToLower(code + " " + message); {
+	lower := strings.ToLower(code + " " + message)
+	switch {
 	case strings.Contains(lower, "rate"):
 		return errdefs.RateLimit(err)
-	case strings.Contains(lower, "auth"),
-		strings.Contains(lower, "unauthorized"),
+	case strings.Contains(lower, "auth"), strings.Contains(lower, "unauthorized"),
 		strings.Contains(lower, "permission"):
 		return errdefs.Unauthorized(err)
-	case strings.Contains(lower, "filter"),
-		strings.Contains(lower, "invalid"),
+	case strings.Contains(lower, "filter"), strings.Contains(lower, "invalid"),
 		strings.Contains(lower, "notfound"):
 		return errdefs.Validation(err)
 	default:
@@ -467,100 +374,4 @@ func classifyResponseError(code, message string) error {
 	}
 }
 
-func decodeGenerate(
-	_ context.Context,
-	raw generateRaw,
-) (inference.GenerateResponse, error) {
-	if raw.failedReason != "" {
-		return inference.GenerateResponse{}, fmt.Errorf(
-			"bytedance: response failed: %s",
-			raw.failedReason,
-		)
-	}
-	parts := make([]message.Part, 0,
-		len(raw.reasonings)+len(raw.texts)+len(raw.toolCalls))
-	// ark emits reasoning items before the answer; the canonical message
-	// keeps that order.
-	for _, reasoning := range raw.reasonings {
-		parts = append(parts, message.ReasoningPart{
-			Text: reasoning.text,
-			ID:   reasoning.id,
-		})
-	}
-	for _, text := range raw.texts {
-		parts = append(parts, message.TextPart{Text: text})
-	}
-	for _, call := range raw.toolCalls {
-		arguments := json.RawMessage(call.args)
-		if !json.Valid(arguments) || len(arguments) == 0 {
-			arguments = json.RawMessage(`{}`)
-		}
-		parts = append(parts, message.ToolCallPart{Call: message.ToolCall{
-			ID:        call.id,
-			Name:      call.name,
-			Arguments: arguments,
-		}})
-	}
-	response := inference.GenerateResponse{
-		Message: message.Message{
-			Role:    message.RoleAssistant,
-			Content: message.Content{Parts: parts},
-		},
-		FinishReason: raw.finish,
-		Usage:        rawUsageCanonical(raw.usage),
-		Metadata:     inference.Metadata{ResponseID: raw.id},
-	}
-	if output := webSearchProviderOutput(raw.webSearchCalls, raw.citations); output != nil {
-		response.ProviderOutputs = append(response.ProviderOutputs, output)
-	}
-	return response, nil
-}
-
-func rawUsageCanonical(raw rawUsage) inference.Usage {
-	// Ark's prompt_tokens is the inclusive total (cached tokens are a
-	// subset of it), so the canonical input needs no normalization; the
-	// uncached remainder is derived so the input sub-counters partition
-	// the total on this provider too.
-	usage := inference.Usage{
-		InputTokens:  raw.inputTokens,
-		OutputTokens: raw.outputTokens,
-		TotalTokens:  raw.totalTokens,
-	}
-	if raw.inputTokens > 0 {
-		// A provider that reports more cached tokens than prompt tokens,
-		// or a negative count, contradicts itself; clamping keeps the
-		// sub-counters partitioning the total instead of exceeding it.
-		read := min(max(raw.cachedTokens, 0), raw.inputTokens)
-		if read > 0 {
-			usage.Input.CacheReadTokens = &read
-		}
-		uncached := raw.inputTokens - read
-		usage.Input.UncachedTokens = &uncached
-	}
-	if raw.reasoningTokens > 0 {
-		reasoning := raw.reasoningTokens
-		usage.Output.ReasoningTokens = &reasoning
-		// Ark reports output_tokens inclusive of reasoning tokens.
-		usage.Output.ReasoningAccounting = inference.ReasoningIncludedInOutput
-	}
-	if raw.inputAudioTokens > 0 {
-		usage.Input.ByModality = append(usage.Input.ByModality,
-			inference.ModalityTokenUsage{
-				Modality: inference.ModalityAudio,
-				Tokens:   raw.inputAudioTokens,
-			})
-	}
-	if raw.webSearchRequests > 0 {
-		usage.Tools = append(usage.Tools, inference.ToolUsage{
-			Kind:     inference.ToolUsageWebSearch,
-			Requests: raw.webSearchRequests,
-		})
-	}
-	if raw.mcpRequests > 0 {
-		usage.Tools = append(usage.Tools, inference.ToolUsage{
-			Kind:     inference.ToolUsageMCP,
-			Requests: raw.mcpRequests,
-		})
-	}
-	return usage
-}
+func bytesClone(raw []byte) []byte { return append([]byte(nil), raw...) }

@@ -117,11 +117,6 @@ func validateModel(declared ModelSpec) error {
 				}
 			}
 		}
-		if len(capabilities.Reasoning.EffortMap) > 0 {
-			return fmt.Errorf(
-				"reasoning.effort_map would never compile: the DashScope thinking dial is a token budget (generate_options.thinking_budget), not a level",
-			)
-		}
 	case kindEmbed:
 		if len(capabilities.Outputs) > 0 {
 			return fmt.Errorf("the embed family declares no generate output")
@@ -130,9 +125,6 @@ func validateModel(declared ModelSpec) error {
 			return fmt.Errorf(
 				"the embed surface has no server-side tools; hosted_web_search would never compile",
 			)
-		}
-		if capabilities.Reasoning.Kind != "" {
-			return fmt.Errorf("the embed surface has no reasoning channel")
 		}
 		for _, input := range capabilities.Inputs {
 			if input != message.PartText {
@@ -158,9 +150,6 @@ func validateModel(declared ModelSpec) error {
 			return fmt.Errorf(
 				"the speech surface has no server-side tools; hosted_web_search would never compile",
 			)
-		}
-		if capabilities.Reasoning.Kind != "" || len(capabilities.Reasoning.EffortMap) > 0 {
-			return fmt.Errorf("the speech surface has no reasoning channel")
 		}
 		for _, input := range capabilities.Inputs {
 			if input != message.PartText {
@@ -195,21 +184,10 @@ func validateModel(declared ModelSpec) error {
 				)
 			}
 		}
-		if capabilities.Reasoning.Kind != "" ||
-			len(capabilities.Reasoning.EffortMap) > 0 {
-			return fmt.Errorf(
-				"the file-transcription surface has no reasoning channel")
-		}
 	default:
 		return fmt.Errorf(
 			"unsupported kind %q; this driver serves the Wan media families (kind \"image\" or \"video\"), native text generation (kind \"generate\"), text embeddings (kind \"embed\"), native speech synthesis (kind \"tts\"), and native file transcription (kind \"transcribe\")",
 			declared.Kind,
-		)
-	}
-	if kind != kindEmbed && capabilities.CustomEmbedDimensions {
-		return fmt.Errorf(
-			"custom_embed_dimensions is an embed-family fact; it would never compile on kind %q",
-			kind,
 		)
 	}
 	if kind != kindGenerate && capabilities.HostedWebSearch {

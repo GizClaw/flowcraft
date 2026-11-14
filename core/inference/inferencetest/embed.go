@@ -2,164 +2,73 @@ package inferencetest
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/resource"
 )
 
-// DefaultFakeEmbedModel is EmbedFake's default model ref.
-var DefaultFakeEmbedModel = model.ModelRef{
-	ID:      model.ModelID{Provider: "fake", Name: "embed"},
-	Profile: "default",
+// EmbedderFixture is what an embedding driver hands the suite.
+type EmbedderFixture struct {
+	// ProviderID is the driver's identity.
+	ProviderID string
+	// NewEmbedder builds an embedder pointed at baseURL.
+	NewEmbedder func(t *testing.T, baseURL string) (inference.Embedder, error)
+	// Request builds the request used for every sample.
+	Request func(t *testing.T) inference.EmbedRequest
+	// Samples are the canned provider answers.
+	Samples []EmbedSample
 }
 
-// EmbedFake is a canned Embed provider for tests: one provider, one
-// profile, one model. Execute answers via Respond, and every request
-// reaching the compiler is captured for assertion. It drives the real
-// Runtime resolve/compile/validate pipeline.
-type EmbedFake struct {
-	// Model is the ref the runtime resolves. Defaults to
-	// DefaultFakeEmbedModel.
-	Model model.ModelRef
-	// Descriptor overrides the model's discovery metadata. The zero
-	// value falls back to {ID: Model.ID}, so tests can declare limits
-	// or lifecycle without rebuilding the provider.
-	Descriptor model.ModelDescriptor
-	// Respond answers Embed calls. Default: one unit-length vector per
-	// request item.
-	Respond func(inference.EmbedRequest) inference.EmbedResponse
-
-	mu       sync.Mutex
-	requests []inference.EmbedRequest
+// EmbedSample is one canned answer and what it must decode to.
+type EmbedSample struct {
+	Name   string
+	Status int
+	Body   string
+	// WantKind, when set, asserts the call fails with that classified kind.
+	WantKind inference.ErrorKind
+	// Check asserts on a successful answer; the suite has already run the
+	// contract's own ValidateFor, so this covers what only the seam knows.
+	Check func(t *testing.T, request inference.EmbedRequest, response inference.EmbedResponse)
 }
 
-// Assembly builds the fake's inference assembly.
-func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
+// RunEmbedder runs the embedding conformance suite against a real HTTP
+// endpoint, so the assertions cover the driver's own decoding and status
+// mapping rather than a mock of them.
+func RunEmbedder(t *testing.T, fixture EmbedderFixture) {
 	t.Helper()
-	ref := f.Model
-	if ref.ID.Provider == "" {
-		ref = DefaultFakeEmbedModel
+	if fixture.NewEmbedder == nil || fixture.Request == nil {
+		t.Fatalf("inferencetest: embedder fixture needs NewEmbedder and Request")
 	}
-	respond := f.Respond
-	if respond == nil {
-		respond = func(request inference.EmbedRequest) inference.EmbedResponse {
-			embeddings := make([]inference.Embedding, len(request.Items))
-			for index := range embeddings {
-				embeddings[index] = inference.Embedding{Vector: []float32{1}}
+	if len(fixture.Samples) == 0 {
+		t.Fatalf("inferencetest: embedder fixture needs at least one sample")
+	}
+
+	for _, sample := range fixture.Samples {
+		t.Run(sample.Name, func(t *testing.T) {
+			server := serve(t, sample.Status, sample.Body)
+
+			embedder, err := fixture.NewEmbedder(t, server.URL)
+			if err != nil {
+				t.Fatalf("NewEmbedder: %v", err)
 			}
-			return inference.EmbedResponse{Embeddings: embeddings}
-		}
-	}
+			request := fixture.Request(t)
+			response, err := embedder.Embed(context.Background(), request)
 
-	compile := inference.Compiler[inference.EmbedRequest, string](
-		func(_ context.Context, _ model.ModelRef, req inference.EmbedRequest) (inference.Compiled[string], error) {
-			f.mu.Lock()
-			f.requests = append(f.requests, req.Clone())
-			f.mu.Unlock()
-			return inference.Compiled[string]{
-				Wire:   "wire",
-				Report: NativeReport(model.OperationEmbed, req.ActiveFields()...),
-			}, nil
-		},
-	)
-	transport := inference.Transport[string, string](
-		func(_ context.Context, wire string) (string, error) { return wire, nil },
-	)
-	decode := inference.Decoder[string, inference.EmbedResponse](
-		func(_ context.Context, _ string) (inference.EmbedResponse, error) {
-			return respond(f.lastRequest()), nil
-		},
-	)
-	driver, err := inference.BindEmbed(compile, transport, decode)
-	if err != nil {
-		t.Fatalf("BindEmbed: %v", err)
+			if sample.WantKind != "" {
+				if err == nil {
+					t.Fatalf("Embed = nil error, want kind %q", sample.WantKind)
+				}
+				if !inference.IsKind(err, sample.WantKind) {
+					t.Fatalf("Embed kind = %v, want %q", err, sample.WantKind)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
+			if sample.Check != nil {
+				sample.Check(t, request, response)
+			}
+		})
 	}
-	descriptor := f.Descriptor
-	if descriptor.ID.Provider == "" {
-		descriptor = model.ModelDescriptor{ID: ref.ID}
-	}
-
-	definition := inference.ProviderDefinition{
-		ID: ref.ID.Provider,
-		Profiles: []inference.ProfileDefinition{{
-			ID:         ref.Profile,
-			Operations: []model.Operation{model.OperationEmbed},
-		}},
-		Models: []inference.ModelImplementation{{
-			Descriptor: descriptor,
-			Openers: inference.Openers{
-				Embed: func(_ context.Context, _ model.ModelRef) (inference.EmbedDriver, error) {
-					return driver, nil
-				},
-			},
-		}},
-	}
-	assembly, err := inference.Factory{}.New(context.Background(), resource.NewInput(nil,
-		map[string]any{"provider." + ref.ID.Provider: definition}, nil, nil))
-	if err != nil {
-		t.Fatalf("build assembly: %v", err)
-	}
-	return assembly
-}
-
-// Requests returns the cloned requests that reached the compiler, in
-// order.
-func (f *EmbedFake) Requests() []inference.EmbedRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]inference.EmbedRequest(nil), f.requests...)
-}
-
-// LastRequest returns the most recently compiled request.
-func (f *EmbedFake) LastRequest() inference.EmbedRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.requests) == 0 {
-		return inference.EmbedRequest{}
-	}
-	return f.requests[len(f.requests)-1]
-}
-
-func (f *EmbedFake) lastRequest() inference.EmbedRequest {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.requests) == 0 {
-		return inference.EmbedRequest{}
-	}
-	return f.requests[len(f.requests)-1]
-}
-
-// EmbedUnarySuite verifies the shared Runtime contracts for Embed
-// drivers.
-type EmbedUnarySuite struct {
-	Model   model.ModelRef
-	Request func() inference.EmbedRequest
-	Driver  inference.EmbedDriver
-
-	TransportCalls func() int64
-	AssertResponse func(*testing.T, inference.EmbedResponse)
-}
-
-// RunEmbedUnary runs the Embed-specific unary conformance suite.
-func RunEmbedUnary(t *testing.T, suite EmbedUnarySuite) {
-	t.Helper()
-	if suite.Driver == nil {
-		t.Fatal("EmbedUnarySuite requires a driver")
-	}
-	RunUnary(t, UnarySuite[inference.EmbedRequest, inference.EmbedResponse]{
-		Operation: model.OperationEmbed,
-		Model:     suite.Model,
-		Request:   suite.Request,
-		Snapshot: func(request inference.EmbedRequest) any {
-			return request.Clone()
-		},
-		Explain:        suite.Driver.Explain,
-		Execute:        suite.Driver.Execute,
-		Metadata:       func(response inference.EmbedResponse) inference.Metadata { return response.Metadata },
-		TransportCalls: suite.TransportCalls,
-		AssertResponse: suite.AssertResponse,
-	})
 }

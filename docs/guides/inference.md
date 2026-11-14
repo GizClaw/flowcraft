@@ -4,588 +4,270 @@ title: Inference Runtime
 ---
 # Inference Runtime Guide
 
-`core/inference` is the unified, instance-owned runtime for model inference.
-Active workloads are `Generate`, `Embed`, `Transcription`, and `Decision`;
-they are enumerated once, by `model.Operations()` in `core/inference/model`.
+`core/inference` is the contract for model calls, and three packages around it are
+the runtime: `core/inference/model` (identity, capabilities, limits, usage
+vocabulary), `core/inference/route` (selection, retry, fallback), and `core/runtime`
+(assembly from a deployment document). `core/inference-openai` and
+`core/inference-anthropic` are the two protocol families that ship with the
+platform; every other vendor is a `driver/` module.
 
-The model declaration vocabulary — identity, descriptor, capabilities,
-limits, and lifecycle — lives in `core/inference/model`. `core/inference`
-re-exports it through deprecated
-aliases (`inference.ModelRef` and friends) so existing callers keep
-compiling; new code should import `core/inference/model` directly.
+```go
+type Provider struct {
+    Generator            // required: Generate and GenerateStream
+    Embedder  Embedder   // nil when the provider does not serve embeddings
+    Decider   Decider    // nil when the provider does not serve judgments
+    Catalog   Catalog    // nil when the deployment declared no models
+}
+```
 
-The token and cost vocabulary follows the same split: `inference.Usage`, its
-per-modality and cache breakdowns, and `Money` live in `core/inference/usage`,
-which depends on nothing but the model leaf. A host that reports usage can
-import it without taking on the runtime; `inference.Usage` keeps working as an
-alias, without a deprecation marker for now.
+`Provider.Validate()` is what turns "declared but uncallable" into a deployment
+error: a model that declares an embedding width while no `Embedder` is bound, or
+decision support while no `Decider` is bound, would be a capability a caller can
+discover and never use.
+
+Transcription and image generation are not seams here — they are extensions the
+provider driver offers (`core/inference-openai` has both). A capability that only
+one vendor sells stays with the vendor.
 
 ## Exact addressing
 
-Every call takes a concrete `ModelRef`:
+Every call names a concrete model:
 
 ```go
-model := model.ModelRef{
-    ID: model.ModelID{
-        Provider: "deepseek",
-        Name:     "deepseek-flash",
-    },
+ref := model.ModelRef{
+    ID:      model.ModelID{Provider: "openai", Name: "gpt-5"},
+    Profile: "luna",        // the deployment's provider block
 }
 ```
 
-The runtime never picks or replaces a model. Optional routing is provided by
-`core/inference/route`. Generate routing consults the providers' declared
-model capabilities on both the selection and the fallback path: targets
-whose declared output kinds cannot serve the request intent are skipped,
-while models with undeclared capabilities are treated as undeclared (not
-unsupported) — preflight remains the final arbiter for those.
+The runtime never picks or replaces a model on its own. Routing is optional and
+explicit: it is a policy over the declared line-up, and an empty `route.selector`
+means declaration order.
 
-## Deployment config
-
-Providers and the assembly are separate resources:
+## The document
 
 ```yaml
-resources:
-  provider:
-    kind: inference.Provider
-    impl: openai
-    settings:
-      id: deepseek
-      spec:
+inference:
+  providers:
+    - name: luna                   # deployment identity, secret-free
+      driver: openai               # a name the host compiled in
+      settings:                    # the driver's own written form (see below)
+        base_url: https://api.openai.com/v1
+        api_key: "${OPENAI_API_KEY}"
         api: responses
-        endpoint:
-          base_url: https://api.deepseek.com
-        wire:
-          reasoning_channel: text   # DeepSeek streams plain reasoning text
-        models:
-          - name: deepseek-flash
-            kind: generate
-            capabilities:
-              inputs: [text, image, data, tool_call, tool_result]
-              outputs: [text]
-      profiles:
-        - secrets:
-            api_key: ${env:DEEPSEEK_API_KEY}
-  infer:
-    kind: inference.Assembly
-    impl: unified
-    deps:
-      provider: provider
+  models:
+    - provider: luna
+      model: gpt-5
+      weight: 100
+      # Fill in only what the driver's catalog does not declare; a
+      # contradiction is an assembly error, not an override.
+      capabilities: {inputs: [text, image], outputs: [text]}
+      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+  route:
+    selector: weighted             # a name the host registered
+    attempts_per_target: 2
+    max_targets: 3
+    base_delay: 200ms
+    max_delay: 2s
 ```
 
-Provider implementations are registered by the application from provider
-driver modules:
+| Block | Rule |
+| --- | --- |
+| `providers[].name` | The deployment's identity for the account or endpoint; it is what `models[].provider` refers to. |
+| `providers[].driver` | Must be registered on the `Runtime`; an unknown one fails with the offered names. |
+| `providers[].settings` | Opaque to core: the driver's constructor decodes it. |
+| `models[]` | Position is priority — the first model is tried first. Declaring a model is the only way one exists. |
+| `route` | Optional. `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`, `selector`, `selector_settings`. |
+
+## Drivers and their settings
+
+The runtime imports no driver, so the adapter that maps a written settings block
+onto a driver's typed `Settings` lives in the host:
 
 ```go
-resource.MustRegister(reg, openai.Factory())
-resource.MustRegister(reg, inference.Factory{})
+runtime.WithDrivers(
+    runtime.Driver{Name: openai.ProviderID, Build: buildOpenAI},
+    runtime.Driver{Name: anthropic.ProviderID, Build: buildAnthropic},
+)
 ```
 
-The provider `spec` is layered — `endpoint` (where the API is and how the key
-rides), `wire` (which dialect the endpoint speaks), `models` (the line-up this
-deployment serves) — and `core/inference` treats every provider through the
-same declaration vocabulary. The full key reference, including
-`wire.store` (`false` by default, or `"omit"` to keep the retention field off
-the request entirely for endpoints whose schema does not know it) and
-`wire.video_input` (a compatible-endpoint extension that, together with a
-model declaring `video` input, lets a chat-surface deployment carry video
-parts), lives in
-the [flowcraft-config provider reference](../../skills/flowcraft-config/references/resources.md).
+Every driver's `Settings` is a plain Go value **without JSON tags** — a JSON block
+is not its wire format, and pretending otherwise would freeze the contract. The
+host writes the mapping, which means a deployment's `settings` keys are the
+host's vocabulary: `examples/forge/internal/app/drivers.go` is the reference
+implementation, including duration parsing and the `wire` sub-block the Anthropic
+driver takes.
 
-## Provider lifecycle
-
-Opening a model resolves its credentials and constructs its provider clients.
-The default call path (`Assembly.Generate`, `Embed`, `Transcribe`, ...) resolves
-the target per call, so nothing is cached behind the caller's back and a
-deployment never needs credentials at build time: `Validate` and `InspectModel`
-work without them, and a missing credential surfaces on first use.
-
-Callers that want opened drivers to outlive a single call say so explicitly.
-`Assembly.Bind(ctx, ref)` opens every operation the model declares and returns
-a `Binding`: immutable, safe for concurrent use, owning its drivers until
-dropped. Binding again picks up rotated credentials. A binding compiles per
-request:
-
-```go
-binding, err := assembly.Bind(ctx, model)
-prepared, err := binding.PrepareGenerate(ctx, request) // compiles once
-response, err := prepared.Execute(ctx)                 // provider I/O only
-```
-
-A `Prepared` attempt is what keeps preflight and execution from compiling the
-same request twice. `Assembly.Prepare*` returns the same kind of handle for
-callers that do not hold a binding, and executing one performs provider I/O
-only while still carrying the span, metrics, and usage envelope of a direct
-call. Routing uses exactly this: a routed attempt opens and compiles once, then
-executes that compilation.
-
-The graph `inference` node is the in-tree example of the binding lifetime: a
-node's model is static graph config and the node outlives the turns that run
-through it, so it opens each configured model once (keyed by the full model
-reference, shared by every node in the graph) and compiles per turn.
-
-The script bridge does the same for script calls: `inference.generate`,
-`explain`, `stream`, `embed`, `transcribe`, and `transcribeSession` resolve
-their model through one `inference.BindingCache` owned by the bridge, so a
-script that keeps addressing the same model reuses its drivers. Both hosts rely
-on the same cache type, and both keep working when the model is not one they
-have seen before: a miss simply opens it.
-
-That reuse has a staleness window: a credential or client setting rotated after
-a model was opened stays in effect until the deployment is rebuilt (or the node
-addresses a different profile). Opening is logged with `llm.provider`,
-`llm.model`, and `llm.profile`, so "the deployment is still using the previous
-key" is diagnosable rather than silent. The node keeps at most 16 bindings;
-past that it evicts the least recently used one, so a board-derived model
-reference cannot accumulate drivers while the models the graph keeps addressing
-stay open.
+That indirection is deliberate. It lets a driver rename a field without a
+breaking change to every deployment file, and it keeps a credential's spelling
+(`api_key`) a host decision rather than a vendor one.
 
 ## Model declarations
 
-Every published model comes from the provider spec's `models` list: no
-driver ships a line-up, so a model exists because the deployment declares it
-and the declaration is the whole fact. Nothing is inherited from a
-same-named model, which is why a generate model has to state its text output
-and every published capability has to be written out; the `catalog` key that
-used to select a namespace is retired and rejected with the migration path.
-Driver control facts that no capability kind expresses are declared per
-model too (Bytedance's `max_resolution` and `video` parameter matrix,
-MiniMax's `wire_model` and `video` surface, DashScope's `image`, `video`,
-`generate`, `embed`, `tts`, and `transcribe` surface blocks).
+A model exists because a deployment declares it. Nothing is inherited from a
+same-named model, so a generate model has to state its text output, and every
+published capability is written out.
 
-Capability declarations are promises validated per provider surface: a
-model published with reasoning kind `toggle` must compile
-`reasoning_enabled=false` on that surface, and one published as `always`
-rejects it. Discovery bits such as `hosted_web_search` and
-`custom_embed_dimensions` ride on the model descriptor, so hosts can
-surface per-model options without driver-specific knowledge.
+Two sources meet here:
 
-Declared limits are enforced before any provider work. A `Generate` request
-whose `max_output_tokens` exceeds the target model's declared
-`max_output_tokens` is rejected at declaration time — the driver is not
-opened, and the rejection is transport-safe, so a routed request falls back
-to a target that declares room for it instead of failing. The limit is a
-promise, not a clamp: the caller's budget is never silently lowered, and an
+- the **driver's catalog** (`Settings.Models`) — the facts the driver knows about
+  a model it serves;
+- the **document's `models[]`** — the facts this deployment wants to publish.
+
+A contradiction between them is an assembly error, not an override. What the
+document adds and the catalog omits becomes the published descriptor
+(`model.ModelDescriptor`: id, label, capabilities, limits, lifecycle).
+
+### Limits are promises, not clamps
+
+A `Generate` request whose `max_output_tokens` exceeds the target's declared
+maximum is rejected **before** the driver is opened, and the rejection is
+transport-safe — so a routed request falls back to a target that declares room for
+it instead of failing. The caller's budget is never silently lowered, and an
 undeclared limit rejects nothing.
 
-`max_input_tokens` is not enforced: the module has no tokenizer, and a
-missing or approximate count would be worse than none. Hosts that own the
-conversation history can read the declared input window from
-`InspectModel` and enforce it where they already trim context.
+`max_input_tokens` is not enforced: the module has no tokenizer, and an
+approximate count would be worse than none. A host that owns the conversation
+history reads the declared window from the catalog and trims where it already
+trims.
 
-## Reasoning provenance
+### Capabilities route the call
 
-Reasoning models return a trace — thinking text plus a signature or an
-encrypted payload — that providers expect back in later turns, and they verify
-it against the model and account that produced it. OpenAI validates a
-reasoning item's id and encrypted content; Anthropic validates a thinking
-block's signature. A payload minted elsewhere is rejected with a provider 400
-that no retry and no fallback repairs, because the trace stays in the
-conversation.
+Declared capabilities are consulted on both the selection and the fallback path:
+a target whose declared output kinds cannot serve the request intent is skipped,
+while a model with undeclared capabilities is treated as undeclared — not
+unsupported — and the request is attempted. The provider's own validation remains
+the final arbiter.
 
-Drivers therefore stamp every trace they produce with a **verification scope**
-(`message.ReasoningPart.Source`) and replay a stored trace only when the
-target's scope matches:
-
-| Trace | Compile outcome |
-| --- | --- |
-| stamped with this target's scope | replayed, subject to the surface's own rules (id + encrypted payload, signature, ...) |
-| stamped with another scope | dropped, with both scopes named in the compile report |
-| unstamped (stored before drivers stamped, or built by hand) | dropped as unattributable |
-
-The derived scope is the address that produced the trace — provider, model,
-and the credential profile when the reference names one:
-
-```
-openai/gpt-5.6-luna/default
-```
-
-Switching models inside one deployment therefore drops the previous model's
-traces. That is what Anthropic requires (a thinking signature is bound to the
-model), and it is what an endpoint that does not document cross-model
-verification cannot be trusted with. A deployment that *has* verified a set of
-models or credentials accept each other's traces declares one shared scope and
-every model of that deployment uses it:
-
-```yaml
-spec:
-  wire:
-    reasoning_scope: openai-prod-shared   # OpenAI and Anthropic drivers
-```
-
-Bytedance uses the same key at the top level of `spec` (`reasoning_scope`),
-because its spec is flat. Ark consumes no reasoning input today, so the stamp
-only keeps its traces attributable when a conversation moves elsewhere.
-
-**Upgrading:** a transcript stored before this rule carries unstamped traces,
-so those traces are dropped instead of replayed. The assistant text is
-untouched — only thinking continuity is lost — and the conversation no longer
-risks a provider rejection it cannot recover from.
+A capability declaration is also a promise checked per surface: a model declaring
+toggleable reasoning must accept `reasoning_enabled=false` on that surface, and one
+declaring `always` must reject it. Discovery bits such as hosted web search ride on
+the descriptor, so a host can surface per-model options without vendor-specific
+knowledge.
 
 ## Routing
 
-Optional target selection is an `inference.Router` resource. It consumes
-one `inference.Assembly` as its `target` dep and reads the route policy
-from its own `settings`:
+Selection, retry and fallback live in `core/inference/route`:
 
-```yaml
-resources:
-  router:
-    kind: inference.Router
-    impl: unified
-    deps:
-      target: infer
-    settings:
-      generate:
-        - tier: fast
-          targets:
-            - model: {id: {provider: deepseek, name: deepseek-flash}}
-              score: {quality: 0.8, speed: 0.9}
-      retry:
-        generate:
-          max_attempts: 2
-          max_total_attempts: 5
-          backoff:
-            kind: exponential   # fixed | exponential (default)
-            initial: 100ms
-            max: 2s
-            multiplier: 2
-            jitter: full        # none | equal | full (default)
-          retryable: [rate_limit, timeout, unavailable]
-          fallback_on_retry_exhausted: true
-      circuit_breaker:
-        failure_threshold: 5      # consecutive transient failures; default 5
-        recovery_window: 30s      # open-circuit window; default 30s
-        half_open_max_probes: 1   # concurrent probes while half-open; default 1
+```go
+router, err := route.New(targets, route.Policy{
+    Generate: mySelector{},          // nil = every target, in declaration order
+    Retry: route.RetryPolicy{
+        AttemptsPerTarget: 2,
+        MaxTargets:        3,
+        BaseDelay:         200 * time.Millisecond,   // doubles per attempt
+        MaxDelay:          2 * time.Second,
+    },
+})
 ```
 
-The policy has four operation areas — `generate`, `embed`, `transcription`,
-and `decision` — each a list of `tier` pools. A pool is an allowlist of
-exact `model` targets plus optional normalized `score` signals
-(`quality` / `economy` / `speed` / `reliability`, all in `[0, 1]`).
-Scores guide selection only; they never claim a request is executable.
+A `route.Target` is one candidate: its provider, weight (for selectors that use
+one), the model it serves, and the deployment profile it belongs to. Dispatch
+stamps the winning target's model identity onto the request, so a caller names a
+model and the answer carries the provider that actually served it.
 
-- Generate routing is capability-aware on both the selection and the
-  fallback path: targets whose declared output kinds cannot serve the
-  request intent are skipped, while targets with undeclared capabilities
-  are treated as undeclared (not unsupported) — preflight remains the final
-  arbiter. A fallback that finds no compatible target left stops and
-  surfaces the failed attempt's error instead of trying an incompatible
-  target; candidates the fallback dismisses are recorded in the trace as
-  skipped attempts (`skip_reason: output_capability`).
-- Generate selection honors an optional per-call `model_hint` on the
-  request (`provider/name`, or a bare name when exactly one configured
-  target carries it). The hint is a preference, not a bypass: a hinted
-  target that is absent, unknown, malformed, ambiguous, or whose declared
-  output kinds cannot serve the request is skipped, and selection falls
-  back to the default policy. When the hinted target is chosen but fails
-  at runtime, fallback continues through the declared order with the hinted
-  target omitted, so the rest of the chain keeps its normal sequence and
-  the failed hint is never re-attempted; targets whose declared output
-  kinds cannot serve the request are skipped on the way. The hint matches by
-  provider + model name only; credential profiles are not part of the
-  hint, so a model configured under several profiles cannot be
-  distinguished per call (the deployment's configured profile stays
-  authoritative). A hinted target that the assembly reports as retired or
-  missing the operation is a selection error on both the hinted and
-  default paths (build-time policy validation already rejects such
-  targets). The hint is routing metadata — drivers never interpret it —
-  and it applies to both unary `Generate` and `GenerateStream`.
-- Decision selection honors the same per-call `model_hint` with the same
-  preference semantics, minus the output-kind filter: decision requests
-  carry no output kinds to match against.
-- The `retry` section configures per-operation retries (same-target), each
-  with `max_attempts`, an optional `max_total_attempts`, a `backoff`
-  curve, an explicit `retryable` class list (`rate_limit`, `timeout`,
-  `unavailable`), and `fallback_on_retry_exhausted`. A retry section
-  requires its operation to have pools.
-- Failure policy stays conservative. Core never auto-retries an attempt-void
-  failure, whatever `retryable` lists, and such a failure does not reach
-  `fallback_on_retry_exhausted` either (that path carries transient provider
-  failures). The attempt-void outcomes are `provider_truncated` (the stream
-  ended without a terminal finish event) and `provider_response_unusable`
-  (the provider completed the call — a terminal finish event arrived, or a
-  unary call returned — but the assembled artifact violates the request
-  contract: empty completed content, an unassemblable part, a tool-choice
-  violation, and so on). Both classify as not available rather than
-  internal, so a host can re-initiate the call at its own granularity:
-  partial output may already have been committed by the inference node, so
-  the decision belongs to the caller. `undefined_tool` stays a deterministic
-  validation failure and remains the one kind the graph engine can turn into
-  recoverable feedback.
-- `circuit_breaker` opens a per-target circuit after consecutive transient
-  failures, probes while half-open, and skips attempts while open.
-- At build time every configured target is validated against the assembly:
-  it must exist, not be retired, and expose the operation. A graph engine
-  wires the router through its `router` dep when inference nodes omit an
-  explicit `model`.
-
-## Request metadata
-
-`GenerateRequest.RequestMetadata` is an opaque `map[string]string` carried
-with every call. Core never interprets its keys; callers and hosts decide
-the vocabulary (conversation identifiers, turn identifiers, installation
-metadata, ...). Graph inference nodes expose the same field as
-`request_metadata` node config, and script/direct callers can set it on the
-canonical request.
-
-Drivers forward the bag only when their deployment enables it, because each
-provider API has a different legal shape. Provider specs accept:
-
-```yaml
-settings:
-  spec:
-    request_metadata:
-      envelope: metadata          # any non-empty top-level field name; empty disables
-```
-
-OpenAI-compatible drivers map `metadata` onto the native OpenAI metadata
-object; `client_metadata` is emitted as a passthrough object for gateways
-that speak the Codex convention. An empty configuration never sends
-anything, and core keys are forwarded verbatim.
-
-`request_metadata` forwarding is implemented by the OpenAI driver, which
-covers OpenAI, Azure, DeepSeek, Kimi and any compatible endpoint configured
-through its `endpoint` block. Anthropic, MiniMax, Bytedance, and DashScope
-are the current exceptions: their official Messages/Ark/Model Studio surfaces
-do not model arbitrary request metadata and the drivers deliberately keep their
-native transport paths, so canonical metadata is not forwarded until those
-SDKs/providers add a native channel.
-
-Because `RequestMetadata` is part of the compile ledger, drivers that cannot
-forward it report a `dropped` decision instead of silently ignoring it.
-Drivers that forward it report `native` when their deployment enables an
-envelope. The envelope is an arbitrary non-empty string naming the top-level
-body field; providers that type `metadata` natively lower that name through
-their SDK types, while other names ride as passthrough JSON fields.
-
-## Unmodeled provider fields (json_set)
-
-Compatible endpoints extend the OpenAI schema with knobs no SDK models —
-Kimi's `thinking`, Qwen's `enable_thinking` / `thinking_budget`, a gateway's
-own routing field. The OpenAI driver carries those as an explicit per-request
-extension no matter which deployment id serves the call:
-
-```json
-{
-  "provider": "kimi",
-  "extension": "generate_options",
-  "value": {
-    "json_set": {
-      "enable_thinking": false,
-      "thinking.keep": "all"
-    }
-  }
-}
-```
-
-Each key is a path in sjson notation (a dot descends into an object, so
-`thinking.keep` sets one leaf and leaves its siblings alone) and each value is
-the raw JSON to place there. The compile report names every key it applied, so
-the ledger says "this value rode the request" — and nothing more:
-
-| Key | Behavior |
+| Field | Meaning |
 | --- | --- |
-| `model`, `messages`, `input`, `tools`, `tool_choice`, `response_format`, `text`, `max_tokens` / `max_completion_tokens` / `max_output_tokens`, `temperature`, `top_p`, `n`, `store`, `metadata`, `reasoning` / `reasoning_effort`, `service_tier`, `verbosity`, `parallel_tool_calls`, `max_tool_calls`, `safety_identifier`, `prompt_cache_key`, `modalities`, `audio` | rejected: the compiler lowers these from the canonical request, and a patch would make the report claim a decision the body contradicts |
-| anything else | carried verbatim, at most 32 keys and 64 KiB per request |
+| `Generate`, `Decision` | One selector per seam; a nil selector means every target in order. |
+| `Retry.AttemptsPerTarget` | Tries of one target for a transient failure; zero means one. |
+| `Retry.MaxTargets` | How many candidates are tried; zero means all the selector returned. |
+| `Retry.BaseDelay`, `Retry.MaxDelay` | Backoff, doubling per attempt, capped. |
 
-This is deliberate passthrough, not a capability claim: FlowCraft cannot
-validate what an endpoint does with a field it did not model, so routing and
-preflight never learn anything from `json_set`. A request that needs the
-endpoint to *do* something with a trace or a content kind — reasoning
-round-trips, video input — needs the driver-side support, not a body patch.
+A **selector** is a Go value, and `runtime.Selector` is only the name that lets a
+document refer to one — two typed slots, because
+`route.Selector[inference.GenerateRequest]` and
+`route.Selector[inference.DecisionRequest]` are different Go types and one factory
+cannot produce both:
 
-`json_set` applies to the JSON generate surfaces (Responses and Chat
-Completions, unary and stream). Multipart transports do not run it.
-
-### Deployment defaults: `wire.extra_body`
-
-An endpoint whose dialect is fixed — "this GLM instance always thinks",
-"this gateway always wants its own routing field" — declares the same shape in
-the provider spec, so every request the deployment serves carries it:
-
-```yaml
-settings:
-  spec:
-    api: chat
-    wire:
-      extra_body:
-        thinking: {type: enabled}
+```go
+runtime.WithSelectors(runtime.Selector{
+    Name:     "weighted",
+    Generate: func(json.RawMessage) (route.Selector[inference.GenerateRequest], error) {
+        return weighted{}, nil
+    },
+})
 ```
 
-Keys and values are the json_set vocabulary (sjson paths, raw JSON), with the
-same bounds (32 keys / 64 KiB) and the same rejected keys. The two sources
-compose in a fixed order: `wire.extra_body` is written first, then the
-request's `json_set`, so a request key wins — an identical path replaces the
-deployment value, a nested path updates the object the deployment wrote.
+There are no built-in selectors, and an unregistered name fails the build with the
+offered list. A selector has one method — `Select(ctx, request, targets)` — because
+a selector answering for several seams would be the operation table this package
+exists to avoid. Pure Go callers skip the name table entirely and put the value in
+`route.Policy` directly.
 
-The difference between the two is scope and reporting, not shape: `extra_body`
-is deployment configuration and, like `store` or `endpoint.headers`, carries no
-per-request decision; `json_set` is a request decision and appears in the
-compile report key by key. Both reach the generate surfaces only, so a
-deployment whose declared line-up has no generate model is rejected at build
-time rather than carrying a field that can never apply.
+## Extensions
 
-### Component notes
+Provider-specific options travel as typed extensions, not as a raw map the driver
+merges blindly:
 
-Decisions are field-level: every active canonical field carries exactly one
-terminal disposition. Some fields aggregate several content parts under one
-path — the `*` in `generate.context.*.content.parts.tool_result` spans every
-message — so a single disposition cannot say "the text arrived but the image
-did not". Such a decision may carry `components` notes: one entry per part,
-in encounter order, each naming the content kind, its position, and its own
-disposition. The notes are populated only when the field lost at least one
-part, and they must fold onto the field's disposition, so a field can never
-read `native` while one of its components was dropped.
+```yaml
+request:
+  extensions:
+    - {name: reasoning, settings: {effort: high}}
+```
 
-The OpenAI driver uses them for multimodal tool results: text that rides
-along is `native`, an image the wire cannot carry (a Chat Completions tool
-message, a model without image input, an unmaterialized stream source) is
-`dropped` at its own position with a reason, and the model receives an
-in-place `[omitted tool output: ...]` placeholder so the surrounding text
-keeps its meaning.
+An extension name is resolved against the `ExtensionDecoder`s the host registered
+(`nodes.WithModelDecoders`, `runtime` options), so unknown settings are a build
+error rather than a silently dropped field, and the driver receives a typed value.
+`inference.Extensions` also carries `Metadata`, which is passed through untouched
+and is the place for a trace tag rather than a wire field.
 
 ## Streaming
 
-`GenerateStream` returns a stream of deltas plus the final result. Streaming
-is provider-neutral; each driver adapts its native protocol.
+`GenerateStream` returns a `Stream` the caller must close. The stream carries
+incremental events — text deltas, reasoning deltas, tool-call fragments, usage —
+and one terminal event; a consumer that stops early must close it, or the provider
+connection leaks. A node that does not need deltas calls `Generate` instead: a call
+whose answer is data should not pay for an event stream.
 
-## Media streams
+## Media
 
-Live media input is a first-class transport, not a new DTO: a stream is a
-sequence of ordinary `message.Part`s. The media layer owns the generic
-pull contract (`media.Stream[T]` / `media.Pipe[T]`); `message.Stream` is
-that contract instantiated over `Part`, and `message.NewPartPipe` builds a
-bounded pipe whose `Send` blocks when the buffer is full — that is the
-backpressure contract. `Interrupt` aborts a stream (barge-in, error), while
-`Close` ends it normally; after `Interrupt`, `Read` returns
-`context.Canceled` even if buffered parts remain.
+Media is a first-class part kind (see [media.md](media.md)). A request's parts and
+the model's declared `inputs`/`outputs` are checked against each other during
+routing, which is what keeps "this turn has an image, this target has no vision"
+from reaching a provider. Audio and video parts follow the same rule; a provider
+that does not accept a kind refuses the request, and flattening it into text is the
+host's decision, not the runtime's.
 
-An `AudioSource` or `VideoSource` can carry a live stream via
-`message.NewAudioStream` / `message.NewVideoStream` (source kind
-`stream`). Stream sources are valid only while a message is in flight:
+## Judgment
 
-- Unary `Generate` rejects stream sources in both context and input — a
-  model call receives complete parts, never a live handle.
-- Stream sources cannot be serialized, so they never cross the wire as a
-  value.
-- When a message becomes history (the run commits), the runtime
-  materializes each stream source into the existing inline-byte part:
-  audio chunks become one `AudioPart` with inline bytes, video chunks one
-  `VideoPart`. This mirrors how `GenerateStream` accumulates deltas and
-  materializes them at the terminal result.
+`Decider.Decide` answers a set of questions in request order and returns one answer
+per question:
 
-## Transcription
+| Type | Is |
+| --- | --- |
+| `Question` | One question with a `QuestionKind`: a choice among labelled options, a probability, a free answer. |
+| `ChoiceValue`, `Probability`, `Answer` | The shapes an answer takes. |
+| `DecisionRequest`, `DecisionResponse` | The batch and its results, with usage and the same error vocabulary as generation. |
 
-Speech recognition is a first-class workload with two execution shapes:
+Routing applies to judgment too — `runtime.Selector.Decision` is the other typed
+slot — because "which model judges this" is the same question as "which model
+answers this".
 
-- `Transcribe` recognizes one complete audio source (`media.AudioSource`)
-  and returns the transcript, with optional segments and timestamps.
-- `TranscribeSession` opens a duplex session: the caller negotiates
-  `input_format` at open, feeds `media.AudioChunk`s through `Send`, and
-  drains partial/final transcript events through `Next`. `Interrupt`
-  terminates a session abnormally (barge-in); draining to `io.EOF` and
-  calling `Result` yields the final transcript.
+## Errors
 
-Both shapes address the same `ModelRef` and share the Transcription route
-pools. Drivers that only serve one shape leave the other opener nil and the
-assembly reports `UnsupportedOperation` for it.
+Every seam shares one vocabulary — an `inference.ErrorKind` plus a `Field` naming
+the request member at fault: `InvalidRequest`, `UnsupportedOperation`,
+`UnsupportedFeature`, `InvalidExtension`, `UnknownModel`, `PolicyDenied`,
+`ProviderFailure`, `InvalidProviderResponse`, `UndefinedTool`, …
 
-Sessions may emit multiple `Final` events for continuous recognition. A
-provider session can expose the optional `TranscriptionSessionFinisher`
-capability: callers that have no more audio call `FinishInput`, then drain
-`Next` to `io.EOF` and read `Result`. `TranscribeStream` performs that
-end-of-input handshake automatically after the source stream ends; the
-script bridge exposes it as the session handle's `finish()`.
+A routing decision classifies from that vocabulary, not from a string, and it has
+three outcomes rather than two:
 
-Live input rides the part-stream transport: `FeedTranscription` pumps a
-`message.Stream[Part]` into an open session (audio parts become chunks with
-monotonic sequence; EOF ends feeding; a stream failure interrupts the
-session), and `TranscribeStream` is the one-shot open + feed + drain +
-result form. Unary `Transcribe` rejects stream sources — whole-file
-recognition takes complete audio, live audio goes through a session.
+| Outcome | Kinds | Meaning |
+| --- | --- | --- |
+| retry the same target | `ProviderFailure`, `ProviderTruncated` | Transient, or a target worth one more attempt. |
+| move to the next target | `UnknownModel`, `UnsupportedOperation`, `UnsupportedFeature`, and anything unclassified | This target cannot serve the request; another may. |
+| stop | `InvalidRequest`, `InvalidExtension`, `PolicyDenied`, `UndefinedTool`, `CompilerContractViolation`, `OperationInterrupted`, and a cancelled context | Repeating it anywhere produces the same answer. |
 
-See [graph.md](graph.md) for the inference node.
+That is what makes a fallback safe: a wrong request is not retried three times
+against three vendors, and a cancelled call is not retried at all.
 
-## Decision
+## What this is not
 
-Decision is a first-class workload for judging one piece of evidence: a
-request carries the evidence plus an ordered list of `questions`, and the
-answers come back per question. Three question kinds share that shape:
-
-- `predicate` asks how likely a statement about the input is true and
-  answers with a `probability`.
-- `choice` picks one of at least two unique options and answers with the
-  chosen value, the full probability distribution, and a `confidence`
-  derived from it. Option values are typed: the string `"true"` and the
-  boolean `true` are distinct options. Two is the only bound the canonical
-  layer enforces — provider limits (255 options today) belong to the driver
-  — and both the chosen value and every distributed value are reconciled
-  against the question's options before an answer reaches the caller.
-- `score` rates the input against ordered `levels` and answers with the
-  probability-weighted score (which may land between levels, always inside
-  the level range), the level distribution, and a `confidence`.
-
-Answers come back in request order, one per question, and every answer
-carries the question's `name`. The name is required, non-empty, and unique
-within a request: the platform wires disagree on identity (one contracts
-answers by array position and treats the name as an optional label, the
-other keys them by a caller-chosen id), so the canonical form requires the
-name and each driver maps its own wire onto it. A question the model
-declines comes back as kind `refusal` instead of an answer value; the other
-questions in the same request are still answered.
-
-Decision has exactly one execution shape: unary, and unaddressed to any
-transcript. The evidence is a single carrier — `text`, opaque `json`
-(object or array), or message `parts` (text and image only; any other kind
-is rejected rather than silently dropped). A response is the caller's
-value: a host that wants the answers in a conversation projects them into
-the transcript itself, e.g. as `message.NewJSONContent`. There is no
-streaming shape and no session — neither wire streams decisions — so the
-whole operation is one execute-phase attempt: retries, fallback, and
-circuit breakers apply to it on the same terms as the other unary
-workloads.
-
-Providers declare the operation through `Openers.Decision`, which returns a
-`DecisionDriver` (`Explain` / `Prepare` / `Execute`) built with
-`inference.BindDecision` over a compiler, a transport, and a strict
-decoder. A model without the opener reports `UnsupportedOperation` with the
-operation named, exactly as the other workloads do.
-
-See [graph.md](graph.md) for the inference node.
-
-## Verifying a driver against the live endpoint
-
-A driver's offline suite asserts what the platform documents; what it does is
-a different question, and only the real endpoint answers it. Credentialed
-lanes run the driver against the live service: they read the credential from
-the environment, then from a repo-root `.env` (git-ignored), and skip when
-neither has it.
-
-A media call is a purchase, so a lane that generates anything is gated
-explicitly on top of holding a credential — a populated `.env` must not turn
-`make test` into a bill. `driver/dashscope/live_test.go` is the reference:
-`DASHSCOPE_LIVE=1` for stills, `DASHSCOPE_LIVE_TEXT=1` for the text and
-embedding surfaces, `DASHSCOPE_LIVE_TTS=1` for speech synthesis,
-`DASHSCOPE_LIVE_ASR=1` for file transcription,
-`DASHSCOPE_LIVE_VIDEO=1` for clips, and
-`DASHSCOPE_LIVE_KEYFRAMES=1` or `DASHSCOPE_LIVE_WAN3=1` stacked on the video
-gate for the two surfaces whose create call already buys a render. Setting
-`DASHSCOPE_LIVE_DUMP` keeps a run's recordings, which turns a live
-observation into an offline fixture.
-
-Those lanes root the assembled provider at a recording proxy in front of the
-real host. The proxy streams responses through untouched — the endpoint that
-answers is still the real one — and records both sides, which is what lets a
-lane assert the two halves of "correct" separately: that the call was
-accepted (the shape the declaration produced is the shape the endpoint
-serves), and that the bytes on the wire agree with the compile report (a
-field reported as sent was sent, and one reported as dropped never rode the
-body).
-
-Two habits the lanes were built around, both learned by getting them wrong: a
-probe whose failure is free answers most protocol questions — which header a
-surface demands, what a refusal looks like, whether an unknown task is an
-error or a status — so those go first and the paid calls go last; and a task
-cannot be cancelled to dodge a render, because the platform only cancels a
-task that has not started yet.
+| Not here | Where |
+| --- | --- |
+| A provider registry with `init()` registration | The host's `runtime.WithDrivers` table: "which drivers exist" is a fact of the binary. |
+| A vendor's model line-up | The deployment declares it; drivers ship none. |
+| Transcription, image generation | Driver extensions (`core/inference-openai`). |
+| Realtime | Reserved; no seam yet. |
+| Token counting | No tokenizer in core. |

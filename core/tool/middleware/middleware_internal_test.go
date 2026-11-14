@@ -2,11 +2,11 @@ package middleware
 
 import (
 	"context"
-	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/goccy/go-json"
 )
 
 type testSource struct {
@@ -31,5 +31,5 @@ func echoTool(name string) tool.Tool {
 }
 
 func call(name string) message.ToolCall {
-	return message.ToolCall{ID: "call-1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
+	return message.ToolCall{ID: "call-1", Name: name, Arguments: message.NewArguments(json.RawMessage(`{"x":1}`))}
 }

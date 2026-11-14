@@ -1,118 +1,178 @@
 package inference
 
 import (
-	"context"
 	"fmt"
-	"time"
 
-	"github.com/GizClaw/flowcraft/core/utils/ptr"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// GenerateStreamDecoder implementations must support concurrent calls.
-type GenerateStreamDecoder[RawEvent any] func(
-	context.Context,
-	RawEvent,
-) (GenerateStreamEvent, error)
+// StreamEventKind names one step of a streaming generation. A driver emits them
+// in order; the order and the terminal conditions are the stream contract.
+type StreamEventKind string
 
-type GenerateStream interface {
-	Next(context.Context) (GenerateStreamEvent, error)
+const (
+	// StreamStart opens the stream. It carries the response metadata that is
+	// known before any content arrives.
+	StreamStart StreamEventKind = "start"
+	// StreamText appends text to the assistant message.
+	StreamText StreamEventKind = "text"
+	// StreamReasoning appends reasoning text to the assistant message. It is
+	// separate from StreamText so a caller can hide or store it without
+	// parsing markers out of the visible answer.
+	StreamReasoning StreamEventKind = "reasoning"
+	// StreamToolCall appends a fragment of one tool call. Fragments for the
+	// same call share an Index and arrive in order.
+	StreamToolCall StreamEventKind = "tool_call"
+	// StreamPart delivers a content part the stream cannot express as
+	// incremental text: a generated image arrives as one complete part, and
+	// synthesized audio arrives as a sequence of chunk parts. It is the same
+	// event for every modality so that adding an output does not fork the
+	// stream contract.
+	StreamPart StreamEventKind = "part"
+	// StreamChunk appends bytes to the media part at Index. The first chunk at an
+	// index carries the part template — its media type and format — and later
+	// chunks carry the bytes that follow. It exists because media payloads have
+	// the opposite merge rule from previews: [StreamPart] replaces, a chunk
+	// appends, and the difference is never inferred from the payload.
+	StreamChunk StreamEventKind = "chunk"
+	// StreamUsage reports interim accounting. Providers that only report
+	// totals at the end emit it once, just before StreamEnd.
+	StreamUsage StreamEventKind = "usage"
+	// StreamEnd closes the stream and carries the finish reason. It is
+	// always the last event.
+	StreamEnd StreamEventKind = "end"
+)
+
+// Validate reports whether the kind is one the contract names.
+func (k StreamEventKind) Validate() error {
+	switch k {
+	case StreamStart, StreamText, StreamReasoning, StreamToolCall, StreamPart,
+		StreamChunk, StreamUsage, StreamEnd:
+		return nil
+	default:
+		return fmt.Errorf("unknown stream event kind %q", k)
+	}
+}
+
+// Stream is one in-flight generation: a [Pull] of events, plus the answer those
+// events assemble into.
+//
+// Next follows the pull contract — [io.EOF] ends the stream, any other error is
+// terminal, and the caller must then Close. Next must not be called concurrently
+// with itself.
+//
+// Result returns the assembled response once Next has reported io.EOF. It is the
+// same value a non-streaming call would have produced, which is what lets a caller
+// that does not care about increments treat both paths alike.
+type Stream interface {
+	Pull[StreamEvent]
 	Result() (GenerateResponse, error)
 	Close() error
 }
 
-type ProviderStream[RawEvent any] interface {
-	Next(context.Context) (RawEvent, error)
-	Close() error
+// ToolCallDelta is one fragment of a tool call under assembly. ID and Name are
+// normally carried by the first fragment; Arguments accumulates across
+// fragments. The fragment carries no index of its own: [StreamEvent.Index] is
+// the content part index for every event kind, so an assembler never has to
+// reconcile two index spaces.
+type ToolCallDelta struct {
+	// ID is the provider-assigned call id.
+	ID string `json:"id,omitempty"`
+	// Name is the tool being called.
+	Name string `json:"name,omitempty"`
+	// Arguments is the JSON argument fragment carried by this event.
+	Arguments string `json:"arguments,omitempty"`
 }
 
-// ProviderStreamMetadata is an optional capability of ProviderStream.
-// Streams that learn a provider-assigned request or response identifier
-// before their terminal event (the x-request-id header at open, the first
-// chunk id, or response.created) implement it so the runtime can attach the
-// identifier to mid-stream and truncated-stream failures. Without it,
-// identifiers ride only the terminal finish event and are lost when the
-// provider stream ends early.
-type ProviderStreamMetadata interface {
-	RequestID() string
-	ResponseID() string
+// StreamEvent is one step of a streaming generation. Only the fields the Kind
+// calls for are set.
+type StreamEvent struct {
+	Kind StreamEventKind `json:"kind"`
+	// Index is the content part index this event belongs to. It is the one
+	// index space for every kind: a tool call is a part at its own index, not
+	// a separate sequence.
+	Index int `json:"index,omitempty"`
+	// Text is the appended text for StreamText and StreamReasoning.
+	Text string `json:"text,omitempty"`
+	// Signature, ID and Source complete a reasoning block: providers that
+	// expect their own reasoning to be replayed verbatim attach it to the
+	// final fragment. They are ignored for every other kind.
+	Signature string `json:"signature,omitempty"`
+	ID        string `json:"id,omitempty"`
+	Source    string `json:"source,omitempty"`
+	// Tool is the fragment for StreamToolCall.
+	Tool *ToolCallDelta `json:"tool,omitempty"`
+	// Part is the content part for StreamPart.
+	Part message.Part `json:"part,omitempty"`
+	// Usage is the accounting for StreamUsage.
+	Usage *usage.Usage `json:"usage,omitempty"`
+	// Metadata is the response identity for StreamStart.
+	Metadata *Metadata `json:"metadata,omitempty"`
+	// Finish is the reason for StreamEnd.
+	Finish FinishReason `json:"finish,omitempty"`
 }
 
-type generateStreamDriver[Wire, RawEvent any] struct {
-	pipeline *pipeline[
-		GenerateRequest,
-		Wire,
-		ProviderStream[RawEvent],
-		GenerateResponse,
-	]
-	decode  GenerateStreamDecoder[RawEvent]
-	binding *generateCompilerBinding
+// streamPayload says which optional fields a kind carries.
+type streamPayload struct {
+	text   bool
+	tool   bool
+	part   bool
+	usage  bool
+	finish bool
 }
 
-func (*generateStreamDriver[Wire, RawEvent]) inferenceGenerateStreamDriver() {}
-func (d *generateStreamDriver[Wire, RawEvent]) generateCompilerBinding() *generateCompilerBinding {
-	return d.binding
+var streamPayloads = map[StreamEventKind]streamPayload{
+	StreamStart:     {},
+	StreamText:      {text: true},
+	StreamReasoning: {text: true},
+	StreamToolCall:  {tool: true},
+	StreamPart:      {part: true},
+	StreamChunk:     {part: true},
+	StreamUsage:     {usage: true},
+	StreamEnd:       {finish: true},
 }
 
-func (d *generateStreamDriver[Wire, RawEvent]) Explain(
-	ctx context.Context,
-	model ModelRef,
-	request GenerateRequest,
-) (Explanation, error) {
-	return d.pipeline.explain(ctx, model, request)
-}
-
-func (d *generateStreamDriver[Wire, RawEvent]) Stream(
-	ctx context.Context,
-	model ModelRef,
-	request GenerateRequest,
-) (GenerateStream, error) {
-	prepared, err := d.PrepareStream(ctx, model, request)
-	if err != nil {
-		return nil, err
+// Validate checks the event's own invariants: a kind names its payload, and a
+// kind that does not carry a field rejects it.
+func (e StreamEvent) Validate() error {
+	if err := e.Kind.Validate(); err != nil {
+		return err
 	}
-	return prepared.Execute(ctx)
-}
-
-// PrepareStream compiles one streaming request against model and returns a
-// handle that opens the stream without compiling again.
-func (d *generateStreamDriver[Wire, RawEvent]) PrepareStream(
-	ctx context.Context,
-	model ModelRef,
-	request GenerateRequest,
-) (*Prepared[GenerateStream], error) {
-	compiled, err := d.pipeline.prepare(ctx, model, request)
-	if err != nil {
-		return nil, err
+	payload := streamPayloads[e.Kind]
+	if (e.Text != "" && !payload.text) ||
+		(e.Tool != nil && !payload.tool) ||
+		(e.Part != nil && !payload.part) ||
+		(e.Usage != nil && !payload.usage) ||
+		(e.Finish != "" && !payload.finish) {
+		return fmt.Errorf("stream %s event carries a foreign payload", e.Kind)
 	}
-	return newPrepared(
-		model,
-		OperationGenerate,
-		compiled.Report,
-		func(runCtx context.Context) (GenerateStream, error) {
-			raw, err := d.pipeline.transport(runCtx, compiled.Wire)
-			if err != nil {
-				return nil, streamProviderError(model.ID.Provider, "stream.open", err)
-			}
-			if ptr.IsNil(raw) {
-				return nil, newStreamError(
-					"stream.open.nil",
-					fmt.Errorf("provider opened a nil generate stream"),
-				)
-			}
-			var meta ProviderStreamMetadata
-			if ids, ok := raw.(ProviderStreamMetadata); ok {
-				meta = ids
-			}
-			return &decodedGenerateStream[RawEvent]{
-				raw:       raw,
-				meta:      meta,
-				decode:    d.decode,
-				model:     model,
-				request:   request.Clone(),
-				report:    compiled.Report,
-				parts:     make(map[int]*generatePartAccumulator),
-				startedAt: time.Now(),
-			}, nil
-		},
-	), nil
+	switch e.Kind {
+	case StreamToolCall:
+		if e.Tool == nil {
+			return fmt.Errorf("stream tool_call event carries no fragment")
+		}
+	case StreamPart:
+		if e.Part == nil {
+			return fmt.Errorf("stream part event carries no part")
+		}
+	case StreamChunk:
+		if e.Part == nil {
+			return fmt.Errorf("stream chunk event carries no part")
+		}
+		switch e.Part.Kind() {
+		case message.PartImage, message.PartAudio, message.PartVideo:
+		default:
+			return fmt.Errorf("stream chunk of %q has no bytes to append", e.Part.Kind())
+		}
+	case StreamUsage:
+		if e.Usage == nil {
+			return fmt.Errorf("stream usage event carries no usage")
+		}
+	case StreamEnd:
+		if err := e.Finish.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

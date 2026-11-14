@@ -1,10 +1,11 @@
 package media
 
 import (
-	"context"
-	"encoding/json"
+	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/goccy/go-json"
 )
 
 func TestTypedSourcesRoundTripAndOwnInlineBytes(t *testing.T) {
@@ -92,85 +93,69 @@ func TestInlineImageCopiesInput(t *testing.T) {
 	}
 }
 
-func TestStreamSourcesCarryLiveStreams(t *testing.T) {
-	pipe := NewPipe[string](1)
-	if !pipe.Send("live") {
-		t.Fatal("pipe rejected its first item")
-	}
-	audio, err := NewAudioStream[string](pipe, "audio/pcm")
-	if err != nil {
-		t.Fatalf("NewAudioStream: %v", err)
-	}
-	if audio.Kind() != SourceStream {
-		t.Fatalf("audio kind = %q, want %q", audio.Kind(), SourceStream)
-	}
-	if audio.MediaType() != "audio/pcm" {
-		t.Fatalf("audio media type = %q", audio.MediaType())
-	}
-	stream, ok := audio.Stream().(Stream[string])
-	if !ok {
-		t.Fatalf("audio Stream() = %T, want Stream[string]", audio.Stream())
-	}
-	value, err := stream.Read(context.Background())
-	if err != nil || value != "live" {
-		t.Fatalf("stream read = (%q, %v)", value, err)
-	}
-
-	video, err := NewVideoStream[string](pipe, "video/mp4")
-	if err != nil {
-		t.Fatalf("NewVideoStream: %v", err)
-	}
-	if video.Kind() != SourceStream || video.MediaType() != "video/mp4" {
-		t.Fatalf("video stream source = kind %q type %q", video.Kind(), video.MediaType())
+// TestDataURLIsExact pins the encoding to the concatenation it replaced. A
+// byte-level drift here changes what a provider receives, so the comparison is
+// against the reference spelling rather than against a golden the helper itself
+// produced.
+func TestDataURLIsExact(t *testing.T) {
+	for _, mediaType := range []string{"image/png", "text/plain; charset=utf-8", ""} {
+		for _, size := range []int{0, 1, 2, 3, 4, 255, 256, 4096} {
+			data := make([]byte, size)
+			for i := range data {
+				data[i] = byte(i * 7)
+			}
+			want := "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data)
+			if got := DataURL(mediaType, data); got != want {
+				t.Fatalf("type %q size %d: DataURL drifted from the reference spelling", mediaType, size)
+			}
+		}
 	}
 }
 
-func TestStreamSourcesRejectBadInput(t *testing.T) {
-	if _, err := NewAudioStream[string](nil, "audio/pcm"); err == nil {
-		t.Fatal("audio stream accepted a nil stream")
-	}
-	var nilPipe *Pipe[string]
-	if _, err := NewAudioStream[string](nilPipe, "audio/pcm"); err == nil {
-		t.Fatal("audio stream accepted a typed nil stream")
-	}
-	pipe := NewPipe[string](0)
-	if _, err := NewAudioStream[string](pipe, ""); err == nil {
-		t.Fatal("audio stream accepted an empty media type")
-	}
-	if _, err := NewAudioStream[string](pipe, "video/mp4"); err == nil {
-		t.Fatal("audio stream accepted a video media type")
-	}
-	if _, err := NewVideoStream[string](pipe, "image/jpeg"); err == nil {
-		t.Fatal("video stream accepted an image media type")
+func TestBase64IsExact(t *testing.T) {
+	for _, size := range []int{0, 1, 2, 3, 4, 4096} {
+		data := make([]byte, size)
+		for i := range data {
+			data[i] = byte(i)
+		}
+		if got, want := Base64(data), base64.StdEncoding.EncodeToString(data); got != want {
+			t.Fatalf("size %d: Base64 drifted from the reference spelling", size)
+		}
 	}
 }
 
-func TestStreamSourcesAreNotSerializable(t *testing.T) {
-	pipe := NewPipe[string](0)
-	audio, err := NewAudioStream[string](pipe, "audio/pcm")
-	if err != nil {
-		t.Fatalf("NewAudioStream: %v", err)
+// TestDataURLAllocations guards the reason the helper exists: one buffer for the
+// header and the payload, then one string to hand out. The old spelling allocated
+// the encoded payload, the concatenated result, and the intermediate prefix.
+func TestDataURLAllocations(t *testing.T) {
+	data := make([]byte, 64<<10)
+	// Two allocations: the buffer and the string handed out. The concatenation
+	// this replaced needed three, so a cap of three would let a revert pass.
+	if allocs := testing.AllocsPerRun(100, func() { _ = DataURL("image/png", data) }); allocs > 2 {
+		t.Fatalf("DataURL allocates %.0f times, want <= 2", allocs)
 	}
-	if _, err := json.Marshal(audio); err == nil ||
-		!strings.Contains(err.Error(), "cannot be serialized") {
-		t.Fatalf("Marshal(stream source) = %v, want serialization error", err)
-	}
-	if err := json.Unmarshal([]byte(`{"kind":"stream","media_type":"audio/pcm"}`), &audio); err == nil {
-		t.Fatal("Unmarshal accepted a stream-kind wire source without a stream")
+	if allocs := testing.AllocsPerRun(100, func() { _ = Base64(data) }); allocs > 2 {
+		t.Fatalf("Base64 allocates %.0f times, want <= 2", allocs)
 	}
 }
 
-func TestStreamSourceCloneSharesLiveHandle(t *testing.T) {
-	pipe := NewPipe[string](0)
-	audio, err := NewAudioStream[string](pipe, "audio/pcm")
-	if err != nil {
-		t.Fatalf("NewAudioStream: %v", err)
-	}
-	clone := audio.Clone()
-	if clone.Kind() != SourceStream {
-		t.Fatalf("clone kind = %q", clone.Kind())
-	}
-	if clone.Stream() != audio.Stream() {
-		t.Fatal("clone does not share the live stream handle")
+func BenchmarkDataURL(b *testing.B) {
+	for _, size := range []struct {
+		name string
+		len  int
+	}{
+		{"4KiB", 4 << 10},
+		{"1MiB", 1 << 20},
+	} {
+		data := make([]byte, size.len)
+		b.Run(size.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(size.len))
+			for i := 0; i < b.N; i++ {
+				if !strings.HasPrefix(DataURL("image/png", data), dataURLScheme) {
+					b.Fatal("missing scheme")
+				}
+			}
+		})
 	}
 }

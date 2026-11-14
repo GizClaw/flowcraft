@@ -3,12 +3,12 @@ package middleware
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"regexp"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // DefaultRedaction is the replacement applied when a rule does not
@@ -74,7 +74,7 @@ type redactingSink struct {
 }
 
 func (s redactingSink) Record(ctx context.Context, rec AuditRecord) {
-	rec.Call.Arguments = s.redactor.Bytes(rec.Call.Arguments)
+	rec.Call.Arguments = message.NewArguments(s.redactor.Bytes(rec.Call.Arguments.Raw()))
 	rec.Result = s.redactor.Result(rec.Result)
 	s.sink.Record(ctx, rec)
 }
@@ -147,7 +147,11 @@ func (r *redactor) Content(content message.Content) message.Content {
 		case message.DataPart:
 			out.Parts[i] = r.dataPart(value)
 		case message.FilePart:
-			value.URI = r.String(value.URI)
+			if value.Source.Kind() == media.SourceURL {
+				if source, err := media.NewFileURL(r.String(value.Source.URL()), value.Source.MediaType()); err == nil {
+					value.Source = source
+				}
+			}
 			value.Name = r.String(value.Name)
 			out.Parts[i] = value
 		case message.ToolCallPart:
@@ -171,15 +175,15 @@ func (r *redactor) Content(content message.Content) message.Content {
 // rather than resurrecting the original secret. Name and id are identifiers
 // the call is addressed by, so they are left alone.
 func (r *redactor) toolCallPart(part message.ToolCallPart) message.Part {
-	redacted := r.Bytes(part.Call.Arguments)
-	if bytes.Equal(redacted, part.Call.Arguments) {
+	redacted := r.Bytes(part.Call.Arguments.Raw())
+	if bytes.Equal(redacted, part.Call.Arguments.Raw()) {
 		return part
 	}
 	if !isJSONObject(redacted) {
 		return message.TextPart{Text: string(redacted)}
 	}
 	call := part.Call
-	call.Arguments = json.RawMessage(redacted)
+	call.Arguments = message.NewArguments(json.RawMessage(redacted))
 	part.Call = call
 	return part
 }

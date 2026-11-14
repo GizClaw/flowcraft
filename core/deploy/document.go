@@ -1,40 +1,406 @@
 package deploy
 
 import (
+	"context"
+	"os"
+	"strconv"
 	"strings"
+	"time"
 
-	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
+	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
-// Document is the top-level deployment DTO: a versioned resource area
-// (the DAG) plus an agent area binding resources.
+// Document is the deployment file: which agents exist and what each is made of.
 type Document struct {
-	Version   string                      `json:"version,omitempty"`
-	Resources resource.Resources          `json:"resources,omitempty"`
-	Agents    map[string]agent.Definition `json:"agents,omitempty"`
-	// Runtime is an application-runtime-owned configuration subtree.
-	// Parse preserves it verbatim so the runtime layer can decode it
-	// strictly without weakening strictness for the deployment schema.
-	Runtime *resource.Opaque `json:"runtime,omitempty"`
+	Version int             `json:"version"`
+	Agents  []AgentDocument `json:"agents"`
 }
 
-// Validate checks the document without resolving any factory.
-func (d Document) Validate() error {
-	if d.Version == "" {
-		return errdefs.Validationf("deployment document: version is required")
+// AgentDocument is one agent's declaration.
+type AgentDocument struct {
+	Name     string            `json:"name"`
+	Engine   EngineDocument    `json:"engine"`
+	Runtime  *RuntimeDocument  `json:"runtime"`
+	Protocol *ProtocolDocument `json:"protocol"`
+	// Catalog scopes the tool projection a local engine reads.
+	Catalog *CatalogDocument `json:"catalog"`
+	// Delegation is the policy this agent's delegate tools use. Nil means the
+	// agent gets no delegation tools at all.
+	Delegation *DelegationDocument `json:"delegation"`
+	// Observability is how much of this agent's runs is traced and recorded.
+	// Nil keeps the host's defaults for both.
+	Observability *ObservabilityDocument `json:"observability"`
+	// Hooks are the host policies attached to this agent's lifecycle, in
+	// declaration order.
+	Hooks []HookDocument `json:"hooks"`
+}
+
+// ObservabilityDocument is the written form of the run's observation policy.
+//
+// Trace is one ladder because spans and the per-call records answer the same
+// question at different resolutions: a run somebody wants to inspect node by
+// node is also a run whose prompt digests are worth keeping. Bodies is not a
+// level: whether the response's bytes are stored is a retention decision about
+// the user's own content, so it is asked separately.
+type ObservabilityDocument struct {
+	// Trace is off (default), run, step or node.
+	Trace string `json:"trace"`
+	// Bodies keeps the bytes of recorded model responses. Nil means the host's
+	// default.
+	Bodies *bool `json:"bodies"`
+}
+
+// HookDocument selects one host hook kind and carries its settings.
+type HookDocument struct {
+	// Kind is required when the entry is present. An unregistered kind is a
+	// document error naming what is registered, the same rule engines and
+	// protocols follow.
+	Kind string `json:"kind"`
+	// Settings is the kind's own configuration, decoded by its registration.
+	Settings json.RawMessage `json:"settings"`
+}
+
+// DelegationDocument is the written form of a delegation policy.
+type DelegationDocument struct {
+	Targets       []string `json:"targets,omitempty"`
+	Modes         []string `json:"modes,omitempty"`
+	MaxDepth      int      `json:"max_depth,omitempty"`
+	MaxConcurrent int      `json:"max_concurrent,omitempty"`
+	Timeout       string   `json:"timeout,omitempty"`
+	MaxInputBytes int      `json:"max_input_bytes,omitempty"`
+}
+
+// CatalogDocument scopes the tool projection.
+type CatalogDocument struct {
+	// Scope is "run" (default) or "session".
+	Scope string `json:"scope"`
+}
+
+// EngineDocument selects the implementation and carries its settings.
+type EngineDocument struct {
+	// Kind is required. There is no default implementation: an agent that does
+	// not say what it is cannot be deployed meaningfully.
+	Kind string `json:"kind"`
+	// Settings is the kind's own configuration, decoded by its registration.
+	Settings json.RawMessage `json:"settings"`
+}
+
+// RuntimeDocument is the substrate configuration as a stack of layers.
+type RuntimeDocument struct {
+	Layers []LayerDocument `json:"layers"`
+}
+
+// LayerDocument is one file in the stack.
+type LayerDocument struct {
+	Priority int    `json:"priority"`
+	Path     string `json:"path"`
+}
+
+// ProtocolDocument selects the exposure and carries its settings.
+type ProtocolDocument struct {
+	// Kind is required when the block is present.
+	Kind string `json:"kind"`
+	// Settings is the protocol's own configuration, decoded by its kind.
+	Settings json.RawMessage `json:"settings"`
+}
+
+// Loader turns a deployment document into specs.
+//
+// The same kind table the manager uses decides what a document may name: an
+// unregistered kind is rejected at load time, with the registered names in the
+// error, rather than failing halfway through assembling an agent.
+type Loader struct {
+	// LoadOptions are handed to runtime.LoadLayers: resolvers for placeholder
+	// schemes. They are not Spec fields because they are host wiring, not
+	// deployment data.
+	LoadOptions []runtime.LoadOption
+	// Kinds are the registered engines and protocols. Decode is invoked here, so
+	// a bad settings block fails at load time.
+	Kinds Kinds
+}
+
+// LoadFile reads a document from disk.
+func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, errdefs.Validationf("manage: read %s: %w", path, err)
 	}
-	if err := d.Resources.Validate(); err != nil {
-		return err
+	return l.Load(ctx, body)
+}
+
+// RequiredPlaceholders reports the environment variables a deployment document names,
+// before the document is loaded. Load fails at the first unset reference; this
+// reports all of them in one pass, which is what a host needs to print a startup
+// checklist instead of a restart loop.
+func (l Loader) RequiredPlaceholders(body []byte) (runtime.PlaceholderRequirement, error) {
+	return runtime.RequiredPlaceholdersDocument(body, "deployment document")
+}
+
+// RequiredPlaceholdersFile reads a document and reports its environment requirements.
+func (l Loader) RequiredPlaceholdersFile(path string) (runtime.PlaceholderRequirement, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return runtime.PlaceholderRequirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
 	}
-	for name, definition := range d.Agents {
-		if strings.TrimSpace(name) == "" {
-			return errdefs.Validationf("deployment document: agent name is empty")
+	return runtime.RequiredPlaceholdersDocument(body, path)
+}
+
+// Load parses and validates a deployment document.
+func (l Loader) Load(ctx context.Context, body []byte) ([]Spec, error) {
+	var document Document
+	// Placeholders are expanded by the same code a runtime layer uses, on the
+	// parsed values: peer, auth, card and settings can all name a secret, and a
+	// host should not have to learn a second rule for the outer document.
+	expanded, err := runtime.ExpandDocument(ctx, body, l.LoadOptions...)
+	if err != nil {
+		return nil, errdefs.Validationf("manage: %w", err)
+	}
+	document, err = decode.Decode[Document](expanded)
+	if err != nil {
+		return nil, errdefs.Validationf("manage: deployment document: %v", err)
+	}
+	if document.Version != 1 {
+		return nil, errdefs.Validationf(
+			"manage: version %d is not supported; this build reads 1", document.Version)
+	}
+	if len(document.Agents) == 0 {
+		return nil, errdefs.Validationf("manage: the document declares no agents")
+	}
+	seen := make(map[string]struct{}, len(document.Agents))
+	specs := make([]Spec, 0, len(document.Agents))
+	for i, agent := range document.Agents {
+		spec, err := l.agent(ctx, i, agent)
+		if err != nil {
+			return nil, err
 		}
-		if err := definition.Validate(); err != nil {
-			return errdefs.Validationf("deployment document: agents[%q]: %w", name, err)
+		if _, duplicate := seen[agent.Name]; duplicate {
+			return nil, errdefs.Validationf(
+				"manage: agents[%d]: duplicate name %q", i, agent.Name)
+		}
+		seen[agent.Name] = struct{}{}
+		specs = append(specs, spec)
+	}
+	return specs, nil
+}
+
+// agent validates one entry and builds its spec.
+func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec, error) {
+	where := func(field string) string {
+		return "manage: agents[" + agent.Name + "]." + field
+	}
+	if strings.TrimSpace(agent.Name) == "" {
+		return Spec{}, errdefs.Validationf("manage: agents[%d]: name is required", index)
+	}
+	if strings.TrimSpace(agent.Engine.Kind) == "" {
+		return Spec{}, errdefs.Validationf("%s: kind is required", where("engine"))
+	}
+	kind, found := l.engine(agent.Engine.Kind)
+	if !found {
+		return Spec{}, errdefs.Validationf(
+			"%s: kind %q is not registered; offered: %s",
+			where("engine"), agent.Engine.Kind, strings.Join(sortedKeys(l.Kinds.Engines), ", "))
+	}
+
+	// The kind says whether it runs here and speaks for its own fields; the
+	// shared rules (runtime, local-vs-remote) live beside the registration.
+	settings := agent.Engine.Settings
+	if len(strings.TrimSpace(string(settings))) == 0 {
+		settings = json.RawMessage(`{}`)
+	}
+	engineSpec := EngineSpec{Kind: agent.Engine.Kind, Settings: settings}
+	if kind.Decode != nil {
+		if _, err := kind.Decode(settings); err != nil {
+			return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 		}
 	}
-	return nil
+	if err := ValidateEngineSpec(kind, engineSpec, agent.Runtime != nil); err != nil {
+		return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
+	}
+
+	var protocolSpec *ProtocolSpec
+	if agent.Protocol != nil {
+		if strings.TrimSpace(agent.Protocol.Kind) == "" {
+			return Spec{}, errdefs.Validationf("%s: kind is required", where("protocol"))
+		}
+		kind, found := l.protocol(agent.Protocol.Kind)
+		if !found {
+			return Spec{}, errdefs.Validationf(
+				"%s: kind %q is not registered; offered: %s",
+				where("protocol"), agent.Protocol.Kind, strings.Join(sortedKeys(l.Kinds.Protocols), ", "))
+		}
+		settings := agent.Protocol.Settings
+		if len(strings.TrimSpace(string(settings))) == 0 {
+			settings = json.RawMessage(`{}`)
+		}
+		if kind.Decode != nil {
+			if _, err := kind.Decode(settings); err != nil {
+				return Spec{}, errdefs.Validationf("%s: %v", where("protocol"), err)
+			}
+		}
+		protocolSpec = &ProtocolSpec{Kind: agent.Protocol.Kind, Settings: settings}
+	}
+
+	hooks, err := l.hookSpecs(agent.Name, agent.Hooks, where)
+	if err != nil {
+		return Spec{}, err
+	}
+
+	catalog := CatalogSpec{}
+	if agent.Catalog != nil {
+		catalog.Scope = agent.Catalog.Scope
+	}
+	if _, err := catalog.ValidatedScope(); err != nil {
+		return Spec{}, errdefs.Validationf("%s: %w", where("catalog"), err)
+	}
+	delegationSpec, err := buildDelegation(agent.Delegation, where)
+	if err != nil {
+		return Spec{}, err
+	}
+	observability, err := buildObservability(agent.Observability, where)
+	if err != nil {
+		return Spec{}, err
+	}
+	spec := Spec{
+		Name:          agent.Name,
+		Catalog:       catalog,
+		Hooks:         hooks,
+		Engine:        engineSpec,
+		Protocol:      protocolSpec,
+		Delegation:    delegationSpec,
+		Observability: observability,
+	}
+	if agent.Runtime != nil {
+		layers, err := l.layers(agent.Name, agent.Runtime)
+		if err != nil {
+			return Spec{}, err
+		}
+		config, _, err := runtime.LoadLayers(ctx, layers, l.LoadOptions...)
+		if err != nil {
+			return Spec{}, errdefs.Validationf("manage: agents[%s]: %w", agent.Name, err)
+		}
+		spec.Runtime = config
+	}
+	return spec, nil
+}
+
+// layers turns the document's stack into runtime layers.
+func (l Loader) layers(agent string, runtimeDocument *RuntimeDocument) ([]runtime.Layer, error) {
+	if len(runtimeDocument.Layers) == 0 {
+		return nil, errdefs.Validationf(
+			"manage: agents[%s].runtime: at least one layer is required", agent)
+	}
+	layers := make([]runtime.Layer, 0, len(runtimeDocument.Layers))
+	for i, layer := range runtimeDocument.Layers {
+		if strings.TrimSpace(layer.Path) == "" {
+			return nil, errdefs.Validationf(
+				"manage: agents[%s].runtime.layers[%d]: path is required", agent, i)
+		}
+		layers = append(layers, runtime.Layer{
+			Priority: layer.Priority,
+			Name:     layer.Path,
+			Path:     layer.Path,
+		})
+	}
+	return layers, nil
+}
+
+func (l Loader) engine(name string) (EngineKind, bool) {
+	kind, found := l.Kinds.Engines[name]
+	return kind, found
+}
+
+func (l Loader) protocol(name string) (ProtocolKind, bool) {
+	kind, found := l.Kinds.Protocols[name]
+	return kind, found
+}
+
+// buildObservability validates the written level. It is checked here rather
+// than at build time so a typo fails before an agent exists, and the error names
+// what may be written instead — the reader's question is "which values are
+// there", not "which field is wrong".
+func buildObservability(doc *ObservabilityDocument, where func(string) string) (ObservabilitySpec, error) {
+	if doc == nil {
+		return ObservabilitySpec{}, nil
+	}
+	if _, err := telemetry.ParseTraceLevel(doc.Trace); err != nil {
+		return ObservabilitySpec{}, errdefs.Validationf("%s: %v", where("observability"), err)
+	}
+	return ObservabilitySpec{Trace: doc.Trace, Bodies: doc.Bodies}, nil
+}
+
+// buildDelegation validates and converts the written policy.
+func buildDelegation(doc *DelegationDocument, where func(string) string) (*DelegationSpec, error) {
+	if doc == nil {
+		return nil, nil
+	}
+	spec := &DelegationSpec{
+		Targets:       append([]string(nil), doc.Targets...),
+		Modes:         append([]string(nil), doc.Modes...),
+		MaxDepth:      doc.MaxDepth,
+		MaxConcurrent: doc.MaxConcurrent,
+		MaxInputBytes: doc.MaxInputBytes,
+	}
+	for _, mode := range spec.Modes {
+		if mode != "sync" && mode != "async" {
+			return nil, errdefs.Validationf("%s: unknown mode %q", where("delegation"), mode)
+		}
+	}
+	if spec.MaxDepth < 0 {
+		return nil, errdefs.Validationf("%s: max_depth must not be negative", where("delegation"))
+	}
+	if spec.MaxConcurrent < 0 {
+		return nil, errdefs.Validationf("%s: max_concurrent must not be negative", where("delegation"))
+	}
+	if spec.MaxInputBytes < 0 {
+		return nil, errdefs.Validationf("%s: max_input_bytes must not be negative", where("delegation"))
+	}
+	if doc.Timeout != "" {
+		timeout, err := time.ParseDuration(doc.Timeout)
+		if err != nil {
+			return nil, errdefs.Validationf("%s: timeout: %v", where("delegation"), err)
+		}
+		if timeout < 0 {
+			return nil, errdefs.Validationf("%s: timeout must not be negative", where("delegation"))
+		}
+		spec.Timeout = timeout
+	}
+	return spec, nil
+}
+
+// hookSpecs validates the document's hook list against the registered kinds.
+//
+// A kind is resolved here rather than at build, so a deployment that names a hook
+// nothing implements fails before an agent exists - and the error lists what is
+// registered, because that is the question the reader has.
+func (l Loader) hookSpecs(agent string, documents []HookDocument, where func(string) string) ([]HookSpec, error) {
+	if len(documents) == 0 {
+		return nil, nil
+	}
+	specs := make([]HookSpec, 0, len(documents))
+	for i, document := range documents {
+		at := where("hooks[" + strconv.Itoa(i) + "]")
+		if strings.TrimSpace(document.Kind) == "" {
+			return nil, errdefs.Validationf("%s: kind is required", at)
+		}
+		kind, found := l.Kinds.Hooks[document.Kind]
+		if !found {
+			return nil, errdefs.Validationf("%s: kind %q is not registered; offered: %s",
+				at, document.Kind, strings.Join(sortedKeys(l.Kinds.Hooks), ", "))
+		}
+		settings := document.Settings
+		if len(strings.TrimSpace(string(settings))) == 0 {
+			settings = json.RawMessage(`{}`)
+		}
+		if kind.Decode != nil {
+			if _, err := kind.Decode(settings); err != nil {
+				return nil, errdefs.Validationf("%s: %v", at, err)
+			}
+		}
+		specs = append(specs, HookSpec{Kind: document.Kind, Settings: settings})
+	}
+	return specs, nil
 }

@@ -1,0 +1,85 @@
+# One ReAct loop: the model answers, and the tool calls it asked for run before
+# the next round.
+#
+# A graph is state, nodes and edges. Nodes share nothing but state; an edge
+# carries a condition over that state, not a value.
+version: 1
+stream: {state: true}
+name: assistant
+
+# The first node of a run, and the state key the run's message is seeded into.
+entry: model
+input: messages
+
+limits:
+  # A soft-exit condition is not enough on its own: this is the backstop that
+  # turns a runaway cycle into a failed turn instead of a hung one.
+  max_steps: 32
+  timeout: 10m
+
+# Every key a node may read or write is declared here, with how concurrent
+# writes combine. An undeclared key is a load error, not a silent new variable.
+state:
+  messages:
+    type: messages
+    # The tool node appends only the results it produced; the engine
+    # concatenates, so writing the whole transcript would duplicate it.
+    merge: append
+    # This is the conversation, not the request: a new turn continues the
+    # session's transcript instead of starting from one message.
+    carry: true
+  pending:
+    type: json
+  usage:
+    type: json
+  answer:
+    type: text
+
+nodes:
+  - id: model
+    kind: model
+    config:
+      # Where the model reads the transcript from and writes its turn to.
+      messages: messages
+      # The tool calls the model asked for. The tool node consumes this key.
+      pending: pending
+      usage: usage
+      output: answer
+      request:
+        system: |
+          你是一个中文语音助手，运行在一台智能音箱上。
+
+          - 回答要短，适合直接朗读：一两句话，不要用 Markdown、列表或表情符号。
+          - 用户让你放音乐、调音量或停止播放时，先调用对应工具，再用一句话确认。
+          - 工具参数从用户的话里取：曲名、音量百分比都要具体；用户没说就选一个合理默认值并说明。
+          - 不知道的事情直说，不要编造设备状态。
+        tools:
+          # The runtime wires the file tools and the host's simulated device
+          # tools; this list is the projection the model may actually call.
+          names: [play_music, set_device_volume, stop_playback]
+
+  - id: tools
+    kind: tool
+    config:
+      messages: messages
+      pending: pending
+
+edges:
+  # A pending list means the model asked for tools: run them, then answer again
+  # with their results in the transcript.
+  #
+  # The test is a length, not `!= nil`: the model node always writes the list,
+  # and an empty one is still a list. `state.pending != nil` would be true for
+  # the empty case and loop forever.
+  - from: model
+    to: tools
+    when: len(state.pending) > 0
+  - from: tools
+    to: model
+  # No pending calls means the turn is done.
+  - from: model
+    to: end
+
+# What a finished run reports as its final answer.
+output:
+  key: answer

@@ -2,174 +2,182 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"maps"
-	"slices"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/goccy/go-json"
 )
 
-// Checkpoint is the engine-agnostic persistence record produced at a
-// safe boundary during execution. Each engine decides what its own
-// step marker / payload looks like; this struct only owns the common
-// envelope shape.
+// CheckpointSchema versions the checkpoint shape. A reader that does not know
+// the schema refuses instead of guessing at fields.
+const CheckpointSchema = 1
+
+// ErrNoCheckpoint reports that a store holds nothing to resume from.
+var ErrNoCheckpoint = errors.New("agent: no checkpoint")
+
+// Checkpoint is one Task plus the configuration it ran under.
 //
-// Engines populate Checkpoint and hand it to [Checkpointer.Checkpoint]
-// (the host method). The host is responsible for writing it durably;
-// engines must not assume the call has persisted anything.
+// It does not contain a runtime: a runtime holds processes, handles and
+// connections that cannot be serialised. What can be is the fingerprint of the
+// deployment needed to rebuild one, plus the transcript to replay — which is
+// why a checkpoint is a retrieval point for the whole stack.
 type Checkpoint struct {
-	// ExecID identifies the engine execution this checkpoint belongs
-	// to. MUST equal the producing [Run.RunID].
-	ExecID string `json:"exec_id"`
-
-	// Steps is an opaque, engine-defined marker set locating "where"
-	// the run is. For graph it is the most recently completed wave —
-	// the resume anchor (the frontier is rebuilt from it) and the
-	// "paused at" display (last element). A single-node wave degrades
-	// to a one-element slice; empty means "no position recorded".
-	// The host treats these as opaque strings.
-	Steps []string `json:"steps,omitempty"`
-
-	// Iteration is an optional monotonic counter for engines that
-	// loop (graph re-entry counter, scheduler tick, …). Zero is fine
-	// when the engine doesn't track iterations.
-	Iteration int `json:"iteration,omitempty"`
-
-	// Board is the Board state at the boundary. Always non-nil.
-	Board *BoardSnapshot `json:"board"`
-
-	// Payload is engine-specific extra state the engine wants to
-	// persist alongside the Board. Treated as opaque JSON by the
-	// store; the producing engine is the only consumer that knows
-	// how to decode it.
-	Payload json.RawMessage `json:"payload,omitempty"`
-
-	// Attributes mirrors [Run.Attributes] at the time the checkpoint
-	// was produced (run id at the agent layer, tenant, graph id, …).
-	// Stores may use these for indexing/lookup.
-	Attributes map[string]string `json:"attributes,omitempty"`
-
-	// Timestamp is the wall-clock time the engine produced the
-	// checkpoint. Hosts may overwrite when they actually persist.
-	Timestamp time.Time `json:"timestamp"`
-
-	// OriginalStartedAt is the wall-clock time the original (fresh)
-	// run started. Stays constant across resumes so dashboards
-	// computing total wall time (e.g. SLO budget burn) don't reset
-	// every time a host re-loads the checkpoint and resumes.
-	//
-	// Engines SHOULD copy this from [ResumeContext.StartedAt] (when
-	// resuming) or from the time they began the fresh run (when
-	// producing the first checkpoint). Hosts driving resume via
-	// [LoadAndResume] thread the value through automatically — the
-	// helper reads OriginalStartedAt off the loaded checkpoint and
-	// stamps it back on the next ResumeContext.
-	//
-	// Zero time means "not recorded" (engines that ship before this
-	// field was added, or that don't track wall time). Consumers
-	// should fall back to Timestamp in that case.
-	OriginalStartedAt time.Time `json:"original_started_at,omitzero"`
-
-	// SpecVersion identifies the engine's spec / definition version
-	// at the time the checkpoint was produced. The format is
-	// engine-defined: graph runner uses the graph definition's
-	// Version (falling back to its Name when Version is empty); a
-	// script engine could store a content hash; a host application
-	// could compose a spec document version.
-	//
-	// CanResume implementations compare this against the engine's
-	// current version: a mismatch means the underlying spec has
-	// drifted (graph re-edited, script reloaded, application spec
-	// reapplied with a new agent definition) and silently resuming
-	// would replay against semantics the original run never saw.
-	// Engines that detect drift surface errdefs.NotAvailable from
-	// CanResume so the host can either fall back to a fresh run or
-	// surface the mismatch to the operator.
-	//
-	// Empty means "no version recorded" — older checkpoints, or
-	// engines that have no concept of versioned spec. CanResume
-	// MUST treat empty as "skip drift check" rather than "always
-	// fail" so old checkpoints stay loadable.
-	SpecVersion string `json:"spec_version,omitempty"`
+	Schema int `json:"schema"`
+	// Version is assigned by the store and advances on every save. It is what a
+	// concurrent writer is compared against.
+	Version int64 `json:"version,omitempty"`
+	// ServerVersion belongs to a protocol adapter (the A2A task store) and only
+	// it changes this. The loop's own saves never touch it: two writers sharing
+	// one counter would reject each other's writes, and both are legitimate.
+	// Zero leaves the stored value untouched, so an engine save cannot reset the
+	// adapter's counter.
+	ServerVersion int64 `json:"server_version,omitempty"`
+	// Fingerprint is the deployment that wrote this checkpoint.
+	Fingerprint Fingerprint                `json:"fingerprint"`
+	Task        Task                       `json:"task"`
+	Sections    map[string]json.RawMessage `json:"sections,omitempty"`
 }
 
-// Validate checks the envelope invariants every engine and every
-// durable store can rely on. Engine-specific fields (Steps,
-// Iteration, Payload shape, SpecVersion) are intentionally left to
-// the engine's own [Resumer] implementation so engines can keep
-// minimal or strict admission policies.
-func (cp Checkpoint) Validate() error {
-	if cp.ExecID == "" {
-		return errdefs.Validation(errors.New("agent checkpoint: exec_id is required"))
-	}
-	if cp.Board == nil {
-		return errdefs.Validation(errors.New("agent checkpoint: board is required"))
-	}
-	if len(cp.Payload) > 0 && !json.Valid(cp.Payload) {
-		return errdefs.Validation(errors.New("agent checkpoint: payload is not valid JSON"))
-	}
-	return nil
-}
-
-// Clone returns an independent deep copy of cp. Stores should clone
-// on Save (the caller keeps ownership of cp) and again on Load (the
-// returned record is owned by the caller), so concurrent callers can
-// never observe each other's mutations.
-func (cp Checkpoint) Clone() Checkpoint {
-	out := cp
-	out.Steps = slices.Clone(cp.Steps)
-	if cp.Board != nil {
-		out.Board = cp.Board.Clone()
-	}
-	out.Payload = slices.Clone(cp.Payload)
-	out.Attributes = maps.Clone(cp.Attributes)
-	return out
-}
-
-// CheckpointStore is the host-side persistence contract. The host's
-// [Checkpointer.Checkpoint] implementation typically delegates to a
-// CheckpointStore. The interface is intentionally narrow: Save
-// persists; Load returns the most-recent persisted record for the
-// given exec id, or (nil, nil) if absent.
+// EventRecord is one appended fact of a Task.
 //
-// Save must atomically replace the record for cp.ExecID; when two
-// Save calls for the same exec id overlap, the later call wins. The
-// store must treat cp as caller-owned and deep-copy before
-// persisting. Load must return a caller-owned copy: mutating the
-// returned checkpoint must not affect the store or other Load
-// results. All methods must be safe for concurrent use.
-type CheckpointStore interface {
-	Save(ctx context.Context, cp Checkpoint) error
-	Load(ctx context.Context, execID string) (*Checkpoint, error)
+// The projection (the Task row) answers "what is true now"; these answer "how it
+// got there". Storing only the projection makes every write carry the whole
+// transcript; storing only events makes every read a replay. Both, in one
+// transaction, is what the shape below is for.
+//
+// A record is ordered by Seq and dated by At, and neither replaces the other: a
+// timeline reads them together, an audit reads the payload and the time, and a
+// resume reads only the order.
+type EventRecord struct {
+	// Seq is assigned by the store, monotonic per task.
+	Seq int64
+	// Kind names the fact: "message", "state", "artifact".
+	Kind string
+	// Payload is the fact itself.
+	Payload json.RawMessage
+	// At is when the fact happened. Zero asks the store to stamp the save, so a
+	// producer with no better answer still gets a time.
+	//
+	// The anchor is per kind, because the facts are not all instants:
+	//
+	//	graph.state, graph.frontier, graph.base  the save that wrote them
+	//	llm.call                                the call's start;
+	//	                                        end = At + LatencyMs
+	//	graph.effect (started)                  the call's start
+	//	graph.effect (done, failed)             the call's end;
+	//	                                        start = At - DurationMs
+	//	script.run, script.tool                 the invocation's start
+	//	message                                 the arrival of the message
+	//
+	// It is not a replacement for Seq: Seq orders facts, At dates them, and a
+	// store keeps both. A reader must treat a zero At as unknown rather than as
+	// 1970 — a row written before this field existed has no time at all.
+	At time.Time
 }
 
-// CheckpointLister optionally extends [CheckpointStore] with the
-// ability to enumerate persisted exec ids. Stores that support
-// listing satisfy this interface; agent-level resume / dashboard
-// code can type-assert to it. Implementations must be safe for
-// concurrent use. The returned slice is caller-owned.
-type CheckpointLister interface {
-	List(ctx context.Context) ([]string, error)
+// TaskSummary is the list projection.
+type TaskSummary struct {
+	ID        string
+	SessionID string
+	State     TaskState
+	Round     int
+	UpdatedAt string
 }
 
-// CheckpointDeleter optionally extends [CheckpointStore] with the
-// ability to delete a single execution's checkpoints. Used by the
-// host when a run completes successfully and its checkpoints are no
-// longer needed. Implementations must be safe for concurrent use.
-type CheckpointDeleter interface {
-	Delete(ctx context.Context, execID string) error
+// SaveOption configures one Save.
+type SaveOption func(*SaveOptions)
+
+// SaveOptions is the resolved form of a Save's options.
+type SaveOptions struct {
+	// Truncate asks the save to compact the log as well.
+	Truncate bool
+	// Through is the last sequence the save may drop; only meaningful with
+	// Truncate.
+	Through int64
+	// Kinds limits truncation to these event kinds. Empty means every kind,
+	// which is the pre-trace behaviour.
+	Kinds []string
 }
 
-// NoopCheckpointStore drops every checkpoint and reports no state.
-// Use as a default when checkpointing is not configured.
-type NoopCheckpointStore struct{}
+// TruncateThrough asks Save to drop the events at or before seq in the same
+// transaction that writes this round. Compaction belongs in the save that makes
+// the base durable: doing it as a second call pays two commits for one decision.
+//
+// A store still refuses to drop the newest event, and TruncateEvents remains the
+// standalone form for a host that compacts out of band.
+func TruncateThrough(seq int64, kinds ...string) SaveOption {
+	return func(options *SaveOptions) {
+		options.Truncate = true
+		options.Through = seq
+		options.Kinds = kinds
+	}
+}
 
-// Save satisfies [CheckpointStore].
-func (NoopCheckpointStore) Save(context.Context, Checkpoint) error { return nil }
+// Fingerprint is the identity a checkpoint records: the deployment that produced
+// it. A resume compares it, so a task cannot continue under a runtime, engine or
+// protocol different from the one it was written under.
+//
+// It is opaque here: deploy composes it from the runtime's own digest and the
+// engine and protocol identities, and a store only persists the string.
+type Fingerprint string
 
-// Load satisfies [CheckpointStore].
-func (NoopCheckpointStore) Load(context.Context, string) (*Checkpoint, error) {
-	return nil, nil
+// Store persists tasks, their events, and the blobs they reference.
+//
+// The interface is semantic rather than relational: a task is addressed by id,
+// and a first save is just a save, so create and append collapse into Save.
+// Where state lives — a local file, Postgres, an object store — is a deployment
+// decision, so the implementation stays replaceable.
+type Store interface {
+	// Save writes the Task projection and appends this round's events in one
+	// transaction. The first save creates the task; later ones advance it.
+	//
+	// The projection never carries history: Task.History is ignored, because the
+	// event log is its only source. Save returns the sequence range it assigned
+	// to the events (first, last), or (0, 0) when there were none, so a caller can
+	// point at an event it just wrote without a second query.
+	//
+	// Options may also compact the log: TruncateThrough drops what a new base
+	// already covers, in the same transaction.
+	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord, options ...SaveOption) (first, last int64, err error)
+	// Load returns the newest projection of one task.
+	//
+	// It does not replay the event log: Task.History is always empty. A caller
+	// that needs history reads Events or EventsAfter. Keeping the projection
+	// small is what makes Load cost the same for a one-turn task and a
+	// thousand-turn one.
+	Load(ctx context.Context, taskID string) (Checkpoint, error)
+	// LatestForSession returns the newest task of one session, which is
+	// what resuming a session needs: checkpoints are keyed by task, but a
+	// session outlives each of its tasks.
+	LatestForSession(ctx context.Context, sessionID string) (Checkpoint, error)
+	// Events returns every appended fact of one task, oldest first.
+	Events(ctx context.Context, taskID string) ([]EventRecord, error)
+	// EventsAfter returns the facts recorded after seq (exclusive), oldest first.
+	// It is what a restore reads when a snapshot already covers everything up to
+	// that point.
+	EventsAfter(ctx context.Context, taskID string, after int64) ([]EventRecord, error)
+	// SetServerVersion advances the adapter's own counter without rewriting the
+	// projection. A protocol adapter that records one event per message uses it:
+	// the engine owns the state, and the adapter owns only its token.
+	SetServerVersion(ctx context.Context, taskID string, version int64) error
+	// TruncateEvents removes the events at or before seq.
+	//
+	// It is the caller's invariant that a later snapshot covers them; a store
+	// cannot tell an obsolete event from a missing one. The newest event is never
+	// removable, so sequence numbers stay monotonic and a later Save continues
+	// after the tail rather than reusing a number.
+	//
+	// Kinds limits the deletion to those event kinds: an engine that keeps
+	// trace records beside its state compacts only the state, so the records
+	// survive. Empty means every kind.
+	TruncateEvents(ctx context.Context, taskID string, seq int64, kinds ...string) error
+	// List returns every task, newest first.
+	List(ctx context.Context) ([]TaskSummary, error)
+	// Delete removes a task and its events.
+	Delete(ctx context.Context, taskID string) error
+	// PutBlob stores bytes and returns their reference. The same bytes must
+	// yield the same reference, so a repeated write costs nothing.
+	PutBlob(ctx context.Context, data []byte) (string, error)
+	// GetBlob returns the bytes a reference names.
+	GetBlob(ctx context.Context, ref string) ([]byte, error)
 }

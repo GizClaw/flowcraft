@@ -1,7 +1,10 @@
-// Package simtools registers the demo's application-owned simulated
-// tools as a deployment tool.Source resource. The tool implementations
-// are Go values by design: the native tool system only declares policy
-// (scopes, middleware) in YAML.
+// Package simtools contributes the demo's application-owned simulated tools.
+//
+// The tool implementations are Go values by design: the native deployment
+// document declares policy (which built-in sets are wired, which tools the model
+// may call), and a host adds its own tools as a [tool.Source]. There is no
+// factory, no resource registry and no deployment name to keep in sync — the
+// source is handed to the runtime the host builds.
 package simtools
 
 import (
@@ -10,45 +13,23 @@ import (
 	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// SourceImpl is the tool.Source impl name used by forge deploy
-// documents.
-const SourceImpl = "sim"
-
-// NewSourceFactory returns the deployment factory for the simulated
-// tool source. counter is shared across every built source and counts
-// tool executions for test statistics.
-func NewSourceFactory(counter *atomic.Int64) resource.Factory[*source] {
-	return sourceFactory{counter: counter}
+// Source is the simulated tool set. It counts executions, which is what the
+// scripted tests assert on: a turn that claims to have played music must have
+// actually called the tool.
+type Source struct {
+	calls atomic.Int64
+	tools []tool.Tool
 }
 
-type sourceFactory struct {
-	counter *atomic.Int64
-}
-
-// Spec implements resource.Factory.
-func (sourceFactory) Spec() resource.Spec {
-	return resource.Spec{
-		Kind: "tool.Source",
-		Impl: SourceImpl,
-	}
-}
-
-// New implements resource.Factory.
-func (f sourceFactory) New(ctx context.Context, in resource.Input) (*source, error) {
-	if _, err := resource.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
-		return nil, err
-	}
-	return &source{tools: f.tools()}, nil
-}
-
-func (f sourceFactory) tools() []tool.Tool {
-	tools := []tool.Tool{
+// New builds the simulated tool source.
+func New() *Source {
+	s := &Source{}
+	s.tools = []tool.Tool{
 		&simulatedTool{
-			count: f.counter,
+			count: &s.calls,
 			definition: message.ToolDefinition{
 				Name:        "play_music",
 				Description: "Play a requested song, track, or piece of music.",
@@ -64,7 +45,7 @@ func (f sourceFactory) tools() []tool.Tool {
 			},
 		},
 		&simulatedTool{
-			count: f.counter,
+			count: &s.calls,
 			definition: message.ToolDefinition{
 				Name:        "set_device_volume",
 				Description: "Set or adjust the current device volume.",
@@ -79,7 +60,7 @@ func (f sourceFactory) tools() []tool.Tool {
 			},
 		},
 		&simulatedTool{
-			count: f.counter,
+			count: &s.calls,
 			definition: message.ToolDefinition{
 				Name:        "stop_playback",
 				Description: "Stop the current music or audio playback.",
@@ -91,48 +72,37 @@ func (f sourceFactory) tools() []tool.Tool {
 				}`),
 			},
 		},
-		&simulatedTool{
-			count: f.counter,
-			definition: message.ToolDefinition{
-				Name:        "werewolf_game_event",
-				Description: "Emit a lifecycle event when Werewolf game state changes.",
-				InputSchema: json.RawMessage(`{
-					"type": "object",
-					"properties": {
-						"event_type": {"type": "string", "description": "setup, night_resolve, game_over, or continue."},
-						"phase": {"type": "string", "description": "Current phase after the event."},
-						"detail": {"type": "string", "description": "Internal lifecycle detail. Do not use it for public narration."}
-					},
-					"required": ["event_type", "phase", "detail"]
-				}`),
-			},
-		},
 	}
-	return tools
+	return s
 }
 
-// source is the immutable tool.Source value contributing the simulated
-// tools.
-type source struct {
-	tools []tool.Tool
+// Tools implements [tool.Source]. Every simulated tool is eager: none needs I/O
+// to become available.
+func (s *Source) Tools() []tool.Tool { return s.tools }
+
+// LazyTools implements [tool.Source]. The set has nothing to defer.
+func (s *Source) LazyTools() []tool.LazyTool { return nil }
+
+// Names lists the tool names in declaration order.
+func (s *Source) Names() []string {
+	names := make([]string, 0, len(s.tools))
+	for _, item := range s.tools {
+		names = append(names, item.Definition().Name)
+	}
+	return names
 }
 
-// Tools implements tool.Source.
-func (s *source) Tools() []tool.Tool { return s.tools }
+// Calls is how many simulated tools have executed in this process.
+func (s *Source) Calls() int64 { return s.calls.Load() }
 
-// LazyTools implements tool.Source.
-func (s *source) LazyTools() []tool.LazyTool { return nil }
-
-var _ tool.Source = (*source)(nil)
+var _ tool.Source = (*Source)(nil)
 
 type simulatedTool struct {
 	definition message.ToolDefinition
 	count      *atomic.Int64
 }
 
-func (t *simulatedTool) Definition() message.ToolDefinition {
-	return t.definition
-}
+func (t *simulatedTool) Definition() message.ToolDefinition { return t.definition }
 
 func (t *simulatedTool) Execute(_ context.Context, arguments string) (message.Content, error) {
 	if t.count != nil {

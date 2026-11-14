@@ -2,11 +2,11 @@ package tooltest
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // FuncTool builds a simple text-returning tool whose input schema is an
@@ -85,7 +85,7 @@ func Execute(
 	result := executor.Execute(context.Background(), message.ToolCall{
 		ID:        "tooltest-call",
 		Name:      name,
-		Arguments: json.RawMessage(arguments),
+		Arguments: message.NewArguments(json.RawMessage(arguments)),
 	})
 	if result.IsError {
 		t.Fatalf("tooltest.Execute(%q): %s", name, result.Content.Text())

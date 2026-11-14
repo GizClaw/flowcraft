@@ -1,0 +1,109 @@
+package route
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+)
+
+// Generate routes one unary generation.
+func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
+	return dispatch(ctx, operationGenerate, r.targets, r.policy.Generate, request,
+		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry)
+}
+
+// GenerateStream routes the opening of one stream.
+//
+// Failover covers only the open: once the stream is returned, an error arrives
+// during iteration, after events have already been produced, and replaying it on
+// another target would duplicate partial output. That is also why the route span
+// ends when the stream opens: the attempt span follows the stream itself.
+func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateRequest) (inference.Stream, error) {
+	ctx, call := startRoute(ctx, operationGenerate)
+	stream, err := r.openStream(ctx, call, request)
+	call.finish(err)
+	return stream, err
+}
+
+// openStream runs the failover-on-open loop without closing the route span.
+func (r *Router) openStream(ctx context.Context, call *routeCall, request inference.GenerateRequest) (inference.Stream, error) {
+	candidates := filterTargets(r.targets, modelNameOfGenerate(request))
+	ordered := candidates
+	if r.policy.Generate != nil {
+		selected, err := r.policy.Generate.Select(ctx, request, candidates)
+		if err != nil {
+			return nil, err
+		}
+		ordered = selected
+	}
+	call.selectTargets(ordered)
+
+	policy := r.policy.Retry.effective(len(ordered))
+	trace := TraceFrom(ctx)
+
+	var last error
+	tried := 0
+	for _, target := range ordered {
+		if tried >= policy.MaxTargets {
+			break
+		}
+		tried++
+		if tried > 1 {
+			call.fallback()
+		}
+		if target.Provider.Generator == nil {
+			continue
+		}
+		stream, err := target.Provider.GenerateStream(ctx, withGenerateTarget(request, target))
+		call.attempt(target, 1, 0, err)
+		if err == nil {
+			trace.record(Attempt{Target: target.Name})
+			return stream, nil
+		}
+		last = err
+		trace.record(Attempt{Target: target.Name, Kind: kindOf(err), Err: err.Error()})
+		if classify(err) == RetryStop {
+			return nil, err
+		}
+	}
+	return nil, last
+}
+
+// modelNameOfGenerate is the model the caller asked for; routing fills the
+// provider from the target it picks.
+func modelNameOfGenerate(request inference.GenerateRequest) string { return request.Model.ID.Name }
+
+// withGenerateTarget stamps the chosen target onto the request.
+func withGenerateTarget(request inference.GenerateRequest, target Target) inference.GenerateRequest {
+	if target.Model.Name != "" {
+		request.Model.ID = target.Model
+	}
+	if request.Model.Profile == "" {
+		request.Model.Profile = target.Profile
+	}
+	return request
+}
+
+// invokeGenerate calls one target's generation seam.
+func invokeGenerate(ctx context.Context, target Target, request inference.GenerateRequest) (inference.GenerateResponse, error) {
+	if target.Provider.Generator == nil {
+		return inference.GenerateResponse{}, inference.NewError(
+			inference.UnsupportedOperation, inference.FieldModel,
+			fmt.Errorf("route: target %q does not generate", target.Name))
+	}
+	return target.Provider.Generate(ctx, request)
+}
+
+// routedGenerator is the generation seam of a Router.
+type routedGenerator struct {
+	router *Router
+}
+
+func (g routedGenerator) Generate(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
+	return g.router.Generate(ctx, request)
+}
+
+func (g routedGenerator) GenerateStream(ctx context.Context, request inference.GenerateRequest) (inference.Stream, error) {
+	return g.router.GenerateStream(ctx, request)
+}

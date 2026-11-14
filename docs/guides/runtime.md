@@ -1,480 +1,271 @@
 ---
 layout: default
-title: Application Runtime and Sessions
+title: Application Runtime
 ---
-# Application Runtime and Sessions
+# Application Runtime Guide
 
-`core/runtime` owns a built deployment and exposes transport-neutral sessions.
-It does not implement HTTP, WebSocket, WebRTC, a CLI, or an application
-protocol.
+`core/runtime` assembles one agent runtime from a configuration document and
+owns everything it built.
 
-## Build
+The unit is deliberately not a session. A `Runtime` holds the substrate a turn
+runs on — the model provider and its router, the tool registry with its
+instances, the sandbox runner, the file boundary, the skill index, the journal —
+and nothing that belongs to a conversation: no history, no turn counter, no
+per-user state. Two runtimes can live in one process without sharing anything,
+which is what makes "atomic" true rather than aspirational. History is an
+argument to a turn, and the turn loop belongs to whatever layer adds prompting
+(`core/agent`, `core/agent-host`).
 
-Create a registry, register every referenced resource factory, then build:
-
-```go
-reg := resource.NewRegistry()
-resource.MustRegister(reg, event.NewFactory())
-resource.MustRegister(reg, graphresource.Factory())
-// One OpenAI-wire driver serves the whole family: register it once per
-// deployment document, next to the other provider drivers you use.
-resource.MustRegister(reg, openai.Factory())
-
-app, err := runtime.NewBuilder(reg).Build(ctx, doc)
-if err != nil {
-    return err
-}
-defer app.Close()
-```
-
-`Runtime` owns its `deploy.Result`, event router, and session manager.
-`Close` releases the deployment (resources and deployed agents), the
-session manager, and any dynamically registered agents.
-
-## Subscribing to runtime events
-
-`Runtime.Attach` subscribes a sink to the runtime's event router
-without resolving the deployment document's `event_bus` resource:
-
-```go
-detach, err := app.Attach(ctx, session.PatternPromptRequested(), sink)
-if err != nil {
-    return err
-}
-defer detach()
-```
-
-Attachments are torn down when the Runtime closes, and `Attach` fails
-with `NotAvailable` afterwards. External attachments inherit the bus
-default backpressure (`DropNewest`); pass
-`event.WithAttachBackpressure` to override per subscription. See
-[prompt.md](prompt.md) for the prompt lifecycle events, and the
-"Dynamic agent registry" section below for the `runtime.agent.*`
-lifecycle events published on dynamic registration/removal.
-
-## Accessing deployment resources
-
-`Runtime.Resource` borrows a built resource value by its deployment
-name from the current generation, mirroring `Agent` for the resource
-view:
-
-```go
-db, ok := app.Resource("db")
-if !ok {
-    return errors.New("deployment has no db resource")
-}
-```
-
-Values are borrowed: the Runtime owns the deployment and closes
-resources when it closes, and a `Reload` retires the previous
-generation's values. Use this for access to deployment-built services
-such as a database pool. If the application must own a value's
-lifecycle or keep it across reloads, construct it outside the runtime
-and inject it through a resource factory registered in the registry
-instead, or use the external dependency channel below.
-
-### External dependencies
-
-`runtime.external_deps` declares caller-owned dependency values that are
-built by the application and only consumed as resource/engine/hook
-dependencies:
+## The document
 
 ```yaml
-runtime:
-  event_bus: events
-  external_deps:
-    - name: db
-      contract: db.Pool
-  sessions:
-    idle_timeout: 10m
+version: 1
+name: forge
+
+files:
+  roots:
+    - /workspace/forge            # absolute; the first root is the default workdir
+
+sandbox:
+  backend: seatbelt               # local | seatbelt | bwrap | windows | remote
+  writes:
+    - /workspace/forge/out
+  net:
+    mode: allow_list
+    allow_hosts: [api.openai.com, "*.github.com"]
+  timeout: 60s
+  cpu_millicores: 2000            # needs timeout
+  memory_mib: 2048
+  output_mib: 8
+  journal:                        # presence opts in; absent means no journal
+    exclude: [.git, node_modules]
+    retention: 4096
+
+inference:
+  providers:
+    - name: openai
+      driver: openai
+      settings: { api_key: "${OPENAI_API_KEY}" }
+  models:
+    - provider: openai
+      model: gpt-5
+      weight: 100
+      capabilities: { inputs: [text, image] }
+      limits: { max_input_tokens: 200000, max_output_tokens: 32000 }
+  route:
+    selector: weighted
+    attempts_per_target: 2
+    max_targets: 3
+
+tools:
+  enable: [exec, read, write, edit, glob, grep, skill_search, skill_read]
+  tty: false
+  dynamic:
+    default: direct
+    hidden: [write]
+  images: false
+  mcp:
+    servers: []
+  middleware:
+    - { name: redact, settings: { pattern: "sk-[A-Za-z0-9]+" } }
+
+skills:
+  roots: [.agents/skills]
 ```
 
-The application injects the matching value before building:
+### `sandbox`
+
+The process boundary. Nothing here is guessed:
+
+| Field | Meaning |
+| --- | --- |
+| `backend` | Required. `local`, `seatbelt`, `bwrap`, `windows`, or `remote`. There is no default: a boundary picked by guessing is a boundary nobody chose. |
+| `workdir` | Where commands run. Empty means the first files root. |
+| `writes` | Absolute paths a command may write. Empty means read-only. |
+| `net.mode` | `default`, `none` (aliases `deny`, `deny_all`), `allow_list` (alias `allowlist`), `proxy` (alias `proxies`). |
+| `net.allow_hosts` | Only legal with `allow_list`; a host pattern or `*`-glob. |
+| `net.proxy` | Only legal with `proxy`. |
+| `timeout` | Default per-call deadline. A tool may ask for less; this is the ceiling. |
+| `cpu_millicores` | Millicore budget. Rejected without `timeout`, because the budget is derived from it. |
+| `memory_mib` | Address-space cap; zero is unbounded. |
+| `output_mib` | Captured output per call; zero uses the backend default. |
+| `journal` | A settings block. Presence opts in; see [sandbox.md](sandbox.md). |
+| `bwrap`, `seatbelt`, `windows` | The backend's own construction options. Setting one on a different backend is a validation error, not a comment. |
+| `remote` | Client configuration for `backend: remote`; must be absent otherwise. |
+
+### `files`, `skills`, `tools`
+
+| Section | Rule |
+| --- | --- |
+| `files.roots` | At least one, all absolute; this is also the write policy the file tools enforce. |
+| `skills.roots` | Directories scanned for `SKILL.md`. One index is built and shared by the tools and the host's own prompts. |
+| `tools.enable` | Empty means every registered tool. Names not registered are a build error. |
+| `tools.dynamic` | The projection: `default` (`always` / `direct` / `deferred` / `hidden`), plus `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`. |
+| `tools.middleware` | Named middleware with kind-owned settings, applied in order. |
+
+### `inference`
+
+Providers are `{name, driver, settings}`; the driver name must be registered on
+the `Runtime` (see `WithDrivers`). Models are `{provider, model, weight,
+capabilities, limits}`. `route` decides how a request picks among them:
+`selector` plus `selector_settings`, `attempts_per_target`, `max_targets`,
+`base_delay`, `max_delay`. See [inference.md](inference.md).
+
+## Layers
+
+A deployment usually stacks three files: a base, a profile, a local override.
 
 ```go
-builder := runtime.NewBuilder(reg)
-if err := builder.WithExternalResource(runtime.ExternalResource{
-    ExternalDependency: runtime.ExternalDependency{
-        Name:     "db",
-        Contract: "db.Pool",
-    },
-    Value: db,
-}); err != nil {
-    return err
-}
-app, err := builder.Build(ctx, doc)
+cfg, provenance, err := runtime.LoadLayers(ctx, []runtime.Layer{
+    {Priority: 0,  Name: "base.yaml",    Path: "base.yaml"},
+    {Priority: 10, Name: "profile.yaml", Path: "profile.yaml"},
+    {Priority: 20, Name: "local.yaml",   Bytes: embedded},
+}, runtime.WithResolver("secret", vault.Resolve))
 ```
 
-Any resource, agent engine, or hook can then reference `db` in its
-`deps`; the consuming factory must declare `{name: db, type: db.Pool}`
-in its `resource.Spec.Deps` so deploy can check the contract.
+- Layers merge in **ascending priority**; a higher priority wins.
+- Duplicate priorities are rejected. Order in the slice is not order of
+  application — a profile picked on a command line belongs above a file from a
+  directory scan regardless of what the scan produced.
+- Merge rules are per node kind and nothing is inferred by reflection: mappings
+  merge key by key, **sequences are replaced whole**, scalars are replaced. A
+  permission list must not grow silently because someone added one line.
+- Placeholders are resolved **once, after the merge**, so a value an overriding
+  layer replaced is never looked up. Resolvers may read a secret store, log an
+  access or fail; doing that for dead values is waste. Forms: `${NAME}`,
+  `${NAME:-fallback}` (both `env`), and `${scheme:arg:arg}` for anything
+  registered with `runtime.WithResolver`.
+- `provenance` maps a dotted path to the layer that last set it — the answer to
+  "which file put this value here", which a merged policy otherwise lacks.
 
-External values are borrowed, not owned:
-
-- They never participate in `Wire` / deployment binding, `Close`,
-  `Runtime.Drain`, or dynamic agent rebinding lifecycle.
-- They are never rebuilt by `Reload`: a generation receives the injected
-  object, unless the reload replaces the set with
-  `WithReloadExternals`.
-- They are hidden from `Runtime.Resource` and `Result.Names` — they
-  exist only as dependencies.
-- `Reload` may shrink or grow the declared set. A reload may not require
-  a value that is neither injected at build time nor part of the
-  reload's replacement set; `WithReloadExternals` is how a generation
-  receives a name the Runtime was not built with.
-- The application is responsible for closing external values — including
-  the ones a reload replaced — after all Runtimes sharing them are
-  closed.
-
-External dependencies cannot serve runtime-managed roles: `event_bus`,
-`checkpoint_store`, and `dynamic_catalog.tools` resource names must be
-regular deployment resources.
-
-## Runtime config
-
-```yaml
-runtime:
-  event_bus: events
-  checkpoint_store: checkpoints   # optional
-  external_deps:                  # optional
-    - name: db
-      contract: db.Pool
-  sessions:
-    idle_timeout: 10m
-    sink_buffer: 256
-    delivery_concurrency: 8
-    speculative_buffer_events: 1024
-    speculative_buffer_bytes: 1048576
-    max_sessions: 1024
-    resume: false
-  dynamic_catalog:
-    tools:
-      default: shared_tools
-      researcher: research_tools
-  agents:
-    remove_timeout: 1m
-```
-
-Rules:
-
-- `event_bus` is required and must name an `event.Bus` resource.
-- `checkpoint_store` is optional; it names an `agent.CheckpointStore`.
-- `sessions.resume` requires `checkpoint_store`.
-- `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources.
-  The reserved `default` key is an optional fallback. The mapping is
-  live: dynamically registered agents may attach a tool assembly at
-  registration time (see below). Every mapping key must name a deployed
-  agent — an unknown key fails the build (`no such deployed agent`).
-- `agents.remove_timeout` (a positive duration string) bounds how long
-  a dynamic agent removal waits for the agent's active turns to finish:
-  it is the default `UnregisterAgent` applies when the call gives no
-  `WithRemoveTimeout`. Absent, a removal is bounded only by the caller's
-  context; the craft module's `SyncAgents` passes fall back to this key
-  before their own default.
-- Buffer and concurrency fields are validated against hard upper bounds.
-
-## Checkpoint stores
-
-`checkpoint_store` names a resource implementing `agent.CheckpointStore`.
-The core backend is the workspace store:
-
-```yaml
-resources:
-  cps:
-    kind: checkpoint.Store
-    impl: workspace
-    deps:
-      workspace: ws
-    settings:
-      prefix: agent/checkpoints  # optional; default "agent/checkpoints"
-```
-
-Checkpoint files live under the workspace's `prefix` directory.
-`sessions.resume: true` requires a store, and reloads additionally require
-it to implement `agent.CheckpointDeleter` (the core workspace store does).
-Concrete alternative backends are app-registered outside `core/` and own
-their settings schema.
-
-## Sessions
+## Building
 
 ```go
-lease, err := app.Sessions().Open(ctx, session.Key{
-    AgentID:   "assistant",
-    ContextID: "conversation-1",
-})
-if err != nil {
-    return err
-}
-defer lease.Close()
-
-turn, err := lease.Session().Start(ctx, agent.Request{
-    Message: message.NewTextMessage(message.RoleUser, "hello"),
-}, session.SinkSpec{ID: "console", Sink: streamSink})
-if err != nil {
-    return err
-}
-
-result, err := turn.Wait(ctx)
-```
-
-`SinkSpec` controls streaming delivery, visibility, authority, and queue
-size. `delivery_concurrency` bounds in-flight sink callbacks.
-
-While a turn runs, `Turn.Interrupt` stops it at the next safe checkpoint
-and `Turn.Steer` hands it a message that a document node delivers at a
-boundary the document chose — see
-[Steering a running turn](#steering-a-running-turn).
-
-Delegated subagent sessions inherit the caller turn's stream sinks: the
-turn execution context carries the caller's stream policy, and the
-delegation service attaches those sinks to subagent runs as observers
-(authority and explicit-ack semantics are downgraded because the sink has
-no handle to the subagent turn). An inherited sink may be invoked
-concurrently from multiple sessions and must be safe for concurrent
-`OnDelta` calls.
-
-### DeleteSession
-
-`app.Sessions().DeleteSession(ctx, key)` removes one session's durable
-state by key (agent id + context id) and closes its live session — the
-by-key counterpart of `UnregisterAgent` for delete/archive-a-conversation
-workflows. After it returns, the checkpoint store no longer carries the
-key's committed history, parked-run checkpoint, or resumable request; a
-later `Open` starts with empty history. Semantics mirror removal: new
-opens for the key are refused until deletion finishes, the live session is
-drained (bounded by ctx) before store entries are removed, and on ctx
-expiry the delete marker rolls back with no partial removal — the call is
-retryable and repeated calls are idempotent.
-
-### Draining a runtime offline
-
-`Runtime.Drain(ctx)` quiesces a runtime whose object is about to be
-replaced (for example a blue-green rebuild that `Reload` cannot express):
-new session leases and new turns on already-open leases are refused, and
-the runtime waits (bounded by `ctx`) for active turns to finish naturally.
-It never interrupts running turns. After `Drain` returns, the runtime stays
-drained; retry a timed-out drain or proceed to `Close` once the replacement
-is ready:
-
-```go
-if err := old.Drain(ctx); err != nil {
-    return err // runtime stays drained; retry or force Close
-}
-if err := old.Close(); err != nil {
-    return err
-}
-newApp, err := runtime.NewBuilder(reg).Build(ctx, doc)
-```
-
-The session manager exposes the same primitives for embedded use:
-`Manager.Idle()` reports whether any session still has active turns,
-prompts, or sinks; `Manager.WaitIdle(ctx)` waits without changing state;
-`Manager.Drain(ctx)` quiesces and waits. Prefer `Runtime.Drain` when the
-application owns a `Runtime`, since it serializes against
-`RegisterAgent` / `UnregisterAgent` / `Reload` / `Close`.
-
-## Steering a running turn
-
-`Turn.Steer(msg)` hands a message to a turn that is already running — the
-inbound counterpart of `Turn.Interrupt`, which can only stop a run, never
-correct it. The queue belongs to the turn (not to the host factory, not to
-the deployment document): `Turn.PendingSteer()` reports what is queued,
-`Turn.DrainSteer()` takes everything queued so far, and the session installs
-the turn's queue as the `agent.SteerSource` capability on every turn host.
-Documents read it where they choose, through the script global
-`host.drainSteer()` (see [graph.md](graph.md)); core never injects text
-mid-stream, and the graph executor's interrupt checkpoints are not delivery
-points.
-
-`Steer` always reports non-delivery instead of silently dropping:
-
-- `ErrSteerQueueFull` (budget exceeded) once 8 messages are queued — the
-  queue is a low-latency correction channel, not a second inbox, so the
-  caller keeps its message and queues it for the next turn;
-- `ErrSteerTooLarge` (budget exceeded) for one oversized message;
-- `agent.Interrupted(...)` once an interrupt was requested: the remaining
-  waves are not guaranteed to run, so accepting would promise a delivery
-  that cannot happen;
-- `ErrSteerClosed` (not available) once the turn is terminal.
-
-Draining is not delivery: a message a node drained and then failed to use
-(or that a checkpoint rollback left outside the resumed board) is gone.
-Undelivered messages are therefore observable two ways — `PendingSteer()`
-while the turn lives, and the `session.pending_steer` key on the turn result
-state for a turn that ended with messages still queued (the messages stay
-retrievable through `DrainSteer`). Steer queues are turn-scoped and never
-persisted, so a resumed run starts empty.
-
-The event stream does not carry that count. The run-end envelope is published
-from inside `Execute` (`core/graph/execute.go`), which returns before the
-turn settles and records the key, and nothing re-publishes afterwards — so an
-embedder that only subscribes to the bus detects non-delivery by reading the
-turn result (`Turn.Wait` or the application's own result path), where the
-value is an `int` in process and a JSON number after a round trip.
-
-Because one turn has exactly one queue, a `WithHostFactory` /
-`WithResultHostFactory` product that already implements `agent.SteerSource`
-fails the start with a conflict rather than being silently shadowed.
-
-Delegated sub-runs are then a per-case story rather than a blanket "not
-steerable": a sub-run with its own turn (delegation against a bound
-`session.Manager`) has its own queue — steerable by whoever starts that turn,
-not by the parent; a sub-run with no turn of its own is not steerable at all,
-and in legacy mode (no manager bound) the synchronous path inherits the
-caller's Host, where the delegation service withholds `agent.SteerSource`
-from what the child engine receives, so a delegated steer node cannot drain
-the parent's queue. See [delegation.md](delegation.md).
-
-The session always wraps the turn Host with its steer source (outermost, on
-top of the ephemeral wrapper), so the Host an engine receives is never the
-factory product itself: optional capabilities are reachable through
-`agent.CapabilityFromHost` — `agent.SteerFromHost`, `agent.EventBusFromHost`
-and `delegation.ServiceFromHost` are the facades over it — never by asserting
-the concrete Host type.
-
-## Dynamic agent registry
-
-Agents are normally declared in the deployment document and fixed for the
-life of the `Runtime`. `Runtime` also exposes a live registry so agents
-can be registered and removed at runtime without rebuilding:
-
-```go
-instance, err := app.RegisterAgent(ctx, "qa", agent.Definition{
-    Card:   agent.AgentCard{Name: "Ticket QA"},
-    Engine: agent.EngineRef{Kind: "agent.Engine", Impl: "graph"},
-}, runtime.WithToolAssembly("shared_tools")) // optional tool catalog
-if err != nil {
-    return err
-}
-
-lease, err := app.Sessions().GetOrCreate(ctx, session.Key{
-    AgentID: "qa", ContextID: "user-7",
-})
-// ... Start / Wait, exactly like a deployed agent
-
-if err := app.UnregisterAgent(ctx, "qa",
-    runtime.WithRemoveTimeout(30*time.Second)); err != nil {
-    return err
-}
-```
-
-Semantics:
-
-- `RegisterAgent` runs the `Definition` through the same assembly path as
-  deployment (`deploy.BindAgent`: engine factory, dependency resolution,
-  hook construction and wiring). A name that collides with a deployed or
-  already-registered agent is a `Conflict`; assembly failures are
-  `Validation` and never leave a partial registration.
-- `UnregisterAgent` blocks new sessions for the agent, waits for active
-  turns to finish naturally (bounded by `WithRemoveTimeout`, the
-  document's `agents.remove_timeout`, or the caller context, in that
-  order), then closes the agent's engine and hooks. On timeout the
-  agent stays registered and sessions stay intact; the call is
-  retryable. Unknown names are an idempotent no-op; deployed agents
-  cannot be removed at runtime (`Conflict`).
-- `Agent` / `AgentNames` are the live view: dynamically registered agents
-  plus the deployment snapshot.
-- With `dynamic_catalog` configured, a registration must either carry
-  `WithToolAssembly(<resource name>)` or be covered by the `default`
-  assembly — the same rule the build enforces for deployed agents.
-- Every successful register/remove publishes a lifecycle event under
-  `runtime.agent.<id>.registered` / `.removed` (subscribe with
-  `PatternAgentLifecycle()`); the payload carries `agent_id`, `name`, and
-  `description`.
-
-`Manager.RemoveAgent` / `Manager.ReopenAgent` are the session-manager
-level primitives behind removal and re-registration.
-
-## Reload
-
-`Runtime.Reload` transactionally replaces the deployment document without
-rebuilding the runtime:
-
-```go
-result, err := app.Reload(ctx, newDoc)
-if err != nil {
-    // the previous generation keeps serving
-    return err
-}
-_ = result.GenerationID
-```
-
-Semantics:
-
-- The new generation is built, validated, and swapped atomically; any
-  failure aborts before the swap and the current generation stays in
-  service. In-flight turns always complete on the generation they started
-  on; the next `Start` uses the new generation.
-- Each generation owns its `event_bus` / `checkpoint_store` values, and
-  the router subscribes to every live generation's bus, so the document
-  may change their configuration or implementation freely. Continuity of
-  durable session state across a store change is the host's
-  responsibility (same backing storage or migration). A reload whose
-  `event_bus` factory returns the current generation's bus (a shared
-  singleton) is rejected.
-- Dynamically registered agents are re-bound against the new result;
-  agents removed by the new document have their sessions drained before
-  the swap. `Reload` is serialized with `RegisterAgent` /
-  `UnregisterAgent` / `Close`.
-- A drain is not reversible. It closes the removed agents' sessions as it
-  goes, so an abort later in the same reload (say, a second removed agent
-  whose drain times out) reopens the agent names but cannot bring those
-  sessions back. The failure is reported as a warning per drained agent, and
-  `drained_agents` on the `.failed` event names them.
-- The new `sessions` limits take effect with the swap, not with the drain:
-  they are validated while the document is parsed and applied in the
-  commit just before the swap, so a bad `sessions` block fails before
-  anything is drained, and a reload that aborts leaves the serving
-  generation under its own tunables.
-- Progress is published as `runtime.rebuild.started` / `.completed` /
-  `.failed` events (`SubjectRuntimeRebuild*`, subscribe with
-  `PatternRuntimeRebuild()`); the `RuntimeRebuildEvent` payload carries
-  `generation_id`, `previous_generation_id`, `rebound_agents`,
-  `drained_agents`, and `error` (on failure). See [event.md](event.md)
-  for the event namespaces.
-
-Reload options replace the inputs a generation is built with, for the
-cases the document alone cannot express (a per-tenant external value, a
-workspace-scoped expansion resolver, a decorator per generation):
-
-```go
-_, err := app.Reload(ctx, newDoc,
-    runtime.WithReloadExternals([]runtime.ExternalResource{db, cache}),
-    runtime.WithReloadResolver(workspaceResolver),
-    runtime.WithReloadHostFactory(decorate),
+// Resolvers are a load option: they belong to reading the document.
+cfg, provenance, err := runtime.LoadLayers(ctx, layers,
+    runtime.WithResolver("secret", vault.Resolve),
 )
+
+rt, err := runtime.New(ctx, cfg,
+    // Drivers are keyed by the name written in inference.providers[].driver.
+    runtime.WithDrivers(runtime.Driver{Name: "openai", Build: openai.New}),
+    // Selectors are keyed by the name written in inference.route.selector.
+    runtime.WithSelectors(runtime.Selector{
+        Name:     "weighted",
+        Generate: func(json.RawMessage) (route.Selector[inference.GenerateRequest], error) {
+            return weighted{}, nil
+        },
+    }),
+    runtime.WithToolSource(myExtraTools),
+    // Middleware that needs a Go value cannot come from YAML, so the host
+    // registers it under the name the document lists.
+    runtime.WithMiddleware(runtime.MiddlewareOption{Name: "approve", Build: approve}),
+)
+defer rt.Close()
 ```
 
-- `WithReloadExternals` replaces the injected external values (the whole
-  set, not a merge), `WithReloadResolver` the expansion resolver, and
-  `WithReloadHostFactory` / `WithReloadResultHostFactory` the host
-  factory decorations.
-- A replacement is validated like the builder's option of the same kind,
-  with one difference: a nil value is meaningful — nil externals, a nil
-  resolver and a nil decorator each mean "none", which is what removes a
-  decorator instead of leaving the retained one in place.
-- Once the swap commits the replacement is retained: a later `Reload`
-  without the option builds with it. A reload that aborts leaves every
-  retained input, and the serving generation, exactly as they were.
+There are no built-in drivers or selectors: a name the document writes must have
+been registered, and an unregistered one fails with the offered names —
+`inference.route.selector: "cheapest" is not available; offered: weighted`. An
+empty `selector` keeps declaration order. Middleware is the exception: the built-in
+names `telemetry`, `recover`, `result_limit`, `concurrency` and `redact` are
+always available, in the order the document lists them, first written outermost.
 
-## Host decorators
+`New` validates before it builds, so a document that cannot be honoured fails
+without side effects:
 
-`runtime.Builder.WithHostFactory` wraps the base host factory. The decorator
-must delegate any method it does not override.
+- `files.roots` present, absolute, and accepted by `permission.Writes`;
+- `sandbox.backend` known, `net.mode` known, `net.allow_hosts` only with
+  `allow_list`, `timeout` and `remote.timeout`/`poll_hold` parseable and positive;
+- `cpu_millicores` implies a `timeout`, and the backend can actually enforce a
+  cpu or memory cap — see below;
+- a backend's own block (`bwrap`, `seatbelt`, `windows`) may only appear with
+  that backend, and `remote` only with `backend: remote`;
+- the journal block's cheap invariants (op names, non-negative retention and
+  watch budget). Root resolution stays a build concern, so a platform without a
+  watch source fails here rather than silently reporting nothing.
 
-`runtime.Builder.WithResultHostFactory` wraps the factory a second time with
-access to the fully assembled deployment, after `WithHostFactory` has run.
-This is the seam for deployment-built, run-scoped services: applications opt
-in and decide which services to expose on every turn host, and the runtime
-itself stays neutral to them. For example, exposing a delegation service:
+## The sandbox policy reaches the commands
 
-```go
-builder.WithResultHostFactory(func(result *deploy.Result, factory session.HostFactory) (session.HostFactory, error) {
-    return hostwrap.Wrap(factory, result) // delegation.Service onto every turn host
-})
+This is the part that used to be missing: a document could declare a budget that
+nothing enforced. The runtime now projects all four knobs onto every call it
+issues through `engine.WithDefaults`:
+
+| Document | Becomes |
+| --- | --- |
+| `timeout` | `ExecOptions.Timeout` — a ceiling; a tool asking for less keeps its own. |
+| `cpu_millicores` | `Resources.CPU` (derived from the timeout). |
+| `memory_mib` | `Resources.MemoryBytes`. |
+| `writes` | `Permission.Writes` — the files a command may touch. |
+
+Three rules make that honest:
+
+1. **Stricter wins, per field.** When a tool also sets resources, the two are
+   merged field by field: zero defers, and of two non-zero values the smaller
+   one wins. A tool cannot widen the deployment's budget and the deployment
+   cannot silently widen a tool's.
+2. **An unenforceable cap is a build error.** `writes` is only projected onto a
+   backend that has write confinement; asking for a cap a backend cannot apply
+   names the field instead of pretending.
+3. **`writes` on `local`/`remote` warns.** `local` enforces no boundary and
+   `remote` enforces it on the server, so the value would be decoration; the
+   runtime logs a warning rather than implying enforcement.
+
+## The remote backend
+
+`sandbox.backend: remote` hands execution to a server that speaks the wire
+protocol in `core/sandbox-remote/wire`:
+
+```yaml
+sandbox:
+  backend: remote
+  remote:
+    transport: http              # http (default) | unix
+    endpoint: https://sandbox.internal:8443
+    token: "${SANDBOX_TOKEN}"
+    timeout: 30s
+    poll_hold: 15s
+    insecure_skip_verify: false
 ```
 
-The decorator is retained across reloads and re-applied to each new
-generation's host factory with that generation's deployment.
+| Transport | Fields |
+| --- | --- |
+| `http` | `endpoint` required and `http(s)`; `socket` rejected. |
+| `unix` | `socket` required; `endpoint` and `insecure_skip_verify` rejected. A token is optional — the boundary is the directory's permissions. |
 
-See [deploy.md](deploy.md) and [resource.md](resource.md).
+Every other backend's fields behave the same way: the field the transport does
+not use is a validation error, because a socket path beside an endpoint is
+configuration that silently does nothing.
+
+## Accessors
+
+| Call | Returns |
+| --- | --- |
+| `Config()` | The resolved configuration, layers already merged. |
+| `Provider()`, `Router()`, `DefaultModel()` | The inference side. |
+| `Tools()`, `Assembly()`, `NewCatalogView()` | The tool registry and the per-run projection. |
+| `Runner()`, `Journal()` | The sandbox boundary and its file journal (nil when absent). |
+| `Files()` | The `fsx.Tree` the file tools write through. |
+| `Skills()` | The one `skill.Index` the tools and the host share. |
+| `Context(ctx)` | A context carrying the runtime's identity for tracing. |
+| `Close()` | Tears down, in reverse construction order. |
+
+## Ownership
+
+One rule: **a `Runtime` closes what it created.** A value handed in through an
+option is somebody else's to close, and `Close` leaves it alone.
+
+`Close` runs in reverse construction order — tools, then journal, then runner,
+then tree — because a session that outlives its runner writes into a corpse, and
+a journal that outlives its runner drops the last events. Errors are joined: a
+failing journal must not stop the runner from being closed.
+
+## What is not here
+
+| Not in `runtime` | Where it lives |
+| --- | --- |
+| Sessions, history, turn loop | `core/agent` and `core/agent-host` |
+| Lifecycle hooks | `agent.Hooks`, attached by a `deploy.HookKind` — see [hooks.md](hooks.md) |
+| Events a UI subscribes to | `agent.Event`, streamed by a session |
+| Reload / hot swap | A host builds a new `Runtime` and drains the old one |
+| Deployment documents | `core/deploy` — see [deploy.md](deploy.md) |

@@ -1,3 +1,13 @@
+# shellcheck disable=SC2046,SC2283,SC1036,SC1088,SC2034
+# Make expands $(...) before the shell sees it: the unquoted expansions are
+# argument lists (module names), and quoting them would pass one string.
+#
+# The same reading applies to the macro assignments below (`NAME = value` is
+# make syntax, not shell) and to the `$$(...)` escaping in recipes: shellcheck
+# parses this file as shell, so those three forms are reported and are not
+# defects. The directives are disabled here rather than per line so a new
+# recipe copying the pattern does not reintroduce the noise.
+#
 # Pin bash so the GO_FOREACH macro's `set -e; for ... done` semantics are
 # stable across hosts (default sh on some macOS setups treats `set -e`
 # inside compound statements differently).
@@ -5,34 +15,32 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod backends/*/*/go.mod))
 # The provider adapters share one module: `driver` provides every
 # `driver/<name>` package, so a new provider is a package, not a module.
 # Spelled out rather than globbed — a wildcard that stops matching a
 # consolidated module silently drops it from every target below.
 DRIVER_MODULES := driver
 
-MODULES_WORK := core craft $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge examples/anvil
+MODULES_WORK := core $(DRIVER_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core craft $(BACKEND_MODULES) $(DRIVER_MODULES)
+MODULES_LINT := core $(DRIVER_MODULES)
 
 # Modules a reader builds from their own go.mod and go.sum, without this
-# workspace: every example, plus `craft` itself — a reader requires it
-# directly, so its own pins have to stand on their own, and the workspace
-# was hiding exactly that. They are checked with GOWORK=off (see
+# workspace: every example. They are checked with GOWORK=off (see
 # `check-consumers`); the drivers get the same treatment per module in
 # CI's test matrix.
 #
 # An exemption is a claim about today, and it is checked as one: a module
 # listed here that starts building outside the workspace fails the
 # target, so an exemption cannot outlive the release that made it
-# obsolete. Empty since core v0.7.0 shipped the two symbols that kept
-# craft and examples/anvil pinned below it (core/hooks and
-# core/tool/mcp.WithServerLost); name a module here only with the reason
-# it cannot build yet.
-CONSUMER_EXEMPT :=
-CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)) craft)
+# obsolete. Name a module here only with the reason it cannot build yet.
+# `examples/forge` imports packages that only exist in this checkout
+# (`agent-host`, `agent-graph/script`, `inference-openai`, …) while its go.mod
+# still pins core v0.10.0: the pin moves when `core` tags the rebuild, and this
+# line has to go with it — the target fails once the exemption builds.
+CONSUMER_EXEMPT := examples/forge
+CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)))
 
 # `make fmt` mirrors the CI gofmt -s gate.
 ALL_MODULES := $(MODULES_WORK)
@@ -53,8 +61,13 @@ help:
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
-	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off),"
-	@echo "                      plus craft itself; exemptions must still be exempt."
+	@echo "  make bench       Run benchmarks for BENCH_MODULES into .bench/"
+	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
+	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
+	@echo "  make test-shuffle   Run the tests in random order, three times"
+	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"
+	@echo "  make stress      Stress one test (PKG= ./pkg RUN=TestName COUNT=200)"
+	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off)."
 	@echo "  make ci          vet + test"
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
@@ -64,12 +77,18 @@ help:
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 
 .PHONY: vet
+# Opt-in suites (integration_bwrap) are type-checked here even on hosts that
+# cannot run them: a file behind a build tag that CI never compiles is a file
+# that rots silently. The suites themselves self-skip when their toolchain is
+# absent, so running them under test costs nothing where bwrap is not installed.
+VET_TAGS = -tags integration_bwrap
+
 vet:
-	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet ./...)
+	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet $(VET_TAGS) ./...)
 
 .PHONY: test
 test:
-	@$(call GO_FOREACH,$(MODULES_WORK),test,go test ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_WORK),test,go test $(VET_TAGS) ./... -count=1)
 
 .PHONY: fmt
 fmt:
@@ -86,9 +105,9 @@ tidy:
 # Modules are installed with GOBIN pointed at a temp directory: `go
 # install` writes whatever binary a module produces outside the tree
 # (nothing is ever left behind next to the source). For a library module
-# like `craft` it writes no binary but still compiles every package — the
-# pin check a reader's own build makes — where `go build -o dir/` refuses
-# to run at all ("no main packages to build").
+# it writes no binary but still compiles every package — the pin check a
+# reader's own build makes — where `go build -o dir/` refuses to run at
+# all ("no main packages to build").
 .PHONY: check-consumers
 check-consumers:
 	@set -e; out=$$(mktemp -d); trap 'rm -rf "$$out"' EXIT; \
@@ -106,6 +125,68 @@ check-consumers:
 		fi; \
 		echo "$$log" | head -1 | sed 's/^/    /'; \
 	done
+
+# Correctness and stability lanes. None of these gate `make ci`: they answer
+# different questions (statistical benchmark matches, ordering-dependent bugs,
+# parser inputs, nil paths), and a developer chooses when to pay for them.
+
+# Every module that carries benchmarks. `driver` is here because its request
+# compilation is on the model-call path and had no measurement at all; a module
+# omitted from this list is a module whose benchmarks never run.
+BENCH_MODULES ?= core driver
+BENCH_LABEL ?= run
+
+.PHONY: bench
+bench:
+	@mkdir -p .bench
+	@set -e; for m in $(BENCH_MODULES); do \
+		label="$${m//\//-}-$(BENCH_LABEL)"; \
+		echo "==> bench $$m -> .bench/$$label.txt"; \
+		( cd $$m && go test -run '^$$' -bench . -benchmem -count=5 ./... ) \
+			> ".bench/$$label.txt"; \
+	done
+
+# bench-check is what CI runs: one iteration per benchmark, so every benchmark
+# compiles, runs and reports. Numbers are not compared — a shared runner varies
+# enough that a threshold would be noise. The allocation guards live in the
+# tests and gate through `make test`.
+.PHONY: bench-check
+bench-check:
+	@$(call GO_FOREACH,$(BENCH_MODULES),bench-check,go test -run '^$$' -bench . -benchmem -benchtime=1x ./...)
+
+.PHONY: bench-compare
+bench-compare:
+	@if [ -z "$(OLD)" ] || [ -z "$(NEW)" ]; then \
+		echo "usage: make bench-compare OLD=.bench/core-old.txt NEW=.bench/core-new.txt" >&2; \
+		exit 2; \
+	fi
+	@go run golang.org/x/perf/cmd/benchstat@latest "$(OLD)" "$(NEW)"
+
+# Coverage for the sandbox subsystem, measured across the packages rather than
+# per package. A per-package number is misleading here: sessionkit and netpolicy
+# are exercised through the backends, so their own test files cover a small slice
+# while the real hit rate is several times higher.
+.PHONY: cover
+cover:
+	@cd core && go test -count=1 -coverpkg=./sandbox/... -coverprofile=../.cover.out ./sandbox/... >/dev/null
+	@cd core && go tool cover -func=../.cover.out | tail -n 25
+	@echo "==> full profile: .cover.out (go tool cover -html=.cover.out)"
+
+.PHONY: test-shuffle
+test-shuffle:
+	@$(call GO_FOREACH,$(MODULES_WORK),test-shuffle,go test -shuffle=on -count=3 ./...)
+
+.PHONY: fuzz
+fuzz:
+	@tools/fuzz.sh
+
+.PHONY: stress
+stress:
+	@if [ -z "$(PKG)" ] || [ -z "$(RUN)" ]; then \
+		echo "usage: make stress PKG=./agent RUN=TestAgentRun COUNT=200" >&2; \
+		exit 2; \
+	fi
+	@tools/stress.sh "$(PKG)" "$(RUN)" "$(COUNT)"
 
 .PHONY: ci
 ci: vet test
@@ -135,11 +216,3 @@ release-preflight-write:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
-
-# Live probes: the credentialed measurement lanes of the memory eval module.
-# They need backends/memory/eval/.env (or a repo-root .env) and spend model
-# calls, so they are opt-in rather than part of `make ci`.
-memory-eval-probes:
-	cd backends/memory/eval && MEMORY_EVAL_LIVE=1 go test ./cmd/memory-eval/ -count=1 -v \
-		-run 'Test(EvidenceFidelity|RetrievalBudgetSweep|PackingRedundancy|IngestTagsDatasetTurns|AnswerContextSize|RejudgeStoredAnswersWithLenientJudge|ConfiguredModelsExistInCatalog|DeriveConcurrencyLiveMatchesSequential|CoIngestedConversationsDoNotChangeRetrieval|ExtractionModelAB)' \
-		-timeout 60m

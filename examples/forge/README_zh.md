@@ -1,134 +1,249 @@
-# Forge — 可运行的本地工作区 Demo
+# Forge —— 跑在 FlowCraft 上的一桌狼人杀
 
-Forge 是 FlowCraft 技术栈的可运行本地 demo。它从原生部署文档装配完整
-runtime,提供交互式 TUI、脚本化场景测试,以及 raid × persona 双智能体模拟——
-全部由 `scenarios/` 下的纯文件驱动,除了 demo 自身外不需要任何应用代码。
+Forge 是 FlowCraft 的可运行本地示例。它把一个 workspace 目录部署成一小群 agent，然后
+打一局狼人杀：一个裁判持有规则，八个座位发言，其中一个座位由你本人来打。
+
+它是一个 **host**，不是框架：它和这套栈打交道的每一步，都是任何应用都要自己写的那几步
+—— 读工作区、部署 agent、驱动一个会话、再把事件读出来。
 
 English version: [README.md](README.md).
 
 ## 快速开始
 
-前置要求:Go 1.26+ 和 provider 凭证(见[凭证](#凭证))。
+需要 Go 1.26+ 和 OpenAI 凭证。
 
 ```bash
 cd examples/forge
+cp .env.example .env          # 然后写入 OPENAI_API_KEY=...
 go run . help
-```
-
-运行一条脚本化测试:
-
-```bash
-go run . test -test werewolf/opening_setup
-```
-
-创建工作区并查看信息:
-
-```bash
-go run . workspace create --config werewolf --workspace ./workspace
-go run . workspace inspect --workspace ./workspace
+go run . tui new              # 选 "werewolf"，开局
+go run . test -test werewolf/opening
+go run . test-auto --raid werewolf --rounds 8     # 让它自己打一局
 ```
 
 ## 命令
 
-- `forge workspace create --config <raid> --workspace <dir>` — 把 raid 场景复制成工作区。
-- `forge workspace inspect --workspace <dir>` — 打印工作区元信息(agent、模型、记忆设置)。
-- `forge config raid|persona|test list` — 列出可用场景和测试。
-- `forge tui new` / `forge tui resume` — 在工作区上打开交互式 TUI。
-- `forge test -test <raid>/<name> [--timeout 2m]` — 运行一条脚本化场景测试。
-- `forge test-auto --raid <raid> --persona <persona> [--turns 3]` — 模拟 persona agent 与 raid agent 之间的对话。
+| 命令 | 作用 |
+|---|---|
+| `forge workspace create --config <raid> --workspace <dir>` | 把副本复制成一个工作区 |
+| `forge workspace inspect --workspace <dir>` | 列出每个 agent：导演还是发言者、名字、图、模型、工具、委派目标、钩子 |
+| `forge inspect <workspace> [--task <id>] [--kind <kind>]` | 从 store 里把一个 run 折叠成时间线 |
+| `forge config raid\|persona\|test list` | 列出场景与测试 |
+| `forge tui new` / `forge tui resume` | 交互式牌桌 |
+| `forge test -test <raid>/<name> [--timeout 2m]` | 跑一条脚本化测试，产物写到 `.out/<run>/` |
+| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | 自动打完整局，人类座位由它自己的 agent 回答 |
 
-## 场景
+场景解析顺序：`--scenarios` → `FORGE_SCENARIOS` → 可执行文件目录 → 当前目录 →
+用户配置目录。
 
-场景文件是 `scenarios/` 下的普通目录,解析优先级依次为 `--scenarios`、
-`FORGE_SCENARIOS`、可执行文件所在目录、当前工作目录、用户配置目录。
+## 牌桌：一张图，八个 agent
 
-### Raid
+一个副本是一份 **C3** 部署：只有三类参与者。
 
-每个 `scenarios/raids/<name>/` 都是一个完整的工作区模板:
+```text
+referee      持有规则和牌桌状态；自己不做任何模型调用
+seat_1..8    一人一个 agent，通过 delegate 工具被叫到
+你           seat_3，由真人（或 test-auto 里 seat_3 自己的 agent）回答
+```
 
-- `deploy.yaml` — `core/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime backends。
-- `inference.yaml` — provider 配置文件和 secret 解析器。
-- `workspace.yaml` — workspace registry 的根目录与布局。
-- `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
-- `graphs/assistant.yaml` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
-- `speakers.yaml` — 可选的每个 graph 节点的用户可见标签;TUI 和测试日志会以 `[主持人]` 这样的标签渲染每个节点的输出。
-
-### 测试
-
-`scenarios/tests/<raid>/<name>.yaml` 定义一条脚本化测试:
+`deploy.yaml` 就是这份演员表：
 
 ```yaml
-name: werewolf_opening_setup
-description: 开局一盘新的狼人杀,并向用户揭示其 3 号村民身份。
-raid: werewolf
-turns:
-  - 开始狼人杀
+agents:
+  - name: referee
+    engine: {kind: graph, settings: {path: ${workspace:root}/graphs/referee.yaml}}
+    delegation:                       # 同步委派：规则叫一个座位，然后等它回答
+      targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
+      modes: [sync]
+      timeout: 2m
+  - name: seat_1
+    engine: {kind: graph, settings: {path: ${workspace:root}/graphs/seat_1.yaml}}
+    hooks:
+      - kind: seat-memory             # 座位跨回合的记忆
+        settings: {dir: .forge/memory, keep: 12}
 ```
 
-`forge test` 会把 raid 复制到 `.out/<raid>_<时间戳>/`,逐轮通过 session
-runtime 运行,并写出 `stats.txt`(每轮指标,包含失败信息)和 `chat_log.txt`。
+裁判的图就是这局游戏：十一个脚本节点（`seed`、`input`、`route`、`night`、`dawn`、
+`day`、`vote`、`exile`、`hunter`、`postgame`、`perform`），状态里装着整张桌子。
+其中只有 `perform` 真正"动手"—— 它调用 `delegate` —— 于是**图决定叫谁，规则决定问什么**。
 
-### Persona
+```text
+input → route → night|dawn|day|vote|exile|hunter|postgame → perform → route
+                    ↑                                            │
+                    └──────────── 牌桌等你时走向 end ──────────────┘
+```
 
-`scenarios/personas/<name>/` 是完整的 workspace 模板,`forge test-auto`
-把它当作模拟中的第二个 agent。
+**为什么座位需要钩子。** 委派每次调用都给座位开一个新的子会话；没有属于它自己的事实，
+它每晚都是初见这张桌子。所以 `seat-memory` 读写 `.forge/memory` 下属于它的文件，键是
+brief 第一行里的对局 id。只有引擎知道一回合何时开始、何时结束；只有部署知道一个座位
+能记住什么 —— 钩子类型存在的意义就是这个分工。
 
-## 凭证
+## 两种导演
 
-Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声明的
-环境变量。demo 启动时会加载 forge 目录下的 `.env`。只有 `DEEPSEEK_API_KEY`
-是必需的:所有场景都固定使用 `deepseek-flash`。另外还声明了三个可直接使用
-的 provider —— 在 OpenAI 端点上完整声明的 `gpt-5.6-luna`(`OPENAI_API_KEY`),
-走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`),以及走 MiniMax
-Anthropic 兼容 Messages 端点、由 anthropic driver 按部署声明提供的
-`MiniMax-M3`(`MINIMAX_API_KEY`),以及走 bytedance driver 的 Ark Responses API、
-由 profile 绑定账号内带日期部署地址的 `doubao-seed-2-0-lite`(`ARK_API_KEY`);
-它们用的是惰性引用,只有在图里真的路由过去时缺少 key 才会报错。完全没有凭证
-时应用会给出明确报错。
+一个副本 = 一个导演 + 一个班子。目录里的两个副本只差一个维度：**导演说不说话**。
 
-## TUI
+| | werewolf（裁判型） | storyteller（讲述型） |
+|---|---|---|
+| 导演 | `referee`：只有规则，**自己不做模型调用** | `narrator`：两个模型节点 `schedule` / `narrate` |
+| 班子 | 八个玩家，其中一个是人 | 四个角色，没有人 |
+| 真相在哪 | 牌桌状态（`game`） | 蓝图与进度（`story`） |
+| 何时结束 | 牌桌等人，或某一方获胜 | 弧线交还给读者，最后收束 |
 
-`forge tui new` 打开两栏 TUI:
+讲述型副本是**数据**而不只是代码：`rules/seed.star` 铺开十个阶段的蓝图，每段有目标、
+边界、允许发言的人、以及交给读者前跑几拍。规则决定候选名单，调度模型在其中选一位，
+规则拒绝名单之外的选择 —— 模型只负责措辞，不决定流程。
 
-- **Chat** — 发送对话并查看流式输出。
-- **Workspace** — 工作区元信息和 token 用量。
+支撑它的两个引擎事实：
 
-`Tab` 切换焦点,`Enter` 提交,`Esc` 清空当前输入,连续按两次 `Ctrl+C`
-退出。空输入不会提交;输入 `/start` 开启新故事,`/next` 让故事继续推进。
+- **`graph.node`**：引擎在事件流上把每次节点调用括起来（start/end），所以界面知道
+  "现在这段字是谁说的"。单节点步精确；宽 frontier 只能做时间线，不能做归属。
+- **`request.stream: false`**：回答是数据（控制行、裁决）的模型调用，可以要一整段回答
+  而不是 delta。
 
-两个宿主指令可以在 TUI 内直接配置推理:
+哪些节点的话不上台面，由部署声明，界面负责过滤：
 
-- `/model` 选择后端 —— `auto`(走路由策略的默认 target)或部署暴露的任意
-  `provider/name`。也可以直接写 `/model auto`、`/model <target>` 跳过选择器。
-- `/think` 选择思考档位 —— `auto`(沿用图里的默认)或 canonical 五档
-  (`minimal`/`low`/`medium`/`high`/`xhigh`)。各 provider 会折叠到自己的档位,
-  折叠情况记录在编译 ledger 上。
-
-这两个选择只存在于 TUI 进程内:它们作为 engine inputs 传给下一轮,不写入
-工作区或会话。状态栏会显示当前选择。场景自己定义的指令(例如 `/start`、
-`/next`)不是 TUI 命令,仍会作为普通用户文本发给 agent。
-
-每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
-输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
-`core/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
-聚合责任仍在 runtime。
-
-聊天输出按发言人分块:每个 graph 节点的流式文本显示为独立的带标签段落,
-工具调用显示为独立的 `[工具调用]` / `[工具结果]` 块,不再混进发言里。
-
-## 与技术栈的接线方式
-
-- `core/deploy` + `core/runtime` 从 `deploy.yaml` 装配 runtime;
-  `core/runtime/session` 驱动对话并把流增量发给 sink。
-- graph 引擎是 `core/graph`,script 节点跑在自带的 JS runtime
-  (`core/agent/scriptrt/jsrt`)上。
-- 模拟工具是 `internal/simtools` 注册的 Go 值。
-- `WithHostFactory` 包住 session host,把每次 LLM 调用的 token 用量镜像到
-  应用侧,供 TUI 展示。
-
-## 开发
+```yaml
+# story.yaml
+internal: [schedule]        # 调度控制行不进正文
+until: "故事收束"            # 自动对局停在这句
+```
 
 ```bash
-go build ./...
-go vet ./...
+go run . test -test storyteller/opening --timeout 300s
+go run . test-auto --raid storyteller --rounds 12
 ```
+
+## 规则即脚本
+
+一条规则是一段 Starlark，由 `core/agent-graph/script` 在进程内执行：
+
+```yaml
+- id: perform
+  kind: script
+  config:
+    backend: starlark
+    path: rules/perform.star
+    reads: [game, brief]
+    writes: [game, brief, spoken]
+    allow: [tool:delegate]        # 唯一一条会动手的规则
+```
+
+- **声明即全部**：`reads`/`writes` 就是这条规则的接触面，`allow` 是它能用的全部工具。
+  文档没写的键和工具，规则碰不到。
+- **不能挂起**：脚本一口气跑完。`allow` 非空时禁止在其中挂起，所以"会动手的规则"必然是
+  "会跑完的规则"。
+- **`version: pinned`**：恢复的 task 继续用当初记录的那一版；那一版不在了就**报错停下**，
+  而不是悄悄换规则。
+- 终止性是构造出来的：没有 IO、没有时钟，只有步数和输出大小预算。内存不是目标 ——
+  选这门语言是为了确定性，不是为了防恶意代码。
+
+后端是语言中立的：先发 Starlark，因为它确定、无 IO；Lua worker 池是**兄弟**，不是替代。
+
+## 钩子：host 拥有的三个时刻
+
+在 `deploy.yaml` 里按 agent 声明：
+
+| 钩子 | 时机 | 失败后果 |
+|---|---|---|
+| `OnSession` | 会话打开或恢复之后、回合之前 | 终止本回合 |
+| `BeforeTurn` | 引擎拿到回合之前，可改写消息 | 终止本回合 |
+| `AfterTurn` | run 结束之后，带状态与结果 | **只记日志，不算失败** |
+
+`AfterTurn` 是那个"不能失败"的：活已经干完，副作用无法撤销，所以一次记忆写入输给竞态
+应该是一行日志，而不是一局游戏卡住。
+
+## `carry`：跨回合的有界状态
+
+图的 state 键可以声明 `carry: true`，下一个 task 从上一个 task 的状态继续，而不是从零值
+开始。裁判用它在任务之间保住牌桌；`day.star` 则靠 `speech` 通道是否变长来判断"人回答了"。
+
+它只适合**有界状态** —— 一局游戏、一张表单、一个累计值 —— 不适合对话历史。在 M2 Max 上
+实测（`core/agent-graph/carry_bench_test.go`）：全新状态起一个 task 约 14.7µs；带 200 条
+消息的对话每回合约 667µs、约 5k 次分配。**对话属于一个 task，不属于 carry。**
+
+## 读一次 run
+
+`forge inspect` 把 checkpoint store 折叠成时间线 —— 这就是"座位集体弃票"和"座位说的是
+我投六号、而解析器读到了字节"的区别：
+
+```text
+step 4  perform  (live)
+  script.run       rules/perform.star  v=sha256:aa471…  live
+  script.tool      delegate#0 ok  我想先救1号，毒药留一晚。  args=sha256:e1dba49…
+  script.tool      delegate#1 ok  我这票先弃了。  args=sha256:89c7b63…
+  state game     brief_kind= brief_seat=0 current_votes=3 items vote_index=3
+```
+
+- 每步一条标记：跑了哪些节点，以及这一步是**真跑还是重放**；
+- 只打印这一步**改过**的 state 字段，而不是整份文档；
+- 每条规则带版本，每次工具调用带回答与参数哈希。
+
+`delegate#0` 与 `delegate#1` 就是"原始回答"和"重问"：规则读不出票时会再问一次，仍读不出
+才记为弃票。
+
+## 代码在哪
+
+| 路径 | 职责 |
+|---|---|
+| `internal/app` | 打开工作区：manager、store、会话、一个回合 |
+| `internal/app/document.go` | 读 `deploy.yaml`、`${workspace:root}`、缺失的环境变量 |
+| `internal/app/drivers.go` | 这个二进制编进来的 driver 表 |
+| `internal/hooks/memory` | `seat-memory` 钩子类型 |
+| `internal/story` | 这张桌子是谁：导演、发言者、名字、玩家座位 |
+| `internal/simtools` | 场景自带的工具，作为一个 `tool.Source` |
+| `internal/chatfmt` | 事件 → 发言/工具块，TUI 与测试日志共用 |
+| `internal/tui` | bubbletea 界面 |
+| `internal/commands` | CLI 表面，含 `inspect` |
+| `internal/scenario` | 文件解析与复制，与 agent 无关 |
+
+整个 host 就是 `host.New` + `Loader.Load` + `Deploy`：
+
+```go
+mgr := host.New(graphKinds(abs), host.Bindings{
+    Store:       store,                                       // 恢复
+    LoadOptions: workspaceOptions(abs),                       // ${workspace:root}
+    OnEvent:     a.forwardSeat,                               // 座位的事件流
+})
+specs, err := mgr.Loader().Load(ctx, body)
+_, err = mgr.Deploy(ctx, specs...)
+
+session, _ := mgr.Session("referee", "referee/"+app.SessionID)   // a session belongs to one agent
+for event, err := range session.Run(ctx, message.NewTextMessage(message.RoleUser, text)) { ... }
+```
+
+## 工作区结构
+
+```text
+scenarios/raids/werewolf/
+  deploy.yaml              # 九个 agent：裁判 + 八个座位
+  runtime.yaml             # 基座：沙箱、文件、模型、工具
+  story.yaml               # 导演、发言者、名字、玩家座位
+  graphs/referee.yaml      # 这局游戏：state、十一个节点、边
+  graphs/seat_1..8.yaml    # 每个座位一张人格图
+  rules/*.star             # 十一条规则
+scenarios/tests/werewolf/opening.yaml, full_game.yaml
+```
+
+`${workspace:root}` 是 forge 为"正在打开的这个目录"绑定的占位符，所以场景目录可以整体搬家。
+每个工作区的持久侧在 `.forge/sessions.db`，因此 `tui resume` 恢复的是**对话**，不只是目录。
+
+## 与旧版 forge 的差别
+
+旧版写于 `core` v0.10.0，已经编译不过。这一版跟随当前分层：
+
+- **没有 resource 文档**：一份部署 = agent + 引擎设置 + runtime 层，文档里没有装配步骤。
+- **脚本回来了，但不是 JavaScript**：狼人杀规则是 Starlark，由图引擎自带的 script 节点在
+  进程内执行。旧的 JS 运行时保持退役，旧场景留在 `../forge-tmp` 仅作参考。
+- **没有 board**：图的 state 取代 board 变量，条件读 `state.<key>`；模型在 `runtime.yaml`
+  里选，不再是 TUI 命令。
+- **归属靠 agent**：事件只说"说了什么、调了什么工具"，不说"哪个节点产生的"，所以需要按
+  发言者归属的部署，就给每个发言者一个 agent —— 座位正是这么来的。
+- **用量与工具计数来自事件流。**
+
+## 开发说明
+
+这个示例需要的 core 修订还没有打 tag，所以模块通过仓库的 `go.work` 解析，自己不携带
+`replace`。
+
+本目录的门禁：`gofmt -l .`、`go build ./... && go vet ./... && go test ./...`。
+仓库根目录：`make ci`（CI 门禁模块另跑 `make lint`）。

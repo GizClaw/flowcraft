@@ -2,51 +2,97 @@ package minimax
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
-// Video generation runs on MiniMax's async task pipeline: create the task,
-// poll its status, then surface the finished artifact's URL. The download
-// URL expires one hour after retrieval, so the response carries it verbatim
-// — downloading and persisting is the caller's job.
+// Video generation runs on MiniMax's v2 asynchronous task pipeline: create the
+// task, poll its status, then surface the finished artifact's URL. The download
+// URL expires one hour after retrieval, so the response carries it verbatim —
+// downloading and persisting is the caller's job.
 //
-// Two task APIs exist:
+// The v2 API serves MiniMax-H3 with a multimodal content array (text/image/
+// video/audio items carrying first_frame/last_frame/reference_* roles), a
+// required resolution (768P/2K) and duration (4-15s), an optional ratio
+// (text-only tasks default to 16:9 and reject adaptive; image tasks default to
+// adaptive server-side), and aigc_watermark/callback_url. Its query endpoint
+// returns the artifact URL directly, so there is no file-retrieval hop. The
+// flat v1 API the Hailuo 2.x/02 trio rides is not served here: those models are
+// not declared by this driver, so a Hailuo declaration fails closed at the
+// endpoint rather than compiling onto an API its model does not speak.
 //
-//   - v1 (/v1/video_generation) serves the Hailuo 2.3/2.3-Fast/02 trio with
-//     flat fields: prompt, first/last-frame images, duration (6s, or 10s at
-//     768P), resolution (768P/1080P; 512P for 02 image-to-video),
-//     aigc_watermark, and the prompt_optimizer / fast_pretreatment /
-//     callback_url knobs. There is no aspect-ratio or seed control, so
-//     those intents reject. Hailuo-2.3-Fast is image-to-video only.
-//
-//   - v2 (/v2/video_generation) serves MiniMax-H3 with a multimodal content
-//     array (text/image/video/audio items carrying first_frame/last_frame/
-//     reference_* roles), a required resolution (768P/2K) and duration
-//     (4-15s), an optional ratio (text-only tasks default to 16:9 and
-//     reject adaptive; image tasks default to adaptive server-side), and
-//     aigc_watermark/callback_url. Its query endpoint returns the artifact
-//     URL directly, so there is no file-retrieval hop. H3-Context-IR
-//     (context_ir.go) rides the same query endpoint and shares the content
-//     role mapping and poll loop.
-//
-// Inline media become data URIs carrying their source media type; absolute
-// URLs pass through verbatim.
+// Inline media become data URIs carrying their source media type; absolute URLs
+// pass through verbatim.
 
-// v2Content holds the multimodal input roles both v2 task APIs understand:
-// first/last-frame images and reference image/video/audio items. The v2
-// video and H3-Context-IR compilers share it so the content mapping and
-// its limits stay in one place.
-type v2Content struct {
+const (
+	// videoPathCreate is the v2 create-task endpoint.
+	videoPathCreate = "/v2/video_generation"
+	// videoPathQueryPrefix is the v2 task-status endpoint; the task id is
+	// appended path-escaped.
+	videoPathQueryPrefix = "/v2/query/video_generation/"
+
+	// videoPromptLimit caps the prompt in characters, per the platform's
+	// documented H3 limit.
+	videoPromptLimit = 7000
+	// referenceImageMax, referenceVideoMax and referenceAudioMax bound the
+	// multimodal reference inputs the v2 content array accepts.
+	referenceImageMax = 9
+	referenceVideoMax = 3
+	referenceAudioMax = 3
+)
+
+// The v2 duration envelope, in whole seconds.
+const (
+	videoDurationMin       = 4
+	videoDurationMax       = 15
+	videoDurationDefault   = 6
+	videoResolutionDefault = "768P"
+	// videoRatioTextDefault is the ratio a text-only task gets when the
+	// request names none: the v2 schema requires an explicit non-adaptive
+	// ratio for text-to-video.
+	videoRatioTextDefault = "16:9"
+)
+
+// videoRatios are the official v2 ratio values. adaptive is the server default
+// for image and reference tasks and invalid for text-only tasks.
+var videoRatios = map[string]bool{
+	"adaptive": true, "21:9": true, "16:9": true, "4:3": true,
+	"1:1": true, "3:4": true, "9:16": true,
+}
+
+// videoResolutions are the official v2 resolution tiers.
+var videoResolutions = map[string]bool{"768P": true, "2K": true}
+
+// resolutionList names the served tiers for an error message.
+func resolutionList() string {
+	names := make([]string, 0, len(videoResolutions))
+	for name := range videoResolutions {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return strings.Join(names, "/")
+}
+
+// videoWire is one compiled H3 task request.
+type videoWire struct {
+	model      string
+	prompt     string
+	duration   *int // seconds; nil only if a caller bypasses the compiler
+	resolution string
+	ratio      string
+	watermark  *bool
+	callback   string
+
 	firstFrame      string
 	lastFrame       string
 	referenceImages []string
@@ -54,918 +100,596 @@ type v2Content struct {
 	referenceAudios []string
 }
 
-type videoWire struct {
-	model  string
-	prompt string
-	v2Content
-	duration         *int // seconds; nil = provider default (v1)
-	resolution       string
-	ratio            string
-	watermark        *bool
-	promptOptimizer  *bool // v1 only
-	fastPretreatment *bool // v1 only
-	callbackURL      string
-}
-
+// videoRaw is one finished task: the artifact URL plus the accounting the query
+// reported.
 type videoRaw struct {
-	videoURL  string
-	requestID string
+	videoURL string
+	// requestID is the server-assigned task id. The v2 create response carries
+	// no trace id, so the task id is the only handle the call has.
+	requestID    string
+	outputTokens int64
 }
 
-// v2RatioValues are the official v2 ratio values. adaptive is the server
-// default for image/reference tasks and invalid for text-only tasks.
-var v2RatioValues = map[string]bool{
-	"adaptive": true, "21:9": true, "16:9": true, "4:3": true,
-	"1:1": true, "3:4": true, "9:16": true,
+// textOnly reports whether the content carries no image or reference input,
+// i.e. the task is text-to-video.
+func (w videoWire) textOnly() bool {
+	return w.firstFrame == "" && w.lastFrame == "" &&
+		len(w.referenceImages) == 0 &&
+		len(w.referenceVideos) == 0 && len(w.referenceAudios) == 0
 }
 
 func compileVideo(
-	endpoint string,
 	declared ModelSpec,
-) inference.GenerateCompiler[videoWire] {
+	name string,
+) protocol.Compiler[inference.GenerateRequest, videoWire] {
 	return func(
 		_ context.Context,
-		ref model.ModelRef,
 		request inference.GenerateRequest,
-		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[videoWire], error) {
-		ledger := inference.NewLedger(
-			model.OperationGenerate,
-			providerID,
-			request.ActiveFieldsFor(shape),
-		)
-		wire := videoWire{model: endpoint}
-		if shape == inference.GenerateExecutionStream {
-			ledger.Reject(
-				inference.FieldGenerateExecutionStream,
-				"video generation is a unary task on this provider",
-			)
+		shape protocol.Shape,
+	) (protocol.Compiled[videoWire], error) {
+		if request.Output.Kind() != inference.OutputVideo {
+			return protocol.Compiled[videoWire]{}, inference.NewError(
+				inference.UnsupportedFeature, inference.FieldOutput,
+				fmt.Errorf("minimax: video pipeline serves video output only"))
 		}
+		if shape == protocol.ShapeStream {
+			return protocol.Compiled[videoWire]{}, inference.NewError(
+				inference.UnsupportedFeature, inference.FieldStream,
+				fmt.Errorf("minimax: video generation is a unary task on this provider"))
+		}
+		options, err := videoOptions(request.Extensions)
+		if err != nil {
+			return protocol.Compiled[videoWire]{}, err
+		}
+		wire := videoWire{model: wireModel(name, declared)}
+		limits := declared.videoLimits()
 
-		prompt, images, videos, audios := collectTaskParts(request, ledger)
+		var prompt []string
+		images, videos, audios, err := collectTaskParts(request, declared, &prompt)
+		if err != nil {
+			return protocol.Compiled[videoWire]{}, err
+		}
 		wire.prompt = strings.Join(prompt, "\n")
-
-		compileVideoInputs(&wire, images, videos, audios, declared, ref, ledger)
-		limit, label := 2000, "minimax v1 prompts"
-		if declared.videoV2() {
-			limit, label = 7000, "MiniMax-H3 prompts"
+		if strings.TrimSpace(wire.prompt) == "" {
+			return protocol.Compiled[videoWire]{}, inference.NewError(
+				inference.UnsupportedFeature, inference.FieldContent,
+				fmt.Errorf("minimax: %s requires a non-empty text prompt", name))
 		}
-		rejectPromptLength(
-			request,
-			ledger,
-			len(wire.prompt),
-			limit,
-			fmt.Sprintf("%s are at most %d characters, not %d", label, limit, len(wire.prompt)),
-		)
-		if declared.videoV2() && wire.prompt == "" {
-			// The v2 schema requires a non-empty text item in content.
-			reason := fmt.Sprintf("%s requires a non-empty text prompt", endpoint)
-			if len(prompt) > 0 {
-				ledger.Reject(inference.FieldGenerateInputText, reason)
-			} else if intent := request.Input.Content.Intent; intent.Video != nil {
-				ledger.Reject(inference.FieldGenerateIntentVideo, reason)
-			} else {
-				ledger.Reject(inference.FieldGenerateInputRole, reason)
-			}
+		characters := len([]rune(wire.prompt))
+		if characters > limits.promptLimit {
+			return protocol.Compiled[videoWire]{}, inference.NewError(
+				inference.InvalidRequest, inference.FieldContent,
+				fmt.Errorf("minimax: prompts are at most %d characters, not %d",
+					limits.promptLimit, characters))
 		}
-		if declared.Video.ImageToVideoOnly && wire.firstFrame == "" {
-			// A missing first frame is a required-input absence, so no part
-			// field is active to reject; the rejection lands on the closest
-			// active field — the video intent when present, the input role
-			// otherwise.
-			reason := fmt.Sprintf(
-				"%s is image-to-video only; the input must carry a first-frame image",
-				endpoint,
-			)
-			if intent := request.Input.Content.Intent; intent.Video != nil {
-				ledger.Reject(inference.FieldGenerateIntentVideo, reason)
-			} else {
-				ledger.Reject(inference.FieldGenerateInputRole, reason)
-			}
+		if err := compileVideoInputs(&wire, images, videos, audios, name, limits); err != nil {
+			return protocol.Compiled[videoWire]{}, err
 		}
-
-		intent := request.Input.Content.Intent
-		if text := intent.Text; text != nil {
-			rejectTextControls(text, ledger,
-				"video models do not call tools",
-				"the task API has no sampling controls",
-				"video models have no thinking control",
-			)
-			ledger.Reject(
-				inference.FieldGenerateIntentText,
-				"video models do not produce text",
-			)
+		if err := compileVideoOptions(&wire, options, name, limits); err != nil {
+			return protocol.Compiled[videoWire]{}, err
 		}
-		if intent.Image != nil {
-			ledger.Reject(
-				inference.FieldGenerateIntentImage,
-				"video models do not produce images",
-			)
-		}
-		if intent.Audio != nil {
-			ledger.Reject(
-				inference.FieldGenerateIntentAudio,
-				"video models do not synthesize standalone audio",
-			)
-		}
-		if video := intent.Video; video != nil {
-			compileVideoIntent(&wire, video, declared, endpoint, ledger)
-		}
-		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
-		compileVideoOptions(&wire, options, declared, endpoint, ledger)
-		ledger.RejectExtensions("video generation", other)
-
-		report := ledger.Report()
-		if ledger.Rejected() {
-			return inference.Compiled[videoWire]{Report: report}, ledger.Err()
-		}
-		return inference.Compiled[videoWire]{Wire: wire, Report: report}, nil
+		return protocol.Compiled[videoWire]{
+			Wire: wire, Fields: request.ActiveFields(),
+		}, nil
 	}
 }
 
-// collectTaskParts gathers text/image/video/audio parts from the user
-// context turns and the request input, rendering media the way the task
-// APIs expect them (URL passthrough or data URIs). Non-media parts reject.
-// Both the video and H3-Context-IR compilers share it.
+// collectTaskParts gathers text/image/video/audio parts from the user context
+// turns and the request input, rendering media the way the task API expects:
+// absolute URLs pass through, inline bytes become data URIs carrying their
+// source media type.
+//
+// A non-empty capabilities.inputs list is the declaration's promise about what
+// this model accepts, and nothing upstream enforces it, so the compiler is the
+// gate: a part kind the model does not declare is rejected here rather than
+// turned into a differently-priced operation on the wire. An empty list filters
+// nothing, which is the documented meaning of an undeclared input surface.
 func collectTaskParts(
 	request inference.GenerateRequest,
-	ledger *inference.Ledger,
-) (prompt []string, images, videos, audios []string) {
-	collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
+	declared ModelSpec,
+	prompt *[]string,
+) (images, videos, audios []string, err error) {
+	declares := func(kind message.PartKind) bool {
+		return len(declared.Capabilities.Inputs) == 0 ||
+			slices.Contains(declared.Capabilities.Inputs, kind)
+	}
+	collect := func(parts []message.Part) error {
 		for _, part := range parts {
 			switch value := part.(type) {
 			case message.TextPart:
-				prompt = append(prompt, value.Text)
+				*prompt = append(*prompt, value.Text)
 			case message.ImagePart:
-				if value.Source.Kind() == media.SourceStream {
-					ledger.Reject(
-						fields(message.PartImage),
-						"stream media sources must be materialized before generate",
-					)
-					continue
+				if !declares(message.PartImage) {
+					return undeclaredInput(declared, message.PartImage)
 				}
-				images = append(images, videoImageValue(value.Source))
+				uri, err := imageSourceURI(value.Source, declared)
+				if err != nil {
+					return err
+				}
+				images = append(images, uri)
 			case message.VideoPart:
-				if value.Source.Kind() == media.SourceStream {
-					ledger.Reject(
-						fields(message.PartVideo),
-						"stream media sources must be materialized before generate",
-					)
-					continue
+				if !declares(message.PartVideo) {
+					return undeclaredInput(declared, message.PartVideo)
 				}
-				videos = append(videos, videoSourceURI(value.Source))
+				uri, err := videoSourceURI(value.Source, declared)
+				if err != nil {
+					return err
+				}
+				videos = append(videos, uri)
 			case message.AudioPart:
-				if value.Source.Kind() == media.SourceStream {
-					ledger.Reject(
-						fields(message.PartAudio),
-						"stream media sources must be materialized before generate",
-					)
-					continue
+				if !declares(message.PartAudio) {
+					return undeclaredInput(declared, message.PartAudio)
 				}
-				audios = append(audios, audioSourceURI(value.Source))
+				uri, err := audioSourceURI(value.Source, declared)
+				if err != nil {
+					return err
+				}
+				audios = append(audios, uri)
 			default:
-				ledger.Reject(
-					fields(part.Kind()),
-					fmt.Sprintf(
-						"the task accepts text, image, video, and audio parts, not %s",
-						part.Kind(),
-					),
-				)
+				return inference.NewError(
+					inference.UnsupportedFeature, inference.FieldContent,
+					fmt.Errorf(
+						"minimax: the task accepts text, image, video, and audio parts, not %s",
+						part.Kind()))
 			}
 		}
+		return nil
 	}
 	for _, turn := range request.Context {
 		if turn.Role != message.RoleUser {
-			ledger.Reject(
-				inference.FieldGenerateContextRole,
-				"task generation keeps user context only; assistant, system, and tool turns have no native channel",
-			)
-			continue
+			return nil, nil, nil, inference.NewError(
+				inference.UnsupportedFeature, inference.FieldContext,
+				fmt.Errorf("minimax: task generation keeps user context only"))
 		}
-		collect(turn.Content.Parts, contextPartField)
-	}
-	collect(request.Input.Content.Parts, inputPartField)
-	return
-}
-
-// rejectPromptLength rejects a prompt that exceeds the official character
-// limit, landing on the most precise active text field: the input text
-// when the request input carries text, otherwise a context text field,
-// otherwise the input role.
-func rejectPromptLength(
-	request inference.GenerateRequest,
-	ledger *inference.Ledger,
-	length, limit int,
-	reason string,
-) {
-	if length <= limit {
-		return
-	}
-	if containsTextPart(request.Input.Content.Parts) {
-		ledger.Reject(inference.FieldGenerateInputText, reason)
-		return
-	}
-	for _, turn := range request.Context {
-		if containsTextPart(turn.Content.Parts) {
-			ledger.Reject(inference.FieldGenerateContextText, reason)
-			return
+		if err := collect(turn.Content.Parts); err != nil {
+			return nil, nil, nil, err
 		}
 	}
-	ledger.Reject(inference.FieldGenerateInputRole, reason)
-}
-
-func containsTextPart(parts []message.Part) bool {
-	for _, part := range parts {
-		if part != nil && part.Kind() == message.PartText {
-			return true
-		}
+	if err := collect(request.Input.Content.Parts); err != nil {
+		return nil, nil, nil, err
 	}
-	return false
+	return images, videos, audios, nil
 }
 
-// compileVideoInputs lowers the collected media parts onto the wire. The
-// v2 API understands every input role (first/last frame and reference_*);
-// v1 understands first/last-frame images only, on the models that declare
-// the capability.
+// undeclaredInput rejects a part kind the model's declaration does not list.
+func undeclaredInput(declared ModelSpec, kind message.PartKind) error {
+	return inference.NewError(
+		inference.UnsupportedFeature, inference.FieldContent,
+		fmt.Errorf("minimax: %s does not declare %s input", declared.Name, kind))
+}
+
+// videoLimits is the effective envelope for one video model: a declared leaf wins,
+// and an omitted one keeps the platform default the driver documents.
+type videoLimits struct {
+	promptLimit     int
+	durationMin     int
+	durationMax     int
+	resolutions     map[string]bool
+	ratios          map[string]bool
+	referenceImages int
+	referenceVideos int
+	referenceAudios int
+}
+
+// videoLimits resolves the declaration onto the platform envelope.
+func (m ModelSpec) videoLimits() videoLimits {
+	limits := videoLimits{
+		promptLimit:     videoPromptLimit,
+		durationMin:     videoDurationMin,
+		durationMax:     videoDurationMax,
+		resolutions:     videoResolutions,
+		ratios:          videoRatios,
+		referenceImages: referenceImageMax,
+		referenceVideos: referenceVideoMax,
+		referenceAudios: referenceAudioMax,
+	}
+	if m.Video.PromptLimit > 0 {
+		limits.promptLimit = m.Video.PromptLimit
+	}
+	if m.Video.DurationMin != nil {
+		limits.durationMin = *m.Video.DurationMin
+	}
+	if m.Video.DurationMax != nil {
+		limits.durationMax = *m.Video.DurationMax
+	}
+	if len(m.Video.Resolutions) > 0 {
+		limits.resolutions = nameSet(m.Video.Resolutions)
+	}
+	if len(m.Video.Ratios) > 0 {
+		limits.ratios = nameSet(m.Video.Ratios)
+	}
+	if m.Video.ReferenceImages > 0 {
+		limits.referenceImages = m.Video.ReferenceImages
+	}
+	if m.Video.ReferenceVideos > 0 {
+		limits.referenceVideos = m.Video.ReferenceVideos
+	}
+	if m.Video.ReferenceAudios > 0 {
+		limits.referenceAudios = m.Video.ReferenceAudios
+	}
+	return limits
+}
+
+// nameSet indexes a declared list for membership checks.
+func nameSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, value := range values {
+		set[value] = true
+	}
+	return set
+}
+
+// compileVideoInputs maps media parts onto the v2 content roles. One image is
+// the frame, two are first/last frames, and more than two — or any
+// video/audio part — switch the task to multimodal reference generation; the
+// two scenarios are mutually exclusive, mirroring the official content rules.
 func compileVideoInputs(
 	wire *videoWire,
 	images, videos, audios []string,
-	declared ModelSpec,
-	model model.ModelRef,
-	ledger *inference.Ledger,
-) {
-	if declared.videoV2() {
-		compileV2Inputs(&wire.v2Content, images, videos, audios, ledger)
-		return
-	}
-	switch {
-	case len(images) == 1:
-		wire.firstFrame = images[0]
-	case len(images) == 2 && declared.Video.LastFrame:
-		wire.firstFrame, wire.lastFrame = images[0], images[1]
-	case len(images) > 0:
-		if declared.Video.LastFrame {
-			ledger.Reject(
-				inference.FieldGenerateInputImage,
-				fmt.Sprintf(
-					"%s accepts a first-frame and a last-frame image, not %d",
-					model.ID.Name, len(images),
-				),
-			)
-		} else {
-			ledger.Reject(
-				inference.FieldGenerateInputImage,
-				fmt.Sprintf(
-					"%s accepts a single first-frame image, not %d",
-					model.ID.Name, len(images),
-				),
-			)
-		}
-	}
-	if len(videos) > 0 {
-		ledger.Reject(
-			inference.FieldGenerateInputVideo,
-			fmt.Sprintf("%s does not accept reference-video input", model.ID.Name),
-		)
-	}
-	if len(audios) > 0 {
-		ledger.Reject(
-			inference.FieldGenerateInputAudio,
-			fmt.Sprintf("%s does not accept reference-audio input", model.ID.Name),
-		)
-	}
-}
-
-// compileV2Inputs maps media parts onto the v2 content roles. One image is
-// the first frame, two are first/last frames, and more than two — or any
-// video/audio part — switch the task to multimodal reference generation;
-// the two scenarios are mutually exclusive, mirroring the official content
-// rules.
-func compileV2Inputs(
-	wire *v2Content,
-	images, videos, audios []string,
-	ledger *inference.Ledger,
-) {
+	name string,
+	limits videoLimits,
+) error {
 	firstLast := len(images) == 1 || len(images) == 2
 	reference := len(images) > 2 || len(videos) > 0 || len(audios) > 0
 	if firstLast && reference {
-		ledger.Reject(
-			inference.FieldGenerateInputImage,
-			"MiniMax-H3 treats first/last-frame input and reference inputs as mutually exclusive",
-		)
-		return
+		return inference.NewError(
+			inference.UnsupportedFeature, inference.FieldContent,
+			fmt.Errorf("minimax: %s treats first/last-frame input and reference inputs as mutually exclusive", name))
 	}
 	switch {
 	case len(images) == 1:
 		wire.firstFrame = images[0]
 	case len(images) == 2:
 		wire.firstFrame, wire.lastFrame = images[0], images[1]
-	case len(images) > 9:
-		ledger.Reject(
-			inference.FieldGenerateInputImage,
-			"MiniMax-H3 accepts at most 9 reference images",
-		)
+	case len(images) > limits.referenceImages:
+		return inference.NewError(
+			inference.UnsupportedFeature, inference.FieldContent,
+			fmt.Errorf("minimax: %s accepts at most %d reference images", name, limits.referenceImages))
 	case len(images) > 2:
 		wire.referenceImages = images
 	}
-	if len(videos) > 3 {
-		ledger.Reject(
-			inference.FieldGenerateInputVideo,
-			"MiniMax-H3 accepts at most 3 reference videos",
-		)
-	} else {
-		wire.referenceVideos = videos
+	if len(videos) > limits.referenceVideos {
+		return inference.NewError(
+			inference.UnsupportedFeature, inference.FieldContent,
+			fmt.Errorf("minimax: %s accepts at most %d reference videos", name, limits.referenceVideos))
 	}
-	if len(audios) > 3 {
-		ledger.Reject(
-			inference.FieldGenerateInputAudio,
-			"MiniMax-H3 accepts at most 3 reference audio clips",
-		)
-	} else {
-		wire.referenceAudios = audios
+	wire.referenceVideos = videos
+	if len(audios) > limits.referenceAudios {
+		return inference.NewError(
+			inference.UnsupportedFeature, inference.FieldContent,
+			fmt.Errorf("minimax: %s accepts at most %d reference audio clips", name, limits.referenceAudios))
 	}
+	wire.referenceAudios = audios
+	return nil
 }
 
-// compileVideoIntent lowers VideoIntent controls onto the wire and enforces
-// the official per-model constraints.
-func compileVideoIntent(
-	wire *videoWire,
-	video *inference.VideoIntent,
-	declared ModelSpec,
-	endpoint string,
-	ledger *inference.Ledger,
-) {
-	if video.DurationMillis != nil {
-		millis := *video.DurationMillis
-		if millis%1000 != 0 {
-			ledger.Reject(
-				inference.FieldGenerateIntentVideoDuration,
-				fmt.Sprintf("minimax video durations are whole seconds, not %dms", millis),
-			)
-		} else {
-			seconds := int(millis / 1000)
-			if declared.videoV2() {
-				if seconds < 4 || seconds > 15 {
-					ledger.Reject(
-						inference.FieldGenerateIntentVideoDuration,
-						fmt.Sprintf("MiniMax-H3 durations are 4-15s, not %ds", seconds),
-					)
-				} else {
-					wire.duration = &seconds
-				}
-			} else {
-				switch {
-				case seconds == 6:
-					wire.duration = &seconds
-				case seconds == 10 && !declared.Video.TenSeconds:
-					ledger.Reject(
-						inference.FieldGenerateIntentVideoDuration,
-						fmt.Sprintf("%s serves 6-second videos only", endpoint),
-					)
-				case seconds == 10:
-					wire.duration = &seconds
-				default:
-					ledger.Reject(
-						inference.FieldGenerateIntentVideoDuration,
-						fmt.Sprintf("minimax video durations are 6s or 10s, not %ds", seconds),
-					)
-				}
-			}
-		}
-	} else if declared.videoV2() {
-		// The v2 schema requires duration; the driver defaults to the same
-		// 6s the v1 API uses when the intent leaves it open.
-		seconds := 6
-		wire.duration = &seconds
-	}
-
-	if video.Resolution != "" {
-		switch strings.ToUpper(video.Resolution) {
-		case "768P":
-			wire.resolution = "768P"
-		case "2K":
-			if !declared.videoV2() {
-				ledger.Reject(
-					inference.FieldGenerateIntentVideoResolution,
-					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
-				)
-			} else {
-				wire.resolution = "2K"
-			}
-		case "1080P":
-			if declared.videoV2() {
-				ledger.Reject(
-					inference.FieldGenerateIntentVideoResolution,
-					fmt.Sprintf("%s serves 768P/2K tiers, not %q", endpoint, video.Resolution),
-				)
-			} else if !declared.Video.HD {
-				ledger.Reject(
-					inference.FieldGenerateIntentVideoResolution,
-					fmt.Sprintf("%s serves 768P only", endpoint),
-				)
-			} else {
-				wire.resolution = "1080P"
-			}
-		case "512P":
-			// 512P exists on the v1 image-to-video surface for
-			// MiniMax-Hailuo-02 only: single-first-frame tasks only.
-			// Text-to-video and first/last-frame (fl2v) tasks cap at
-			// 768P/1080P per the official docs.
-			if !declared.Video.P512 || wire.firstFrame == "" || wire.lastFrame != "" {
-				ledger.Reject(
-					inference.FieldGenerateIntentVideoResolution,
-					fmt.Sprintf("%s serves 768P/1080P tiers, not %q", endpoint, video.Resolution),
-				)
-			} else {
-				wire.resolution = "512P"
-			}
-		default:
-			tiers := "768P/1080P"
-			if declared.videoV2() {
-				tiers = "768P/2K"
-			}
-			ledger.Reject(
-				inference.FieldGenerateIntentVideoResolution,
-				fmt.Sprintf("%s serves %s tiers, not %q", endpoint, tiers, video.Resolution),
-			)
-		}
-	} else if declared.videoV2() {
-		// The v2 schema requires resolution; 768P is the default tier.
-		wire.resolution = "768P"
-	}
-	if !declared.videoV2() && wire.duration != nil && *wire.duration == 10 &&
-		wire.resolution == "1080P" {
-		ledger.Reject(
-			inference.FieldGenerateIntentVideoDuration,
-			"10-second videos require 768P",
-		)
-	}
-
-	if video.AspectRatio != "" {
-		if !declared.videoV2() {
-			ledger.Reject(
-				inference.FieldGenerateIntentVideoAspectRatio,
-				"the v1 task API has no aspect-ratio control; resolution tiers are fixed-ratio",
-			)
-		} else if !v2RatioValues[string(video.AspectRatio)] {
-			ledger.Reject(
-				inference.FieldGenerateIntentVideoAspectRatio,
-				fmt.Sprintf(
-					"MiniMax-H3 ratios are adaptive/21:9/16:9/4:3/1:1/3:4/9:16, not %q",
-					video.AspectRatio,
-				),
-			)
-		} else {
-			wire.ratio = string(video.AspectRatio)
-		}
-	} else if declared.videoV2() && v2TextOnly(&wire.v2Content) {
-		// Text-only tasks require an explicit non-adaptive ratio; 16:9 is
-		// the driver default.
-		wire.ratio = "16:9"
-	}
-	if declared.videoV2() && wire.ratio == "adaptive" && v2TextOnly(&wire.v2Content) {
-		ledger.Reject(
-			inference.FieldGenerateIntentVideoAspectRatio,
-			"text-to-video requires an explicit ratio; adaptive is not allowed",
-		)
-	}
-	if video.Seed != nil {
-		ledger.Reject(
-			inference.FieldGenerateIntentVideoSeed,
-			"the minimax task APIs have no seed control",
-		)
-	}
-	wire.watermark = video.Watermark
-}
-
-// v2TextOnly reports whether the content carries no image or reference
-// input, i.e. the request is a text-only (t2v) task.
-func v2TextOnly(content *v2Content) bool {
-	return content.firstFrame == "" && content.lastFrame == "" &&
-		len(content.referenceImages) == 0 &&
-		len(content.referenceVideos) == 0 && len(content.referenceAudios) == 0
-}
-
-// compileVideoOptions lowers VideoOptions onto the wire and rejects the
-// v1-only prompt controls on the v2 API, where they do not exist.
+// compileVideoOptions lowers VideoOptions onto the wire and enforces the declared
+// envelope for this model.
 func compileVideoOptions(
 	wire *videoWire,
-	options VideoOptions,
-	declared ModelSpec,
-	endpoint string,
-	ledger *inference.Ledger,
-) {
-	field := func(name string) inference.FieldID {
-		return inference.ExtensionField(name).Qualify(options)
-	}
-	wire.callbackURL = options.CallbackURL
-	if options.PromptOptimizer != nil {
-		if declared.videoV2() {
-			ledger.Reject(
-				field("prompt_optimizer"),
-				fmt.Sprintf("%s does not support prompt_optimizer; the v2 API has no prompt optimizer", endpoint),
-			)
-		} else {
-			wire.promptOptimizer = options.PromptOptimizer
+	options *VideoOptions,
+	name string,
+	limits videoLimits,
+) error {
+	field := func(option string) inference.Field {
+		if options == nil {
+			return inference.FieldExtensions
 		}
+		return inference.ExtensionField(option).Qualify(*options)
 	}
-	if options.FastPretreatment != nil {
-		if declared.videoV2() {
-			ledger.Reject(
-				field("fast_pretreatment"),
-				fmt.Sprintf("%s does not support fast_pretreatment; the v2 API has no prompt optimizer", endpoint),
-			)
-		} else {
-			wire.fastPretreatment = options.FastPretreatment
-		}
-	}
-	if options.LastFrameOnly != nil && *options.LastFrameOnly {
-		if !declared.videoV2() {
-			ledger.Reject(
-				field("last_frame_only"),
-				fmt.Sprintf("%s does not support last_frame_only; the v1 API has no last-frame-only task", endpoint),
-			)
-		} else if wire.firstFrame == "" || wire.lastFrame != "" {
-			ledger.Reject(
-				field("last_frame_only"),
-				"last_frame_only requires exactly one input image",
-			)
-		} else {
-			// Mark the single image as the closing frame
-			// (role=last_frame) instead of the opening one.
+	if options != nil {
+		if options.LastFrameOnly != nil && *options.LastFrameOnly {
+			if wire.firstFrame == "" || wire.lastFrame != "" {
+				return inference.NewError(
+					inference.InvalidExtension, field("last_frame_only"),
+					fmt.Errorf("minimax: last_frame_only requires exactly one input image"))
+			}
+			// Mark the single image as the closing frame (role=last_frame)
+			// instead of the opening one.
 			wire.lastFrame = wire.firstFrame
 			wire.firstFrame = ""
 		}
+		wire.watermark = options.Watermark
+		wire.callback = options.CallbackURL
 	}
+
+	seconds := videoDurationDefault
+	if options != nil && options.DurationMillis != nil {
+		millis := *options.DurationMillis
+		if millis%1000 != 0 {
+			return inference.NewError(
+				inference.InvalidExtension, field("duration_millis"),
+				fmt.Errorf("minimax: durations are whole seconds, not %dms", millis))
+		}
+		seconds = int(millis / 1000)
+	}
+	if seconds < limits.durationMin || seconds > limits.durationMax {
+		return inference.NewError(
+			inference.InvalidExtension, field("duration_millis"),
+			fmt.Errorf("minimax: %s durations are %d-%ds, not %ds",
+				name, limits.durationMin, limits.durationMax, seconds))
+	}
+	wire.duration = &seconds
+
+	wire.resolution = videoResolutionDefault
+	if options != nil && options.Resolution != "" {
+		if !limits.resolutions[options.Resolution] {
+			return inference.NewError(
+				inference.InvalidExtension, field("resolution"),
+				fmt.Errorf("minimax: %s does not serve the %q tier",
+					name, options.Resolution))
+		}
+		wire.resolution = options.Resolution
+	}
+
+	textOnly := wire.textOnly()
+	if options != nil && options.AspectRatio != "" {
+		ratio := string(options.AspectRatio)
+		if !limits.ratios[ratio] {
+			return inference.NewError(
+				inference.InvalidExtension, field("aspect_ratio"),
+				fmt.Errorf("minimax: %s does not serve the %q ratio", name, ratio))
+		}
+		if textOnly && ratio == "adaptive" {
+			return inference.NewError(
+				inference.InvalidExtension, field("aspect_ratio"),
+				fmt.Errorf("minimax: text-to-video requires an explicit ratio; adaptive is not allowed"))
+		}
+		wire.ratio = ratio
+	} else if textOnly {
+		wire.ratio = videoRatioTextDefault
+	}
+	return nil
 }
 
-// videoCreateResponse is the v1 create-task envelope.
+// videoCreateResponse is the v2 create-task envelope. The v2 API answers failures
+// with HTTP status codes, but it may still describe them with the same base_resp
+// envelope the v1 surfaces always send, so both are read: a 200 carrying a
+// non-zero status is a refusal, not a task.
 type videoCreateResponse struct {
 	TaskID   string   `json:"task_id"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
-// videoV2CreateResponse is the v2 create-task envelope; v2 errors ride
-// HTTP status codes rather than base_resp.
-type videoV2CreateResponse struct {
-	TaskID string `json:"task_id"`
-}
-
-// videoQueryResponse is the v1 task-status envelope.
+// videoQueryResponse is the v2 task-status envelope: the artifact URL rides
+// content.url and the accounting rides task.usage.
 type videoQueryResponse struct {
-	TaskID   string   `json:"task_id"`
-	Status   string   `json:"status"`
-	FileID   string   `json:"file_id"`
-	BaseResp baseResp `json:"base_resp"`
-}
-
-// videoV2QueryResponse is the shared v2 task-status envelope. Video tasks
-// carry the artifact URL in content.url; H3-Context-IR tasks carry the
-// enhanced prompt in content.prompt.
-type videoV2QueryResponse struct {
 	Task struct {
 		ID      string `json:"id"`
 		Status  string `json:"status"`
 		Content struct {
-			URL    string `json:"url"`
-			Prompt string `json:"prompt"`
+			URL string `json:"url"`
 		} `json:"content"`
 		Usage struct {
-			TotalTokens      int64 `json:"total_tokens"`
 			PromptTokens     int64 `json:"prompt_tokens"`
 			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
 		} `json:"usage"`
 	} `json:"task"`
-}
-
-// v2TaskUsage carries the token accounting a succeeded v2 task reports.
-type v2TaskUsage struct {
-	inputTokens  int64
-	outputTokens int64
-	totalTokens  int64
-}
-
-// v2TaskResult is the succeeded v2 task content; exactly one of url and
-// prompt is populated, depending on the task type.
-type v2TaskResult struct {
-	id     string
-	url    string
-	prompt string
-	usage  v2TaskUsage
-}
-
-// pollV2Task polls the shared v2 query endpoint until the task reaches a
-// terminal state. Video generation and H3-Context-IR both ride it; the
-// caller validates the content field its task type requires.
-func pollV2Task(
-	ctx context.Context,
-	client *mediaClient,
-	taskID string,
-	pollInterval time.Duration,
-) (v2TaskResult, error) {
-	queryPath := "/v2/query/video_generation/" + url.PathEscape(taskID)
-	for {
-		var task videoV2QueryResponse
-		if err := client.getJSON(ctx, queryPath, nil, &task); err != nil {
-			return v2TaskResult{}, err
-		}
-		switch strings.ToLower(task.Task.Status) {
-		case "succeeded":
-			return v2TaskResult{
-				id:     task.Task.ID,
-				url:    task.Task.Content.URL,
-				prompt: task.Task.Content.Prompt,
-				usage: v2TaskUsage{
-					inputTokens:  task.Task.Usage.PromptTokens,
-					outputTokens: task.Task.Usage.CompletionTokens,
-					totalTokens:  task.Task.Usage.TotalTokens,
-				},
-			}, nil
-		case "failed":
-			return v2TaskResult{}, errdefs.NotAvailable(fmt.Errorf(
-				"minimax: task %q failed server-side",
-				taskID,
-			))
-		case "cancelled":
-			return v2TaskResult{}, errdefs.NotAvailable(fmt.Errorf(
-				"minimax: task %q was cancelled server-side",
-				taskID,
-			))
-		}
-		select {
-		case <-ctx.Done():
-			return v2TaskResult{}, ctx.Err()
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-// videoFileResponse is the v1 file-retrieval envelope.
-type videoFileResponse struct {
-	File struct {
-		DownloadURL string `json:"download_url"`
-	} `json:"file"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
-func transportVideoV1(
+// transportVideo creates the task, polls it to a terminal state, and returns the
+// artifact URL.
+func transportVideo(
 	client *mediaClient,
-	pollInterval time.Duration,
-) inference.Transport[videoWire, videoRaw] {
-	return func(ctx context.Context, wire videoWire) (videoRaw, error) {
-		request := map[string]any{
-			"model":  wire.model,
-			"prompt": wire.prompt,
-		}
-		if wire.firstFrame != "" {
-			request["first_frame_image"] = wire.firstFrame
-		}
-		if wire.lastFrame != "" {
-			request["last_frame_image"] = wire.lastFrame
-		}
-		if wire.duration != nil {
-			request["duration"] = *wire.duration
-		}
-		if wire.resolution != "" {
-			request["resolution"] = wire.resolution
-		}
-		if wire.watermark != nil {
-			request["aigc_watermark"] = *wire.watermark
-		}
-		if wire.promptOptimizer != nil {
-			request["prompt_optimizer"] = *wire.promptOptimizer
-		}
-		if wire.fastPretreatment != nil {
-			request["fast_pretreatment"] = *wire.fastPretreatment
-		}
-		if wire.callbackURL != "" {
-			request["callback_url"] = wire.callbackURL
-		}
-
+) protocol.Transport[inference.GenerateRequest, videoWire, videoRaw] {
+	return func(
+		ctx context.Context,
+		_ inference.GenerateRequest,
+		wire videoWire,
+	) (videoRaw, error) {
 		var created videoCreateResponse
-		if err := client.postJSON(ctx, "/v1/video_generation", request, &created); err != nil {
+		if err := client.postJSON(ctx, videoPathCreate, videoTaskRequest(wire), &created); err != nil {
 			return videoRaw{}, err
 		}
-		if err := created.BaseResp.err("video generation"); err != nil {
+		if err := created.BaseResp.err("video task creation"); err != nil {
 			return videoRaw{}, err
 		}
 		if created.TaskID == "" {
-			return videoRaw{}, fmt.Errorf(
-				"minimax: video task creation returned no task_id",
-			)
+			return videoRaw{}, inference.NewError(
+				inference.InvalidProviderResponse, inference.FieldOutput,
+				fmt.Errorf("minimax: video task creation returned no task_id"))
 		}
-
-		query := url.Values{"task_id": {created.TaskID}}
-		// MiniMax's v1 video endpoint returns no request/trace id on
-		// success; the task_id is the only server-assigned handle for the
-		// create request, so it doubles as the request id for tracing.
-		requestID := created.TaskID
+		queryPath := videoPathQueryPrefix + url.PathEscape(created.TaskID)
 		for {
-			var task videoQueryResponse
-			if err := client.getJSON(ctx, "/v1/query/video_generation", query, &task); err != nil {
+			var query videoQueryResponse
+			if err := client.getJSON(ctx, queryPath, &query); err != nil {
 				return videoRaw{}, err
 			}
-			if err := task.BaseResp.err("video task query"); err != nil {
+			if err := query.BaseResp.err("video task query"); err != nil {
 				return videoRaw{}, err
 			}
-			switch strings.ToLower(task.Status) {
-			case "success":
-				if task.FileID == "" {
-					return videoRaw{}, fmt.Errorf(
-						"minimax: succeeded video task %q carries no file_id",
-						created.TaskID,
-					)
-				}
-				var file videoFileResponse
-				fileQuery := url.Values{"file_id": {task.FileID}}
-				if err := client.getJSON(ctx, "/v1/files/retrieve", fileQuery, &file); err != nil {
-					return videoRaw{}, err
-				}
-				if err := file.BaseResp.err("video file retrieval"); err != nil {
-					return videoRaw{}, err
-				}
-				if file.File.DownloadURL == "" {
-					return videoRaw{}, fmt.Errorf(
-						"minimax: video file %q carries no download url",
-						task.FileID,
-					)
+			if query.Task.Status == "" {
+				// A statusless task is a decode failure, not something to wait
+				// on: polling it would spin until the caller's deadline and then
+				// report an interruption instead of the provider's answer.
+				return videoRaw{}, inference.NewError(
+					inference.InvalidProviderResponse, inference.FieldOutput,
+					fmt.Errorf("minimax: video task %q query carried no status", created.TaskID))
+			}
+			switch strings.ToLower(query.Task.Status) {
+			case "succeeded":
+				if query.Task.Content.URL == "" {
+					return videoRaw{}, inference.NewError(
+						inference.InvalidProviderResponse, inference.FieldOutput,
+						fmt.Errorf("minimax: succeeded video task %q carries no content url",
+							created.TaskID))
 				}
 				return videoRaw{
-					videoURL:  file.File.DownloadURL,
-					requestID: requestID,
+					videoURL:     query.Task.Content.URL,
+					requestID:    created.TaskID,
+					outputTokens: query.Task.Usage.CompletionTokens,
 				}, nil
-			case "fail", "failed":
+			case "failed":
 				return videoRaw{}, errdefs.NotAvailable(fmt.Errorf(
-					"minimax: video task %q failed server-side",
-					created.TaskID,
-				))
+					"minimax: video task %q failed server-side", created.TaskID))
+			case "cancelled":
+				return videoRaw{}, errdefs.NotAvailable(fmt.Errorf(
+					"minimax: video task %q was cancelled server-side", created.TaskID))
 			}
 			select {
 			case <-ctx.Done():
 				return videoRaw{}, ctx.Err()
-			case <-time.After(pollInterval):
+			case <-time.After(client.pollInterval()):
 			}
 		}
 	}
 }
 
-func transportVideoV2(
-	client *mediaClient,
-	pollInterval time.Duration,
-) inference.Transport[videoWire, videoRaw] {
-	return func(ctx context.Context, wire videoWire) (videoRaw, error) {
-		request := map[string]any{
-			"model":      wire.model,
-			"content":    v2ContentItems(wire.prompt, wire.v2Content),
-			"resolution": wire.resolution,
-		}
-		if wire.duration != nil {
-			request["duration"] = *wire.duration
-		}
-		if wire.ratio != "" {
-			request["ratio"] = wire.ratio
-		}
-		if wire.watermark != nil {
-			request["aigc_watermark"] = *wire.watermark
-		}
-		if wire.callbackURL != "" {
-			request["callback_url"] = wire.callbackURL
-		}
+// videoTaskBody is the v2 create payload. The required facts are always emitted;
+// the optional switches disappear when unset, so a caller cannot accidentally send
+// a zero the platform would read as an instruction.
+type videoTaskBody struct {
+	Model      string             `json:"model"`
+	Content    []videoContentItem `json:"content"`
+	Resolution string             `json:"resolution"`
+	Duration   *int               `json:"duration,omitempty"`
+	Ratio      string             `json:"ratio,omitempty"`
+	Watermark  *bool              `json:"aigc_watermark,omitempty"`
+	Callback   string             `json:"callback_url,omitempty"`
+}
 
-		var created videoV2CreateResponse
-		if err := client.postJSON(ctx, "/v2/video_generation", request, &created); err != nil {
-			return videoRaw{}, err
-		}
-		if created.TaskID == "" {
-			return videoRaw{}, fmt.Errorf(
-				"minimax: video task creation returned no task_id",
-			)
-		}
-		task, err := pollV2Task(ctx, client, created.TaskID, pollInterval)
-		if err != nil {
-			return videoRaw{}, err
-		}
-		if task.url == "" {
-			return videoRaw{}, fmt.Errorf(
-				"minimax: succeeded video task %q carries no content url",
-				created.TaskID,
-			)
-		}
-		return videoRaw{
-			videoURL:  task.url,
-			requestID: task.id,
-		}, nil
+// videoContentItem is one entry of the v2 content array. Exactly one typed payload
+// is set, and its JSON name is also the item's type, which is why the field is a
+// struct rather than a dynamic key.
+type videoContentItem struct {
+	Type     string         `json:"type"`
+	Text     string         `json:"text,omitempty"`
+	ImageURL *videoMediaURL `json:"image_url,omitempty"`
+	VideoURL *videoMediaURL `json:"video_url,omitempty"`
+	AudioURL *videoMediaURL `json:"audio_url,omitempty"`
+	Role     string         `json:"role,omitempty"`
+}
+
+// videoMediaURL is the nested url object every media item carries.
+type videoMediaURL struct {
+	URL string `json:"url"`
+}
+
+// videoTaskRequest renders the v2 create payload: the mandatory text item first,
+// then the media items with their roles.
+func videoTaskRequest(wire videoWire) videoTaskBody {
+	return videoTaskBody{
+		Model:      wire.model,
+		Content:    videoContentItems(wire),
+		Resolution: wire.resolution,
+		Duration:   wire.duration,
+		Ratio:      wire.ratio,
+		Watermark:  wire.watermark,
+		Callback:   wire.callback,
 	}
 }
 
-// v2ContentItems renders the official v2 content array for a task: the
-// mandatory text item first, then images and reference media with their
-// roles.
-func v2ContentItems(prompt string, content v2Content) []map[string]any {
-	items := make([]map[string]any, 0,
-		1+len(content.referenceImages)+len(content.referenceVideos)+len(content.referenceAudios))
-	items = append(items, map[string]any{
-		"type": "text",
-		"text": prompt,
-	})
-	item := func(itemType, value, role string) map[string]any {
-		return map[string]any{
-			"type": itemType,
-			itemType: map[string]any{
-				"url": value,
-			},
-			"role": role,
-		}
+// videoContentItems renders the official v2 content array for a task.
+func videoContentItems(wire videoWire) []videoContentItem {
+	items := make([]videoContentItem, 0,
+		1+len(wire.referenceImages)+len(wire.referenceVideos)+len(wire.referenceAudios))
+	items = append(items, videoContentItem{Type: "text", Text: wire.prompt})
+	if wire.firstFrame != "" {
+		items = append(items, videoMediaItem("image_url", wire.firstFrame, "first_frame"))
 	}
-	if content.firstFrame != "" {
-		items = append(items, item("image_url", content.firstFrame, "first_frame"))
+	if wire.lastFrame != "" {
+		items = append(items, videoMediaItem("image_url", wire.lastFrame, "last_frame"))
 	}
-	if content.lastFrame != "" {
-		items = append(items, item("image_url", content.lastFrame, "last_frame"))
+	for _, value := range wire.referenceImages {
+		items = append(items, videoMediaItem("image_url", value, "reference_image"))
 	}
-	for _, value := range content.referenceImages {
-		items = append(items, item("image_url", value, "reference_image"))
+	for _, value := range wire.referenceVideos {
+		items = append(items, videoMediaItem("video_url", value, "reference_video"))
 	}
-	for _, value := range content.referenceVideos {
-		items = append(items, item("video_url", value, "reference_video"))
-	}
-	for _, value := range content.referenceAudios {
-		items = append(items, item("audio_url", value, "reference_audio"))
+	for _, value := range wire.referenceAudios {
+		items = append(items, videoMediaItem("audio_url", value, "reference_audio"))
 	}
 	return items
 }
 
+// videoMediaItem builds one media entry with the role the task API expects.
+func videoMediaItem(kind, value, role string) videoContentItem {
+	item := videoContentItem{Type: kind, Role: role}
+	media := &videoMediaURL{URL: value}
+	switch kind {
+	case "image_url":
+		item.ImageURL = media
+	case "video_url":
+		item.VideoURL = media
+	case "audio_url":
+		item.AudioURL = media
+	}
+	return item
+}
+
 func decodeVideo(
 	_ context.Context,
+	request inference.GenerateRequest,
 	raw videoRaw,
 ) (inference.GenerateResponse, error) {
-	// MiniMax video tasks deliver mp4 files; the URL carries no explicit
-	// media type, so the compiler-known container is the truthful one.
+	// MiniMax video tasks deliver mp4 files; the URL carries no explicit media
+	// type, so the container the API produces is the truthful one.
 	source, err := media.NewVideoURL(raw.videoURL, "video/mp4")
 	if err != nil {
 		return inference.GenerateResponse{}, fmt.Errorf("minimax: video url: %w", err)
 	}
-	generated := int64(1)
 	return inference.GenerateResponse{
 		Message: message.Message{
 			Role:    message.RoleAssistant,
 			Content: message.Content{Parts: []message.Part{message.VideoPart{Source: source}}},
 		},
-		FinishReason: inference.FinishCompleted,
-		Usage: inference.Usage{
-			GeneratedVideos: &generated,
+		FinishReason: inference.FinishStop,
+		Usage: usage.Usage{
+			OutputTokens: raw.outputTokens,
+			Work:         map[usage.WorkKind]int64{usage.WorkVideosGenerated: 1},
 		},
-		Metadata: inference.Metadata{RequestID: raw.requestID},
+		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
 	}, nil
 }
 
-func openVideo(
-	cls *clients,
-	spec Spec,
+// imageSourceURI renders an input image the way the task API expects: absolute
+// URLs pass through, inline bytes become a data URI carrying the source media
+// type.
+func imageSourceURI(source media.ImageSource, declared ModelSpec) (string, error) {
+	if source.Kind() == media.SourceURL {
+		return source.URL(), nil
+	}
+	return inlineMediaURI(declared, message.PartImage, source.MediaType(), source.Bytes())
+}
+
+func videoSourceURI(source media.VideoSource, declared ModelSpec) (string, error) {
+	if source.Kind() == media.SourceURL {
+		return source.URL(), nil
+	}
+	return inlineMediaURI(declared, message.PartVideo, source.MediaType(), source.Bytes())
+}
+
+func audioSourceURI(source media.AudioSource, declared ModelSpec) (string, error) {
+	if source.Kind() == media.SourceURL {
+		return source.URL(), nil
+	}
+	return inlineMediaURI(declared, message.PartAudio, source.MediaType(), source.Bytes())
+}
+
+// inlineMediaURI renders an inline payload as a data URI, rejecting one above the
+// model's declared byte ceiling. The ceiling is enforced here rather than left to
+// the endpoint because Base64 inflates the payload by a third and the marshalled
+// body holds another copy, so an oversized input costs several times its own size
+// — per part, before anything is sent. An undeclared ceiling filters nothing,
+// which is the documented meaning of an undeclared limit.
+//
+// The prefix and the encoded payload go into one buffer sized up front: encoding
+// to a string and concatenating it would hold the payload twice more on a path
+// that already pays a copy for the source bytes.
+func inlineMediaURI(
 	declared ModelSpec,
-	id model.ModelID,
-) (inference.GenerateOperations, error) {
-	var transport inference.Transport[videoWire, videoRaw]
-	if declared.videoV2() {
-		transport = transportVideoV2(cls.media, spec.videoPollInterval())
-	} else {
-		transport = transportVideoV1(cls.media, spec.videoPollInterval())
+	kind message.PartKind,
+	mediaType string,
+	data []byte,
+) (string, error) {
+	if limit := declared.Limits.MaxInputBytes; limit != nil && int64(len(data)) > *limit {
+		return "", inference.NewError(
+			inference.InvalidRequest, inference.FieldContent,
+			fmt.Errorf(
+				"minimax: %s %s input is %d bytes, above the declared max_input_bytes of %d",
+				declared.Name, kind, len(data), *limit))
 	}
-	unary, err := inference.BindGenerate(
-		compileVideo(wireModel(id.Name, declared), declared),
-		transport,
-		decodeVideo,
-	)
-	if err != nil {
-		return inference.GenerateOperations{}, err
-	}
-	return inference.GenerateOperations{Unary: unary}, nil
-}
-
-// videoImageValue renders an input image the way the video task APIs expect:
-// absolute URLs pass through, inline bytes become a data URI carrying the
-// source media type. (image_generation's subject_reference surface uses raw
-// base64 instead — see imageSourceValue.)
-func videoImageValue(source media.ImageSource) string {
-	if source.Kind() == media.SourceURL {
-		return source.URL()
-	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
-}
-
-func videoSourceURI(source media.VideoSource) string {
-	if source.Kind() == media.SourceURL {
-		return source.URL()
-	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
-}
-
-func audioSourceURI(source media.AudioSource) string {
-	if source.Kind() == media.SourceURL {
-		return source.URL()
-	}
-	return "data:" + source.MediaType() + ";base64," +
-		base64.StdEncoding.EncodeToString(source.Bytes())
+	return media.DataURL(mediaType, data), nil
 }

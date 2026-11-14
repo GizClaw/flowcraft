@@ -1,340 +1,185 @@
 package runtime
 
 import (
-	"context"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
+	"github.com/GizClaw/flowcraft/core/permission"
 )
 
-func parseRuntimeDocument(t *testing.T, runtimeYAML string) deploy.Document {
-	t.Helper()
-	doc, err := deploy.Parse([]byte(
-		"version: v1\nagents: {}\nruntime:\n" + runtimeYAML))
+func validConfig(root string) Config {
+	return Config{
+		Version: 1,
+		Name:    "test",
+		Sandbox: SandboxConfig{Backend: BackendLocal, Writes: []string{root}},
+		Files:   FilesConfig{Roots: []string{root}},
+	}
+}
+
+func TestConfigValidateRejectsMissingBackend(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Sandbox.Backend = ""
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("missing backend accepted")
+	}
+	if !strings.Contains(err.Error(), "sandbox.backend") {
+		t.Errorf("error %q does not name the field", err)
+	}
+}
+
+func TestConfigValidateRejectsUnknownBackend(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Sandbox.Backend = "chroot"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("unknown backend accepted")
+	}
+}
+
+func TestConfigValidateRejectsRelativeRoots(t *testing.T) {
+	cfg := validConfig("relative/path")
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("relative root accepted")
+	}
+}
+
+// allow_hosts without the matching mode is a configuration that looks like a
+// restriction and enforces nothing.
+func TestConfigValidateRejectsHostsWithoutAllowList(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Sandbox.Net = NetConfig{Mode: "none", AllowHosts: []string{"api.example.com"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("allow_hosts with mode none accepted")
+	}
+	if !strings.Contains(err.Error(), "allow_list") {
+		t.Errorf("error %q does not explain the mode", err)
+	}
+}
+
+func TestNetModeNames(t *testing.T) {
+	for name, want := range map[string]permission.NetMode{
+		"":           permission.NetDefault,
+		"default":    permission.NetDefault,
+		"none":       permission.NetDenyAll,
+		"deny_all":   permission.NetDenyAll,
+		"allow_list": permission.NetAllowList,
+		"allowlist":  permission.NetAllowList,
+		"proxy":      permission.NetProxy,
+		"proxies":    permission.NetProxy,
+	} {
+		got, err := NetConfig{Mode: name}.mode()
+		if err != nil {
+			t.Errorf("mode %q: %v", name, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("mode %q = %v, want %v", name, got, want)
+		}
+	}
+	if _, err := (NetConfig{Mode: "vpn"}).mode(); err == nil {
+		t.Error("unknown mode accepted")
+	}
+}
+
+// The written unit is mebibytes; the contract takes bytes.
+func TestLimitsConvertMebibytes(t *testing.T) {
+	limits, err := SandboxConfig{MemoryMiB: 2048, OutputMiB: 8, CPU: 1500}.limits()
 	if err != nil {
-		t.Fatalf("deploy.Parse: %v", err)
+		t.Fatalf("limits: %v", err)
 	}
-	return doc
-}
-
-func TestDecodeConfigStrictAndValidated(t *testing.T) {
-	t.Run("valid", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  checkpoint_store: cps
-  sessions:
-    idle_timeout: 30s
-    sink_buffer: 17
-    speculative_buffer_events: 23
-    speculative_buffer_bytes: 4096
-    delivery_concurrency: 3
-    max_sessions: 7
-    resume: true
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.EventBus != "events" || cfg.CheckpointStore != "cps" ||
-			cfg.Sessions.IdleTimeout != 30*time.Second ||
-			cfg.Sessions.SinkBuffer != 17 ||
-			cfg.Sessions.SpeculativeBufferEvents != 23 ||
-			cfg.Sessions.SpeculativeBufferBytes != 4096 ||
-			cfg.Sessions.DeliveryConcurrency != 3 ||
-			cfg.Sessions.MaxSessions != 7 ||
-			!cfg.Sessions.Resume {
-			t.Fatalf("unexpected config: %#v", cfg)
-		}
-	})
-
-	t.Run("defaults", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, "  event_bus: events\n")
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.Sessions.IdleTimeout != defaultIdleTimeout ||
-			cfg.Sessions.SinkBuffer != defaultSinkBuffer ||
-			cfg.Sessions.SpeculativeBufferEvents != defaultSpeculativeBufferEvents ||
-			cfg.Sessions.SpeculativeBufferBytes != defaultSpeculativeBufferBytes ||
-			cfg.Sessions.DeliveryConcurrency != defaultDeliveryConcurrency ||
-			cfg.Sessions.MaxSessions != defaultMaxSessions ||
-			cfg.Sessions.Resume {
-			t.Fatalf("defaults not applied: %#v", cfg.Sessions)
-		}
-	})
-
-	t.Run("blank checkpoint store is disabled", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, "  event_bus: events\n  checkpoint_store: '   '\n")
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.CheckpointStore != "" {
-			t.Fatalf("CheckpointStore = %q, want empty", cfg.CheckpointStore)
-		}
-	})
-
-	for name, runtimeYAML := range map[string]string{
-		"absent":                   "",
-		"empty":                    "  {}\n",
-		"unknown runtime field":    "  event_bus: events\n  surprise: true\n",
-		"bad duration":             "  event_bus: events\n  sessions: {idle_timeout: soon}\n",
-		"bad sink buffer":          "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
-		"bad speculative events":   "  event_bus: events\n  sessions: {speculative_buffer_events: 0}\n",
-		"bad speculative bytes":    "  event_bus: events\n  sessions: {speculative_buffer_bytes: -1}\n",
-		"huge sink buffer":         "  event_bus: events\n  sessions: {sink_buffer: 2097152}\n",
-		"huge speculative events":  "  event_bus: events\n  sessions: {speculative_buffer_events: 2097152}\n",
-		"huge speculative bytes":   "  event_bus: events\n  sessions: {speculative_buffer_bytes: 536870912}\n",
-		"bad delivery concurrency": "  event_bus: events\n  sessions: {delivery_concurrency: 0}\n",
-		"bad max sessions":         "  event_bus: events\n  sessions: {max_sessions: 0}\n",
-		"resume without store":     "  event_bus: events\n  sessions: {resume: true}\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			var doc deploy.Document
-			if name == "absent" {
-				doc = deploy.Document{Version: "v1"}
-			} else {
-				doc = parseRuntimeDocument(t, runtimeYAML)
-			}
-			if _, err := DecodeConfig(context.Background(), doc); err == nil {
-				t.Fatal("DecodeConfig unexpectedly succeeded")
-			}
-		})
+	if limits.MemoryBytes != 2048<<20 {
+		t.Errorf("memory = %d, want %d", limits.MemoryBytes, int64(2048)<<20)
+	}
+	if limits.MaxOutputBytes != 8<<20 {
+		t.Errorf("output = %d, want %d", limits.MaxOutputBytes, int64(8)<<20)
+	}
+	if limits.CPUMillicores != 1500 {
+		t.Errorf("cpu = %d, want 1500", limits.CPUMillicores)
 	}
 }
 
-func TestDecodeConfig_EnvExpansion(t *testing.T) {
-	t.Run("string field from env", func(t *testing.T) {
-		t.Setenv("FLOWCRAFT_TEST_IDLE_TIMEOUT", "45s")
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  sessions:
-    idle_timeout: ${env:FLOWCRAFT_TEST_IDLE_TIMEOUT}
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.Sessions.IdleTimeout != 45*time.Second {
-			t.Fatalf("IdleTimeout = %v, want 45s", cfg.Sessions.IdleTimeout)
-		}
-	})
-
-	t.Run("string map field from env", func(t *testing.T) {
-		t.Setenv("FLOWCRAFT_TEST_EVENT_BUS", "events")
-		doc := parseRuntimeDocument(t, "  event_bus: ${env:FLOWCRAFT_TEST_EVENT_BUS}\n")
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.EventBus != "events" {
-			t.Fatalf("EventBus = %q, want events", cfg.EventBus)
-		}
-	})
-
-	t.Run("missing env fails", func(t *testing.T) {
-		key := "FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT"
-		if value, ok := os.LookupEnv(key); ok {
-			t.Cleanup(func() { _ = os.Setenv(key, value) })
-			if err := os.Unsetenv(key); err != nil {
-				t.Fatalf("unset %s: %v", key, err)
-			}
-		}
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  sessions:
-    idle_timeout: ${env:FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT}
-`)
-		if _, err := DecodeConfig(context.Background(), doc); err == nil {
-			t.Fatal("DecodeConfig unexpectedly succeeded with missing env")
-		}
-	})
-
-	t.Run("numeric field from env", func(t *testing.T) {
-		t.Setenv("FLOWCRAFT_TEST_SINK_BUFFER", "17")
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  sessions:
-    sink_buffer: ${env:FLOWCRAFT_TEST_SINK_BUFFER}
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if cfg.Sessions.SinkBuffer != 17 {
-			t.Fatalf("SinkBuffer = %d, want 17", cfg.Sessions.SinkBuffer)
-		}
-	})
-
-	t.Run("bool field from env", func(t *testing.T) {
-		t.Setenv("FLOWCRAFT_TEST_RESUME", "true")
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  checkpoint_store: cps
-  sessions:
-    resume: ${env:FLOWCRAFT_TEST_RESUME}
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if !cfg.Sessions.Resume {
-			t.Fatal("Resume = false, want true")
-		}
-	})
-}
-
-func TestDecodeConfig_DynamicCatalog(t *testing.T) {
-	t.Run("valid", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  dynamic_catalog:
-    tools: {default: shared_tools, researcher: research_tools}
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		dc := cfg.DynamicCatalog
-		if dc == nil {
-			t.Fatal("DynamicCatalog is nil")
-		}
-		if dc.Tools["default"] != "shared_tools" ||
-			dc.Tools["researcher"] != "research_tools" {
-			t.Fatalf("Tools = %#v", dc.Tools)
-		}
-	})
-
-	for name, runtimeYAML := range map[string]string{
-		"missing tools": `  event_bus: events
-  dynamic_catalog: {}
-`,
-		"empty agent key": `  event_bus: events
-  dynamic_catalog:
-    tools: {'': research_tools}
-`,
-		"empty resource": `  event_bus: events
-  dynamic_catalog:
-    tools: {researcher: ''}
-`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			doc := parseRuntimeDocument(t, runtimeYAML)
-			if _, err := DecodeConfig(context.Background(), doc); !errdefs.IsValidation(err) {
-				t.Fatalf("DecodeConfig error = %v, want validation", err)
-			}
-		})
+func TestWorkDirDefaultsToFirstRoot(t *testing.T) {
+	cfg := Config{Files: FilesConfig{Roots: []string{"/first", "/second"}}}
+	if got := cfg.workDir(); got != "/first" {
+		t.Errorf("workDir = %q, want the first root", got)
+	}
+	cfg.Sandbox.WorkDir = "/explicit"
+	if got := cfg.workDir(); got != "/explicit" {
+		t.Errorf("workDir = %q, want the explicit value", got)
 	}
 }
 
-func TestDecodeConfigAgents(t *testing.T) {
-	for name, tc := range map[string]struct {
-		runtimeYAML string
-		timeout     time.Duration
-	}{
-		"configured": {
-			runtimeYAML: `  event_bus: events
-  agents:
-    remove_timeout: 5s
-`,
-			timeout: 5 * time.Second,
-		},
-		"absent":        {runtimeYAML: "  event_bus: events\n"},
-		"empty section": {runtimeYAML: "  event_bus: events\n  agents: {}\n"},
-		"null value":    {runtimeYAML: "  event_bus: events\n  agents: {remove_timeout: }\n"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			doc := parseRuntimeDocument(t, tc.runtimeYAML)
-			cfg, err := DecodeConfig(context.Background(), doc)
-			if err != nil {
-				t.Fatalf("DecodeConfig: %v", err)
-			}
-			if cfg.Agents.RemoveTimeout != tc.timeout {
-				t.Fatalf("Agents.RemoveTimeout = %v, want %v",
-					cfg.Agents.RemoveTimeout, tc.timeout)
-			}
-		})
+// An empty enable list means every set: a runtime with no tools looks complete
+// and does nothing.
+func TestToolsEnabledDefaultsToAll(t *testing.T) {
+	var tools ToolsConfig
+	for _, name := range []string{ToolFiles, ToolExec, ToolSkills} {
+		if !tools.enabled(name) {
+			t.Errorf("%s disabled by an empty enable list", name)
+		}
 	}
-
-	for name, runtimeYAML := range map[string]string{
-		"bad duration":    "  event_bus: events\n  agents: {remove_timeout: soon}\n",
-		"unitless number": "  event_bus: events\n  agents: {remove_timeout: 5}\n",
-		"zero":            "  event_bus: events\n  agents: {remove_timeout: 0s}\n",
-		"negative":        "  event_bus: events\n  agents: {remove_timeout: -1s}\n",
-		"unknown field":   "  event_bus: events\n  agents: {remove_timeout: 5s, hot: true}\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			doc := parseRuntimeDocument(t, runtimeYAML)
-			if _, err := DecodeConfig(context.Background(), doc); !errdefs.IsValidation(err) {
-				t.Fatalf("DecodeConfig error = %v, want validation", err)
-			}
-		})
+	subset := ToolsConfig{Enable: []string{ToolFiles}}
+	if subset.enabled(ToolExec) {
+		t.Error("exec enabled although the list names only files")
 	}
 }
 
-func TestDecodeConfigRejectsUnknownSessionField(t *testing.T) {
-	doc := parseRuntimeDocument(t, `  event_bus: events
-  sessions:
-    idle_timeout: 30s
-    mystery: true
-`)
-	_, err := DecodeConfig(context.Background(), doc)
-	if err == nil || !strings.Contains(err.Error(), "mystery") {
-		t.Fatalf("DecodeConfig error = %v, want unknown field mention", err)
+func TestDynamicRejectsUnknownExposure(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Tools.Dynamic = &DynamicConfig{Default: "sometimes"}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("unknown exposure accepted")
+	}
+	if !strings.Contains(err.Error(), "tools.dynamic.default") {
+		t.Errorf("error %q does not name the field", err)
 	}
 }
 
-func TestDecodeConfigExternalDeps(t *testing.T) {
-	t.Run("valid", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, `  event_bus: events
-  external_deps:
-    - name: db
-      contract: db.Pool
-    - name: cache
-      contract: cache.Client
-`)
-		cfg, err := DecodeConfig(context.Background(), doc)
-		if err != nil {
-			t.Fatalf("DecodeConfig: %v", err)
-		}
-		if len(cfg.ExternalDeps) != 2 ||
-			cfg.ExternalDeps[0] != (ExternalDependency{Name: "db", Contract: "db.Pool"}) ||
-			cfg.ExternalDeps[1] != (ExternalDependency{Name: "cache", Contract: "cache.Client"}) {
-			t.Fatalf("ExternalDeps = %#v", cfg.ExternalDeps)
-		}
-	})
+// A tool cannot be always visible and never visible at once.
+func TestDynamicRejectsAlwaysAndHiddenOverlap(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Tools.Dynamic = &DynamicConfig{Always: []string{"edit"}, Hidden: []string{"edit"}}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("overlap accepted")
+	}
+}
 
-	for name, runtimeYAML := range map[string]string{
-		"missing contract": `  event_bus: events
-  external_deps:
-    - name: db
-`,
-		"duplicate": `  event_bus: events
-  external_deps:
-    - {name: db, contract: db.Pool}
-    - {name: db, contract: db.Other}
-`,
-		"event bus conflict": `  event_bus: events
-  external_deps:
-    - {name: events, contract: event.Bus}
-`,
-		"checkpoint conflict": `  event_bus: events
-  checkpoint_store: cps
-  external_deps:
-    - {name: cps, contract: checkpoint.Store}
-`,
-		"dynamic catalog conflict": `  event_bus: events
-  external_deps:
-    - {name: tools, contract: tool.Assembly}
-  dynamic_catalog:
-    tools:
-      bot: tools
-`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			doc := parseRuntimeDocument(t, runtimeYAML)
-			if _, err := DecodeConfig(context.Background(), doc); err == nil {
-				t.Fatal("DecodeConfig unexpectedly succeeded")
-			}
-		})
+// The MCP package owns the transport rules; the runtime must surface them with
+// the YAML path, not restate them.
+func TestMCPValidationIsDelegated(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Tools.MCP = MCPConfig{Servers: []MCPServerConfig{
+		{Name: "broken", Transport: "stdio"}, // stdio without a command
+	}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("stdio server without a command accepted")
+	}
+	if !strings.Contains(err.Error(), "mcp") {
+		t.Errorf("error %q does not name the section", err)
+	}
+}
+
+func TestMCPSpecCarriesOptionalFields(t *testing.T) {
+	required := true
+	spec, err := MCPConfig{Servers: []MCPServerConfig{{
+		Name: "docs", Transport: "http", URL: "https://example.test/mcp",
+		Prefix: "docs", Liveness: "30s", Required: &required,
+	}}}.spec()
+	if err != nil {
+		t.Fatalf("spec: %v", err)
+	}
+	server := spec.Servers[0]
+	if server.Prefix == nil || *server.Prefix != "docs" {
+		t.Errorf("prefix = %v, want docs", server.Prefix)
+	}
+	if server.Liveness == nil || *server.Liveness != "30s" {
+		t.Errorf("liveness = %v, want 30s", server.Liveness)
+	}
+	if server.Required == nil || !*server.Required {
+		t.Errorf("required = %v, want true", server.Required)
 	}
 }

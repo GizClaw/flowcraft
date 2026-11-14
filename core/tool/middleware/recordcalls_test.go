@@ -5,14 +5,15 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/engine"
 )
 
 func TestRecordCalls_FeedsSession(t *testing.T) {
-	assembly, err := tool.NewAssembly(
+	assembly, err := engine.NewAssembly(
 		[]tool.Source{testSource{tools: []tool.Tool{echoTool("direct")}}},
-		tool.WithDynamic(tool.Policy{
-			Default:   tool.ExposureDeferred,
-			Exposures: map[string]tool.Exposure{"direct": tool.ExposureDirect},
+		engine.WithDynamic(engine.Policy{
+			Default:   engine.ExposureDeferred,
+			Exposures: map[string]engine.Exposure{"direct": engine.ExposureDirect},
 		}),
 	)
 	if err != nil {
@@ -20,8 +21,8 @@ func TestRecordCalls_FeedsSession(t *testing.T) {
 	}
 	//nolint:staticcheck // standalone deprecated middleware: covered for custom dispatchers
 	exec := tool.NewExecutor(assembly.Catalog(), RecordCalls())
-	session := assembly.NewSession()
-	ctx := tool.WithSession(context.Background(), session)
+	session := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), session)
 
 	exec.Execute(ctx, call("direct"))
 
@@ -38,7 +39,7 @@ func TestRecordCalls_FeedsSession(t *testing.T) {
 }
 
 func TestRecordCalls_NoSessionIsNoOp(t *testing.T) {
-	assembly, err := tool.NewAssembly(
+	assembly, err := engine.NewAssembly(
 		[]tool.Source{testSource{tools: []tool.Tool{echoTool("direct")}}},
 	)
 	if err != nil {

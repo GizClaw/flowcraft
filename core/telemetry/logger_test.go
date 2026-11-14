@@ -17,14 +17,11 @@ func TestSetLoggerName(t *testing.T) {
 	SetLoggerName("")
 }
 
+// These exercise the instrumentation half with no provider installed, which is the
+// state every library consumer is in: a package that logs must be safe before the
+// host wired its exporters. Provider installation is covered in telemetry/setup.
 func TestEmitAllSeverities(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx)
-	if err != nil {
-		t.Fatalf("InitLog error: %v", err)
-	}
-	defer func() { _ = shutdown(ctx) }()
-
 	Enable()
 
 	Trace(ctx, "trace msg")
@@ -35,12 +32,6 @@ func TestEmitAllSeverities(t *testing.T) {
 }
 
 func TestEmitWithNilContext(t *testing.T) {
-	shutdown, err := InitLog(context.Background())
-	if err != nil {
-		t.Fatalf("InitLog error: %v", err)
-	}
-	defer func() { _ = shutdown(context.Background()) }()
-
 	Enable()
 	//nolint:staticcheck // deliberate: verify nil Context does not panic
 	Info(nil, "nil context msg")
@@ -48,30 +39,12 @@ func TestEmitWithNilContext(t *testing.T) {
 
 func TestEmitWithAttributes(t *testing.T) {
 	ctx := context.Background()
-	shutdown, err := InitLog(ctx)
-	if err != nil {
-		t.Fatalf("InitLog error: %v", err)
-	}
-	defer func() { _ = shutdown(ctx) }()
-
 	Enable()
 	Info(ctx, "msg with attrs", attribute.String("key", "value"), attribute.Int("n", 42))
 }
 
 func TestEmitWithTraceContext(t *testing.T) {
 	ctx := context.Background()
-
-	traceShutdown, err := InitTracer(ctx)
-	if err != nil {
-		t.Fatalf("InitTracer error: %v", err)
-	}
-	defer func() { _ = traceShutdown(ctx) }()
-
-	logShutdown, err := InitLog(ctx)
-	if err != nil {
-		t.Fatalf("InitLog error: %v", err)
-	}
-	defer func() { _ = logShutdown(ctx) }()
 
 	Enable()
 	ctx, span := Tracer().Start(ctx, "test-span")

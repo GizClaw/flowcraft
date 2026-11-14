@@ -1,10 +1,3 @@
-// Package telemetry provides OpenTelemetry initialization and global accessor
-// functions for traces, metrics, and logs.
-//
-// Three pipelines are initialised independently via InitTracer, InitMeter, and
-// InitLog. When no exporter is configured the SDK is still installed so that
-// valid trace/span IDs are available for structured log correlation, while
-// actual export is discarded (zero overhead).
 package telemetry
 
 import (

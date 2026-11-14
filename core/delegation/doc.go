@@ -1,14 +1,11 @@
-// Package delegation defines backend-neutral contracts for assigning work to
-// another agent or execution target.
+// Package delegation assigns one agent's work to another deployed agent.
 //
-// Mode distinguishes synchronous and asynchronous work. Directory owns
-// discovery; Service owns execution and status lookup. The local service
-// (LocalService), the deploy-bound directory (LocalDirectory), and the
-// delegation resource factories live in this package; the model-facing
-// delegate / delegation_status tools live in the tool subpackage, and the
-// runtime host-factory integration (exposing a Service on every turn host)
-// lives in the hostwrap subpackage.
+// Its unit is a Target: an agent name resolved through Sessions. The package
+// knows nothing about deploy documents, runtimes or A2A: a host adapts its
+// manager to Sessions, and the tools it builds are injected into the calling
+// agent's runtime.
 //
-// A host can expose a Service to execution-time tools with [WithService],
-// and consumers recover it with [ServiceFromHost].
+// The first slice is synchronous and in-process. Async jobs and a durable
+// store extend the same Job/Policy model later; they do not change the
+// Sessions contract.
 package delegation

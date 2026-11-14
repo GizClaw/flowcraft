@@ -1,0 +1,231 @@
+# The referee: the game's rules, and no voice of its own.
+#
+# Every line the table hears is spoken by a seat agent, reached through the
+# delegate tool by the perform rule. Routing is a condition over the game state,
+# so the document reads like the phase machine it is.
+version: 1
+stream: {state: true}
+name: referee
+entry: input
+input: speech
+
+limits:
+  # One run advances the table until it needs the human; the cap is the
+  # backstop against a cycle of rules that never pauses.
+  max_steps: 400
+  timeout: 10m
+
+state:
+  game:
+    type: json
+    # The game is the session, not the turn: a new turn continues the board.
+    carry: true
+  speech:
+    type: messages
+    merge: append
+    # The human's transcript is carried too, so a resumed game still has it.
+    carry: true
+  seed:
+    type: text
+  brief:
+    type: text
+  prompt:
+    type: text
+  spoken:
+    type: text
+
+nodes:
+  # Entry: the table's first line decides the deal's seed and nothing else.
+  - id: input
+    kind: script
+    config:
+      backend: starlark
+      path: rules/input.star
+      reads: [game, speech, seed]
+      writes: [game, seed]
+
+  - id: route
+    kind: script
+    config:
+      backend: starlark
+      path: rules/route.star
+      reads: [game, speech]
+      writes: [game]
+
+  - id: seed
+    kind: script
+    config:
+      backend: starlark
+      path: rules/seed.star
+      reads: [game, seed]
+      writes: [game, prompt]
+
+  - id: night
+    kind: script
+    config:
+      backend: starlark
+      path: rules/night.star
+      reads: [game, speech]
+      writes: [game, prompt, brief]
+
+  - id: dawn
+    kind: script
+    config:
+      backend: starlark
+      path: rules/dawn.star
+      reads: [game]
+      writes: [game, prompt]
+
+  - id: day
+    kind: script
+    config:
+      backend: starlark
+      path: rules/day.star
+      reads: [game, speech]
+      writes: [game, prompt, brief]
+
+  - id: vote
+    kind: script
+    config:
+      backend: starlark
+      path: rules/vote.star
+      reads: [game, speech]
+      writes: [game, prompt, brief]
+
+  - id: exile
+    kind: script
+    config:
+      backend: starlark
+      path: rules/exile.star
+      reads: [game]
+      writes: [game, prompt]
+
+  - id: hunter
+    kind: script
+    config:
+      backend: starlark
+      path: rules/hunter.star
+      reads: [game]
+      writes: [game, brief, prompt]
+
+  - id: postgame
+    kind: script
+    config:
+      backend: starlark
+      path: rules/postgame.star
+      reads: [game, speech]
+      writes: [game, brief, prompt]
+
+  - id: perform
+    kind: script
+    config:
+      backend: starlark
+      path: rules/perform.star
+      reads: [game, brief]
+      writes: [game, brief, spoken, prompt]
+      # The one rule that acts: it asks a seat through the delegate tool.
+      allow: [tool:delegate]
+
+edges:
+  # A new game needs a table before anything else.
+  - from: route
+    to: seed
+    when: 'state.game == nil or state.game.started != true'
+  - from: route
+    to: night
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and (state.game.phase == "night_wolf"
+      or state.game.phase == "night_witch"
+      or state.game.phase == "night_seer")
+  - from: route
+    to: dawn
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and state.game.phase == "dawn"
+  - from: route
+    to: day
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and state.game.phase == "day"
+  - from: route
+    to: vote
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and (state.game.phase == "vote"
+      or state.game.phase == "pk"
+      or state.game.phase == "tally")
+  - from: route
+    to: exile
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and state.game.phase == "exile"
+  # The human's move, or the end of the game, stops the run.
+  - from: route
+    to: hunter
+    when: >-
+      state.game != nil and state.game.started == true
+      and (state.game.waiting_for == "" or state.game.human_ready == true)
+      and state.game.phase == "hunter"
+  - from: route
+    to: postgame
+    when: 'state.game != nil and state.game.phase == "ended"'
+  - from: route
+    to: end
+    when: >-
+      state.game != nil and state.game.started == true
+      and state.game.waiting_for != ""
+      and state.game.human_ready != true
+
+  # A rule that picked a seat hands the turn to the performer; the rest return
+  # to the router, which decides what happens next.
+  - {from: input, to: route}
+  - {from: seed, to: route}
+  - from: night
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: night
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: day
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: day
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: vote
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: vote
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: hunter
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: hunter
+    to: route
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  - from: postgame
+    to: perform
+    when: 'state.game != nil and state.game.brief_seat != 0'
+  - from: postgame
+    to: end
+    when: 'state.game != nil and state.game.brief_seat == 0'
+  # A seat's turn returns the run to the rules - unless the game is over, in
+  # which case this turn was the answer and the run stops.
+  - from: perform
+    to: route
+    when: 'state.game == nil or state.game.phase != "ended"'
+  - from: perform
+    to: end
+    when: 'state.game != nil and state.game.phase == "ended"'
+  - {from: dawn, to: route}
+  - {from: exile, to: route}
+
+output:
+  key: prompt

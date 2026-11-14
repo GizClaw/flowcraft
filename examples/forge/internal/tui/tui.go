@@ -1,5 +1,5 @@
-// Package tui implements the bubbletea interface for forge: a raid /
-// workspace selector and the two-panel chat TUI (chat, workspace).
+// Package tui implements the bubbletea interface for forge: a raid / workspace
+// selector and the two-panel chat TUI (chat, workspace).
 package tui
 
 import (
@@ -9,9 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/event"
-	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -78,8 +76,8 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "enter":
 			if len(m.items) > 0 {
-				item := m.items[m.cursor]
-				m.selected = &item
+				selected := m.items[m.cursor]
+				m.selected = &selected
 			}
 			return m, tea.Quit
 		}
@@ -91,10 +89,6 @@ func (m selectorModel) View() string {
 	var b strings.Builder
 	b.WriteString(selectorTitleStyle.Render(m.title))
 	b.WriteString("\n\n")
-	if len(m.items) == 0 {
-		b.WriteString("No items found.\n")
-		return b.String()
-	}
 	for i, item := range m.items {
 		cursor := "  "
 		style := selectorItemStyle
@@ -121,18 +115,26 @@ var (
 	selectorHelpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
 
+// chatMessage is one line group in the chat panel.
 type chatMessage struct {
-	Role   string
-	NodeID string
-	Kind   string // "", "tool_call", "tool_result"
-	Text   string
+	Role string
+	Kind string // "", "tool_call", "tool_result"
+	// Label names the speaker when the line came from an agent other than the one
+	// the turn drives: a seat reached through delegation.
+	Label string
+	// Private marks a line only the role acting in its phase could hear.
+	Private bool
+	Text    string
 }
 
+// seatMsg carries one event of a seat, which arrives while the turn is in flight.
+type seatMsg struct{ seat app.SeatEvent }
+
+// eventMsg carries one item of the run iterator to the update loop.
 type eventMsg struct {
-	delta  *agent.StreamDeltaPayload
-	nodeID string
-	err    error
-	done   bool
+	event agent.Event
+	err   error
+	done  bool
 }
 
 type quitDisarmMsg struct{}
@@ -145,29 +147,24 @@ type Model struct {
 	status        string
 	err           string
 	running       bool
-	eventCh       <-chan eventMsg
-	width         int
-	height        int
-	chatInput     textinput.Model
-	chatViewport  viewport.Model
-	chatSpinner   spinner.Model
-	quitArmed     bool
-	usageBefore   app.UsageSnapshot
-	usage         app.UsageSnapshot
-	curNodeID     string
-	callNames     map[string]string
-	// model and think are the per-turn inference preferences this TUI
-	// process holds: empty means automatic. They live only here — nothing is
-	// written to the workspace or the session board until a turn starts.
-	model string
-	think string
-	// picker is the in-TUI option list, non-nil while /model or /think is
-	// collecting a choice.
-	picker    *selectorModel
-	pickerFor string
+	// private is whether the seat now speaking is in a phase only its role hears.
+	private bool
+	// node is the graph node the engine last reported running, which is how a
+	// silent node's text stays off the chat.
+	node         string
+	eventCh      <-chan eventMsg
+	width        int
+	height       int
+	chatInput    textinput.Model
+	chatViewport viewport.Model
+	chatSpinner  spinner.Model
+	quitArmed    bool
+	usage        app.Usage
+	callNames    map[string]string
 }
 
-// NewModel builds a TUI model over an open app.
+// NewModel builds a TUI model over an open app. A nil app is accepted so the
+// rendering can be tested without a deployment.
 func NewModel(a *app.App, workspacePath string) Model {
 	chat := textinput.New()
 	chat.Placeholder = "message"
@@ -226,9 +223,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitArmed = false
 		return m, nil
 	case tea.KeyMsg:
-		if m.picker != nil {
-			return m.updatePicker(msg)
-		}
 		if isEnter(msg) {
 			return m.submitFocusedInput()
 		}
@@ -256,7 +250,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.running = false
 			m.status = "ready"
-			m.usage = m.app.Usage().Since(m.usageBefore)
 			if msg.err != nil {
 				m.err = msg.err.Error()
 				m.status = "error"
@@ -269,60 +262,91 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.running = false
 			m.err = msg.err.Error()
 			m.status = "error"
-			m.usage = m.app.Usage().Since(m.usageBefore)
 			return m, m.afterRun()
 		}
-		if msg.delta != nil {
-			if msg.delta.Type == agent.StreamDeltaPart {
-				switch part := msg.delta.Part.(type) {
-				case message.TextPart:
-					m.appendAssistant(part.Text, msg.nodeID)
-				case message.ToolCallPart:
-					m.callNames[part.Call.ID] = part.Call.Name
-					m.appendTool("tool_call", part.Call.Name, string(part.Call.Arguments))
-				case message.ToolResultPart:
-					name := m.callNames[part.Result.CallID]
-					if name == "" {
-						name = part.Result.CallID
-					}
-					m.appendTool("tool_result", name, part.Result.Content.Text())
-				}
-			}
-		}
+		m.observe("", msg.event)
 		return m, pollCmd(m.eventCh)
+	case seatMsg:
+		if !m.running {
+			return m, nil
+		}
+		m.private = m.app.Private(msg.seat.Phase)
+		m.observe(msg.seat.Label, msg.seat.Event)
+		return m, waitSeatCmd(m.app.Events())
 	}
 	var cmd tea.Cmd
 	m.chatInput, cmd = m.chatInput.Update(msg)
 	return m, cmd
 }
 
-func (m Model) View() string {
-	if m.picker != nil {
-		return m.picker.View()
+// observe folds one run event into the chat panel and the usage line. A non-empty
+// label means the line came from a seat rather than the turn's own agent.
+func (m *Model) observe(label string, event agent.Event) {
+	switch typed := event.(type) {
+	case agent.EventExtension[graph.NodeEvent]:
+		m.node = typed.Value.Node
+		return
+	case agent.Text:
+		if label == "" && m.app.Silent(m.node) {
+			// The node is the engine's own: its words are a decision, not a line.
+			return
+		}
+		if label != "" {
+			m.appendSpeaker(label, typed.Text, m.private)
+			return
+		}
+		m.appendAssistant(typed.Text)
+	case agent.ToolCallStart:
+		m.callNames[typed.Call.ID] = typed.Call.Name
+		// A delegated turn is rendered as the seat speaking, through the seat's own
+		// events; the call itself would be the same words twice.
+		if typed.Call.Name == "delegate" {
+			return
+		}
+		m.appendTool("tool_call", typed.Call.Name, typed.Call.Arguments.String())
+	case agent.ToolResult:
+		name := m.callNames[typed.Result.CallID]
+		if name == "delegate" {
+			return
+		}
+		if name == "" {
+			name = typed.Result.CallID
+		}
+		m.appendTool("tool_result", name, typed.Result.Content.Text())
+	case agent.UsageEvent:
+		m.usage.Add(typed.Usage)
 	}
+}
+
+func (m Model) View() string {
 	width, _, bodyHeight, midW := m.panelLayout()
 	top := topStyle.Width(width - 2).MaxWidth(width - 2).Render(m.topLine())
 	rightW := maxInt(26, width/4)
 	mid := panelStyle.Width(midW).Height(bodyHeight).Render(m.chatView(midW, bodyHeight))
 	right := panelStyle.Width(rightW).Height(bodyHeight).Render(m.debugView(rightW, bodyHeight))
 	return top + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, mid, right) + "\n" +
-		helpStyle.Render("enter submit  /model /think  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
+		helpStyle.Render("enter submit  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
 }
 
 func (m Model) topLine() string {
-	info := m.app.Info()
+	info := m.appInfo()
 	status := m.status
 	if m.quitArmed {
 		status = "press ctrl+c again to quit"
 	}
-	return fmt.Sprintf("Forge TUI  agent=%s  context=%s  %s  status=%s",
-		info.AgentName, info.ContextID, m.selection(), status)
+	return fmt.Sprintf("Forge TUI  agent=%s  session=%s  status=%s", info.Agent, info.Session, status)
+}
+
+func (m Model) appInfo() app.Info {
+	if m.app == nil {
+		return app.Info{}
+	}
+	return m.app.Info()
 }
 
 func (m Model) chatView(width, height int) string {
-	title := "Chat"
 	vp := m.chatViewportFor(width, height)
-	lines := []string{panelTitleStyle.Render(title), vp.View()}
+	lines := []string{panelTitleStyle.Render("Chat"), vp.View()}
 	if m.err != "" {
 		lines = append(lines, errorStyle.Render("error: "+m.err))
 	}
@@ -341,7 +365,7 @@ func (m Model) usageLines(width int) []string {
 		text = "usage: -"
 	} else {
 		text = fmt.Sprintf("usage in %d out %d total %d reason %d cache_r %d cache_w %d calls %d",
-			m.usage.InputTokens, m.usage.OutputTokens, m.usage.TotalTokens,
+			m.usage.InputTokens, m.usage.OutputTokens, m.usage.Total(),
 			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens,
 			m.usage.Calls)
 	}
@@ -360,19 +384,17 @@ func (m Model) chatContent(width int) string {
 			text = "..."
 		}
 		prefix := msg.Role + ": "
+		if msg.Label != "" {
+			prefix = "[" + msg.Label + "] "
+		}
+		if msg.Private {
+			prefix = "[私密] " + prefix
+		}
 		switch msg.Kind {
 		case "tool_call":
 			prefix = "[工具调用] "
 		case "tool_result":
 			prefix = "[工具结果] "
-		default:
-			if msg.Role == "assistant" {
-				if m.app != nil {
-					if label := m.app.SpeakerLabel(msg.NodeID); label != "" {
-						prefix = "[" + label + "] "
-					}
-				}
-			}
 		}
 		for _, line := range wrapLine(prefix+text, width-4) {
 			b.WriteString(line)
@@ -384,28 +406,36 @@ func (m Model) chatContent(width int) string {
 }
 
 func (m Model) debugView(width, height int) string {
-	info := m.app.Info()
+	info := m.appInfo()
 	lines := []string{
 		panelTitleStyle.Render("Workspace"),
 		"path: " + m.workspacePath,
-		"agent: " + info.AgentName,
-		"context: " + info.ContextID,
+		"agent: " + info.Agent,
+		"engine: " + info.Engine,
+		"session: " + info.Session,
+		"models:",
+	}
+	for _, model := range info.Models {
+		lines = append(lines, "  "+model)
+	}
+	lines = append(lines, "tools:")
+	for _, item := range info.Tools {
+		lines = append(lines, "  "+item)
 	}
 	return strings.Join(trimLines(wrapLines(lines, width-4), height), "\n")
 }
 
-func (m *Model) appendAssistant(text, nodeID string) {
-	if len(m.messages) == 0 ||
-		m.messages[len(m.messages)-1].Role != "assistant" ||
-		!m.running ||
-		(nodeID != "" && nodeID != m.curNodeID) {
-		m.messages = append(m.messages, chatMessage{
-			Role:   "assistant",
-			NodeID: nodeID,
-		})
+func (m *Model) appendAssistant(text string) {
+	// The turn's own words never continue a seat's block: a seat speaks through its
+	// own events, and the referee's text after it is a different speaker.
+	merge := m.running && len(m.messages) > 0
+	if merge {
+		last := m.messages[len(m.messages)-1]
+		merge = last.Role == "assistant" && last.Label == "" &&
+			last.Kind == "" && !last.Private
 	}
-	if nodeID != "" {
-		m.curNodeID = nodeID
+	if !merge {
+		m.messages = append(m.messages, chatMessage{Role: "assistant"})
 	}
 	last := &m.messages[len(m.messages)-1]
 	last.Text += text
@@ -414,6 +444,24 @@ func (m *Model) appendAssistant(text, nodeID string) {
 }
 
 // appendTool records one tool-use block in the chat.
+// appendSpeaker writes one seat's line under its label, starting a new block when
+// the speaker changes.
+func (m *Model) appendSpeaker(label, text string, private bool) {
+	merge := len(m.messages) > 0
+	if merge {
+		last := m.messages[len(m.messages)-1]
+		merge = last.Role == "assistant" && last.Label == label &&
+			last.Kind == "" && last.Private == private
+	}
+	if !merge {
+		m.messages = append(m.messages, chatMessage{Role: "assistant", Label: label, Private: private})
+	}
+	last := &m.messages[len(m.messages)-1]
+	last.Text += text
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
+}
+
 func (m *Model) appendTool(kind, name, detail string) {
 	text := name
 	if detail != "" {
@@ -434,12 +482,10 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	if text == "" || m.running {
 		return m, nil
 	}
-	if strings.HasPrefix(text, "/") {
-		updated, cmd, consumed := m.runCommand(text)
-		if consumed {
-			updated.chatInput.SetValue("")
-			return updated, cmd
-		}
+	if text == "/help" {
+		m.appendSystem(commandHelp())
+		m.chatInput.SetValue("")
+		return m, nil
 	}
 	m.chatInput.SetValue("")
 	m.messages = append(m.messages, chatMessage{Role: "user", Text: text})
@@ -447,88 +493,76 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	m.status = "running"
 	m.err = ""
 	m.chatInput.Blur()
-	m.usageBefore = m.app.Usage()
-	m.curNodeID = ""
+	m.usage = app.Usage{}
 	_, _, bodyHeight, midW := m.panelLayout()
 	m.syncChatViewport(midW, bodyHeight)
 	ch := make(chan eventMsg, 256)
 	m.eventCh = ch
 	return m, tea.Batch(
-		startRoundCmd(m.app, text, ch, app.TurnOptions{Model: m.model, Think: m.think}),
+		startTurnCmd(m.app, text, ch),
 		pollCmd(ch),
+		waitSeatCmd(m.app.Events()),
 		m.chatSpinner.Tick,
 	)
 }
 
-func (m Model) panelLayout() (width, height, bodyHeight, midW int) {
-	width, height = m.width, m.height
-	if width <= 0 {
-		width = 120
-	}
-	if height <= 0 {
-		height = 32
-	}
-	bodyHeight = height - 4
-	if bodyHeight < 12 {
-		bodyHeight = 12
-	}
-	rightW := maxInt(26, width/4)
-	midW = maxInt(32, width-rightW-6)
-	return width, height, bodyHeight, midW
-}
-
-func (m *Model) syncChatViewport(width, height int) {
-	m.chatViewport = m.chatViewportFor(width, height)
-}
-
-func (m *Model) afterRun() tea.Cmd {
-	var cmds []tea.Cmd
-	cmds = append(cmds, m.chatInput.Focus())
+// appendSystem writes a local note, not a turn.
+func (m *Model) appendSystem(text string) {
+	m.messages = append(m.messages, chatMessage{Role: "system", Text: text})
 	_, _, bodyHeight, midW := m.panelLayout()
 	m.syncChatViewport(midW, bodyHeight)
-	return tea.Batch(cmds...)
 }
 
-func (m Model) chatViewportFor(width, height int) viewport.Model {
-	vp := m.chatViewport
-	vp.Width = maxInt(1, width-4)
-	vp.Height = maxInt(1, height-3-len(m.usageLines(width)))
-	if m.err != "" {
-		vp.Height = maxInt(1, vp.Height-1)
-	}
-	follow := vp.AtBottom()
-	vp.SetContent(m.chatContent(width))
-	if follow {
-		vp.GotoBottom()
-	}
-	return vp
+func commandHelp() string {
+	return strings.Join([]string{
+		"/help   show this note",
+		"",
+		"The model and its reasoning effort are deployment settings: they live in",
+		"the workspace's runtime layer, so one TUI session cannot switch them.",
+	}, "\n")
 }
 
-func startRoundCmd(
-	a *app.App,
-	text string,
-	ch chan<- eventMsg,
-	opts app.TurnOptions,
-) tea.Cmd {
+// startTurnCmd streams one turn into ch. It runs on the command goroutine, so the
+// update loop stays responsive while the agent works.
+func startTurnCmd(a *app.App, text string, ch chan<- eventMsg) tea.Cmd {
 	return func() tea.Msg {
-		sink := session.SinkSpec{
-			ID: "tui",
-			Sink: agent.StreamSinkFunc(func(_ context.Context, env event.Envelope, delta agent.StreamDeltaPayload) error {
-				d := delta
-				ch <- eventMsg{delta: &d, nodeID: env.NodeID()}
-				return nil
-			}),
+		if a == nil {
+			ch <- eventMsg{err: fmt.Errorf("no workspace is open")}
+			ch <- eventMsg{done: true}
+			close(ch)
+			return nil
 		}
-		_, err := a.RunTurn(context.Background(), text, sink, opts)
+		result, err := a.RunTurn(context.Background(), a.Info().Agent, text, func(event agent.Event) {
+			ch <- eventMsg{event: event}
+		})
+		if err == nil {
+			err = app.Failure(result, nil)
+		}
 		if err != nil {
 			ch <- eventMsg{err: err}
 		}
 		ch <- eventMsg{done: true}
 		close(ch)
-		return eventMsg{}
+		return nil
 	}
 }
 
+// waitSeatCmd waits for the next seat event. It returns nil for a workspace with no
+// seat feed, which keeps a nil channel out of the select loop.
+func waitSeatCmd(ch <-chan app.SeatEvent) tea.Cmd {
+	if ch == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		seat, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return seatMsg{seat: seat}
+	}
+}
+
+// pollCmd waits for the next event of the running turn.
 func pollCmd(ch <-chan eventMsg) tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-ch
@@ -556,6 +590,59 @@ func maxInt(a, b int) int {
 	return b
 }
 
+func (m Model) panelLayout() (width, height, bodyHeight, midW int) {
+	width, height = m.width, m.height
+	if width <= 0 {
+		width = 120
+	}
+	if height <= 0 {
+		height = 32
+	}
+	bodyHeight = height - 4
+	if bodyHeight < 12 {
+		bodyHeight = 12
+	}
+	rightW := maxInt(26, width/4)
+	midW = maxInt(32, width-rightW-6)
+	return width, height, bodyHeight, midW
+}
+
+func (m *Model) syncChatViewport(width, height int) {
+	m.chatViewport = m.chatViewportFor(width, height)
+}
+
+func (m *Model) afterRun() tea.Cmd {
+	m.chatInput.Focus()
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
+	return m.chatInput.Focus()
+}
+
+func (m Model) chatViewportFor(width, height int) viewport.Model {
+	vp := m.chatViewport
+	vp.Width = maxInt(1, width-4)
+	vp.Height = maxInt(1, height-3-len(m.usageLines(width)))
+	if m.err != "" {
+		vp.Height = maxInt(1, vp.Height-1)
+	}
+	follow := vp.AtBottom()
+	vp.SetContent(m.chatContent(width))
+	if follow {
+		vp.GotoBottom()
+	}
+	return vp
+}
+
+var (
+	topStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
+	panelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
+	panelTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	helpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+)
+
+// wrapLine breaks one line at width display columns. Wide runes are measured, not
+// counted, so a CJK line wraps where the terminal wraps.
 func wrapLine(text string, width int) []string {
 	if width <= 0 {
 		return []string{text}
@@ -599,11 +686,3 @@ func trimLines(lines []string, height int) []string {
 	}
 	return lines[len(lines)-height:]
 }
-
-var (
-	topStyle        = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("15"))
-	panelStyle      = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1)
-	panelTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	helpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	errorStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-)

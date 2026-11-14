@@ -2,184 +2,94 @@ package bytedance
 
 import (
 	"context"
-	"errors"
-	"io"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/message"
-	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
-func conformanceTextRequest() inference.GenerateRequest {
-	return inference.GenerateRequest{Input: inference.GenerateInput{
-		Role: inference.InputRoleUser,
-		Content: inference.InputContent{
-			Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
-			Intent:  inference.Intent{Text: &inference.TextIntent{}},
-		},
-	}}
-}
-
-func conformanceModel(name string) model.ModelRef {
-	return model.ModelRef{
-		ID:      model.ModelID{Provider: providerID, Name: name},
-		Profile: "default",
-	}
-}
-
-func conformanceGenerateDrivers[Wire any](
-	t *testing.T,
-	compile inference.GenerateCompiler[Wire],
-	calls *inferencetest.Counter,
-) (inference.GenerateDriver, inference.GenerateStreamDriver) {
-	t.Helper()
-	operations, err := inference.BindGenerateOperations(
-		compile,
-		countingTransport(calls, func(_ context.Context, wire Wire) (Wire, error) { return wire, nil }),
-		inference.Decoder[Wire, inference.GenerateResponse](
-			func(_ context.Context, _ Wire) (inference.GenerateResponse, error) {
-				return inference.GenerateResponse{
-					Message: message.Message{
-						Role:    message.RoleAssistant,
-						Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
-					},
-					FinishReason: inference.FinishCompleted,
-				}, nil
-			},
-		),
-		countingTransport(calls, func(_ context.Context, _ Wire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
-			return &conformanceStream{events: []inference.GenerateStreamEvent{
-				{PartIndex: 0, Delta: inference.TextPartDelta{Text: "ok"}},
-				{FinishReason: inference.FinishCompleted},
-			}}, nil
-		}),
-		inference.GenerateStreamDecoder[inference.GenerateStreamEvent](
-			func(_ context.Context, event inference.GenerateStreamEvent) (inference.GenerateStreamEvent, error) {
-				return event, nil
-			},
-		),
-	)
-	if err != nil {
-		t.Fatalf("BindGenerateOperations: %v", err)
-	}
-	return operations.Unary, operations.Stream
-}
-
-func conformanceEmbedDriver[Wire any](
-	t *testing.T,
-	compile inference.Compiler[inference.EmbedRequest, Wire],
-	calls *inferencetest.Counter,
-) inference.EmbedDriver {
-	t.Helper()
-	driver, err := inference.BindEmbed(
-		compile,
-		countingTransport(calls, func(_ context.Context, wire Wire) (Wire, error) { return wire, nil }),
-		inference.Decoder[Wire, inference.EmbedResponse](
-			func(_ context.Context, _ Wire) (inference.EmbedResponse, error) {
-				return inference.EmbedResponse{
-					Embeddings: []inference.Embedding{{Vector: []float32{1}}},
-				}, nil
-			},
-		),
-	)
-	if err != nil {
-		t.Fatalf("BindEmbed: %v", err)
-	}
-	return driver
-}
-
-func countingTransport[Wire, Raw any](
-	calls *inferencetest.Counter,
-	next inference.Transport[Wire, Raw],
-) inference.Transport[Wire, Raw] {
-	return func(ctx context.Context, wire Wire) (Raw, error) {
-		calls.Inc()
-		return next(ctx, wire)
-	}
-}
-
-type conformanceStream struct {
-	events []inference.GenerateStreamEvent
-	index  int
-}
-
-func (s *conformanceStream) Next(context.Context) (inference.GenerateStreamEvent, error) {
-	if s.index >= len(s.events) {
-		return inference.GenerateStreamEvent{}, io.EOF
-	}
-	event := s.events[s.index]
-	s.index++
-	return event, nil
-}
-func (*conformanceStream) Close() error { return nil }
-
-func TestConformanceGenerateConcurrent(t *testing.T) {
-	calls := &inferencetest.Counter{}
-	model := "doubao-seed-2-0-lite"
-	unary, stream := conformanceGenerateDrivers(t, compileGenerateFor(model, declarations[model]), calls)
-	inferencetest.RunGenerateConcurrent(t, inferencetest.GenerateConcurrentSuite{
-		Model:      conformanceModel(model),
-		Request:    conformanceTextRequest,
-		Unary:      unary,
-		Stream:     stream,
-		Goroutines: 2,
+func testDescriptor(name, kind string, inputs, outputs []message.PartKind) model.ModelDescriptor {
+	return descriptor(ModelSpec{
+		Name: name, Kind: kind,
+		Capabilities: model.ModelCapabilities{Inputs: inputs, Outputs: outputs},
 	})
 }
 
-var errStreamFailure = errors.New("stream failure")
-
-type failingStream struct{}
-
-func (*failingStream) Next(context.Context) (inference.GenerateStreamEvent, error) {
-	return inference.GenerateStreamEvent{}, errStreamFailure
-}
-func (*failingStream) Close() error { return nil }
-
-func TestConformanceGenerateStreamFailure(t *testing.T) {
-	calls := &inferencetest.Counter{}
-	model := "doubao-seed-2-0-lite"
-	driver, err := inference.BindGenerateStream(
-		compileGenerateFor(model, declarations[model]),
-		countingTransport(calls, func(_ context.Context, _ *arkresponses.ResponsesRequest) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
-			return &failingStream{}, nil
-		}),
-		inference.GenerateStreamDecoder[inference.GenerateStreamEvent](
-			func(_ context.Context, event inference.GenerateStreamEvent) (inference.GenerateStreamEvent, error) {
-				return event, nil
-			},
-		),
-	)
-	if err != nil {
-		t.Fatalf("BindGenerateStream: %v", err)
+func testRequest(name string, output inference.Output, content message.Content) inference.GenerateRequest {
+	return inference.GenerateRequest{
+		Model:  model.ModelRef{ID: model.ModelID{Provider: ProviderID, Name: name}},
+		Input:  inference.GenerateInput{Role: inference.InputRoleUser, Content: content},
+		Output: output,
 	}
-	inferencetest.RunGenerateStreamFailure(t, inferencetest.GenerateStreamFailureSuite{
-		Model:          conformanceModel(model),
-		Request:        conformanceTextRequest,
-		Driver:         driver,
-		TransportCalls: calls.Load,
-		AssertError: func(t *testing.T, err error) {
-			if !errors.Is(err, errStreamFailure) {
-				t.Fatalf("stream error = %v", err)
-			}
-		},
-	})
 }
 
-func TestConformanceEmbedUnary(t *testing.T) {
-	calls := &inferencetest.Counter{}
-	model := "doubao-embedding-large"
-	driver := conformanceEmbedDriver(t, compileEmbedFor(model, declarations[model]), calls)
-	inferencetest.RunEmbedUnary(t, inferencetest.EmbedUnarySuite{
-		Model: conformanceModel(model),
-		Request: func() inference.EmbedRequest {
-			return inference.EmbedRequest{Items: []inference.EmbedItem{{
-				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
-			}}}
+func TestCompileText(t *testing.T) {
+	desc := testDescriptor("ark-test", "generate",
+		[]message.PartKind{message.PartText}, []message.PartKind{message.PartText})
+	request := testRequest("ark-test", inference.OutputText, message.NewTextContent("hello"))
+	compiled, err := compileGenerate("ep-test", desc)(context.Background(), request, protocol.ShapeUnary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Wire.Model != "ep-test" {
+		t.Fatalf("model = %q", compiled.Wire.Model)
+	}
+	if compiled.Wire.Instructions != nil && *compiled.Wire.Instructions != "" {
+		t.Fatalf("instructions = %q, want unset without a system message", *compiled.Wire.Instructions)
+	}
+	if len(compiled.Fields) == 0 {
+		t.Fatal("compiled fields are empty")
+	}
+}
+
+func TestCompileEmbed(t *testing.T) {
+	desc := testDescriptor("embed-test", "embed",
+		[]message.PartKind{message.PartText}, nil)
+	desc.Capabilities.EmbeddingDimensions = 1024
+	request := inference.EmbedRequest{
+		Model: model.ModelRef{ID: model.ModelID{Provider: ProviderID, Name: "embed-test"}},
+		Input: []message.Content{message.NewTextContent("hello")},
+	}
+	compiled, err := compileEmbed("ep-embed", desc)(context.Background(), request, protocol.ShapeUnary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Wire.text == nil || compiled.Wire.text.Model != "ep-embed" {
+		t.Fatalf("wire = %+v", compiled.Wire)
+	}
+}
+
+func TestCompileImage(t *testing.T) {
+	desc := testDescriptor("image-test", "image",
+		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+	request := testRequest("image-test", inference.OutputImage, message.NewTextContent("a red square"))
+	compiled, err := compileImage("ep-image", desc)(context.Background(), request, protocol.ShapeUnary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Wire.ark.Model != "ep-image" || compiled.Wire.ark.Prompt != "a red square" {
+		t.Fatalf("wire = %+v", compiled.Wire.ark)
+	}
+}
+
+func TestCompileVideo(t *testing.T) {
+	desc := ModelSpec{
+		Name: "video-test", Kind: "video",
+		Capabilities: model.ModelCapabilities{
+			Inputs: []message.PartKind{message.PartText}, Outputs: []message.PartKind{message.PartVideo},
 		},
-		Driver:         driver,
-		TransportCalls: calls.Load,
-	})
+	}
+	request := testRequest("video-test", inference.OutputVideo, message.NewTextContent("a calm lake"))
+	compiled, err := compileVideo("ep-video", desc)(context.Background(), request, protocol.ShapeUnary)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Wire.Model != "ep-video" {
+		t.Fatalf("model = %q", compiled.Wire.Model)
+	}
+	if len(compiled.Wire.Content) == 0 || compiled.Wire.Content[0].Text == nil {
+		t.Fatalf("content = %+v", compiled.Wire.Content)
+	}
 }

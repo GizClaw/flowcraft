@@ -1,0 +1,449 @@
+//go:build windows
+
+package windows
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/paths"
+	"github.com/GizClaw/flowcraft/core/permission"
+	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
+	"github.com/GizClaw/flowcraft/core/sandbox/journal"
+	"github.com/GizClaw/flowcraft/core/sandbox/sessionkit"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+)
+
+// defaultMaxOutputBytes is the per-stream cap used by the one-shot
+// Exec when ExecOptions.Resources.MaxOutputBytes is zero.
+const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
+
+// Runner executes commands directly on the host via os/exec, with the
+// child confined to a Windows Job Object that owns its whole process
+// tree. It is the no-filesystem-isolation backend for Windows:
+// lifecycle and resource caps are enforced by the kernel (job
+// objects); filesystem and network confinement are phase 2.
+//
+// Policy support matrix:
+//
+//   - WorkDir / Stdin / Timeout: fully supported. Every child runs in
+//     its own job; timeout/cancel closes the job and kills the whole
+//     tree, not just the leader.
+//   - TTY sessions: supported via ConPTY (merged SessionStreamTTY,
+//     Resize). Signal stays NotAvailable. TTY combined with
+//     WithWriteConfinement is NotAvailable until the restricted-token
+//     spawn path is verified against a real pseudo console.
+//   - Env: fully supported (see sandbox.EnvPolicy doc).
+//   - Net.Mode: NetDefault (host networking), NetDenyAll (AppContainer
+//     without network capabilities), and NetAllowList / NetProxy
+//     (AppContainer + WFP port-pinning to the enforcement proxy) are
+//     supported. Non-elevated hosts fail closed with NotAvailable.
+//   - Permission != nil without WithWriteConfinement: errdefs.NotAvailable
+//     (no OS boundary to confine a caller-supplied file boundary).
+//   - Resources.MemoryBytes: enforced as a job-wide memory limit
+//     (JOB_OBJECT_LIMIT_JOB_MEMORY).
+//   - Resources.CPUMillicores: enforced as a per-process user-time
+//     limit = Timeout x millicores/1000; requires Timeout > 0,
+//     otherwise errdefs.NotAvailable.
+//   - Resources.DiskBytes != 0: errdefs.NotAvailable (no quota
+//     mechanism).
+//   - Resources.MaxOutputBytes: enforced; per-call value overrides the
+//     runner's WithMaxOutputBytes default.
+type Runner struct {
+	rootDir      string
+	cfg          runnerConfig
+	sessions     *sessionkit.SessionRegistry
+	registryOnce sync.Once
+	lowTemp      string
+	journal      *journal.Journal
+}
+
+// New constructs a Runner rooted at rootDir. The root is resolved via
+// filepath.Abs + EvalSymlinks so a later symlink swap on the root
+// itself cannot be used to escape.
+func New(rootDir string, opts ...Option) (*Runner, error) {
+	real, err := filepath.Abs(rootDir)
+	if err == nil {
+		if resolved, evalErr := filepath.EvalSymlinks(real); evalErr == nil {
+			real = resolved
+		}
+	}
+	r := &Runner{
+		rootDir: real,
+		cfg:     runnerConfig{defaultMaxOutput: defaultMaxOutputBytes},
+	}
+	for _, o := range opts {
+		o(&r.cfg)
+	}
+	if r.cfg.writeConfine {
+		var err error
+		r.cfg.writable, err = resolveAbsolutePaths(real, r.cfg.writable)
+		if err != nil {
+			return nil, err
+		}
+		r.lowTemp, err = createLowTempDir()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if r.cfg.journal != nil {
+		// Explicitly configured and unavailable is an error, not a
+		// degradation: this constructor can report it, and a deployment
+		// that asked for a journal must not end up with a runner that
+		// silently watches nothing.
+		journalCfg := *r.cfg.journal
+		journalCfg.Root = real
+		journalCfg.ExtraRoots = r.cfg.writable
+		j, err := journal.New(journalCfg)
+		if err != nil {
+			return nil, err
+		}
+		r.journal = j
+	}
+	return r, nil
+}
+
+// Capabilities declares the honest surface: env allow-lists and
+// job-object resource caps are always enforced; filesystem write
+// bounds are enforced when the runner was constructed with
+// WithWriteConfinement. TTY sessions are supported through ConPTY;
+// signal and event features are not. A journal is reported when the
+// runner was constructed with one.
+func (r *Runner) Capabilities() sandbox.Capabilities {
+	// MemoryCap / CPUCap are unconditional here: job objects enforce them in
+	// the kernel, so the answer does not depend on the unix group sampler that
+	// sessionkit.Enforcement gates on.
+	policy := sandbox.Enforcement{
+		EnvAllowList: true,
+		MemoryCap:    true,
+		CPUCap:       true,
+		NetModes:     permission.IsolatingNetModes(),
+	}
+	if r.cfg.writeConfine {
+		policy.FilesystemBounds = true
+		policy.WriteConfinement = true
+	}
+	return sandbox.Capabilities{
+		Policy: policy,
+		// The session surface is the shared layer's, not a local guess: a runner
+		// that claims less than its sessions do is a runner whose promise the
+		// conformance suite can falsify (Watch works, or it does not).
+		Features: sessionkit.SessionFeatures(),
+		Journal:  r.journal.Capabilities(),
+	}
+}
+
+// Start implements Runner: validatePolicy runs first, then the command is
+// spawned on pipes inside a fresh job object.
+func (r *Runner) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+	return r.registry().Start(ctx, spec)
+}
+
+// List implements Runner.
+func (r *Runner) List(ctx context.Context) ([]sandbox.SessionInfo, error) {
+	return r.registry().List(ctx)
+}
+
+// Terminate implements Runner.
+func (r *Runner) Terminate(ctx context.Context, id string) error {
+	return r.registry().Terminate(ctx, id)
+}
+
+// Close implements core/sandbox.Runner: it terminates every session
+// started through this runner. Safe to call more than once and when
+// the runner never started anything.
+func (r *Runner) Close() error {
+	err := r.registry().Close()
+	if r.journal != nil {
+		if jerr := r.journal.Close(); jerr != nil && err == nil {
+			err = jerr
+		}
+	}
+	if r.lowTemp != "" {
+		if rerr := os.RemoveAll(r.lowTemp); rerr != nil {
+			telemetry.WarnErr(context.Background(),
+				"windows: remove low-IL temp dir failed", rerr,
+				attribute.String("windows.temp_dir", r.lowTemp))
+		}
+		r.lowTemp = ""
+	}
+	return err
+}
+
+// OpenJournal implements core/sandbox.JournalProvider. It fails with
+// errdefs.NotAvailable when the runner was built without a journal.
+func (r *Runner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.journal == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox-windows: no file journal is attached to this runner")
+	}
+	return r.journal.Open()
+}
+
+// registry returns the session registry, initialising it lazily so a
+// zero-value Runner still answers with NotAvailable instead of
+// panicking on a nil interface.
+func (r *Runner) registry() *sessionkit.SessionRegistry {
+	r.registryOnce.Do(func() {
+		if r.sessions == nil {
+			r.sessions = sessionkit.NewSessionRegistry(r.spawnProcess)
+		}
+	})
+	return r.sessions
+}
+
+// spawnProcess is Runner's sandbox.SessionStarter: it applies the same policy
+// surface as Exec, then hands the configured command and its own process policy
+// to the shared session layer, which owns the lifecycle and the job object.
+func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+	if err := r.validatePolicy(spec); err != nil {
+		return nil, err
+	}
+	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	maxOut := spec.Opts.Resources.MaxOutputBytes
+	if maxOut <= 0 {
+		maxOut = r.cfg.defaultMaxOutput
+	}
+	spec.Opts.Resources.MaxOutputBytes = maxOut
+
+	env := buildEnv(spec.Opts.Env)
+	var iso *netIsolation
+	if spec.Opts.Net.Mode != permission.NetDefault {
+		if spec.TTY {
+			return nil, errdefs.NotAvailablef(
+				"windows: TTY sessions with a net policy are not supported yet")
+		}
+		writable := spec.Opts.Writable(append([]string{r.rootDir}, r.cfg.writable...))
+		iso, err = newNetIsolation(r.rootDir, writable, spec.Opts.Net)
+		if err != nil {
+			return nil, err
+		}
+		// AppContainer cannot read the user profile; redirect the child's
+		// home-facing env into the sandbox home.
+		env = iso.env(env)
+	}
+	if spec.TTY && r.cfg.writeConfine {
+		return nil, errdefs.NotAvailablef(
+			"windows: TTY sessions with write confinement are not supported yet")
+	}
+
+	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
+	cmd.Dir = workDir
+	if iso == nil && !spec.TTY && r.cfg.writeConfine {
+		writable := spec.Opts.Writable(append([]string{r.rootDir}, r.cfg.writable...))
+		for _, p := range writable {
+			if err := labelLowIntegrity(p); err != nil {
+				return nil, err
+			}
+		}
+		cmd.Env = withLowTempEnv(env, r.lowTemp)
+	} else {
+		cmd.Env = env
+	}
+	cmd.Env = sanitizeEnv(cmd.Env)
+	if err := ctx.Err(); err != nil {
+		return nil, errdefs.FromContext(err)
+	}
+
+	// The policy this backend contributes: the child's token. A TTY session is
+	// spawned by the pseudo console, which builds its own attributes, and both
+	// combinations that would need one are refused above.
+	var setup sessionkit.ProcessSetup
+	switch {
+	case spec.TTY:
+		setup = nil
+	case iso != nil:
+		setup = func(cmd *exec.Cmd) (func() error, error) {
+			// The child runs under the AppContainer token: network is
+			// kernel-isolated and writes are bounded by the package SID's DACL
+			// grants, which replace the Low-IL confinement.
+			if err := enableCreateProcessAsUserPrivileges(); err != nil {
+				return nil, err
+			}
+			cmd.SysProcAttr.Token = syscall.Token(iso.token)
+			return iso.Close, nil
+		}
+	case r.cfg.writeConfine:
+		setup = func(cmd *exec.Cmd) (func() error, error) {
+			// The child runs under a restricted, Low-integrity token: reads
+			// everywhere, writes only where the mandatory label was lowered.
+			if err := enableCreateProcessAsUserPrivileges(); err != nil {
+				return nil, err
+			}
+			token, err := restrictToken()
+			if err != nil {
+				return nil, err
+			}
+			cmd.SysProcAttr.Token = syscall.Token(token)
+			return token.Close, nil
+		}
+	}
+	return sessionkit.StartSessionWithPolicy(ctx, spec, cmd, setup)
+}
+
+// Attach implements sandbox.SessionAttacher: the registry owns the process, so a
+// caller that only has the id can still read its output and its exit status.
+func (r *Runner) Attach(ctx context.Context, id string) (sandbox.Session, error) {
+	return r.registry().Attach(ctx, id)
+}
+
+// validatePolicy is engine.ValidateExecPolicy plus the windows posture: a
+// per-call file boundary needs write confinement, and the net modes are the
+// three the AppContainer / WFP path can enforce.
+//
+// The resource caps are not special-cased any more: ValidateExecPolicy reads
+// them off the runner's own Enforcement, and this backend reports them from job
+// objects rather than from the shared group sampler.
+func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
+	if err := engine.ValidateExecPolicy(spec.Opts, r.Capabilities().Policy); err != nil {
+		return err
+	}
+	if spec.Opts.Permission != nil && !r.cfg.writeConfine {
+		return errdefs.NotAvailablef(
+			"windows: a per-call file boundary requires the runner to be constructed with WithWriteConfinement")
+	}
+	if spec.Opts.Net.Mode != permission.NetDefault {
+		switch spec.Opts.Net.Mode {
+		case permission.NetDenyAll, permission.NetAllowList, permission.NetProxy:
+			// Supported: AppContainer, plus WFP port-pinning to the
+			// enforcement proxy for allow_list / proxy modes.
+		default:
+			return errdefs.NotAvailablef(
+				"windows: net mode %d not supported yet", int(spec.Opts.Net.Mode))
+		}
+	}
+	return nil
+}
+
+// buildEnv translates a sandbox.EnvPolicy into a flat []string
+// suitable for exec.Cmd.Env. The empty result is returned as nil so
+// os/exec falls back to its "no env at all" code path (which is what
+// we want when the caller asked for an empty allow-list with no
+// Inject).
+func buildEnv(p sandbox.EnvPolicy) []string {
+	var env []string
+
+	if p.Allow == nil {
+		env = append(env, os.Environ()...)
+	} else if len(p.Allow) > 0 {
+		allow := make(map[string]bool, len(p.Allow))
+		for _, name := range p.Allow {
+			allow[name] = true
+		}
+		for _, kv := range os.Environ() {
+			idx := strings.IndexByte(kv, '=')
+			if idx <= 0 {
+				continue
+			}
+			if allow[kv[:idx]] {
+				env = append(env, kv)
+			}
+		}
+	}
+
+	if len(p.Inject) > 0 {
+		injected := make(map[string]bool, len(p.Inject))
+		for k := range p.Inject {
+			injected[k] = true
+		}
+		filtered := env[:0]
+		for _, kv := range env {
+			idx := strings.IndexByte(kv, '=')
+			if idx <= 0 {
+				filtered = append(filtered, kv)
+				continue
+			}
+			if !injected[kv[:idx]] {
+				filtered = append(filtered, kv)
+			}
+		}
+		env = filtered
+		for k, v := range p.Inject {
+			env = append(env, fmt.Sprintf("%s=%s", k, v))
+		}
+	}
+
+	if p.Allow != nil && len(p.Allow) == 0 && len(p.Inject) == 0 {
+		// Distinguish "inherit nothing" from "inherit everything":
+		// return an empty (non-nil) slice so exec.Cmd.Env is set to no
+		// entries instead of falling back to os.Environ().
+		return []string{}
+	}
+	return env
+}
+
+func (r *Runner) resolveWorkDir(dir string) (string, error) {
+	abs := dir
+	if !filepath.IsAbs(dir) {
+		abs = filepath.Join(r.rootDir, dir)
+	}
+	abs = filepath.Clean(abs)
+
+	real, err := engine.EvalExistingPrefix(abs)
+	if err != nil {
+		return "", fmt.Errorf("windows: resolve workdir: %w", err)
+	}
+	if !containedInRoot(real, r.rootDir) {
+		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
+	}
+	return abs, nil
+}
+
+// containedInRoot reports whether path is root itself or directly
+// under it. Windows paths are case-insensitive, so the comparison
+// folds case (paths.WithinFold); the workspace layer's equivalent
+// check does the same.
+func containedInRoot(path, root string) bool {
+	return paths.WithinFold(root, path)
+}
+
+// resolveAbsolutePaths makes each path absolute (relative entries are
+// resolved against root) without requiring them to exist yet.
+func resolveAbsolutePaths(root string, paths []string) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		out = append(out, filepath.Clean(p))
+	}
+	return out, nil
+}
+
+// sanitizeEnv drops entries containing NUL bytes. os/exec rejects such
+// entries with a hard error, and a malformed entry in the host
+// environment must not prevent spawning.
+func sanitizeEnv(env []string) []string {
+	out := env[:0]
+	for _, kv := range env {
+		if strings.IndexByte(kv, 0) >= 0 {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+var _ sandbox.Runner = (*Runner)(nil)
+var _ sandbox.JournalProvider = (*Runner)(nil)
+
+var (
+	_ sandbox.Runner          = (*Runner)(nil)
+	_ sandbox.SessionAttacher = (*Runner)(nil)
+)

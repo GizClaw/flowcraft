@@ -8,6 +8,9 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 func TestChatContentKeepsAllMessages(t *testing.T) {
@@ -110,7 +113,6 @@ func TestUsageShownBelowInput(t *testing.T) {
 	m.usage.Calls = 1
 	m.usage.InputTokens = 10
 	m.usage.OutputTokens = 20
-	m.usage.TotalTokens = 30
 	got := m.chatView(80, 16)
 	if !strings.Contains(got, "usage in 10 out 20 total 30") {
 		t.Fatalf("chatView should show token usage below the input:\n%s", got)
@@ -122,7 +124,6 @@ func TestChatViewFitsPanelHeightWithWrappedUsage(t *testing.T) {
 	m.usage.Calls = 1
 	m.usage.InputTokens = 10
 	m.usage.OutputTokens = 20
-	m.usage.TotalTokens = 30
 	got := m.chatView(32, 14)
 	if lines := strings.Split(got, "\n"); len(lines) != 14 {
 		t.Fatalf("chatView rendered %d lines, want 14:\n%s", len(lines), got)
@@ -179,5 +180,34 @@ func TestQIsTypable(t *testing.T) {
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
 	if got := updated.(Model).chatInput.Value(); got != "q" {
 		t.Fatalf("q should be typed into the input, got %q", got)
+	}
+}
+
+func TestSeatLinesCarryTheirLabel(t *testing.T) {
+	m := NewModel(nil, "workspace")
+	m.observe("1号林知", agent.Text{Text: "我怀疑5号。"})
+	m.observe("1号林知", agent.Text{Text: "他太急着归票。"})
+	got := m.chatContent(80)
+	if !strings.Contains(got, "[1号林知] 我怀疑5号。他太急着归票。") {
+		t.Fatalf("chatContent = %q, want one labelled block", got)
+	}
+	m.observe("5号周岚", agent.Text{Text: "别急着扣帽子。"})
+	if blocks := strings.Count(m.chatContent(80), "[5号周岚]"); blocks != 1 {
+		t.Fatalf("a new speaker starts a new block: %q", m.chatContent(80))
+	}
+}
+
+func TestDelegateToolCallsAreNotRendered(t *testing.T) {
+	m := NewModel(nil, "workspace")
+	m.running = true
+	// The seat's line arrives as its own text; the call that produced it would be
+	// the same words under a tool block.
+	m.observe("", agent.ToolCallStart{Call: message.ToolCall{ID: "call-1", Name: "delegate"}})
+	m.observe("", agent.ToolResult{Result: message.ToolResult{
+		CallID: "call-1", Content: message.NewTextContent("我怀疑5号。"),
+	}})
+	got := m.chatContent(80)
+	if strings.Contains(got, "delegate") || strings.Contains(got, "[工具调用]") {
+		t.Fatalf("chatContent = %q, want the delegated call hidden", got)
 	}
 }

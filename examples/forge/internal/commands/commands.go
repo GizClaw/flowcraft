@@ -1,6 +1,6 @@
-// Package commands implements the forge CLI surface. Commands only
-// parse arguments and delegate to scenario (files), app (runtime), and
-// tui — they never assemble the runtime themselves.
+// Package commands implements the forge CLI surface. Commands only parse
+// arguments and delegate to scenario (files), app (deployment) and tui — they
+// never assemble a runtime themselves.
 package commands
 
 import (
@@ -30,6 +30,8 @@ func Execute(args []string) error {
 		return testCmd(args[1:])
 	case "test-auto":
 		return testAutoCmd(args[1:])
+	case "inspect":
+		return inspectCmd(args[1:])
 	case "help", "-h", "--help":
 		return helpCmd(args[1:])
 	default:
@@ -37,8 +39,8 @@ func Execute(args []string) error {
 	}
 }
 
-// parseGlobalFlags extracts forge-wide flags that may precede the
-// subcommand, such as --scenarios <dir>.
+// parseGlobalFlags extracts forge-wide flags that may precede the subcommand,
+// such as --scenarios <dir>.
 func parseGlobalFlags(args []string) []string {
 	if len(args) >= 2 && args[0] == "--scenarios" {
 		scenario.SetOverride(args[1])
@@ -67,7 +69,8 @@ Usage:
   forge tui new
   forge tui resume
   forge test -test <name|path> [--timeout 2m]
-  forge test-auto --raid <name|path> --persona <name|path> [--timeout 5m]
+  forge test-auto --raid <name|path> [--player <agent>] [--rounds 24] [--timeout 4m]
+  forge inspect <workspace> [--task <id>] [--kind <kind>]
 `, "\n")
 }
 

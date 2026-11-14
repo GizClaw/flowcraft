@@ -1,72 +1,61 @@
 package usage
 
 import (
-	"errors"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/goccy/go-json"
 )
 
 // The accounting vocabulary is arithmetic and validation, and both have rules a
-// reader cannot infer from the struct: which side of an Add wins, what stays
-// nil, and which combinations are inconsistent. These pin them.
+// reader cannot infer from the struct: which side of AddMeter wins, what stays
+// nil, which breakdowns are not summed, and which combinations are inconsistent.
 
 func int64Ptr(value int64) *int64 { return &value }
 
-func TestUsageAdd(t *testing.T) {
-	ref := model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}}
-	other := model.ModelRef{ID: model.ModelID{Provider: "p", Name: "other"}}
-
-	t.Run("sums totals and keeps the first model", func(t *testing.T) {
+func TestUsageAddMeter(t *testing.T) {
+	t.Run("sums tokens, cache counters and work", func(t *testing.T) {
 		got := Usage{
-			InputTokens: 3, OutputTokens: 4, TotalTokens: 7,
-			Model: ref, LatencyMs: 5,
+			InputTokens: 3, OutputTokens: 4,
 			Input: InputTokenUsage{CacheReadTokens: int64Ptr(1)},
-		}.Add(Usage{
-			InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
-			Model: other, LatencyMs: 6,
+			Work:  map[WorkKind]int64{WorkImagesGenerated: 2},
+		}.AddMeter(Usage{
+			InputTokens: 1, OutputTokens: 2,
 			Input: InputTokenUsage{CacheReadTokens: int64Ptr(2)},
+			Work:  map[WorkKind]int64{WorkVideosGenerated: 1},
 		})
-		if got.InputTokens != 4 || got.OutputTokens != 6 || got.TotalTokens != 10 {
+		if got.InputTokens != 4 || got.OutputTokens != 6 || got.TotalTokens() != 10 {
 			t.Fatalf("totals = %d/%d/%d, want 4/6/10",
-				got.InputTokens, got.OutputTokens, got.TotalTokens)
-		}
-		if got.LatencyMs != 11 {
-			t.Fatalf("latency = %d, want 11", got.LatencyMs)
-		}
-		if got.Model != ref {
-			t.Fatalf("model = %v, want the left operand's", got.Model)
+				got.InputTokens, got.OutputTokens, got.TotalTokens())
 		}
 		if got.Input.CacheReadTokens == nil || *got.Input.CacheReadTokens != 3 {
 			t.Fatalf("cache read = %v, want 3", got.Input.CacheReadTokens)
 		}
-	})
-
-	t.Run("takes the model from the right when the left has none", func(t *testing.T) {
-		got := Usage{}.Add(Usage{Model: other})
-		if got.Model != other {
-			t.Fatalf("model = %v, want the right operand's", got.Model)
+		if got.WorkValue(WorkImagesGenerated) != 2 || got.WorkValue(WorkVideosGenerated) != 1 {
+			t.Fatalf("work = %v, want images=2 videos=1", got.Work)
 		}
 	})
 
 	t.Run("leaves an unreported counter nil", func(t *testing.T) {
-		got := Usage{}.Add(Usage{})
+		got := Usage{}.AddMeter(Usage{})
 		if got.Input.CacheReadTokens != nil || got.Input.UncachedTokens != nil {
 			t.Fatal("a counter neither side reported must stay nil, not become zero")
 		}
 	})
 
-	t.Run("does not carry the breakdowns it cannot sum", func(t *testing.T) {
-		// Documented: modality splits, TTL-keyed cache writes, tool details and
-		// billing have no provider-independent sum semantics.
+	t.Run("does not carry details or billing", func(t *testing.T) {
 		got := Usage{
-			Auxiliary: []AuxiliaryTokenUsage{{Kind: AuxiliaryCitationTokens, Tokens: 2}},
-			Tools:     []ToolUsage{{Kind: ToolUsageMCP, Requests: 1}},
-			Billing:   &BillingUsage{Cost: &Money{Currency: "usd", Units: 1, Scale: 4}},
-		}.Add(Usage{})
-		if len(got.Auxiliary) != 0 || len(got.Tools) != 0 || got.Billing != nil {
-			t.Fatalf("breakdowns carried over: auxiliary=%v tools=%v billing=%v",
-				got.Auxiliary, got.Tools, got.Billing)
+			Details: Details{
+				InputModalities: map[Modality]int64{ModalityText: 1},
+				Auxiliary:       map[AuxiliaryTokenKind]int64{AuxiliaryCitationTokens: 2},
+				Tools:           map[ToolUsageKind]int64{ToolUsageMCP: 1},
+			},
+			Billing: &Billing{Cost: &Money{Currency: "usd", Units: 1, Scale: 4}},
+		}.AddMeter(Usage{})
+		if len(got.Details.InputModalities) != 0 ||
+			len(got.Details.Auxiliary) != 0 ||
+			len(got.Details.Tools) != 0 ||
+			got.Billing != nil {
+			t.Fatalf("details carried over: %+v billing=%v", got.Details, got.Billing)
 		}
 	})
 }
@@ -93,24 +82,38 @@ func TestMoneyAdd(t *testing.T) {
 func TestUsageClone(t *testing.T) {
 	original := Usage{
 		InputTokens: 1,
-		Input:       InputTokenUsage{CacheReadTokens: int64Ptr(7), ByModality: []ModalityTokenUsage{{Modality: ModalityText, Tokens: 1}}},
-		Auxiliary:   []AuxiliaryTokenUsage{{Kind: AuxiliaryCitationTokens, Tokens: 2}},
-		Billing:     &BillingUsage{Cost: &Money{Currency: "usd", Units: 1, Scale: 4}},
+		Work:        map[WorkKind]int64{WorkImagesGenerated: 1},
+		Input:       InputTokenUsage{CacheReadTokens: int64Ptr(7)},
+		Details: Details{
+			InputModalities: map[Modality]int64{ModalityText: 1},
+			CacheWrites:     map[CacheTTL]int64{CacheTTL5Minutes: 2},
+			Auxiliary:       map[AuxiliaryTokenKind]int64{AuxiliaryCitationTokens: 2},
+			Output:          OutputTokenUsage{ReasoningTokens: int64Ptr(3)},
+		},
+		Billing: &Billing{Cost: &Money{Currency: "usd", Units: 1, Scale: 4}},
 	}
 	clone := original.Clone()
 	*clone.Input.CacheReadTokens = 99
-	clone.Input.ByModality[0].Tokens = 99
-	clone.Auxiliary[0].Tokens = 99
+	clone.Work[WorkImagesGenerated] = 99
+	clone.Details.InputModalities[ModalityText] = 99
+	clone.Details.CacheWrites[CacheTTL5Minutes] = 99
+	clone.Details.Auxiliary[AuxiliaryCitationTokens] = 99
+	*clone.Details.Output.ReasoningTokens = 99
 	clone.Billing.Cost.Units = 99
 
-	if *original.Input.CacheReadTokens != 7 || original.Input.ByModality[0].Tokens != 1 ||
-		original.Auxiliary[0].Tokens != 2 || original.Billing.Cost.Units != 1 {
+	if *original.Input.CacheReadTokens != 7 ||
+		original.WorkValue(WorkImagesGenerated) != 1 ||
+		original.Details.InputModalities[ModalityText] != 1 ||
+		original.Details.CacheWrites[CacheTTL5Minutes] != 2 ||
+		original.Details.Auxiliary[AuxiliaryCitationTokens] != 2 ||
+		*original.Details.Output.ReasoningTokens != 3 ||
+		original.Billing.Cost.Units != 1 {
 		t.Fatal("Clone shares storage with the original")
 	}
 }
 
 func TestUsageValidate(t *testing.T) {
-	valid := Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5}
+	valid := Usage{InputTokens: 2, OutputTokens: 3}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid usage rejected: %v", err)
 	}
@@ -121,43 +124,38 @@ func TestUsageValidate(t *testing.T) {
 		want  string
 	}{
 		{
-			"negative total",
-			Usage{InputTokens: -1, TotalTokens: -1},
+			"negative prompt tokens",
+			Usage{InputTokens: -1},
 			"non-negative",
 		},
 		{
-			"total does not add up",
-			Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 6},
-			"total must equal input plus output",
+			"negative output tokens",
+			Usage{OutputTokens: -1},
+			"non-negative",
 		},
 		{
-			"negative latency",
-			Usage{LatencyMs: -1},
-			"latency must be non-negative",
+			"unknown work kind",
+			Usage{Work: map[WorkKind]int64{WorkKind("typo"): 1}},
+			"unknown work kind",
 		},
 		{
-			"negative optional counter",
-			Usage{GeneratedImages: int64Ptr(-1)},
-			"generated images",
-		},
-		{
-			"model missing its name",
-			Usage{Model: model.ModelRef{ID: model.ModelID{Provider: "p"}}},
-			"usage model: model name is required",
+			"negative work",
+			Usage{Work: map[WorkKind]int64{WorkImagesGenerated: -1}},
+			"must be non-negative",
 		},
 		{
 			"billing without currency",
-			Usage{Billing: &BillingUsage{Cost: &Money{Units: 1}}},
+			Usage{Billing: &Billing{Cost: &Money{Units: 1}}},
 			"billing currency is required",
 		},
 		{
 			"billing scale out of range",
-			Usage{Billing: &BillingUsage{Cost: &Money{Currency: "usd", Scale: 19}}},
+			Usage{Billing: &Billing{Cost: &Money{Currency: "usd", Scale: 19}}},
 			"scale must not exceed 18",
 		},
 		{
 			"negative billed units",
-			Usage{Billing: &BillingUsage{Cost: &Money{Currency: "usd", Units: -1}}},
+			Usage{Billing: &Billing{Cost: &Money{Currency: "usd", Units: -1}}},
 			"must be non-negative",
 		},
 	}
@@ -175,10 +173,8 @@ func TestUsageValidate(t *testing.T) {
 }
 
 // A modality breakdown is a subset of the total it breaks down. Under-reporting
-// is what a driver does when a provider names only some modalities (OpenAI
-// reports audio tokens, not text), so it must stay valid; over-reporting is a
-// contradiction the totals rule cannot catch on its own. A total nobody
-// reported is not a total to be exceeded.
+// is what a driver does when a provider names only some modalities; a total
+// nobody reported is not a total to be exceeded.
 func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -188,10 +184,10 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 		{
 			"input sum equals the prompt total",
 			Usage{
-				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
-				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityText, Tokens: 8},
-					{Modality: ModalityAudio, Tokens: 2},
+				InputTokens: 10, OutputTokens: 1,
+				Details: Details{InputModalities: map[Modality]int64{
+					ModalityText:  8,
+					ModalityAudio: 2,
 				}},
 			},
 			"",
@@ -199,30 +195,18 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 		{
 			"input sum below the prompt total stays valid",
 			Usage{
-				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
-				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityAudio, Tokens: 2},
+				InputTokens: 10, OutputTokens: 1,
+				Details: Details{InputModalities: map[Modality]int64{
+					ModalityAudio: 2,
 				}},
 			},
 			"",
 		},
 		{
-			// An audio provider that names its audio tokens and reports no
-			// prompt total: the breakdown is the only number there is, and a
-			// zero total is indistinguishable from "not reported".
 			"input breakdown without a reported total",
 			Usage{
-				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityAudio, Tokens: 100},
-				}},
-			},
-			"",
-		},
-		{
-			"output breakdown without a reported total",
-			Usage{
-				Output: OutputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityAudio, Tokens: 7},
+				Details: Details{InputModalities: map[Modality]int64{
+					ModalityAudio: 100,
 				}},
 			},
 			"",
@@ -230,10 +214,10 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 		{
 			"input sum above the prompt total",
 			Usage{
-				InputTokens: 10, OutputTokens: 1, TotalTokens: 11,
-				Input: InputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityText, Tokens: 9},
-					{Modality: ModalityAudio, Tokens: 2},
+				InputTokens: 10, OutputTokens: 1,
+				Details: Details{InputModalities: map[Modality]int64{
+					ModalityText:  9,
+					ModalityAudio: 2,
 				}},
 			},
 			"input modality tokens total 11 exceeds input tokens 10",
@@ -241,12 +225,22 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 		{
 			"output sum above the completion total",
 			Usage{
-				InputTokens: 1, OutputTokens: 3, TotalTokens: 4,
-				Output: OutputTokenUsage{ByModality: []ModalityTokenUsage{
-					{Modality: ModalityAudio, Tokens: 4},
+				InputTokens: 1, OutputTokens: 3,
+				Details: Details{OutputModalities: map[Modality]int64{
+					ModalityAudio: 4,
 				}},
 			},
 			"output modality tokens total 4 exceeds output tokens 3",
+		},
+		{
+			"cache write breakdown mismatch",
+			Usage{
+				Input: InputTokenUsage{CacheWriteTokens: int64Ptr(5)},
+				Details: Details{CacheWrites: map[CacheTTL]int64{
+					CacheTTL5Minutes: 2,
+				}},
+			},
+			"cache write breakdown does not match cache write tokens",
 		},
 	}
 	for _, test := range tests {
@@ -265,24 +259,27 @@ func TestUsageValidateBoundsModalitiesByTheirTotal(t *testing.T) {
 	}
 }
 
-func TestUsageValidateSkipsTheZeroModel(t *testing.T) {
-	// A reporter that only knows token counts leaves the envelope zero, and a
-	// zero ModelRef means "not reported" rather than "invalid".
-	if err := (Usage{InputTokens: 1, TotalTokens: 1}).Validate(); err != nil {
-		t.Fatalf("a zero model must be accepted: %v", err)
+// Work is the extension point: a new modality adds a WorkKind constant, not a
+// Usage field, and AddMeter merges it like any other meter.
+func TestUsageWork(t *testing.T) {
+	var total Usage
+	total.AddWork(WorkImagesGenerated, 2)
+	total.AddWork(WorkImagesGenerated, 3)
+	if got := total.WorkValue(WorkImagesGenerated); got != 5 {
+		t.Fatalf("images = %d, want 5", got)
 	}
-	// A partially filled one is a real error, and the model check wraps so the
-	// inner refusal stays reachable.
-	err := Usage{Model: model.ModelRef{ID: model.ModelID{Provider: "p"}}}.Validate()
-	if err == nil {
-		t.Fatal("a model with no name should be rejected")
+
+	sum := total.AddMeter(Usage{Work: map[WorkKind]int64{
+		WorkVideosGenerated: 1,
+	}})
+	if got := sum.WorkValue(WorkImagesGenerated); got != 5 {
+		t.Fatalf("summed images = %d, want 5", got)
 	}
-	if !contains(err.Error(), "usage model: ") {
-		t.Fatalf("error = %v, want a wrapped usage model failure", err)
+	if got := sum.WorkValue(WorkVideosGenerated); got != 1 {
+		t.Fatalf("summed videos = %d, want 1", got)
 	}
-	// The wrap is what keeps the inner refusal classifiable.
-	if !errors.Is(err, err) {
-		t.Fatalf("error = %v, want it to unwrap", err)
+	if got := (Usage{}).AddMeter(Usage{}).Work; got != nil {
+		t.Fatalf("empty work = %v, want nil", got)
 	}
 }
 
@@ -296,4 +293,28 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// The wire shape is the contract a trace exporter and a billing job read. Work
+// is keyed, details and billing are nested, and the legacy per-modality fields
+// are gone.
+func TestUsageJSONShape(t *testing.T) {
+	raw, err := json.Marshal(Usage{
+		InputTokens:  3,
+		OutputTokens: 4,
+		Work:         map[WorkKind]int64{WorkImagesGenerated: 1},
+		Details: Details{
+			InputModalities: map[Modality]int64{ModalityText: 2},
+		},
+		Billing: &Billing{Cost: &Money{Currency: "usd", Units: 1, Scale: 4}},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	want := `{"input_tokens":3,"output_tokens":4,"work":{"images.generated":1},` +
+		`"details":{"input_modalities":{"text":2}},` +
+		`"billing":{"cost":{"currency":"usd","units":1,"scale":4}}}`
+	if string(raw) != want {
+		t.Fatalf("JSON = %s\nwant %s", raw, want)
+	}
 }

@@ -1,59 +1,104 @@
 package dashscope
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/protocol"
+	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
-// Text generation runs on one of the platform's two generation surfaces,
-// selected by the model declaration rather than by the model name:
-//
-//   - text-generation (.../aigc/text-generation/generation), the classic
-//     surface: message content is a string, media parts have no channel, a
-//     streamed call pairs the X-DashScope-Sse header with
-//     parameters.incremental_output, and parameters.result_format must ask
-//     for "message" — the decoder reads messages, not the legacy text shape.
-//   - multimodal-generation
-//     (.../aigc/multimodal-generation/generation), the surface the Qwen3.5+
-//     commercial families and the VL/Omni models require even for text
-//     input: message content is an array of typed entries (text, image,
-//     video, audio), and a streamed call additionally carries
-//     parameters.stream: true.
-//
-// Both surfaces speak one envelope — {model, input.messages, parameters},
-// answered as output.choices[0].message — and they stream the same
-// event-stream shape: data lines carry the increment, finish_reason is the
-// string "null" until the terminal frame, and the terminal frame closes the
-// stream. The stream's accounting rides the terminal frame's cumulative
-// usage.
 const (
 	generatePathText       = "/api/v1/services/aigc/text-generation/generation"
 	generatePathMultimodal = "/api/v1/services/aigc/multimodal-generation/generation"
 )
 
-// generateWire is one compiled text-generation request: the lowered messages,
-// the parameters object as far as the compiler filled it, and the surface the
-// transport posts both to.
 type generateWire struct {
-	model  string
-	path   string
-	stream bool
-	// messages is input.messages in wire order. The wire genuinely mixes
-	// string content (the text surface) with content arrays (the multimodal
-	// surface), and it carries keys some messages omit, so it is built as
-	// maps rather than as a struct whose zero values would emit themselves.
-	messages []map[string]any
-	params   map[string]any
+	model    string
+	path     string
+	stream   bool
+	messages []messageBody
+	params   generateParams
 }
 
-// generateRequest renders the payload for the surface the wire selects.
+// generateParams is the parameters block. Presence is explicit: the dialect and the
+// shape decide which leaves are set, and an unset knob is omitted rather than sent
+// as a zero. max_tokens and max_completion_tokens are separate fields because the
+// model declaration picks one and the wire must carry only that one.
+type generateParams struct {
+	ResultFormat        string                  `json:"result_format,omitempty"`
+	IncrementalOutput   *bool                   `json:"incremental_output,omitempty"`
+	Stream              *bool                   `json:"stream,omitempty"`
+	Tools               []generateToolBody      `json:"tools,omitempty"`
+	ToolChoice          *generateToolChoiceBody `json:"tool_choice,omitempty"`
+	Temperature         *float64                `json:"temperature,omitempty"`
+	TopP                *float64                `json:"top_p,omitempty"`
+	Seed                *int64                  `json:"seed,omitempty"`
+	TopK                *int                    `json:"top_k,omitempty"`
+	RepetitionPenalty   *float64                `json:"repetition_penalty,omitempty"`
+	PresencePenalty     *float64                `json:"presence_penalty,omitempty"`
+	Stop                []string                `json:"stop,omitempty"`
+	ParallelToolCalls   *bool                   `json:"parallel_tool_calls,omitempty"`
+	EnableSearch        *bool                   `json:"enable_search,omitempty"`
+	ThinkingBudget      *int                    `json:"thinking_budget,omitempty"`
+	VLHighResImages     *bool                   `json:"vl_high_resolution_images,omitempty"`
+	MaxTokens           *int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int                    `json:"max_completion_tokens,omitempty"`
+	ResponseFormat      *generateResponseFormat `json:"response_format,omitempty"`
+}
+
+// generateToolBody is one function tool: the schema rides as raw JSON so the
+// provider receives exactly what the deployment declared.
+type generateToolBody struct {
+	Type     string               `json:"type"`
+	Function generateFunctionBody `json:"function"`
+}
+
+type generateFunctionBody struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description,omitempty"`
+	Parameters  json.RawMessage `json:"parameters"`
+}
+
+// generateToolChoiceBody is the union the platform accepts: a mode string, or a
+// function object naming the call to force.
+type generateToolChoiceBody struct {
+	mode string
+	name string
+}
+
+func (c generateToolChoiceBody) MarshalJSON() ([]byte, error) {
+	if c.name == "" {
+		return json.Marshal(c.mode)
+	}
+	forced := struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}{Type: "function"}
+	forced.Function.Name = c.name
+	return json.Marshal(forced)
+}
+
+// generateResponseFormat is the union of a plain JSON mode and a named schema.
+type generateResponseFormat struct {
+	Type       string              `json:"type"`
+	JSONSchema *generateJSONSchema `json:"json_schema,omitempty"`
+}
+
+type generateJSONSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+	Strict bool            `json:"strict"`
+}
+
 func generateRequest(wire generateWire) map[string]any {
 	return map[string]any{
 		"model":      wire.model,
@@ -62,697 +107,554 @@ func generateRequest(wire generateWire) map[string]any {
 	}
 }
 
-// compileGenerate lowers a canonical request onto the native text surfaces.
-// One compiler serves both execution shapes — the shape only switches the
-// streaming parameters — and the surface is fixed by the declaration.
-func compileGenerate(
-	declared ModelSpec,
-	reasonScope string,
-	name string,
-) inference.GenerateCompiler[generateWire] {
-	params := declared.Generate
-	multimodal := params.API == generateAPIMultimodal
-	return func(
-		_ context.Context,
-		_ model.ModelRef,
-		request inference.GenerateRequest,
-		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[generateWire], error) {
-		ledger := inference.NewLedger(
-			model.OperationGenerate,
-			providerID,
-			request.ActiveFieldsFor(shape),
-		)
-		if len(request.RequestMetadata) > 0 {
-			ledger.Drop(
-				inference.FieldGenerateRequestMetadata,
-				"the DashScope text surfaces have no arbitrary request metadata channel",
-			)
+type generateEnvelope struct {
+	Output struct {
+		Choices []generateChoice `json:"choices"`
+	} `json:"output"`
+	Usage     generateUsage `json:"usage"`
+	RequestID string        `json:"request_id"`
+	Code      string        `json:"code"`
+	Message   string        `json:"message"`
+}
+
+type generateChoice struct {
+	FinishReason string              `json:"finish_reason"`
+	Message      generateMessageBody `json:"message"`
+}
+
+type generateMessageBody struct {
+	Role             string                `json:"role"`
+	Content          json.RawMessage       `json:"content"`
+	ReasoningContent string                `json:"reasoning_content"`
+	ToolCalls        []generateToolCallRaw `json:"tool_calls"`
+}
+
+type generateToolCallRaw struct {
+	ID       string `json:"id"`
+	Index    *int   `json:"index"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+type generateUsage struct {
+	InputTokens         int64 `json:"input_tokens"`
+	OutputTokens        int64 `json:"output_tokens"`
+	TotalTokens         int64 `json:"total_tokens"`
+	OutputTokensDetails struct {
+		ReasoningTokens int64 `json:"reasoning_tokens"`
+	} `json:"output_tokens_details"`
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+func (u generateUsage) canonical() usage.Usage {
+	out := usage.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+	if read := min(max(u.PromptTokensDetails.CachedTokens, 0), u.InputTokens); read > 0 {
+		out.Input.CacheReadTokens = &read
+		uncached := u.InputTokens - read
+		out.Input.UncachedTokens = &uncached
+	}
+	if reasoning := u.OutputTokensDetails.ReasoningTokens; reasoning > 0 {
+		out.Details.Output.ReasoningTokens = &reasoning
+		out.Details.Output.ReasoningAccounting = usage.ReasoningIncludedInOutput
+	}
+	return out
+}
+
+type generateRaw struct{ body generateEnvelope }
+
+func compileGenerate(declared ModelSpec, name string) protocol.Compiler[inference.GenerateRequest, generateWire] {
+	multimodal := declared.Generate.API == generateAPIMultimodal
+	return func(_ context.Context, request inference.GenerateRequest, shape protocol.Shape) (protocol.Compiled[generateWire], error) {
+		if request.Output.Kind() != inference.OutputText {
+			return protocol.Compiled[generateWire]{}, inference.NewError(inference.UnsupportedFeature, inference.FieldOutput,
+				fmt.Errorf("dashscope: generate surface produces text"))
 		}
 		wire := generateWire{
-			model:  wireModel(name, declared),
-			path:   generatePathText,
-			stream: shape == inference.GenerateExecutionStream,
-			params: make(map[string]any),
+			model: wireModel(name, declared), path: generatePathText,
+			stream: shape == protocol.ShapeStream, params: generateParams{},
 		}
 		if multimodal {
 			wire.path = generatePathMultimodal
 		} else {
-			// The classic surface defaults to the legacy text result; the
-			// message shape is what carries tool calls and reasoning.
-			wire.params["result_format"] = "message"
+			wire.params.ResultFormat = "message"
 		}
 		if wire.stream {
-			// Incremental frames: each event carries the new fragment, not
-			// the text so far. The multimodal surface pairs the flag with
-			// its own stream parameter; the platform refuses either one
-			// without the sse header, which the transport sets.
-			wire.params["incremental_output"] = true
+			streaming := true
+			wire.params.IncrementalOutput = &streaming
 			if multimodal {
-				wire.params["stream"] = true
+				wire.params.Stream = &streaming
 			}
 		}
-
-		lower := lowerer{
-			declared:        declared,
-			multimodal:      multimodal,
-			replayReasoning: params.ReplayReasoning,
-			reasonScope:     reasonScope,
-			ledger:          ledger,
-		}
+		var warnings []inference.Warning
 		for _, turn := range request.Context {
-			messages, err := lower.turn(turn, contextPartField)
+			messages, err := lowerTurn(turn, declared, multimodal, &warnings)
 			if err != nil {
-				return inference.Compiled[generateWire]{}, err
+				return protocol.Compiled[generateWire]{}, err
 			}
 			wire.messages = append(wire.messages, messages...)
 		}
-		input, err := lower.turn(request.Input.Message(), inputPartField)
+		messages, err := lowerTurn(request.Input.Message(), declared, multimodal, &warnings)
 		if err != nil {
-			return inference.Compiled[generateWire]{}, err
+			return protocol.Compiled[generateWire]{}, err
 		}
-		wire.messages = append(wire.messages, input...)
-
-		lower.intent(&wire, request.Input.Content.Intent)
-		options, other := inference.ExtensionFor[GenerateOptions](request.Extensions)
-		lower.options(&wire, options, request.Input.Content.Intent.Text)
-		ledger.RejectExtensions("text generation", other)
-
-		report := ledger.Report()
-		if ledger.Rejected() {
-			return inference.Compiled[generateWire]{Report: report}, ledger.Err()
+		wire.messages = append(wire.messages, messages...)
+		if definitions := request.Tools.Definitions(); len(definitions) > 0 {
+			tools := make([]generateToolBody, 0, len(definitions))
+			for _, definition := range definitions {
+				tools = append(tools, generateToolBody{
+					Type: "function",
+					Function: generateFunctionBody{
+						Name:        definition.Name,
+						Description: definition.Description,
+						Parameters:  definition.InputSchema,
+					},
+				})
+			}
+			wire.params.Tools = tools
 		}
-		return inference.Compiled[generateWire]{Wire: wire, Report: report}, nil
+		if choice := request.Tools.Choice(); choice != nil {
+			switch choice.Mode {
+			case inference.ToolChoiceFunction:
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "function", name: choice.Name}
+			case inference.ToolChoiceNone:
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "none"}
+			case inference.ToolChoiceRequired:
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "required"}
+			default:
+				wire.params.ToolChoice = &generateToolChoiceBody{mode: "auto"}
+			}
+		}
+		options, err := generateOptions(request.Extensions)
+		if err != nil {
+			return protocol.Compiled[generateWire]{}, err
+		}
+		applyGenerateOptions(&wire, options, declared)
+		return protocol.Compiled[generateWire]{Wire: wire, Fields: request.ActiveFields(), Warnings: warnings}, nil
 	}
 }
 
-// lowerer lowers canonical messages and intent onto one native surface. It
-// carries the declaration facts the lowering reads — media acceptance,
-// whether the input consumes reasoning traces back — and records every
-// decision on the shared ledger.
-type lowerer struct {
-	declared        ModelSpec
-	multimodal      bool
-	replayReasoning bool
-	reasonScope     string
-	ledger          *inference.Ledger
+func generateOptions(extensions inference.Extensions) (*GenerateOptions, error) {
+	var found *GenerateOptions
+	for _, extension := range extensions {
+		options, ok := extension.(*GenerateOptions)
+		if !ok {
+			return nil, inference.NewError(inference.InvalidExtension, inference.FieldExtensions,
+				fmt.Errorf("dashscope: extension %s/%s is not understood", extension.ProviderID(), extension.ExtensionID()))
+		}
+		if found != nil {
+			return nil, inference.NewError(inference.InvalidExtension, inference.FieldExtensions, fmt.Errorf("dashscope: duplicate generate options"))
+		}
+		found = options
+	}
+	if found != nil {
+		if err := found.Validate(); err != nil {
+			return nil, inference.NewError(inference.InvalidExtension, inference.FieldExtensions, err)
+		}
+	}
+	return found, nil
 }
 
-// turn lowers one canonical turn. Roles lower as the platform's messages:
-// system and user carry content, assistant may carry content, tool calls and
-// a replayed trace, and a tool turn fans out one message per result. fields
-// is the ledger field resolver of the position the turn came from, so a
-// decision lands on the field the runtime activated.
-func (l lowerer) turn(
+func applyGenerateOptions(wire *generateWire, options *GenerateOptions, declared ModelSpec) {
+	if options == nil {
+		return
+	}
+	if options.Temperature != nil {
+		wire.params.Temperature = options.Temperature
+	}
+	if options.TopP != nil {
+		wire.params.TopP = options.TopP
+	}
+	if options.Seed != nil {
+		wire.params.Seed = options.Seed
+	}
+	if options.TopK != nil {
+		wire.params.TopK = options.TopK
+	}
+	if options.RepetitionPenalty != nil {
+		wire.params.RepetitionPenalty = options.RepetitionPenalty
+	}
+	if options.PresencePenalty != nil {
+		wire.params.PresencePenalty = options.PresencePenalty
+	}
+	if len(options.Stop) > 0 {
+		wire.params.Stop = options.Stop
+	}
+	if options.ParallelToolCalls != nil {
+		wire.params.ParallelToolCalls = options.ParallelToolCalls
+	}
+	if options.EnableSearch != nil {
+		wire.params.EnableSearch = options.EnableSearch
+	}
+	if options.ThinkingBudget != nil {
+		wire.params.ThinkingBudget = options.ThinkingBudget
+	}
+	if options.VlHighResolutionImages != nil {
+		wire.params.VLHighResImages = options.VlHighResolutionImages
+	}
+	if options.MaxOutputTokens != nil {
+		// The declaration picks which budget field the endpoint reads; exactly one
+		// goes on the wire.
+		if declared.Generate.MaxTokensParam == maxTokensParamCompletion {
+			wire.params.MaxCompletionTokens = options.MaxOutputTokens
+		} else {
+			wire.params.MaxTokens = options.MaxOutputTokens
+		}
+	}
+	if options.ResponseFormat != nil {
+		switch options.ResponseFormat.Kind {
+		case "json_object":
+			wire.params.ResponseFormat = &generateResponseFormat{Type: "json_object"}
+		case "json_schema":
+			wire.params.ResponseFormat = &generateResponseFormat{
+				Type: "json_schema",
+				JSONSchema: &generateJSONSchema{
+					Name:   options.ResponseFormat.Name,
+					Schema: options.ResponseFormat.Schema,
+					Strict: options.ResponseFormat.Strict,
+				},
+			}
+		}
+	}
+}
+
+// messageBody is one wire message. Each role gets its own type because the platform
+// accepts a different key set per role: a single struct with optional fields would let
+// an illegal combination — a tool message carrying tool_calls — compile.
+type messageBody interface{ messageRole() string }
+
+type systemMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+func (systemMessage) messageRole() string { return string(message.RoleSystem) }
+
+type userMessage struct {
+	Role    string         `json:"role"`
+	Content messageContent `json:"content"`
+}
+
+func (userMessage) messageRole() string { return string(message.RoleUser) }
+
+// assistantMessage is a previous answer. Content is a pointer because a turn that
+// carries only tool calls sends no content key at all, while one that carries neither
+// content nor calls sends an explicit empty string.
+type assistantMessage struct {
+	Role             string          `json:"role"`
+	Content          *messageContent `json:"content,omitempty"`
+	ToolCalls        []toolCallBody  `json:"tool_calls,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+}
+
+func (assistantMessage) messageRole() string { return string(message.RoleAssistant) }
+
+type toolMessage struct {
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id"`
+}
+
+func (toolMessage) messageRole() string { return string(message.RoleTool) }
+
+// messageContent is the union the two surfaces disagree on: the text surface carries a
+// bare string and the multimodal one a typed item array. The fields are unexported so
+// the two constructors are the only way in.
+type messageContent struct {
+	text  *string
+	items []contentItemBody
+}
+
+// textContent is the string form, which is how the text surface speaks.
+func textContent(value string) messageContent { return messageContent{text: &value} }
+
+// itemsContent is the multimodal form: one entry per input part.
+func itemsContent(items []contentItemBody) messageContent { return messageContent{items: items} }
+
+func (c messageContent) MarshalJSON() ([]byte, error) {
+	if c.items != nil {
+		return json.Marshal(c.items)
+	}
+	if c.text != nil {
+		return json.Marshal(*c.text)
+	}
+	return []byte(`""`), nil
+}
+
+// contentItemBody is one multimodal input entry. This wire uses a sibling key per kind
+// rather than the nested object the OpenAI family uses.
+type contentItemBody struct {
+	Text  string `json:"text,omitempty"`
+	Image string `json:"image,omitempty"`
+	Video string `json:"video,omitempty"`
+	Audio string `json:"audio,omitempty"`
+}
+
+// toolCallBody is one call the model asked for. Arguments is the serialised JSON the
+// model produced, and this wire carries it as a string.
+type toolCallBody struct {
+	ID       string               `json:"id"`
+	Type     string               `json:"type"`
+	Function toolCallFunctionBody `json:"function"`
+}
+
+type toolCallFunctionBody struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+func lowerTurn(
 	turn message.Message,
-	fields func(message.PartKind) inference.FieldID,
-) ([]map[string]any, error) {
+	declared ModelSpec,
+	multimodal bool,
+	warnings *[]inference.Warning,
+) ([]messageBody, error) {
 	switch turn.Role {
 	case message.RoleSystem:
-		// The platform's system message carries text only, so non-text
-		// parts are rejected here rather than by the surface rules below —
-		// the reason names the real constraint.
-		textOnly := make([]message.Part, 0, len(turn.Content.Parts))
+		var text strings.Builder
 		for _, part := range turn.Content.Parts {
-			if _, ok := part.(message.TextPart); !ok {
-				l.ledger.Reject(
-					fields(part.Kind()),
-					"the platform's system message carries text only",
-				)
-				continue
+			switch value := part.(type) {
+			case message.TextPart:
+				text.WriteString(value.Text)
+			case message.DataPart:
+				text.WriteString(string(value.Value))
+			default:
+				return nil, inference.NewError(inference.UnsupportedFeature, inference.FieldContext, fmt.Errorf("dashscope: system message carries text only"))
 			}
-			textOnly = append(textOnly, part)
 		}
-		return l.role(message.RoleSystem, textOnly, fields)
+		return []messageBody{systemMessage{Role: string(message.RoleSystem), Content: text.String()}}, nil
 	case message.RoleUser:
-		return l.role(message.RoleUser, turn.Content.Parts, fields)
-	case message.RoleAssistant:
-		return l.assistant(turn.Content.Parts, fields)
-	case message.RoleTool:
-		return l.tools(turn.Content.Parts, fields)
-	default:
-		return nil, fmt.Errorf(
-			"dashscope: unsupported message role %q", turn.Role)
-	}
-}
-
-// role lowers a content-carrying turn (system or user).
-func (l lowerer) role(
-	role message.Role,
-	parts []message.Part,
-	fields func(message.PartKind) inference.FieldID,
-) ([]map[string]any, error) {
-	content, err := l.content(parts, fields)
-	if err != nil {
-		return nil, err
-	}
-	return []map[string]any{{"role": string(role), "content": content}}, nil
-}
-
-// content lowers the parts of one content-carrying turn. The text surface
-// joins the text parts into the single string its message carries and rejects
-// every other kind; the multimodal surface keeps the parts as typed entries,
-// in order.
-func (l lowerer) content(
-	parts []message.Part,
-	fields func(message.PartKind) inference.FieldID,
-) (any, error) {
-	if l.multimodal {
-		items := make([]map[string]any, 0, len(parts))
-		for _, part := range parts {
-			item, ok := l.contentItem(part, fields)
-			if ok {
-				items = append(items, item)
-			}
-		}
-		return items, nil
-	}
-	var text strings.Builder
-	for _, part := range parts {
-		switch value := part.(type) {
-		case message.TextPart:
-			if text.Len() > 0 {
-				text.WriteString("\n")
-			}
-			text.WriteString(value.Text)
-		case message.ImagePart, message.VideoPart, message.AudioPart:
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"the text-generation surface carries text only; declare generate.api: multimodal for media input",
-			)
-		case message.ToolCallPart:
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"tool calls belong to assistant turns",
-			)
-		case message.ToolResultPart:
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"tool results belong to a tool-role turn",
-			)
-		case message.ReasoningPart:
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"reasoning belongs to assistant turns",
-			)
-		default:
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"the text-generation surface has no channel for this content kind; inline it as text",
-			)
-		}
-	}
-	return text.String(), nil
-}
-
-// contentItem lowers one part of the multimodal surface's content array: a
-// typed entry per part, in order. A part kind the surface cannot carry
-// rejects, and the caller drops it from the array.
-func (l lowerer) contentItem(
-	part message.Part,
-	fields func(message.PartKind) inference.FieldID,
-) (map[string]any, bool) {
-	switch value := part.(type) {
-	case message.TextPart:
-		return map[string]any{"text": value.Text}, true
-	case message.ImagePart:
-		if !slices.Contains(l.declared.Capabilities.Inputs, message.PartImage) {
-			l.ledger.Reject(
-				fields(message.PartImage),
-				"model does not accept image input",
-			)
-			return nil, false
-		}
-		uri, err := imageSourceValue(value.Source)
-		if err != nil {
-			l.ledger.Reject(
-				fields(message.PartImage),
-				fmt.Sprintf("image input is not renderable: %v", err),
-			)
-			return nil, false
-		}
-		return map[string]any{"image": uri}, true
-	case message.VideoPart:
-		if !slices.Contains(l.declared.Capabilities.Inputs, message.PartVideo) {
-			l.ledger.Reject(
-				fields(message.PartVideo),
-				"model does not accept video input",
-			)
-			return nil, false
-		}
-		uri, err := videoSourceValue(value.Source)
-		if err != nil {
-			l.ledger.Reject(
-				fields(message.PartVideo),
-				fmt.Sprintf("video input is not renderable: %v", err),
-			)
-			return nil, false
-		}
-		return map[string]any{"video": uri}, true
-	case message.AudioPart:
-		if !slices.Contains(l.declared.Capabilities.Inputs, message.PartAudio) {
-			l.ledger.Reject(
-				fields(message.PartAudio),
-				"model does not accept audio input",
-			)
-			return nil, false
-		}
-		uri, err := audioSourceValue(value.Source)
-		if err != nil {
-			l.ledger.Reject(
-				fields(message.PartAudio),
-				fmt.Sprintf("audio input is not renderable: %v", err),
-			)
-			return nil, false
-		}
-		return map[string]any{"audio": uri}, true
-	case message.ToolCallPart:
-		l.ledger.Reject(
-			fields(part.Kind()),
-			"tool calls belong to assistant turns",
-		)
-		return nil, false
-	case message.ToolResultPart:
-		l.ledger.Reject(
-			fields(part.Kind()),
-			"tool results belong to a tool-role turn",
-		)
-		return nil, false
-	case message.ReasoningPart:
-		l.ledger.Reject(
-			fields(part.Kind()),
-			"reasoning belongs to assistant turns",
-		)
-		return nil, false
-	default:
-		l.ledger.Reject(
-			fields(part.Kind()),
-			"the multimodal-generation surface has no channel for this content kind; inline it as text",
-		)
-		return nil, false
-	}
-}
-
-// assistant lowers one assistant turn: its content parts, its tool calls, and
-// the reasoning trace where the declaration replays one. The platform pairs
-// the call identifier with each tool call and takes the arguments as a JSON
-// string.
-func (l lowerer) assistant(
-	parts []message.Part,
-	fields func(message.PartKind) inference.FieldID,
-) ([]map[string]any, error) {
-	var (
-		contentParts []message.Part
-		toolCalls    []map[string]any
-		reasoning    []string
-	)
-	for _, part := range parts {
-		switch value := part.(type) {
-		case message.ToolCallPart:
-			toolCalls = append(toolCalls, map[string]any{
-				"id":   value.Call.ID,
-				"type": "function",
-				"function": map[string]any{
-					"name":      value.Call.Name,
-					"arguments": string(value.Call.Arguments),
-				},
-			})
-		case message.ReasoningPart:
-			l.replayTrace(&reasoning, value, fields)
-		default:
-			contentParts = append(contentParts, part)
-		}
-	}
-	wire := map[string]any{"role": string(message.RoleAssistant)}
-	switch {
-	case len(contentParts) > 0:
-		content, err := l.content(contentParts, fields)
+		content, err := lowerContent(turn.Content.Parts, declared, multimodal)
 		if err != nil {
 			return nil, err
 		}
-		wire["content"] = content
-	case len(toolCalls) == 0:
-		// A turn with neither content nor calls keeps its message well
-		// formed; with calls the platform lets content be omitted.
-		wire["content"] = ""
-	}
-	if len(toolCalls) > 0 {
-		wire["tool_calls"] = toolCalls
-	}
-	if len(reasoning) > 0 {
-		wire["reasoning_content"] = strings.Join(reasoning, "\n")
-	}
-	return []map[string]any{wire}, nil
-}
-
-// replayTrace collects the trace text of a reasoning part when the
-// declaration consumes one back, and drops it with the reason otherwise.
-// Provenance is the first question: the platform verifies a trace against the
-// model and account that produced it, so a trace another target stamped — and
-// one that carries no stamp at all — can never be verified here and would fail
-// the whole turn the way no retry can repair. Both drops report rather than
-// send.
-func (l lowerer) replayTrace(
-	collect *[]string,
-	part message.ReasoningPart,
-	fields func(message.PartKind) inference.FieldID,
-) {
-	field := fields(message.PartReasoning)
-	switch {
-	case !l.replayReasoning:
-		l.ledger.Drop(
-			field,
-			"this model's input does not consume reasoning_content; set generate.replay_reasoning where the platform requires the trace back",
-		)
-	case part.Source == "":
-		l.ledger.Drop(field, "reasoning trace carries no provenance")
-	case part.Source != l.reasonScope:
-		l.ledger.Drop(field, fmt.Sprintf(
-			"reasoning trace was verified by scope %q, not %q",
-			part.Source, l.reasonScope,
-		))
-	case part.Text == "":
-		l.ledger.Drop(field, "the trace carries no text to replay")
-	default:
-		*collect = append(*collect, part.Text)
-	}
-}
-
-// tools lowers one tool-role turn: every tool result becomes its own message,
-// because the platform pairs one content string with one tool call id.
-func (l lowerer) tools(
-	parts []message.Part,
-	fields func(message.PartKind) inference.FieldID,
-) ([]map[string]any, error) {
-	messages := make([]map[string]any, 0, len(parts))
-	for _, part := range parts {
-		result, ok := part.(message.ToolResultPart)
-		if !ok {
-			l.ledger.Reject(
-				fields(part.Kind()),
-				"tool-role content carries tool results only",
-			)
-			continue
-		}
-		messages = append(messages, map[string]any{
-			"role":         string(message.RoleTool),
-			"content":      l.toolResultContent(result.Result, fields(message.PartToolResult)),
-			"tool_call_id": result.Result.CallID,
-		})
-	}
-	return messages, nil
-}
-
-// toolResultContent lowers a tool result's content into the string the native
-// tool message carries. Text and structured data ride; every other kind
-// becomes an in-place placeholder reported on the ledger, so the model still
-// sees where something was omitted and the loss is auditable instead of
-// silent. The native message has no error flag: a failed result rides as
-// plain content.
-func (l lowerer) toolResultContent(
-	result message.ToolResult,
-	field inference.FieldID,
-) string {
-	var builder strings.Builder
-	omitted := make([]string, 0, len(result.Content.Parts))
-	for _, part := range result.Content.Parts {
-		switch value := part.(type) {
-		case message.TextPart:
-			builder.WriteString(value.Text)
-		case message.DataPart:
-			builder.WriteString("\n")
-			builder.Write(value.Value)
-			builder.WriteString("\n")
-		default:
-			reason := fmt.Sprintf(
-				"%s (the platform's tool message carries text only)",
-				part.Kind(),
-			)
-			omitted = append(omitted, reason)
-			builder.WriteString("[omitted tool output: " + reason + "]")
-		}
-	}
-	if len(omitted) > 0 {
-		l.ledger.Drop(
-			field,
-			"tool output omitted: "+strings.Join(omitted, ", "),
-		)
-	}
-	return builder.String()
-}
-
-// intent lowers the output controls. A non-text modality has no surface here
-// — the model publishes text — and each one is rejected on its own field so
-// the report names what the caller asked for.
-func (l lowerer) intent(wire *generateWire, intent inference.Intent) {
-	if intent.Image != nil {
-		l.ledger.Reject(
-			inference.FieldGenerateIntentImage,
-			"this model publishes text output; route a Wan image model",
-		)
-	}
-	if intent.Audio != nil {
-		l.ledger.Reject(
-			inference.FieldGenerateIntentAudio,
-			"the generate surface produces text, not speech",
-		)
-	}
-	if intent.Video != nil {
-		l.ledger.Reject(
-			inference.FieldGenerateIntentVideo,
-			"this model publishes text output; route a Wan video model",
-		)
-	}
-	text := intent.Text
-	if text == nil {
-		return
-	}
-	if format := text.Response; format != nil {
-		switch format.Kind {
-		case inference.ResponseText:
-			// The default shape: nothing to send.
-		case inference.ResponseJSONObject:
-			wire.params["response_format"] = map[string]any{
-				"type": "json_object",
-			}
-		case inference.ResponseJSONSchema:
-			wire.params["response_format"] = map[string]any{
-				"type": "json_schema",
-				"json_schema": map[string]any{
-					"name":   format.Name,
-					"schema": json.RawMessage(format.Schema),
-					"strict": true,
-				},
+		return []messageBody{userMessage{Role: string(message.RoleUser), Content: content}}, nil
+	case message.RoleAssistant:
+		assistant := assistantMessage{Role: string(message.RoleAssistant)}
+		var contentParts []message.Part
+		var reasoning []string
+		for _, part := range turn.Content.Parts {
+			switch value := part.(type) {
+			case message.ToolCallPart:
+				assistant.ToolCalls = append(assistant.ToolCalls, toolCallBody{
+					ID:   value.Call.ID,
+					Type: "function",
+					Function: toolCallFunctionBody{
+						Name:      value.Call.Name,
+						Arguments: value.Call.Arguments.String(),
+					},
+				})
+			case message.ReasoningPart:
+				if declared.Generate.ReplayReasoning && value.Text != "" {
+					reasoning = append(reasoning, value.Text)
+				} else if value.Text != "" {
+					*warnings = append(*warnings, inference.Warning{Field: inference.FieldContent, Code: "reasoning_not_replayed", Message: "dashscope: reasoning_content is not replayed by this model"})
+				}
+			default:
+				contentParts = append(contentParts, part)
 			}
 		}
-	}
-	if text.MaxOutputTokens != nil {
-		wire.params[l.maxTokensParam()] = *text.MaxOutputTokens
-	}
-	if len(text.Tools) > 0 {
-		tools := make([]map[string]any, 0, len(text.Tools))
-		for _, definition := range text.Tools {
-			function := map[string]any{
-				"name":       definition.Name,
-				"parameters": json.RawMessage(definition.InputSchema),
+		if len(contentParts) > 0 {
+			content, err := lowerContent(contentParts, declared, multimodal)
+			if err != nil {
+				return nil, err
 			}
-			if definition.Description != "" {
-				function["description"] = definition.Description
+			assistant.Content = &content
+		} else if len(assistant.ToolCalls) == 0 {
+			// Neither content nor calls: the turn still has to say something, and the
+			// platform expects the key. This is why Content is a pointer rather than
+			// omitempty on a plain string — an empty string would vanish.
+			empty := textContent("")
+			assistant.Content = &empty
+		}
+		if len(reasoning) > 0 {
+			assistant.ReasoningContent = strings.Join(reasoning, "\n")
+		}
+		return []messageBody{assistant}, nil
+	case message.RoleTool:
+		out := make([]messageBody, 0, len(turn.Content.Parts))
+		for _, part := range turn.Content.Parts {
+			result, ok := part.(message.ToolResultPart)
+			if !ok {
+				return nil, inference.NewError(inference.InvalidRequest, inference.FieldContent, fmt.Errorf("dashscope: tool role carries tool results only"))
 			}
-			tools = append(tools, map[string]any{
-				"type":     "function",
-				"function": function,
+			var text strings.Builder
+			for _, item := range result.Result.Content.Parts {
+				switch value := item.(type) {
+				case message.TextPart:
+					text.WriteString(value.Text)
+				case message.DataPart:
+					text.WriteString(string(value.Value))
+				default:
+					text.WriteString("[omitted " + string(item.Kind()) + "]")
+				}
+			}
+			out = append(out, toolMessage{
+				Role:       string(message.RoleTool),
+				Content:    text.String(),
+				ToolCallID: result.Result.CallID,
 			})
 		}
-		wire.params["tools"] = tools
-	}
-	if choice := text.ToolChoice; choice != nil {
-		switch choice.Kind {
-		case inference.ToolChoiceNamed:
-			wire.params["tool_choice"] = map[string]any{
-				"type":     "function",
-				"function": map[string]any{"name": choice.Name},
-			}
-		default:
-			// auto, none, and required ride verbatim.
-			wire.params["tool_choice"] = string(choice.Kind)
-		}
-	}
-	if text.Temperature != nil {
-		wire.params["temperature"] = *text.Temperature
-	}
-	if text.TopP != nil {
-		wire.params["top_p"] = *text.TopP
-	}
-	l.reasoning(wire, text)
-}
-
-// maxTokensParam resolves which wire parameter the canonical output-token
-// control lowers to for the declared model.
-func (l lowerer) maxTokensParam() string {
-	switch l.declared.Generate.MaxTokensParam {
-	case maxTokensParamCompletion:
-		return maxTokensParamCompletion
+		return out, nil
 	default:
-		return maxTokensParamMaxTokens
+		return nil, fmt.Errorf("dashscope: unsupported role %q", turn.Role)
 	}
 }
 
-// reasoning lowers the thinking controls. The platform's dial is binary —
-// enable_thinking — plus the token budget that rides the options extension;
-// the declared ReasoningKind decides which requests compile. reasoning_effort
-// has no level dial to land on, so it is dropped with that reason rather than
-// silently quantized.
-func (l lowerer) reasoning(wire *generateWire, text *inference.TextIntent) {
-	kind := l.declared.Capabilities.Reasoning.Kind
-	if text.ReasoningEnabled != nil {
-		switch {
-		case kind == model.ReasoningNone:
-			l.ledger.Reject(
-				inference.FieldGenerateIntentReasoningEnabled,
-				"model has no thinking control",
-			)
-		case kind == model.ReasoningAlways && !*text.ReasoningEnabled:
-			l.ledger.Reject(
-				inference.FieldGenerateIntentReasoningEnabled,
-				"model cannot disable thinking",
-			)
+func lowerContent(parts []message.Part, declared ModelSpec, multimodal bool) (messageContent, error) {
+	if !multimodal {
+		var text strings.Builder
+		for _, part := range parts {
+			switch value := part.(type) {
+			case message.TextPart:
+				text.WriteString(value.Text)
+			case message.DataPart:
+				text.WriteString(string(value.Value))
+			default:
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent,
+					fmt.Errorf("dashscope: text surface carries text only, not %s", part.Kind()))
+			}
+		}
+		return textContent(text.String()), nil
+	}
+	items := make([]contentItemBody, 0, len(parts))
+	for _, part := range parts {
+		switch value := part.(type) {
+		case message.TextPart:
+			items = append(items, contentItemBody{Text: value.Text})
+		case message.ImagePart:
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartImage) {
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept image input"))
+			}
+			uri, err := imageSourceValue(value.Source)
+			if err != nil {
+				return messageContent{}, err
+			}
+			items = append(items, contentItemBody{Image: uri})
+		case message.VideoPart:
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartVideo) {
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept video input"))
+			}
+			uri, err := videoSourceValue(value.Source)
+			if err != nil {
+				return messageContent{}, err
+			}
+			items = append(items, contentItemBody{Video: uri})
+		case message.AudioPart:
+			if !slices.Contains(declared.Capabilities.Inputs, message.PartAudio) {
+				return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: model does not accept audio input"))
+			}
+			uri, err := audioSourceValue(value.Source)
+			if err != nil {
+				return messageContent{}, err
+			}
+			items = append(items, contentItemBody{Audio: uri})
 		default:
-			wire.params["enable_thinking"] = *text.ReasoningEnabled
+			return messageContent{}, inference.NewError(inference.UnsupportedFeature, inference.FieldContent, fmt.Errorf("dashscope: %s has no content channel", part.Kind()))
 		}
 	}
-	if text.ReasoningEffort != "" {
-		if kind == model.ReasoningNone {
-			l.ledger.Reject(
-				inference.FieldGenerateIntentReasoningEffort,
-				"model has no thinking control",
-			)
-			return
+	return itemsContent(items), nil
+}
+
+func transportGenerate(client *mediaClient) protocol.Transport[inference.GenerateRequest, generateWire, generateRaw] {
+	return func(ctx context.Context, _ inference.GenerateRequest, wire generateWire) (generateRaw, error) {
+		var envelope generateEnvelope
+		if err := client.postJSON(ctx, wire.path, false, generateRequest(wire), &envelope); err != nil {
+			return generateRaw{}, err
 		}
-		l.ledger.Drop(
-			inference.FieldGenerateIntentReasoningEffort,
-			"the DashScope thinking depth dial is a token budget, not a level; set generate_options.thinking_budget to spend one",
-		)
+		if envelope.Code != "" {
+			return generateRaw{}, errorBody{Code: envelope.Code, Message: envelope.Message, RequestID: envelope.RequestID}.failure("generate", 200)
+		}
+		if len(envelope.Output.Choices) == 0 {
+			return generateRaw{}, fmt.Errorf("dashscope: generate returned no choices")
+		}
+		return generateRaw{body: envelope}, nil
 	}
 }
 
-// options lowers the generate options extension: the sampler dials, the
-// server-side search switches, the thinking budget, and the VL
-// high-resolution switch. Every knob binds only where the declaration names
-// it, so a knob an undeclared surface would silently swallow rejects instead.
-func (l lowerer) options(
-	wire *generateWire,
-	options GenerateOptions,
-	text *inference.TextIntent,
-) {
-	field := func(name string) inference.FieldID {
-		return inference.ExtensionField(name).Qualify(options)
+func decodeGenerate(_ context.Context, request inference.GenerateRequest, raw generateRaw) (inference.GenerateResponse, error) {
+	if len(raw.body.Output.Choices) != 1 {
+		return inference.GenerateResponse{}, fmt.Errorf("dashscope: generate returned %d choices", len(raw.body.Output.Choices))
 	}
-	if options.Seed != nil {
-		wire.params["seed"] = *options.Seed
+	choice := raw.body.Output.Choices[0]
+	content, err := decodeGenerateContent(choice.Message.Content)
+	if err != nil {
+		return inference.GenerateResponse{}, err
 	}
-	if options.TopK != nil {
-		wire.params["top_k"] = *options.TopK
+	parts := make([]message.Part, 0, 1+len(choice.Message.ToolCalls))
+	if choice.Message.ReasoningContent != "" {
+		parts = append(parts, message.ReasoningPart{Text: choice.Message.ReasoningContent})
 	}
-	if options.RepetitionPenalty != nil {
-		wire.params["repetition_penalty"] = *options.RepetitionPenalty
+	if content != "" {
+		parts = append(parts, message.TextPart{Text: content})
 	}
-	if options.PresencePenalty != nil {
-		wire.params["presence_penalty"] = *options.PresencePenalty
+	for _, call := range choice.Message.ToolCalls {
+		parts = append(parts, message.ToolCallPart{Call: message.ToolCall{ID: call.ID, Name: call.Function.Name, Arguments: message.NewArguments(json.RawMessage(call.Function.Arguments))}})
 	}
-	if len(options.Stop) > 0 {
-		wire.params["stop"] = options.Stop
-	}
-	if options.ParallelToolCalls != nil {
-		wire.params["parallel_tool_calls"] = *options.ParallelToolCalls
-	}
-	if options.EnableSearch != nil {
-		switch {
-		case !l.declared.Capabilities.HostedWebSearch:
-			l.ledger.Reject(
-				field("enable_search"),
-				"model does not declare hosted web search",
-			)
-		default:
-			wire.params["enable_search"] = *options.EnableSearch
+	return inference.GenerateResponse{
+		Message:      message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: parts}},
+		FinishReason: generateFinish(choice.FinishReason, len(choice.Message.ToolCalls) > 0),
+		Usage:        raw.body.Usage.canonical(),
+		Metadata:     inference.Metadata{Model: request.Model.ID, RequestID: raw.body.RequestID},
+	}, nil
+}
+
+func generateFinish(raw string, tools bool) inference.FinishReason {
+	switch raw {
+	case "length":
+		return inference.FinishLength
+	case "tool_calls":
+		return inference.FinishToolCalls
+	case "content_filter":
+		return inference.FinishContentFilter
+	case "", "null":
+		if tools {
+			return inference.FinishToolCalls
 		}
-	}
-	if options.SearchOptions != nil {
-		switch {
-		case !l.declared.Capabilities.HostedWebSearch:
-			l.ledger.Reject(
-				field("search_options"),
-				"model does not declare hosted web search",
-			)
-		case options.EnableSearch == nil || !*options.EnableSearch:
-			l.ledger.Reject(
-				field("search_options"),
-				"search_options apply only while web search is enabled; set enable_search to true",
-			)
-		default:
-			search := make(map[string]any)
-			if strategy := options.SearchOptions.Strategy; strategy != "" {
-				search["strategy"] = strategy
-			}
-			if options.SearchOptions.EnableSource != nil {
-				search["enable_source"] = *options.SearchOptions.EnableSource
-			}
-			if options.SearchOptions.EnableCitation != nil {
-				search["enable_citation"] = *options.SearchOptions.EnableCitation
-			}
-			if format := options.SearchOptions.CitationFormat; format != "" {
-				search["citation_format"] = format
-			}
-			wire.params["search_options"] = search
-		}
-	}
-	if options.ThinkingBudget != nil {
-		switch {
-		case l.declared.Capabilities.Reasoning.Kind == model.ReasoningNone:
-			l.ledger.Reject(
-				field("thinking_budget"),
-				"model has no thinking control",
-			)
-		case text != nil && text.ReasoningEnabled != nil && !*text.ReasoningEnabled:
-			l.ledger.Reject(
-				field("thinking_budget"),
-				"thinking is disabled on this request; a thinking budget cannot bind",
-			)
-		default:
-			wire.params["thinking_budget"] = *options.ThinkingBudget
-		}
-	}
-	if options.VlHighResolutionImages != nil {
-		if !slices.Contains(l.declared.Capabilities.Inputs, message.PartImage) {
-			l.ledger.Reject(
-				field("vl_high_resolution_images"),
-				"model does not accept image input",
-			)
-		} else {
-			wire.params["vl_high_resolution_images"] =
-				*options.VlHighResolutionImages
-		}
+		return inference.FinishStop
+	default:
+		return inference.FinishStop
 	}
 }
 
-// openGenerate binds the text-generation compiler to the platform's HTTP
-// surfaces. Both execution shapes ride the same compiler; the reasoning scope
-// is stamped on the traces the model produces so a later turn can tell
-// whether this target may replay one.
-func openGenerate(
-	cls *clients,
-	spec Spec,
-	declared ModelSpec,
-	id model.ModelID,
-	profile string,
-) (inference.GenerateOperations, error) {
-	scope := inference.ReasoningScope(
-		spec.ReasoningScope, id.Provider, id.Name, profile)
-	return inference.BindGenerateOperations(
-		compileGenerate(declared, scope, id.Name),
-		transportGenerate(cls.media),
-		inference.WithReasoningSource(decodeGenerate, scope),
-		transportGenerateStream(cls.media),
-		inference.WithReasoningDeltaSource(decodeGenerateStream, scope),
-	)
+func decodeGenerateContent(raw json.RawMessage) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return "", nil
+	}
+	if trimmed[0] == '"' {
+		var text string
+		if err := json.Unmarshal(trimmed, &text); err != nil {
+			return "", err
+		}
+		return text, nil
+	}
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &items); err != nil {
+		return "", err
+	}
+	var builder strings.Builder
+	for _, item := range items {
+		value, ok := item["text"]
+		if !ok {
+			return "", fmt.Errorf("dashscope: content entry is not text")
+		}
+		var text string
+		if err := json.Unmarshal(value, &text); err != nil {
+			return "", err
+		}
+		builder.WriteString(text)
+	}
+	return builder.String(), nil
+}
+
+func (d *driver) compileGenerate(ctx context.Context, request inference.GenerateRequest, shape protocol.Shape) (protocol.Compiled[generateWire], error) {
+	declared, err := d.spec(request.Model.ID)
+	if err != nil {
+		return protocol.Compiled[generateWire]{}, err
+	}
+	return compileGenerate(declared, request.Model.ID.Name)(ctx, request, shape)
 }
