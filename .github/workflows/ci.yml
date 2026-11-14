@@ -238,13 +238,37 @@ jobs:
           config: .github/markdownlint-cli2.jsonc
       # A module that needs a tidy is a module whose go.mod no longer describes
       # its imports; the release gate rejects that state, so catch it earlier.
+      #
+      # `in_flight` names the modules whose code already imports packages this
+      # branch adds while their go.mod still pins the previous `core` tag. Tidy
+      # resolves against the tag rather than the workspace, so it cannot be clean
+      # until the pin moves with the release. Each entry is checked as a claim: a
+      # module that tidies cleanly, or fails for any reason other than that pin,
+      # fails this lane, so the list cannot outlive its reason.
       - name: go mod tidy
         run: |
           set -e
-          modules="core examples/forge driver"
-          for d in $modules; do
+          in_flight="examples/forge driver"
+          for d in core examples/forge driver; do
             echo "==> $d"
-            ( cd "$d" && go mod tidy -diff )
+            case " $in_flight " in
+              *" $d "*)
+                out=$( cd "$d" && go mod tidy -diff 2>&1 ) && {
+                  echo "error: $d is tidy outside the workspace now;" \
+                    "drop it from in_flight" >&2
+                  exit 1
+                }
+                case "$out" in
+                  *"does not contain package"* | *"missing go.sum entry"*) ;;
+                  *)
+                    echo "$out" >&2
+                    exit 1
+                    ;;
+                esac
+                echo "    in flight: its pin moves with the core release"
+                ;;
+              *) ( cd "$d" && go mod tidy -diff ) ;;
+            esac
           done
 
   fuzz:
