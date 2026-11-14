@@ -35,11 +35,7 @@ MODULES_LINT := core $(DRIVER_MODULES)
 # listed here that starts building outside the workspace fails the
 # target, so an exemption cannot outlive the release that made it
 # obsolete. Name a module here only with the reason it cannot build yet.
-# `examples/forge` imports packages that only exist in this checkout
-# (`agent-host`, `agent-graph/script`, `inference-openai`, …) while its go.mod
-# still pins core v0.10.0: the pin moves when `core` tags the rebuild, and this
-# line has to go with it — the target fails once the exemption builds.
-CONSUMER_EXEMPT := examples/forge
+CONSUMER_EXEMPT :=
 CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wildcard examples/*/go.mod)))
 
 # `make fmt` mirrors the CI gofmt -s gate.

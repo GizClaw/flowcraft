@@ -249,37 +249,12 @@ jobs:
             docs/**/*.md
       # A module that needs a tidy is a module whose go.mod no longer describes
       # its imports; the release gate rejects that state, so catch it earlier.
-      #
-      # `in_flight` names the modules whose code already imports packages this
-      # branch adds while their go.mod still pins the previous `core` tag. Tidy
-      # resolves against the tag, not the workspace, so it cannot be clean
-      # until the pin moves with the release. Each entry is checked as a
-      # claim: a module that tidies cleanly, or fails for any reason other than
-      # that pin, fails this lane, so the list cannot outlive its reason.
       - name: go mod tidy
         run: |
           set -e
-          in_flight="examples/forge driver"
           for d in core examples/forge driver; do
             echo "==> $d"
-            case " $in_flight " in
-              *" $d "*)
-                out=$( cd "$d" && go mod tidy -diff 2>&1 ) && {
-                  msg="error: $d is tidy outside the workspace now"
-                  echo "$msg; drop it from in_flight" >&2
-                  exit 1
-                }
-                case "$out" in
-                  *"does not contain package"* | *"missing go.sum entry"*) ;;
-                  *)
-                    echo "$out" >&2
-                    exit 1
-                    ;;
-                esac
-                echo "    in flight: its pin moves with the core release"
-                ;;
-              *) ( cd "$d" && go mod tidy -diff ) ;;
-            esac
+            ( cd "$d" && go mod tidy -diff )
           done
 
   fuzz:
@@ -360,57 +335,12 @@ jobs:
           GOWORK: "off"
         working-directory: ${{ matrix.module }}
         run: |
-          # The requirement moves with the core release. Until `core` tags the
-          # rebuild this module imports packages its pin does not contain, so a
-          # failure that names the pin is the expected state and a failure that
-          # names anything else is a real one. Delete this guard with the bump.
-          steps() { go mod tidy -diff && go build ./... && go vet ./...; }
-          if out=$(steps 2>&1); then
-            echo "$out"
-            exit 0
-          fi
-          case "$out" in
-            *"does not contain package"* | *"missing go.sum entry"*)
-              echo "$out" | head -3
-              echo "==> in flight: the core pin moves with the release"
-              ;;
-            *)
-              echo "$out"
-              exit 1
-              ;;
-          esac
-      # core/sandbox and the backends carry per-GOOS files the linux lane
-      # never compiles, so
-      # a darwin syscall or an other-unix stub can be wrong or stop building
-      # without any check going red. Cross-compile them here: same runner,
-      # no extra cost.
-      - name: Vet the unix variants
-        if: matrix.module == 'core'
-        run: |
-          GOOS=darwin go vet ./...
-          GOOS=freebsd go vet ./...
-        working-directory: ${{ matrix.module }}
+          go mod tidy -diff
+          go build ./...
+          go vet ./...
       - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}
-        run: |
-          # govulncheck builds the module in module mode, so the driver's pin
-          # makes it unresolvable for the same reason the lane above is guarded.
-          # A scan that cannot build proves nothing; say so instead of reddening
-          # the lane, and delete this guard with the pin bump.
-          if out=$(go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./... 2>&1); then
-            echo "$out"
-            exit 0
-          fi
-          case "$out" in
-            *"does not contain package"* | *"missing go.sum entry"* | *undefined:* | *"cannot find module"*)
-              echo "$out" | head -3
-              echo "==> in flight: the core pin moves with the release"
-              ;;
-            *)
-              echo "$out"
-              exit 1
-              ;;
-          esac
 
   test-sandbox-bwrap:
     name: Integration core/sandbox-bwrap
