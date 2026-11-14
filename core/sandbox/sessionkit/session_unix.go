@@ -28,10 +28,6 @@ const (
 	defaultSessionRows = 24
 	defaultSessionCols = 80
 	sessionCopyChunk   = 32 * 1024
-	// watcherQueueSize bounds each event subscriber's live queue.
-	// Overflow surfaces as SessionEventLag followed by the watcher
-	// closing; consumers recover with Read(afterSeq).
-	watcherQueueSize = 256
 	// sessionTerminateGrace is how long Terminate waits after SIGTERM
 	// before escalating to SIGKILL, so TUI/REPL children get a chance
 	// to restore the terminal and flush state.

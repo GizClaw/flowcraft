@@ -14,6 +14,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
 
+// watcherQueueSize bounds each event subscriber's live queue. Overflow surfaces
+// as SessionEventLag followed by the watcher closing; consumers recover with
+// Read(afterSeq).
+const watcherQueueSize = 256
+
 type sessionWriter struct {
 	out    *outputLog
 	stream sandbox.SessionStream
