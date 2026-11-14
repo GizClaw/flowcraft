@@ -271,6 +271,13 @@ func (s *localSession) Write(ctx context.Context, data []byte) error {
 	select {
 	case err := <-done:
 		if err != nil {
+			// A child that closed its input — or exited — before the bytes
+			// arrived is not a failure of this write: probing fd 0 and
+			// leaving, or exiting on the first line, are ordinary. The
+			// session's terminal status is where that shows up.
+			if isClosedInput(err) {
+				return nil
+			}
 			return errdefs.Internal(fmt.Errorf("sandbox: process write: %w", err))
 		}
 		return nil
@@ -945,4 +952,14 @@ func (l *outputLog) trimLocked() {
 func (l *outputLog) wakeReadersLocked() {
 	close(l.wake)
 	l.wake = make(chan struct{})
+}
+
+// isClosedInput reports whether a write failed because the far end is no
+// longer reading: the child closed its stdin, or the session's own descriptor
+// is gone. Both mean "stop writing", not "the write broke".
+func isClosedInput(err error) bool {
+	return errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.EBADF) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrClosed)
 }

@@ -14,12 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	xwin "golang.org/x/sys/windows"
+
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
-	xwin "golang.org/x/sys/windows"
 )
 
 const (
@@ -298,6 +299,12 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 	select {
 	case err := <-done:
 		if err != nil {
+			// Same rule as the unix path: a child that closed its input or
+			// already exited is not a broken write, it is a child that stopped
+			// reading. The terminal status carries what happened.
+			if isClosedInput(err) {
+				return nil
+			}
 			return errdefs.Internal(fmt.Errorf("windows: process write: %w", err))
 		}
 		return nil
@@ -788,4 +795,13 @@ func classifyStartError(path string, err error) error {
 			path, err)
 	}
 	return errdefs.Internal(fmt.Errorf("windows: start %s: %w", path, err))
+}
+
+// isClosedInput reports whether a write failed because the far end is no
+// longer reading: the child closed its stdin or has exited.
+func isClosedInput(err error) bool {
+	return errors.Is(err, xwin.ERROR_BROKEN_PIPE) ||
+		errors.Is(err, xwin.ERROR_NO_DATA) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, os.ErrClosed)
 }

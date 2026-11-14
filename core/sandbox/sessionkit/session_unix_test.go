@@ -3,6 +3,7 @@
 package sessionkit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os/exec"
@@ -143,6 +144,18 @@ func TestStartSessionStdinStreams(t *testing.T) {
 	}
 	if exit.Code != 0 {
 		t.Errorf("exit = %+v", exit)
+	}
+}
+
+// TestStartSessionWriteToClosedInput is a regression for the flake the Linux
+// suite caught: a child that closes its stdin and keeps running — or exits after
+// probing fd 0 — leaves the writer with EPIPE, which is the ordinary outcome of
+// writing to a process that stopped reading, not an internal failure. The exit
+// status is where the caller learns what happened.
+func TestStartSessionWriteToClosedInput(t *testing.T) {
+	sess := startSh(t, sandbox.SessionSpec{Stdin: true}, "exec 0<&-; sleep 5")
+	if err := sess.Write(context.Background(), bytes.Repeat([]byte("x"), 1<<16)); err != nil {
+		t.Fatalf("Write to a child that closed its input: %v", err)
 	}
 }
 
