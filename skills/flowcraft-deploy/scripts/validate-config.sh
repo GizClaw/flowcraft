@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# L2 validation: parse a FlowCraft deployment through the real
-# core/deploy assembly layer. The validator pins the FlowCraft core module
-# versions declared in scripts/validator/go.mod, so it works standalone
-# from any working directory.
+# Structural validation: load a FlowCraft deployment through the same code the
+# host runs (`deploy.Loader`, `graph.Parse`), without building anything. The
+# validator pins the core module version in scripts/validator/go.mod, so it works
+# from any directory; run it from the one the deployment lives in, because a
+# graph's `settings.path` and a layer's `path` resolve against the working
+# directory.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 validator_dir="$script_dir/validator"
 bin_dir="$(mktemp -d)"
