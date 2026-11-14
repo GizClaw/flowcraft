@@ -307,7 +307,8 @@ make release-check # validate changesets and the pending release plan
 This repository is a Go workspace (`go.work`). Active members are `core`,
 `driver` and `examples/forge`; release tooling in `tools/releasegate` builds
 standalone with `GOWORK=off`, and `make check-consumers` builds each example
-against its own pinned releases.
+against its own pinned releases (`examples/forge` is exempt until its pin moves to
+a released core, because it already imports the rebuilt packages).
 
 ## Contributing
 
