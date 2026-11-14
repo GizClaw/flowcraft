@@ -1,6 +1,6 @@
 ---
-name: flowcraft-config
-description: "Author, validate, and troubleshoot complete FlowCraft configuration: deployment documents (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring), craft.yaml application definitions, and plugin.json manifests. Use when writing or reviewing FlowCraft configs, assembling an agent deployment on top of a Craft, adding runtime/session settings, building graph definitions, defining plugins and their permissions, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment or craft template."
+name: flowcraft-deploy
+description: "Author, validate, and troubleshoot a FlowCraft deployment: the deployment document (agents, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level), the runtime layer one agent runs on (sandbox boundary and its journal, files, providers and models, tools and skills), and the graph document an engine of kind graph executes (state slots, nodes, the conditions on their edges). Use when writing or reviewing a FlowCraft deployment, adding a runtime layer or session settings, writing a graph document, resolving load failures (\"is not registered\", unknown field, an unenforceable cap, a missing graph path), or copying a minimal runnable FlowCraft deployment."
 ---
 
 # FlowCraft Config Authoring
@@ -42,7 +42,7 @@ the L2 structural validator and fix errors against the reference cards.
    standalone validator does not cover `craft.yaml` (see "Compatibility
    and versioning").
 6. **Validate structurally with L2.** Run
-   `skills/flowcraft-config/scripts/validate-config.sh <deployment-file>`
+   `skills/flowcraft-deploy/scripts/validate-config.sh <deployment-file>`
    (or the installed copy's script). The validator pins the FlowCraft
    core module in its `go.mod` and works standalone from any directory.
    It is structural only: it strictly decodes the document through

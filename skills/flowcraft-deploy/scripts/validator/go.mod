@@ -1,4 +1,4 @@
-module github.com/GizClaw/flowcraft/skills/flowcraft-config/scripts/validator
+module github.com/GizClaw/flowcraft/skills/flowcraft-deploy/scripts/validator
 
 go 1.26.0
 

@@ -1,0 +1,8 @@
+interface:
+  display_name: "FlowCraft Deployment Authoring"
+  short_description: "Write, validate, and debug FlowCraft deployments"
+  default_prompt: >-
+    Use $flowcraft-deploy to write a complete FlowCraft deployment — the
+    deployment document (agents, engines, protocols, hooks), the runtime layer
+    one agent runs on (sandbox, files, providers, tools, skills) and the graph
+    document an engine executes — then validate it.
