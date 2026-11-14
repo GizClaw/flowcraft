@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/goccy/go-json"
 )
 
@@ -43,7 +45,7 @@ func engineFor(name string, runner func() agent.Runner) EngineKind {
 	}
 }
 
-const runtimeLayer = `
+const runtimeLayerYAML = `
 version: 1
 sandbox: {backend: local, writes: ["/work"]}
 files: {roots: ["/work"]}
@@ -52,10 +54,22 @@ inference:
   models: [{provider: p, model: m}]
 `
 
+// platformPaths rewrites the unix placeholders a fixture is written with, so the
+// same document is absolute on both platforms: "/work" is not absolute on
+// Windows, where a path needs a volume.
+func platformPaths(text string) string {
+	return strings.NewReplacer(
+		"/work", pathtest.Abs("work"),
+		"/tmp", pathtest.Abs("tmp"),
+	).Replace(text)
+}
+
+func runtimeLayer() string { return platformPaths(runtimeLayerYAML) }
+
 func writeLayer(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "runtime.yaml")
-	if err := os.WriteFile(path, []byte(runtimeLayer), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(runtimeLayer()), 0o600); err != nil {
 		t.Fatalf("write layer: %v", err)
 	}
 	return path

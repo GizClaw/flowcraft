@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/permission"
 )
 
@@ -17,7 +18,7 @@ func validConfig(root string) Config {
 }
 
 func TestConfigValidateRejectsMissingBackend(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Sandbox.Backend = ""
 	err := cfg.Validate()
 	if err == nil {
@@ -29,7 +30,7 @@ func TestConfigValidateRejectsMissingBackend(t *testing.T) {
 }
 
 func TestConfigValidateRejectsUnknownBackend(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Sandbox.Backend = "chroot"
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("unknown backend accepted")
@@ -46,7 +47,7 @@ func TestConfigValidateRejectsRelativeRoots(t *testing.T) {
 // allow_hosts without the matching mode is a configuration that looks like a
 // restriction and enforces nothing.
 func TestConfigValidateRejectsHostsWithoutAllowList(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Sandbox.Net = NetConfig{Mode: "none", AllowHosts: []string{"api.example.com"}}
 	err := cfg.Validate()
 	if err == nil {
@@ -126,7 +127,7 @@ func TestToolsEnabledDefaultsToAll(t *testing.T) {
 }
 
 func TestDynamicRejectsUnknownExposure(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Tools.Dynamic = &DynamicConfig{Default: "sometimes"}
 	err := cfg.Validate()
 	if err == nil {
@@ -139,7 +140,7 @@ func TestDynamicRejectsUnknownExposure(t *testing.T) {
 
 // A tool cannot be always visible and never visible at once.
 func TestDynamicRejectsAlwaysAndHiddenOverlap(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Tools.Dynamic = &DynamicConfig{Always: []string{"edit"}, Hidden: []string{"edit"}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("overlap accepted")
@@ -149,7 +150,7 @@ func TestDynamicRejectsAlwaysAndHiddenOverlap(t *testing.T) {
 // The MCP package owns the transport rules; the runtime must surface them with
 // the YAML path, not restate them.
 func TestMCPValidationIsDelegated(t *testing.T) {
-	cfg := validConfig("/tmp")
+	cfg := validConfig(pathtest.Abs("tmp"))
 	cfg.Tools.MCP = MCPConfig{Servers: []MCPServerConfig{
 		{Name: "broken", Transport: "stdio"}, // stdio without a command
 	}}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/fsx"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 )
 
 func openTree(t *testing.T, roots ...string) (*fsx.Tree, context.Context) {
@@ -29,7 +30,7 @@ func TestOpenRejectsUnusableRoots(t *testing.T) {
 	if _, err := fsx.Open(fsx.WithWritable(filepath.Join(t.TempDir(), "missing"))); err == nil {
 		t.Error("missing root accepted, want an error: a handle cannot enforce what it cannot open")
 	}
-	if _, err := fsx.Open(fsx.WithWritable("/")); err != nil {
+	if _, err := fsx.Open(fsx.WithWritable(pathtest.Roots())); err != nil {
 		t.Errorf("filesystem root rejected: %v", err)
 	}
 }

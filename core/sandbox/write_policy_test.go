@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -93,7 +94,7 @@ func TestWithDefaultsPermissionMerge(t *testing.T) {
 // network half is refused because a nil Permission must mean "inherit" while a
 // nil network means "unrestricted".
 func TestValidateExecPolicyPermission(t *testing.T) {
-	root := filepath.Join(string(filepath.Separator), "work")
+	root := pathtest.Abs("work")
 	caps := sandbox.Enforcement{MemoryCap: true, CPUCap: true}
 
 	valid := []sandbox.ExecOptions{

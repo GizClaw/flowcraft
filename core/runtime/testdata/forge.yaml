@@ -15,11 +15,13 @@ sandbox:
     mode: allow_list
     allow_hosts:
       - api.openai.com
-  # Default per-call deadline; the cpu budget below is derived from it.
+  # Default per-call deadline. A tool may ask for less; this is the ceiling.
   timeout: 60s
-  cpu_millicores: 2000
-  memory_mib: 2048
   output_mib: 8
+  # cpu_millicores and memory_mib are enforced by a backend that samples the
+  # process group (bwrap / seatbelt) or the kernel (windows). "local" enforces
+  # neither, so declaring one here fails the build rather than being ignored —
+  # which is also why this example leaves them out.
   # journal:            # presence enables it; absence means no journal
   #   exclude: [.git, node_modules]
   #   retention: 4096

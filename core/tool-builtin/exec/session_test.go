@@ -1,3 +1,7 @@
+//go:build unix
+
+// Sessions run on the unix spawn path; the Windows backend has its own suite.
+
 package exec
 
 import (

@@ -6,16 +6,19 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 )
 
 // Writes.Validate is the input to every sandbox projection, so it is the one
 // place a bad path has to be refused.
 func TestWritesValidate(t *testing.T) {
+	work := pathtest.Abs("work")
+	out := pathtest.Abs("out")
 	valid := [][]string{
 		nil,
-		{"/"},
-		{"/work"},
-		{"/work", "/tmp/out"},
+		{pathtest.Roots()},
+		{work},
+		{work, out},
 	}
 	for _, paths := range valid {
 		if err := (Writes{Paths: paths}).Validate(); err != nil {
@@ -26,11 +29,11 @@ func TestWritesValidate(t *testing.T) {
 	sep := string(filepath.Separator)
 	invalid := map[string]Writes{
 		"relative":        {Paths: []string{"work"}},
-		"glob star":       {Paths: []string{"/work/*"}},
-		"glob question":   {Paths: []string{"/work/?"}},
-		"glob class":      {Paths: []string{"/work/[a-z]"}},
-		"duplicate":       {Paths: []string{"/work", "/work"}},
-		"duplicate clean": {Paths: []string{"/work", "/work/" + sep}},
+		"glob star":       {Paths: []string{work + sep + "*"}},
+		"glob question":   {Paths: []string{work + sep + "?"}},
+		"glob class":      {Paths: []string{work + sep + "[a-z]"}},
+		"duplicate":       {Paths: []string{work, work}},
+		"duplicate clean": {Paths: []string{work, work + sep}},
 	}
 	for name, w := range invalid {
 		err := w.Validate()

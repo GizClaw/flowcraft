@@ -1,3 +1,5 @@
+//go:build unix
+
 package remote_test
 
 import (
@@ -6,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,12 +45,10 @@ func newUnixRunner(t *testing.T, root string) *remote.Runner {
 	inner := local.New(root)
 	t.Cleanup(func() { _ = inner.Close() })
 
+	// A unix socket is the boundary: no token, as on a host that trusts the
+	// directory's permissions.
 	serverOpts := []remote.ServerOption{remote.WithoutAuth()}
 	var clientOpts []remote.Option
-	if runtime.GOOS == "windows" {
-		serverOpts = []remote.ServerOption{remote.WithServerToken(testToken)}
-		clientOpts = append(clientOpts, remote.WithToken(testToken))
-	}
 
 	server, err := remote.NewServer(inner, serverOpts...)
 	if err != nil {
@@ -105,11 +104,6 @@ func TestListenUnixCreatesAPrivateSocket(t *testing.T) {
 	info, err := os.Stat(socketPath)
 	if err != nil {
 		t.Fatalf("stat socket: %v", err)
-	}
-	if runtime.GOOS == "windows" {
-		// Advisory only; the directory ACL decides. Nothing to assert beyond the
-		// file existing, which is what the check above proved.
-		return
 	}
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Fatalf("socket mode = %o, want 600", perm)

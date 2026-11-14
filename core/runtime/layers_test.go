@@ -3,9 +3,11 @@ package runtime
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/goccy/go-json"
 )
 
@@ -14,8 +16,20 @@ func loadLayers(t *testing.T, layers ...Layer) (Config, Provenance, error) {
 	return LoadLayers(context.Background(), layers)
 }
 
+// platformPaths rewrites the unix placeholders a fixture is written with, so the
+// same document is absolute on both platforms: "/work" is not absolute on
+// Windows, where a path needs a volume.
+func platformPaths(text string) string {
+	return strings.NewReplacer(
+		"/work", pathtest.Abs("work"),
+		"/tmp", pathtest.Abs("tmp"),
+		"/expanded", pathtest.Abs("expanded"),
+		"/fallback", pathtest.Abs("fallback"),
+	).Replace(text)
+}
+
 func base() Layer {
-	return Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+	return Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(platformPaths(`
 version: 1
 name: forge
 sandbox:
@@ -25,7 +39,7 @@ files:
   roots: ["/work"]
 tools:
   enable: [files]
-`)}
+`))}
 }
 
 func override(body string) Layer {
@@ -33,12 +47,12 @@ func override(body string) Layer {
 }
 
 func TestLoadLayersMergesSections(t *testing.T) {
-	cfg, prov, err := loadLayers(t, base(), override(`
+	cfg, prov, err := loadLayers(t, base(), override(platformPaths(`
 sandbox:
   writes: [/work, /tmp]
 tools:
   tty: true
-`))
+`)))
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
@@ -51,7 +65,8 @@ tools:
 	}
 	// A sequence is replaced whole, not appended: one more line must not add a
 	// writable path to the base list.
-	if got := strings.Join(cfg.Sandbox.Writes, ","); got != "/work,/tmp" {
+	wantWrites := pathtest.Abs("work") + "," + pathtest.Abs("tmp")
+	if got := strings.Join(cfg.Sandbox.Writes, ","); got != wantWrites {
 		t.Errorf("writes = %q, want the override list only", got)
 	}
 	if !cfg.Tools.TTY {
@@ -103,19 +118,20 @@ func TestLoadLayersRejectsUnknownKey(t *testing.T) {
 }
 
 func TestLoadLayersExpandsEnv(t *testing.T) {
-	t.Setenv("RUNTIME_TEST_ROOT", "/expanded")
-	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+	root := pathtest.Abs("expanded")
+	t.Setenv("RUNTIME_TEST_ROOT", root)
+	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(platformPaths(`
 version: 1
 sandbox:
   backend: local
   workdir: ${RUNTIME_TEST_ROOT}
 files:
   roots: ["${RUNTIME_TEST_ROOT}"]
-`)})
+`))})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
-	if cfg.Files.Roots[0] != "/expanded" || cfg.Sandbox.WorkDir != "/expanded" {
+	if cfg.Files.Roots[0] != root || cfg.Sandbox.WorkDir != root {
 		t.Errorf("roots=%v workdir=%q, want the expanded value", cfg.Files.Roots, cfg.Sandbox.WorkDir)
 	}
 }
@@ -139,23 +155,23 @@ files:
 }
 
 func TestLoadLayersFallback(t *testing.T) {
-	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(platformPaths(`
 version: 1
 sandbox:
   backend: local
 files:
   roots: ["${RUNTIME_TEST_ABSENT:-/fallback}"]
-`)})
+`))})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
-	if cfg.Files.Roots[0] != "/fallback" {
+	if cfg.Files.Roots[0] != pathtest.Abs("fallback") {
 		t.Errorf("roots = %v, want the fallback", cfg.Files.Roots)
 	}
 }
 
 func TestLoadLayersFromFile(t *testing.T) {
-	path := t.TempDir() + "/base.yaml"
+	path := filepath.Join(t.TempDir(), "base.yaml")
 	body := "version: 1\nsandbox:\n  backend: local\nfiles:\n  roots: [" + t.TempDir() + "]\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write layer: %v", err)
@@ -168,7 +184,7 @@ func TestLoadLayersFromFile(t *testing.T) {
 // A commented-out example must not be able to break a working configuration:
 // expansion runs on the parsed tree, so comments are already gone.
 func TestLoadLayersIgnoresCommentedVariables(t *testing.T) {
-	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(platformPaths(`
 version: 1
 sandbox:
   backend: local
@@ -177,11 +193,11 @@ files:
 # mcp:
 #   servers:
 #     - env: { GREETING: "${TOTALLY_UNSET}" }
-`)})
+`))})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
-	if cfg.Files.Roots[0] != "/work" {
+	if cfg.Files.Roots[0] != pathtest.Abs("work") {
 		t.Errorf("roots = %v", cfg.Files.Roots)
 	}
 }
@@ -189,7 +205,7 @@ files:
 // A "#" inside a quoted value is data, not a comment, and still expands.
 func TestLoadLayersExpandsInsideQuotedValues(t *testing.T) {
 	t.Setenv("RUNTIME_TEST_HOST", "api.example.test")
-	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(`
+	cfg, _, err := loadLayers(t, Layer{Priority: 0, Name: "base.yaml", Bytes: []byte(platformPaths(`
 version: 1
 sandbox:
   backend: local
@@ -204,7 +220,7 @@ inference:
   models:
     - provider: primary
       model: m
-`)})
+`))})
 	if err != nil {
 		t.Fatalf("LoadLayers: %v", err)
 	}
