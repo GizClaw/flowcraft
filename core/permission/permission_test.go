@@ -77,7 +77,7 @@ func TestNetPolicyValidateAndIsZero(t *testing.T) {
 			{Action: NetAllow, Host: "example.com", Port: 443},
 			{Action: NetDeny, Host: "*.ads.test", Reason: "tracker"},
 		}},
-		{Mode: NetAllowList, UnixSockets: []string{"/run/service.sock"}},
+		{Mode: NetAllowList, UnixSockets: []string{pathtest.Abs("run/service.sock")}},
 		{MITM: &MITMPolicy{Hosts: []string{"example.com"}, MaxBodyBytes: 1 << 20}},
 	}
 	for i, p := range valid {
@@ -122,7 +122,7 @@ func TestNetPolicyValidateAndIsZero(t *testing.T) {
 		"allow hosts":  {AllowHosts: []string{"example.com"}},
 		"rules":        {Rules: []NetRule{{Action: NetAllow, Host: "example.com"}}},
 		"proxy":        {Proxy: "http://127.0.0.1:3128"},
-		"unix sockets": {UnixSockets: []string{"/run/service.sock"}},
+		"unix sockets": {UnixSockets: []string{pathtest.Abs("run/service.sock")}},
 		"mitm":         {MITM: &MITMPolicy{}},
 	} {
 		if policy.IsZero() {

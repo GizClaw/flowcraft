@@ -235,8 +235,18 @@ jobs:
       # The config lives at the repository root: the CLI only accepts its own
       # file names, so a path under .github/ is rejected before anything is
       # linted (which is what this lane did: fail, never run).
+      #
+      # The globs are here rather than in the config because the action passes
+      # them on the command line, where they win. `CHANGELOG.md` is generated
+      # from changeset summaries whose prose is not written as Markdown (a
+      # summary naming `backends/*` reads as emphasis), so this lane lints what
+      # is authored and the generator owns its own output.
       - name: markdownlint
         uses: DavidAnson/markdownlint-cli2-action@v20
+        with:
+          globs: |
+            README.md
+            docs/**/*.md
       # A module that needs a tidy is a module whose go.mod no longer describes
       # its imports; the release gate rejects that state, so catch it earlier.
       #

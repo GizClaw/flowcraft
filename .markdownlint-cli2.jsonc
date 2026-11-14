@@ -15,13 +15,9 @@
     // Code blocks quote Go and YAML verbatim, tabs included.
     "MD010": { "code_blocks": false }
   },
-  // `CHANGELOG.md` is generated from changeset summaries, whose prose is not
-  // written as Markdown: a summary naming `backends/*` reads as emphasis to the
-  // linter. Lint what is authored; the generator owns its output.
-  "globs": [
-    "README.md",
-    "docs/**/*.md"
-  ],
+  // The file list lives in the workflow: the action passes its own `globs`
+  // input to the CLI, and command-line globs win over these. `ignores` still
+  // apply, which is what keeps the local-only trees out of a developer's run.
   "ignores": [
     "docs/plans/**",
     "docs/reporters/**",

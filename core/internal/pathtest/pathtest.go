@@ -10,20 +10,21 @@ package pathtest
 import goruntime "runtime"
 
 // Roots returns the synthetic absolute root for this platform: "/" on unix and
-// `C:\` on Windows. Nothing is created; the value only has to satisfy
+// "C:/" on Windows. Nothing is created; the value only has to satisfy
 // filepath.IsAbs.
 func Roots() string {
 	if goruntime.GOOS == "windows" {
-		return `C:\`
+		return "C:/"
 	}
 	return "/"
 }
 
 // Abs returns name under the synthetic root, joined so a fixture can write the
-// same expression on both platforms: Abs("work") is "/work" or `C:\work`.
+// same expression on both platforms: Abs("work") is "/work" or "C:/work".
+//
+// Windows separators are spelled with forward slashes on purpose: Windows accepts
+// them, and a backslash inside a double-quoted YAML string is an escape ("\f" is
+// a form feed), which would turn a fixture path into a different string entirely.
 func Abs(name string) string {
-	if goruntime.GOOS == "windows" {
-		return `C:\` + name
-	}
-	return "/" + name
+	return Roots() + name
 }

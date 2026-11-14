@@ -4,11 +4,13 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
+	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/goccy/go-json"
 )
 
@@ -71,7 +73,10 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	if got := rt.DefaultModel(); got.Profile != "luna" || got.ID.Name != "gpt-6-luna" {
 		t.Errorf("default model = %+v, want gpt-6-luna/luna", got)
 	}
-	for _, name := range []string{"read_file", "write_file", "edit", "bash", "exec_session", "skill_search"} {
+	// The shell tool is named for the shell the platform has: bash on unix, pwsh
+	// (or powershell / cmd) on Windows.
+	shell := engine.DefaultShell(goruntime.GOOS).Name
+	for _, name := range []string{"read_file", "write_file", "edit", shell, "exec_session", "skill_search"} {
 		if _, ok := rt.Tools().Get(name); !ok {
 			t.Errorf("tool %q not wired; got %v", name, rt.Tools().Names())
 		}
