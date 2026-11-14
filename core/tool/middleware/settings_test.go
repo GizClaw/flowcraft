@@ -2,11 +2,11 @@ package middleware
 
 import (
 	"context"
-	"reflect"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -400,16 +400,22 @@ func fromSettingsRecovering(s Settings) (mws []tool.Middleware, recovered any, e
 
 // TestFromSettingsOrder pins the full chain order, not just one pair. The order is
 // load-bearing: Recover must be outermost so a panicking tool cannot escape,
-// Telemetry must see the call before any limit rewrites the result, and Timeout's
-// own error result has to pass through the limiter — so a reordering is a behaviour
-// change and should fail here rather than surface as a subtler bug elsewhere.
+// Telemetry must see the call before any limit rewrites the result, and Truncate
+// must run inside the limiter — so a reordering is a behaviour change and should
+// fail here rather than surface as a subtler bug elsewhere.
+//
+// The properties are asserted by behaviour rather than by comparing the closures
+// each slot holds: a middleware is a function value, and Go is free to inline and
+// duplicate one, which makes a code-pointer comparison pass on one architecture
+// and fail on the next. Which constructor each *setting* builds is covered by its
+// own test (resultlimit_test.go, truncate_test.go, timeout_test.go, …).
 func TestFromSettingsOrder(t *testing.T) {
 	dir := t.TempDir()
 	settings := Settings{
 		Recover:     &RecoverSettings{},
 		Telemetry:   &TelemetrySettings{Enabled: boolPtr(true)},
 		ResultLimit: &ResultLimitSettings{Max: 128},
-		Truncate:    &TruncateSettings{Enabled: true, MaxChars: 16, Dir: dir},
+		Truncate:    &TruncateSettings{Enabled: true, MaxChars: 64, Dir: dir},
 		Timeout:     &TimeoutSettings{Default: "30s"},
 		Concurrency: &ConcurrencySettings{Limit: 2},
 	}
@@ -417,29 +423,40 @@ func TestFromSettingsOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
+	// recover, telemetry, result_limit, truncate, timeout, concurrency.
+	if len(chain) != 6 {
+		t.Fatalf("chain has %d entries, want 6", len(chain))
+	}
+	ctx := context.Background()
 
-	limiter, err := ResultLimiter(128)
+	// Recover is outermost: a panic in the innermost stage becomes a result.
+	res := dispatchThrough(chain, func(context.Context, message.ToolCall) message.ToolResult {
+		panic("boom")
+	})(ctx, message.ToolCall{ID: "call", Name: "boom"})
+	if !res.IsError {
+		t.Fatalf("a panic escaped the chain: %#v", res)
+	}
+
+	// Truncate runs inside the limiter: it spills the tool's full output and hands
+	// back an excerpt plus a pointer, and the limiter's own bound is wide enough to
+	// keep that pointer. With the two reversed the limiter would cut the pointer
+	// away and the spill file would hold the excerpt instead of the whole result.
+	full := strings.Repeat("x", 1000)
+	res = dispatchThrough(chain, func(_ context.Context, call message.ToolCall) message.ToolResult {
+		return message.ToolResult{CallID: call.ID, Content: message.NewTextContent(full)}
+	})(ctx, message.ToolCall{ID: "call", Name: "big"})
+	if got := len([]rune(res.Content.Text())); got > 128 {
+		t.Fatalf("content = %d runes, want the limiter's 128 bound", got)
+	}
+	if !strings.Contains(res.Content.Text(), "truncated; full output:") {
+		t.Fatalf("limiter cut the truncation pointer away: %q", res.Content.Text())
+	}
+	spilled, err := os.ReadFile(filepath.Join(dir, "call.output"))
 	if err != nil {
-		t.Fatalf("ResultLimiter: %v", err)
+		t.Fatalf("spill file missing: %v", err)
 	}
-	concurrency, err := Concurrency(2)
-	if err != nil {
-		t.Fatalf("Concurrency: %v", err)
-	}
-	want := []tool.Middleware{
-		Recover(),
-		Telemetry(),
-		limiter,
-		Truncate(TruncateSettings{Enabled: true, MaxChars: 16, Dir: dir}),
-		Timeout(30*time.Second, nil),
-		concurrency,
-	}
-	if len(chain) != len(want) {
-		t.Fatalf("chain has %d entries, want %d", len(chain), len(want))
-	}
-	for i := range want {
-		if reflect.ValueOf(chain[i]).Pointer() != reflect.ValueOf(want[i]).Pointer() {
-			t.Fatalf("entry %d is not the expected middleware", i)
-		}
+	if string(spilled) != full {
+		t.Fatalf("spill file = %d bytes, want the full %d: truncate ran outside the limiter",
+			len(spilled), len(full))
 	}
 }

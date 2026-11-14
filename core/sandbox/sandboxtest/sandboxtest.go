@@ -121,28 +121,44 @@ func testCapabilitiesMatchBehaviour(t *testing.T, build Builder) {
 			TTY:  true,
 		}), "Start(TTY) on a runner that does not advertise TTY")
 	} else {
-		sess := startOK(t, h, sandbox.SessionSpec{
-			Argv: h.shell().Argv("echo tty"),
+		// A resize needs a session that is still there: a command that exits
+		// before the call reaches the backend is a closed session, and over a
+		// connection that race is a test failure on a slow or loaded machine.
+		tty := startOK(t, h, sandbox.SessionSpec{
+			Argv: h.shell().Argv(h.shell().LongRunning()),
 			TTY:  true,
 			Rows: 24,
 			Cols: 80,
 		})
-		if !sess.Capabilities().TTY {
+		if !tty.Capabilities().TTY {
 			t.Error("session does not report the TTY the runner advertised")
 		}
-		if err := sess.Resize(context.Background(), 40, 120); err != nil {
+		if err := tty.Resize(context.Background(), 40, 120); err != nil {
 			t.Errorf("Resize on an advertised TTY: %v", err)
 		}
-		_ = sess.Close()
+		_ = tty.Close()
 	}
 
-	sess := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv("echo signal")})
+	// Signal has the same requirement for the same reason: a child that already
+	// exited cannot receive one, so the promise is only meaningful while the
+	// process is running.
 	if !sessions.Signal {
+		sess := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv("echo signal")})
 		requireNotAvailable(t, sess.Signal(context.Background(), sandbox.SessionSignalInterrupt),
 			"Signal on a runner that does not advertise it")
-	} else if err := sess.Signal(context.Background(), sandbox.SessionSignalInterrupt); err != nil {
-		t.Errorf("Signal on an advertised session: %v", err)
+		_ = sess.Close()
+	} else {
+		signalled := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv(h.shell().LongRunning())})
+		if err := signalled.Signal(context.Background(), sandbox.SessionSignalInterrupt); err != nil {
+			t.Errorf("Signal on an advertised session: %v", err)
+		}
+		_ = signalled.Close()
 	}
+
+	// The event stream is the one check that wants a finished session: Watch
+	// replays the retained log, so a process that already exited must still
+	// report its exit without anyone nudging it.
+	sess := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv("echo signal")})
 	if !sessions.Events {
 		watcher, werr := sess.Watch(context.Background())
 		if werr == nil {
