@@ -34,6 +34,11 @@ type Recorder struct {
 // provider.
 // providerLock serializes the tests that install a provider.
 //
+// It is not enough on its own: a *different* test in the same package that emits
+// spans while this provider is installed lands in this recorder too, so a test
+// that asserts on span counts must not run in parallel with one that emits. Use
+// t.Parallel only where the assertion is not about what this process emitted.
+//
 // The provider is process-global, so two tests that use this helper at the same
 // time — `t.Parallel` in one, a sibling in the other — put each other's spans in
 // one recorder: a test asserting "exactly one span named X" then sees the other

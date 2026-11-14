@@ -20,7 +20,6 @@ import (
 // of waiting out its timeout, and the configured observer must be told
 // exactly once.
 func TestSource_UnrunnableCommandGivesUpAndReportsLoss(t *testing.T) {
-	t.Parallel()
 	src := NewSource(WithRetryBackoff(10*time.Millisecond, 20*time.Millisecond))
 	t.Cleanup(func() { _ = src.Close() })
 
@@ -66,7 +65,6 @@ func TestSource_UnrunnableCommandGivesUpAndReportsLoss(t *testing.T) {
 // the taxonomy: a server whose child exits and is reconnected in place
 // must not flap the observer.
 func TestSource_LossIsSilentForTransientReconnects(t *testing.T) {
-	t.Parallel()
 	src := NewSource(
 		WithRetryBackoff(30*time.Millisecond, 100*time.Millisecond),
 		WithLivenessInterval(50*time.Millisecond),
@@ -134,7 +132,6 @@ var _ mcpsdk.Transport = (*afterFirstTransport)(nil)
 // terminal loss after a live server: the child is gone, the command
 // cannot be spawned again, and the observer learns about it once.
 func TestSource_ReportsLossWhenReconnectCannotSucceed(t *testing.T) {
-	t.Parallel()
 	src := NewSource(WithRetryBackoff(30*time.Millisecond, 100*time.Millisecond))
 	t.Cleanup(func() { _ = src.Close() })
 

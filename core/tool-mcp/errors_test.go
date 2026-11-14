@@ -16,7 +16,6 @@ import (
 // ones it can: only the "this command will never run" class may be
 // treated as terminal by the retry loop.
 func TestCannotStart(t *testing.T) {
-	t.Parallel()
 	missingPath := &fs.PathError{
 		Op: "fork/exec", Path: "/x/server", Err: syscall.ENOENT,
 	}
@@ -71,7 +70,6 @@ func TestCannotStart(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			if got := cannotStart(tc.err); got != tc.want {
 				t.Fatalf("cannotStart(%v) = %v, want %v", tc.err, got, tc.want)
 			}
@@ -84,7 +82,6 @@ func TestCannotStart(t *testing.T) {
 // (terminal, and a waiting host is woken with it), while a spawn
 // failure a retry may fix stays NotAvailable.
 func TestConnectErrorClassifiesUnrunnableCommands(t *testing.T) {
-	t.Parallel()
 	missing := connectError("broken", &fs.PathError{
 		Op: "fork/exec", Path: "/x/server", Err: syscall.ENOENT,
 	})
@@ -107,7 +104,6 @@ func TestConnectErrorClassifiesUnrunnableCommands(t *testing.T) {
 // exec actually produces, so the classification cannot drift away from
 // the OS error shapes it is meant to match.
 func TestCannotStartRealExecErrors(t *testing.T) {
-	t.Parallel()
 	if err := exec.Command("/definitely/not/here/mcp-server").Start(); err == nil || !cannotStart(err) {
 		t.Fatalf("missing absolute command: err=%v cannotStart=%v, want true",
 			err, cannotStart(err))
