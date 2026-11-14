@@ -2,7 +2,7 @@
 
 # FlowCraft
 
-**A modular Go toolkit for extensible AI applications, long-term memory, provider backends, and local interactive workflows.**
+**A Go platform for building AI agents: model calls, tools, sandboxed execution, and declarative graphs — assembled from YAML and owned by your process.**
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/core.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/core)
@@ -13,245 +13,257 @@
 
 ---
 
-FlowCraft is a Go workspace for building and evaluating AI applications without
-tying application code to one model provider or execution model. Graphs are one
-built-in option, not a required architecture: use the core packages directly, or
-start with the forge demo in `examples/forge` for a runnable local workspace.
+FlowCraft is a Go workspace for building agent deployments without tying
+application code to one model provider or one execution model. A deployment is a
+document: which agents exist, what each runs on, and what each is allowed to do.
+The platform builds that document into something you own — one `Runtime` per
+agent, a session table, an HTTP surface — and leaves prompting, persistence and
+your product's own policies in your hands.
+
+Graphs are one execution engine, not a required architecture: use the packages
+directly, or start from the forge demo in `examples/forge`.
 
 ## Modules
 
-- **`core`** — The single platform module: agent execution, graph, tool,
-  model, message, skills, inference, memory contracts, event bus, telemetry,
-  workspace, sandbox, deployment/resource assembly, runtime, sessions, and
-  delegation contracts.
-- **`driver`** — Provider adapters built on `core`, one module: Anthropic
-  (the Messages family), ByteDance, MiniMax, DashScope (Alibaba Cloud Model
-  Studio's native surfaces: text generation, embeddings, speech synthesis,
-  file transcription, and the Wan image and video families), and TypeSafe
-  (the System One decision surface).
-- **`memory`** — The long-term memory backend and its eval harness
-  (`memory/eval`); the sandbox backends (`bwrap`, `seatbelt`) and the
-  encrypted keychain secret store (`core/secret/keychain`) live in `core/`.
-- **`examples/forge`** — A runnable local workspace demo built on the current
-  stack: native deploy/inference/memory scenario configs, an interactive TUI,
-  scripted tests, and raid × persona simulation.
-- **`tools/releasegate`** — Release automation: changeset validation, release
-  planning, and changelog aggregation.
+- **`core`** — the platform module: message and permission contracts, inference
+  (with the OpenAI and Anthropic protocol families), tools, sandbox, the runtime,
+  agent execution with the graph engine and A2A, deployment documents and kinds,
+  and telemetry.
+- **`driver`** — provider adapters that are not protocol families, one package
+  each: `bytedance`, `dashscope`, `minimax`.
+- **`examples/forge`** — a runnable local demo: a werewolf table played by a cast
+  of agents, with a TUI, scripted tests and self-play.
+- **`tools/releasegate`** — release automation: changeset validation, release
+  planning, changelog aggregation.
 
-Library layers are independently versioned Go modules; applications adopt only
-the layers they need.
+Modules are independently versioned; an application adopts only what it needs.
 
-## Memory architecture
+## The unit is the deployment
 
-`core/memory` defines the memory capability contracts — `ContextProvider`,
-`TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope`, and `Turn`.
-`core/memory` also provides the generic glue: a
-`memory.Assembly` deploy resource that dispatches to implementations by
-`impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
-the GoTemplate context renderer.
+Three files describe one deployment, and each is validated without being built:
 
-This mirrors the inference pattern: `core/inference` is generic, and each
-provider driver (`openai`, `anthropic`, `bytedance`, `minimax`, `dashscope`,
-`typesafe`) is a registered factory. A deployment points one of them at any
-endpoint speaking that wire family — DeepSeek and GLM ride the OpenAI driver,
-for example — so the document's provider id (`openai`, `deepseek`, …) names
-the deployment, not the module. Memory implementations plug in the same way —
-each registers under its own `impl:` name with its own parameters (the
-flowcraft memory module is one such app-registered implementation); `core`
-owns only the contracts and glue.
+| File | Says |
+| --- | --- |
+| `deploy.yaml` | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level |
+| a runtime layer | what one agent runs on: the sandbox boundary, the files it may write, its providers and models, its tools and skills |
+| a graph document | what the graph engine runs: state slots with merge rules, nodes, the conditions on their edges |
+
+```yaml
+version: 1
+agents:
+  - name: assistant
+    engine:
+      kind: graph                       # registered kind, not a built-in name
+      settings: {path: ./graphs/assistant.yaml}
+    runtime:
+      layers:
+        - {priority: 0, path: ./runtime.yaml}
+    protocol:
+      kind: a2a
+      settings: {peer: {url: https://client.example}}
+    delegation:
+      targets: [reviewer]
+      modes: [sync]
+```
+
+Everything a document can name is a **kind** — engine, protocol or hook — and a
+kind the host did not register is a load error listing what it did register,
+never a silently skipped block. The built-ins are `a2a` and `graph` engines, the
+`a2a` protocol, and no hooks: a host's policy is the host's.
 
 ## Quickstart
 
-### Run the forge workspace demo
-
-The fastest way to explore the stack is the runnable demo in
-[`examples/forge`](examples/forge/):
+### Run the forge demo
 
 ```bash
 cd examples/forge
+cp .env.example .env          # then set OPENAI_API_KEY=...
 go run . help
-
-# Create a workspace from the werewolf scenario and run a scripted test.
-go run . workspace create --config werewolf --workspace ./workspace
-go run . test -test werewolf/opening_setup
+go run . tui new              # pick "werewolf" and start the table
+go run . test -test werewolf/opening
+go run . test-auto --raid werewolf --rounds 8
 ```
 
-The demo builds workspaces from native deploy/inference/memory scenario
-documents, opens an interactive TUI, and runs scripted tests and raid × persona
-simulations. Command reference, scenario layout, and credentials live in
+The demo is a host, not a framework: it opens a workspace, deploys agents, drives
+a session and reads the events back — the same things any application writes.
+Command reference and scenario layout live in
 [`examples/forge/README.md`](examples/forge/README.md) (中文版:
-[`examples/forge/README_zh.md`](examples/forge/README_zh.md)).
+[`README_zh.md`](examples/forge/README_zh.md)).
 
 ### Embed FlowCraft in a Go service
 
-Use `core` directly and add `driver` or `memory` for provider
-adapters and the long-term memory backend.
-Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
-`core/runtime`, and drive turns through `core/runtime/session`:
-
 ```go
-document, _ := deploy.Parse(deployYAML)
-app, _ := runtimeBuilder.Build(ctx, document)
-defer app.Close()
+loader := deploy.Loader{Kinds: deploy.BuiltinKinds()}
+specs, err := loader.LoadFile(ctx, "deploy.yaml")   // strict; unknown fields fail
 
-lease, _ := app.Sessions().Open(ctx, session.Key{
-    AgentID:   "assistant",
-    ContextID: "conversation-1",
+manager := host.New(deploy.BuiltinKinds(), host.Bindings{
+    Store:          store,                          // sessions survive a restart
+    RuntimeOptions: []runtime.Option{runtime.WithDrivers(myDrivers...)},
+    LoadOptions:    []runtime.LoadOption{runtime.WithResolver("secret", vault.Resolve)},
+    Harness:        "myapp@1.0.0",
 })
-turn, _ := lease.Session().Start(ctx, agent.Request{
-    Message: message.NewTextMessage(message.RoleUser, "hello"),
-}, session.SinkSpec{ID: "console", Sink: streamSink})
-result, _ := turn.Wait(ctx)
+defer manager.Close()
+
+if _, err := manager.Deploy(ctx, specs...); err != nil { /* … */ }
+
+sess, ok := manager.Session("assistant", "conversation-1")
+if !ok { /* not deployed */ }
+for event, err := range sess.Run(ctx, message.NewTextMessage(message.RoleUser, "hello")) {
+    if err != nil { break }
+    render(event)                                   // text, reasoning, tool calls, usage
+}
 ```
 
+A driver is a `runtime.Driver{Name, Build}` pair, and the adapter that maps a
+written `settings` block onto the driver's typed settings belongs to your
+application — `examples/forge/internal/app/drivers.go` is a working reference.
 See [`docs/guides/deploy.md`](docs/guides/deploy.md) and
-[`docs/guides/runtime.md`](docs/guides/runtime.md) for the full assembly and
-session contracts.
+[`docs/guides/runtime.md`](docs/guides/runtime.md).
 
 ## Architecture
 
-`core` defines the execution contracts: `core/agent` owns the execution
-primitives (`Engine`, `Runner`, `Agent`, `Checkpoint`), while
-`core/agent-graph` compiles declarative graphs into `agent.Engine`
-implementations. Memory and provider adapters compose those contracts
-without becoming dependencies of the core.
+`core` is layered: a package imports only from the layers below it.
 
-```
-                ┌──────────────────────┐
-                │   Your application   │
-                └──────────┬───────────┘
-                           │
-             ┌─────────────┬─────────────┐
-             ▼                           ▼
-      ┌─────────────┐             ┌─────────────────┐
-      │ driver      │             │ app-registered  │
-      │  inference  │             │ memory          │
-      │ providers   │             │ implementations │
-      │             │             │                 │
-      └──────┬──────┘             └──────┬──────────┘
-             └─────────────┬─────────────┘
-                           ▼
-                ┌──────────────────────┐
-                │         core/        │
-                │   agent · graph ·    │
-                │   tool · event ·     │
-                │  message · inference │
-                │  deploy · runtime    │
-                └──────────────────────┘
+```text
+                 ┌──────────────────────────────────────────┐
+                 │            your application              │
+                 │  drivers · secret resolvers · approvals   │
+                 └───────────────────┬──────────────────────┘
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │ deployment   core/deploy (documents, kinds)            │
+        │              core/agent-host (process, sessions)       │
+        ├────────────────────────────────────────────────────────┤
+        │ assembly     core/runtime (provider · tools · sandbox  │
+        │              files · skills · journal; owns them)      │
+        ├────────────────────────────────────────────────────────┤
+        │ execution    core/agent · agent-graph · agent-a2a      │
+        │              core/delegation                           │
+        ├────────────────────────────────────────────────────────┤
+        │ boundaries   core/tool (+engine, middleware, mcp)      │
+        │              core/sandbox (+backends, journal, remote)  │
+        ├────────────────────────────────────────────────────────┤
+        │ inference    core/inference (+openai, +anthropic)       │
+        │              driver/*                                  │
+        ├────────────────────────────────────────────────────────┤
+        │ contracts    message · errdefs · permission · fsx       │
+        │              skill · search                            │
+        └────────────────────────────────────────────────────────┘
 ```
 
-**Layering rule:** execution contracts live in `core/agent` (`agent.Engine`,
-`agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
-import graph or tool packages. `core/agent-graph` builds on those contracts and
-returns an `agent.Engine`. Memory contracts live in core, while
-app-registered implementations and adapters (`driver`, `memory`) stay outside
-the core and depend on it, never the reverse.
+**Two rules keep that shape.** A `Runtime` owns what it built and closes it in
+reverse construction order; a value handed in through an option is somebody
+else's to close. And nothing below the assembly layer knows about a conversation:
+`core/agent` owns runs, `core/runtime` owns the substrate, and history is an
+argument to a turn.
 
 ## Module map
 
-| Path                                                  | Role                                                                                     | Distribution         |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
-| [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
-| [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go module  |
-| [`memory`](memory/)                                   | Long-term memory backend and its eval harness                                             | Versioned Go module  |
-| [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
-| [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
-| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
+| Path | Role | Distribution |
+| --- | --- | --- |
+| [`core`](core/) | Platform module: contracts, inference, tools, sandbox, runtime, execution, deployment | Versioned Go module |
+| [`driver`](driver/) | Provider adapters that are not protocol families | Versioned Go module |
+| [`examples/forge`](examples/forge/) | Runnable demo: a werewolf table played by agents | Example |
+| [`tools/releasegate`](tools/releasegate/) | Release automation | Tool |
+| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill: reference cards, templates, validator | Skill |
 
 ## Highlights
 
-### Memory contracts (`core/memory`)
+### One document, three kind tables
 
-- Memory as a pluggable implementation: concrete implementations are
-  app-registered behind the `core/memory` contracts.
+A deployment names agents; each agent names an engine, optionally a protocol and
+its own hooks. Registration lives with the loader (`deploy.BuiltinKinds`,
+`WithEngines`/`WithProtocols`/`WithHooks`) while the implementation stays in its
+own package, so a kind cannot be loadable and yet not deployable. Placeholders
+(`${VAR}`, `${VAR:-fallback}`, `${scheme:arg}`) expand once, after the layers
+merge, and `Loader.RequiredPlaceholders` prints the whole startup checklist in
+one pass instead of failing at the first unset reference.
 
-### Streaming, durable, resumable (`core/agent`)
+### A graph engine that can loop
 
-- `Subject`-routed event bus — every step emits structured envelopes.
-- `Checkpoint` / `CheckpointStore` contracts — pause and resume an agent
-  across restarts.
-- `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
+`core/agent-graph` runs a graph as a frontier loop, so a ReAct cycle is just
+edges: no topological order, no cycle rejection. A node produces state, never a
+value on an edge — state keys declare their own merge rule (`single`, `last`,
+`append`), fan-out shares immutable message sequences, and edges carry conditions
+compiled at build time. Nodes are kinds too: `model`, `tool`, `condition` and
+whatever the host registers.
 
-### Unified inference runtime (`core/inference` + `driver`)
+### A boundary with four backends and one proxy
 
-- One runtime for Generate / Embed / Decision / Transcription (Realtime
-  reserved), with exact `ModelRef` addressing and compile-time capability
-  checks.
-- Providers registered as factories: OpenAI (OpenAI, Azure, DeepSeek, Kimi and
-  compatible gateways), Anthropic (Anthropic and compatible Messages
-  endpoints), ByteDance, MiniMax, DashScope (Alibaba Cloud Model Studio's
-  native text, embedding, speech, image, and video surfaces), and TypeSafe
-  (the System One decision surface).
+`core/sandbox` is the contract, `core/sandbox/engine` is the policy layer
+(defaults, allow-list, approval, escalation, the safe-read-only classifier), and
+the backends are siblings: `local`, `bwrap` (Linux namespaces), `seatbelt`
+(macOS), `windows` (job objects, optional Low-integrity confinement). Every call
+can narrow the boundary it was given and never widen it; a cap a backend cannot
+enforce fails the build instead of being ignored. `core/sandbox-remote` runs the
+same `Runner` on another machine — HTTP or unix socket, cursor reads, one SSE
+stream, retries only where repeating is safe.
 
-### Runnable local workspace demo (`examples/forge`)
+### Inference with two protocol families
 
-A runnable demo on the current stack: native scenario documents, an interactive
-TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
-[`examples/forge/README.md`](examples/forge/README.md) for details.
+`core/inference` is the contract (`Generator`, `Embedder`, `Decider`, `Catalog`),
+`core/inference-openai` and `-anthropic` are the protocol families, and
+`driver/*` holds the vendors that are not one. Routing is a policy over the
+declared line-up: capability-filtered candidates, per-target attempts, bounded
+backoff, and a retry classification that reads the contract's error kinds rather
+than strings. Drivers ship no model line-up — a model exists because a deployment
+declared it, and its limits are enforced before the provider is opened.
+
+### Durable runs
+
+`core/agent` checkpoints a task as a projection plus an append-only event log,
+written in one transaction, so `Load` costs the same for a one-turn task and a
+thousand-turn one. Two counters (`Version` from the store, `ServerVersion` from a
+protocol adapter) let an engine and an adapter write the same task without
+rejecting each other, and a changed deployment invalidates a resume through the
+fingerprint rather than replaying a transcript into a stack that never produced
+it.
 
 ## Documentation
 
 The canonical reference is the per-package `doc.go` files, browsable on
 pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 
-- [Graph Runtime](docs/guides/graph.md) — `core/agent-graph`: declarative DAG
-  engine, node I/O roles, parallel branches, custom node types.
-- [Tool System](docs/guides/tool.md) — `core/tool`: LLM function-calling
-  contract, the Registry / Catalog / Executor split, middleware chain, and
-  the MCP bridge.
-- [Agent Skills](docs/guides/skill.md) — `core/skill`: SKILL.md discovery
-  and parsing, BM25 ranking over names and descriptions, and the per-turn
-  `## Skills` section; lifecycle and authoring stay with the caller.
-- [Event Bus](docs/guides/event.md) — `core/event`: subject-routed
-  publish/subscribe, in-process `MemoryBus`, host capability wiring,
-  backpressure policies.
-- [Workspace](docs/guides/workspace.md) — `core/workspace`: per-run
-  filesystem abstraction, backends, capabilities, and the
-  `state vs policy` split vs Sandbox.
-- [Sandbox](docs/guides/sandbox.md) — `core/sandbox`: agent execution
-  boundary, env / net / resources policy, runners (local / seatbelt /
-  bwrap), decorators, and approval.
-- [Inference Runtime](docs/guides/inference.md) — unified Generate / Embed /
-  Transcription (Realtime reserved): deployment config, routing, extensions,
-  streaming, media intents, hot reload.
-- [Deployment Assembly](docs/guides/deploy.md) — `core/deploy`: one YAML
-  document + one `Build` call to wire shared resources, named agents,
-  engines, and lifecycle hooks.
-- [Application Runtime](docs/guides/runtime.md) — `core/runtime` +
-  `core/runtime/session`: process-level services and leased, interruptible
-  streaming sessions above a built deployment.
-- [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
-  `core/memory` contracts and deploy/runtime glue.
-- [Prompt Lifecycle Events](docs/guides/prompt.md) — the
-  `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
-- [External Hooks](docs/guides/hooks.md) — `core/hooks`: `hooks.json`
-  command hooks, the frozen event vocabulary and invocation contract,
-  and the trust rules for plugin-contributed sources.
-- [Delegation](docs/guides/delegation.md) — `core/delegation`: backend-neutral
-  target discovery, sync / async execution, and the session-bound
-  delegation lifecycle.
+- [Graph Engine](docs/guides/graph.md) — `core/agent-graph`: the frontier loop,
+  declared state, compiled conditions, node kinds, checkpoints and replay.
+- [Tool System](docs/guides/tool.md) — `core/tool`: the function-calling
+  contract, the projection, middleware, the MCP bridge and `tool_search`.
+- [Agent Skills](docs/guides/skill.md) — `core/skill`: `SKILL.md` discovery, the
+  shared ranking kernel, and the per-turn `## Skills` section.
+- [Script Rules](docs/guides/script.md) — `core/agent-graph/script`: bounded rule
+  scripts as a graph node, with budgets, tool policy and replay.
+- [Application Runtime](docs/guides/runtime.md) — `core/runtime`: one runtime per
+  document — provider, tools, sandbox, files, skills, journal.
+- [Checkpoints](docs/guides/checkpoint.md) — `core/agent`: the store contract, the
+  projection and its event log, blobs, and the SQLite backend.
+- [Hooks](docs/guides/hooks.md) — `agent.Hooks`: the three host boundaries of a
+  turn and how a deployment declares its own hook kinds.
+- [Media & Attachments](docs/guides/media.md) — the sealed part vocabulary and the
+  budgets a payload meets on its way into a request.
+- [Sandbox](docs/guides/sandbox.md) — the command boundary: per-call permission,
+  backends, escalation, and the file journal.
+- [Remote Sandbox](docs/guides/sandbox-remote.md) — the same `Runner` across a
+  host boundary.
+- [Inference Runtime](docs/guides/inference.md) — addressing, drivers, model
+  declarations, routing and retry, typed extensions.
+- [Deployment Assembly](docs/guides/deploy.md) — the deployment document, the kind
+  tables, and a loader that validates without building.
+- [Delegation](docs/guides/delegation.md) — one agent handing work to another,
+  with derived child sessions and a lineage a chain keeps.
 
-### Configuration authoring skill (`skills/flowcraft-config`)
+### Configuration authoring skill
 
 [`skills/flowcraft-config/`](skills/flowcraft-config/) is a Codex skill for
-writing, validating, and troubleshooting FlowCraft deployment
-configuration: the deployment document (the filename is arbitrary;
-`deploy.yaml` is the convention), the `runtime` section,
-inference/workspace/sandbox/tool sub-documents, `core/memory` contracts,
-and graph JSON node wiring. Concrete memory implementations are app-registered.
-
-The skill ships an L2 dry-run validator that pins the released
-`core`/`driver`/`backends` module versions and builds your deployment
-through the real `core/deploy` assembly layer with stub secrets — no network, no real
-credentials:
+writing and reviewing FlowCraft configuration: reference cards, minimal
+templates, and a structural validator.
 
 ```bash
 skills/flowcraft-config/scripts/validate-config.sh deploy.yaml
-skills/flowcraft-config/scripts/validate-config.sh --type graph graphs/assistant.json
 ```
 
-`--type` supports `deploy` (default), `inference`, `workspace`, `sandbox`,
-`tool`, `graph`, and `agent` entries.
+> The cards and templates in the skill still describe the pre-rebuild
+> configuration model, and the validator pins an older `core` release. They are
+> being rebuilt; until then the guides above are the reference.
 
 Install it into Codex (replaces an existing copy, so remove
 `~/.codex/skills/flowcraft-config` first if present):
@@ -267,20 +279,18 @@ skills.sh (`npx skills add GizClaw/flowcraft`).
 Reference material:
 
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
-- [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform module.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/driver](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver) — provider adapters.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox) — sandbox backends.
 
 ## Status
 
-The active project surface is `core`, `driver`, `memory`, and the forge demo.
-`core` is the release-managed module and remains pre-1.0. Durable execution
-contracts (checkpoints, interrupt/resume, scheduling), OTel instrumentation,
-and retrieval end-to-end coverage are maintained in-tree; checkpoint
-persistence is host-provided through the `CheckpointStore` contract.
+The workspace is `core`, `driver` and `examples/forge`. `core` and `driver` are
+release-managed and pre-1.0; API surface follows SemVer per module, and breaking
+changes may ship as minor bumps until a module reaches `v1.0.0`.
 
-API surface is governed by SemVer per module. Breaking changes may ship as
-minor bumps until a module reaches `v1.0.0`.
+Long-term memory is a separate product line built on this platform, not a module
+of it: the contracts a memory backend needs (messages, turns, tool calls,
+checkpoints, hooks) are all here, and the backend lives in its own repository.
 
 ## Building from source
 
@@ -289,33 +299,35 @@ git clone https://github.com/GizClaw/flowcraft
 cd flowcraft
 
 make help          # list every target
-make ci            # vet + test for all in-tree modules
+make ci            # vet + test for every workspace module
+make lint          # golangci-lint on the CI-gated modules
 make release-check # validate changesets and the pending release plan
 ```
 
-This repository is a Go workspace. Active members are `core`, `memory`,
-`memory/eval`, `driver`, and `examples/forge`; release tooling in
-`tools/releasegate` builds standalone with `GOWORK=off`.
+This repository is a Go workspace (`go.work`). Active members are `core`,
+`driver` and `examples/forge`; release tooling in `tools/releasegate` builds
+standalone with `GOWORK=off`, and `make check-consumers` builds each example
+against its own pinned releases.
 
 ## Contributing
 
 Issues and pull requests are welcome. Before opening a PR:
 
 1. `make ci` should be green.
-2. `gofmt -l .` should print nothing.
-3. Tests for new features. New behaviour without a test won't merge.
-4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`,
-   `refactor:`, `test:`, `chore:`).
+2. `make lint` and `make release-check` should be green too.
+3. `gofmt -s -l core/` should print nothing.
+4. Tests for new behaviour; a change without one will not merge.
+5. Commit messages follow Conventional Commits with a module scope
+   (`feat(core/runtime): …`, `fix(driver/minimax): …`).
 
-Library releases are declared explicitly with immutable `.release/*.json`
-changesets for `core`; a changeset is optional for ordinary PRs.
-After merge, automation aggregates pending summaries into a Release PR that
-updates `CHANGELOG.md`. Merging that PR gates each planned module in dependency
-order — isolated tidy, build, vet, and race tests — and pushes each tag as its
-gate passes. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and
-coordinated dependency rules.
+Library releases are declared with immutable `.release/*.json` changesets, added
+when a module is actually being tagged — a changeset is not needed on every PR.
+Automation aggregates pending summaries into a Release PR; merging it gates each
+planned module in dependency order (isolated tidy, build, vet, race tests) and
+pushes each tag as its gate passes. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for
+the contract and the coordinated-release rules.
 
-For larger work, please open a discussion or draft RFC issue first.
+For substantial API changes, please open an issue first.
 
 ---
 
