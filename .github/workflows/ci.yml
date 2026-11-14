@@ -194,6 +194,12 @@ jobs:
       # leaving a stale exemption behind. See the Makefile.
       - name: Check consumers
         run: make check-consumers
+      # The skill's validator is the other consumer: its own module, pinned to
+      # a released core, and the only thing that runs the shipped templates. It
+      # also fails when its pin falls behind the newest core tag, which is how
+      # the previous validator silently kept checking a schema nobody wrote.
+      - name: Check the deployment skill
+        run: make check-skill
 
   lint:
     name: Lint (${{ matrix.module }})

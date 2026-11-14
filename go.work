@@ -4,10 +4,6 @@ use (
 	./core
 	./driver
 	./examples/forge
-	// A consumer that is checked against its own pin: `make check-skill` builds it
-	// with GOWORK=off, while being listed here keeps it analyzable in the workspace
-	// the way the examples are.
-	./skills/flowcraft-deploy/scripts/validator
 )
 
 replace google.golang.org/genproto => google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d
