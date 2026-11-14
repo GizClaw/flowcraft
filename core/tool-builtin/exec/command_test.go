@@ -1,10 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path. The Windows backend has its own
-// conformance file, and these bodies are POSIX scripts: making this suite run
-// there means rendering the bodies (not just the shell) through
-// sandboxtest.ForPlatform, which lands with the sessionkit port.
-
 package exec
 
 import (
@@ -14,15 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/goccy/go-json"
 )
 
 func newTool(t *testing.T) *CommandTool {
 	t.Helper()
-	runner := local.New(t.TempDir())
-	t.Cleanup(func() { _ = runner.Close() })
-	command, err := NewCommand(runner)
+	command, err := NewCommand(newRunnerIn(t, t.TempDir()), WithShell(testShell()))
 	if err != nil {
 		t.Fatalf("NewCommand: %v", err)
 	}
@@ -46,10 +36,9 @@ func run(t *testing.T, command *CommandTool, arguments map[string]any) (map[stri
 	return out, nil
 }
 
-// A plain command runs directly: the spawn receives the program and its
-// arguments, with no shell interpreting them.
-func TestDirectCommand(t *testing.T) {
-	out, err := run(t, newTool(t), map[string]any{"command": "/bin/echo hello world"})
+// A command with no shell syntax is a program and its arguments.
+func TestPlainCommand(t *testing.T) {
+	out, err := run(t, newTool(t), map[string]any{"command": "echo hello world"})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -63,21 +52,22 @@ func TestDirectCommand(t *testing.T) {
 
 // Shell syntax goes through the platform shell; the model's line is the command.
 func TestShellCommand(t *testing.T) {
-	out, err := run(t, newTool(t), map[string]any{"command": "printf 'a\\n' | tr a-z A-Z"})
+	out, err := run(t, newTool(t), map[string]any{"command": "echo a && echo b"})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
 	if out["exit_code"].(float64) != 0 {
 		t.Fatalf("exit = %v, stderr = %v", out["exit_code"], out["stderr"])
 	}
-	if strings.TrimSpace(out["output"].(string)) != "A" {
-		t.Errorf("stdout = %q, want A", out["stdout"])
+	output := out["output"].(string)
+	if !strings.Contains(output, "a") || !strings.Contains(output, "b") {
+		t.Errorf("stdout = %q, want both lines of the chain", output)
 	}
 }
 
 // A non-zero exit is a result, not a tool error: the model needs the code.
 func TestNonZeroExitIsAResult(t *testing.T) {
-	out, err := run(t, newTool(t), map[string]any{"command": "/bin/sh -c 'exit 3'"})
+	out, err := run(t, newTool(t), map[string]any{"command": "exit 3"})
 	if err != nil {
 		t.Fatalf("exec returned an error for a non-zero exit: %v", err)
 	}
@@ -90,13 +80,11 @@ func TestNonZeroExitIsAResult(t *testing.T) {
 // success rather than the file.
 func TestCommandWritesInWorkdir(t *testing.T) {
 	dir := t.TempDir()
-	runner := local.New(dir)
-	t.Cleanup(func() { _ = runner.Close() })
-	command, err := NewCommand(runner)
+	command, err := NewCommand(newRunnerIn(t, dir), WithShell(testShell()))
 	if err != nil {
 		t.Fatalf("NewCommand: %v", err)
 	}
-	out, err := run(t, command, map[string]any{"command": "/bin/sh -c 'echo hi > out.txt'"})
+	out, err := run(t, command, map[string]any{"command": "echo hi > out.txt"})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -124,9 +112,7 @@ func TestMetadataDeclaresMutation(t *testing.T) {
 // Output beyond the tool's bound is cut, and the result says so: a model that
 // cannot tell a short answer from a truncated one will ask again.
 func TestOutputIsCappedAndReported(t *testing.T) {
-	out, err := run(t, newTool(t), map[string]any{
-		"command": "/bin/sh -c 'head -c 2000000 /dev/zero | tr \"\\\\0\" x'",
-	})
+	out, err := run(t, newTool(t), map[string]any{"command": bigOutputCommand()})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
 	}

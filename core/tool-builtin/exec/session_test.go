@@ -1,28 +1,20 @@
-//go:build unix
-
-// Sessions run on the unix spawn path. The Windows backend has its own
-// conformance file, and these bodies are POSIX scripts: making this suite run
-// there means rendering the bodies (not just the shell) through
-// sandboxtest.ForPlatform, which lands with the sessionkit port.
-
 package exec
 
 import (
 	"context"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
+	"github.com/GizClaw/flowcraft/core/sandbox/sandboxtest"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
 
 func newSessionGroup(t *testing.T, opts ...SessionOption) *SessionGroup {
 	t.Helper()
-	runner := local.New(t.TempDir())
-	t.Cleanup(func() { _ = runner.Close() })
-	group, err := NewSession(runner, opts...)
+	group, err := NewSession(newRunnerIn(t, t.TempDir()), opts...)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -67,7 +59,7 @@ func TestSessionStartFeedWaitClose(t *testing.T) {
 
 	started, err := callTool(t, lifecycle, map[string]any{
 		"action": "start",
-		"argv":   []string{"/bin/sh", "-c", "echo hi; exit 0"},
+		"argv":   sandboxtest.ForPlatform(goruntime.GOOS).Argv("echo hi"),
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -109,7 +101,7 @@ func TestWriteStdinFeedsTheProcess(t *testing.T) {
 	stdin := findTool(t, group, WriteStdinName)
 
 	started, err := callTool(t, lifecycle, map[string]any{
-		"action": "start", "argv": []string{"/bin/cat"},
+		"action": "start", "argv": stdinReaderArgv(),
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -135,7 +127,7 @@ func TestWriteStdinFeedsTheProcess(t *testing.T) {
 func TestTTYRefusedWhenNotPublished(t *testing.T) {
 	group := newSessionGroup(t)
 	if _, err := callTool(t, findTool(t, group, SessionName), map[string]any{
-		"action": "start", "argv": []string{"/bin/sh", "-c", "true"}, "tty": true,
+		"action": "start", "argv": longRunningArgv(), "tty": true,
 	}); err == nil {
 		t.Fatal("tty accepted although the group did not publish TTY support")
 	}
@@ -143,11 +135,19 @@ func TestTTYRefusedWhenNotPublished(t *testing.T) {
 
 // kill stops the session through Terminate, which the contract has.
 func TestSignalKillStopsTheSession(t *testing.T) {
-	group := newSessionGroup(t)
+	runner := newRunnerIn(t, t.TempDir())
+	if !runner.Capabilities().Features.Signal {
+		t.Skip("this platform has no signal channel: a job object cannot deliver one")
+	}
+	group, err := NewSession(runner, WithTTY(false))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { _ = group.Close() })
 	lifecycle := findTool(t, group, SessionName)
 
 	started, err := callTool(t, lifecycle, map[string]any{
-		"action": "start", "argv": []string{"/bin/sh", "-c", "sleep 30"},
+		"action": "start", "argv": longRunningArgv(),
 	})
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -186,8 +186,7 @@ func TestWriteStdinUnknownIDRejected(t *testing.T) {
 // The runner is shared; the group is not. A session started outside this tool
 // must not appear in its list, because the model can neither feed nor stop it.
 func TestListShowsOnlyOwnedSessions(t *testing.T) {
-	runner := local.New(t.TempDir())
-	t.Cleanup(func() { _ = runner.Close() })
+	runner := newRunnerIn(t, t.TempDir())
 
 	foreign, err := runner.Start(context.Background(), sandboxSessionSpec(t))
 	if err != nil {
@@ -202,7 +201,7 @@ func TestListShowsOnlyOwnedSessions(t *testing.T) {
 	t.Cleanup(func() { _ = group.Close() })
 
 	payload, err := callTool(t, findTool(t, group, SessionName), map[string]any{
-		"action": "start", "argv": []string{"sh", "-c", "sleep 30"},
+		"action": "start", "argv": longRunningArgv(),
 	})
 	if err != nil {
 		t.Fatalf("start owned session: %v", err)

@@ -1,10 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path. The Windows backend has its own
-// conformance file, and these bodies are POSIX scripts: making this suite run
-// there means rendering the bodies (not just the shell) through
-// sandboxtest.ForPlatform, which lands with the sessionkit port.
-
 package remote_test
 
 import (
@@ -12,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox/sandboxtest"
 )
@@ -38,7 +30,7 @@ func TestConformance(t *testing.T) {
 func newRemoteRunner(t *testing.T, root string) *remote.Runner {
 	t.Helper()
 
-	inner := local.New(root)
+	inner := newInner(t, root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))

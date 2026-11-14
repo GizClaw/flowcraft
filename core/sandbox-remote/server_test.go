@@ -1,10 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path. The Windows backend has its own
-// conformance file, and these bodies are POSIX scripts: making this suite run
-// there means rendering the bodies (not just the shell) through
-// sandboxtest.ForPlatform, which lands with the sessionkit port.
-
 package remote_test
 
 import (
@@ -20,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote/wire"
 )
@@ -29,7 +21,7 @@ import (
 // it with the given options.
 func serve(t *testing.T, serverOpts []remote.ServerOption, clientOpts ...remote.Option) (*remote.Runner, string) {
 	t.Helper()
-	inner := local.New(t.TempDir())
+	inner := newInner(t, t.TempDir())
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, serverOpts...)
@@ -54,7 +46,7 @@ func serve(t *testing.T, serverOpts []remote.ServerOption, clientOpts ...remote.
 // An endpoint that executes commands must not come up unauthenticated by
 // omission: the decision has to be stated.
 func TestNewServerRequiresAnAuthDecision(t *testing.T) {
-	inner := local.New(t.TempDir())
+	inner := newInner(t, t.TempDir())
 	defer func() { _ = inner.Close() }()
 
 	if _, err := remote.NewServer(inner); !errdefs.IsValidation(err) {
@@ -69,7 +61,7 @@ func TestNewServerRequiresAnAuthDecision(t *testing.T) {
 }
 
 func TestUnauthenticatedClientIsRefused(t *testing.T) {
-	inner := local.New(t.TempDir())
+	inner := newInner(t, t.TempDir())
 	defer func() { _ = inner.Close() }()
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))
 	if err != nil {
@@ -97,7 +89,7 @@ func TestUnauthenticatedClientIsRefused(t *testing.T) {
 func TestWithoutAuthServes(t *testing.T) {
 	client, _ := serve(t, []remote.ServerOption{remote.WithoutAuth()})
 	if _, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo hi"},
+		Argv: script("echo hi"),
 	}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -139,7 +131,7 @@ func TestCapabilitiesAreTheServers(t *testing.T) {
 	client, _ := serve(t, []remote.ServerOption{remote.WithServerToken(testToken)},
 		remote.WithToken(testToken))
 
-	inner := local.New(t.TempDir())
+	inner := newInner(t, t.TempDir())
 	defer func() { _ = inner.Close() }()
 	want := inner.Capabilities()
 
@@ -155,7 +147,7 @@ func TestClosedSessionRefusesOperations(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "exit 7"},
+		Argv: script("exit 7"),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -190,7 +182,7 @@ func TestUnenforceablePolicySurvivesTheWire(t *testing.T) {
 		remote.WithToken(testToken))
 
 	_, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "true"},
+		Argv: script("exit 0"),
 		Opts: sandbox.ExecOptions{
 			Resources: sandbox.ResourceLimits{DiskBytes: 1 << 20},
 		},
@@ -266,7 +258,7 @@ func TestAttachToAStartedSession(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo reattached"},
+		Argv: script("echo reattached"),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
