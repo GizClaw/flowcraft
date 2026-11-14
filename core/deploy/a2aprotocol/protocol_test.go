@@ -62,6 +62,10 @@ func runtimeConfig(t *testing.T) runtime.Config {
 	}
 }
 
+// newManager deploys through one manager and closes it with the test. Call it
+// after the runtime config: registration order is cleanup order reversed, and a
+// manager that outlives its runtime root keeps a directory handle open, which
+// Windows refuses to remove.
 func newManager(t *testing.T, kinds deploy.Kinds, bindings host.Bindings) *host.Manager {
 	t.Helper()
 	manager := host.New(kinds, bindings)
@@ -220,11 +224,11 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 	kinds := deploy.BuiltinKinds().
 		WithEngines(artifactEngine()).
 		WithProtocols(deploy.A2AProtocol())
+	spec := specFor(t, "artifacts", "artifact")
 	manager := newManager(t, kinds, host.Bindings{
 		RuntimeOptions: []runtime.Option{stubDriver()},
 		ArtifactURL:    func(ref string) string { return "https://files.test/" + ref },
 	})
-	spec := specFor(t, "artifacts", "artifact")
 	spec.Protocol = &deploy.ProtocolSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{
 		"card": map[string]any{"version": "1.0.0", "url": "http://artifacts.invalid"},
 	})}

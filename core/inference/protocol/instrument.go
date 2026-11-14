@@ -160,6 +160,10 @@ type call[Res any] struct {
 	finishOf func(Res) []string
 
 	ttft time.Duration
+	// sawFirstToken is the "already recorded" flag, not ttft: a platform whose
+	// clock resolution can return a zero interval would otherwise read a real
+	// first delta as "not yet", emit the event again and drop the metric.
+	sawFirstToken bool
 }
 
 // startCall opens the span for one call. A nil *call is returned when the
@@ -206,9 +210,10 @@ func startCall[Req, Res any](
 // emitted at finish so a caller that never reaches first text contributes
 // nothing rather than a zero.
 func (c *call[Res]) firstToken() {
-	if c == nil || c.ttft != 0 {
+	if c == nil || c.sawFirstToken {
 		return
 	}
+	c.sawFirstToken = true
 	c.ttft = time.Since(c.start)
 	c.span.AddEvent("llm.first_token", trace.WithAttributes(
 		attribute.Int64(telemetry.AttrLLMTimeToFirstTokenMs, c.ttft.Milliseconds()),
@@ -362,7 +367,7 @@ func (c *call[Res]) recordMetrics(
 		}
 	}
 	recordTokens(c.ctx, meter, c.metricAttrs(), tokens)
-	if c.ttft > 0 {
+	if c.sawFirstToken {
 		if histogram, err := meter.Float64Histogram("time_to_first_token.seconds",
 			metric.WithDescription("Delay until the first visible text delta")); err == nil {
 			histogram.Record(c.ctx, c.ttft.Seconds(), c.metricAttrs())

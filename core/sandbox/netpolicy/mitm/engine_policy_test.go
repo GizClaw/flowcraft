@@ -3,6 +3,7 @@ package mitm
 import (
 	"crypto/x509"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -81,6 +82,9 @@ func TestShouldMITMSelection(t *testing.T) {
 // parseable PEM bundle — and WriteBundle has to put it somewhere the child can
 // read and take it away again.
 func TestPEMAndBundleCarryTheCA(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows permission bits are advisory: the directory ACL is the boundary")
+	}
 	engine, err := New(&permission.MITMPolicy{Enabled: true}, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)

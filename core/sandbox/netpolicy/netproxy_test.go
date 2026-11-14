@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -314,6 +315,9 @@ func TestStartRejectsBadConfig(t *testing.T) {
 // The default listener is a unix socket with restrictive permissions, because
 // it is the only thing standing between a sandboxed child and the proxy.
 func TestStartUnixSocketIsPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows permission bits are advisory: the directory ACL is the boundary")
+	}
 	proxy, err := Start(ProxyConfig{Mode: permission.NetAllowList})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
