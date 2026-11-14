@@ -53,6 +53,7 @@ retrieval, runtime orchestration, and voice. Source on
 - [Deployment Assembly](guides/deploy.md) — `core/deploy`: the deployment
   document, the engine / protocol / hook kind tables, and one `Loader` that
   validates a deployment without building it.
+
 ### Delegation
 
 - [Delegation](guides/delegation.md) — `core/delegation`: one agent handing work

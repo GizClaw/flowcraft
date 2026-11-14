@@ -5,15 +5,26 @@
   "config": {
     "MD013": false,
     "MD024": false,
-    "MD033": false
+    "MD033": false,
+    // Every page carries Jekyll front matter whose `title:` is the rendered
+    // title, so the H1 below it is not a second one.
+    "MD025": { "front_matter_title": "" },
+    // The README opens with a centered badge block; a heading inside the
+    // <div> would break the centering.
+    "MD041": false,
+    // Code blocks quote Go and YAML verbatim, tabs included.
+    "MD010": { "code_blocks": false }
   },
+  // `CHANGELOG.md` is generated from changeset summaries, whose prose is not
+  // written as Markdown: a summary naming `backends/*` reads as emphasis to the
+  // linter. Lint what is authored; the generator owns its output.
   "globs": [
     "README.md",
-    "CHANGELOG.md",
     "docs/**/*.md"
   ],
   "ignores": [
     "docs/plans/**",
+    "docs/reporters/**",
     "docs/reports/**",
     "docs/reviews/**",
     "docs/week_reporters/**"
