@@ -1,7 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path; the Windows backend has its own suite.
-
 package remote_test
 
 import (
@@ -9,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox/sandboxtest"
 )
@@ -35,7 +30,7 @@ func TestConformance(t *testing.T) {
 func newRemoteRunner(t *testing.T, root string) *remote.Runner {
 	t.Helper()
 
-	inner := local.New(root)
+	inner := newInner(t, root)
 	t.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))

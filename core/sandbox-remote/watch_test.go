@@ -1,7 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path; the Windows backend has its own suite.
-
 package remote_test
 
 import (
@@ -21,7 +17,7 @@ func TestWatchStreamsOutputAndExit(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo first-line; sleep 0.2; echo second-line"},
+		Argv: script("echo first-line; sleep 0.2; echo second-line"),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -81,7 +77,7 @@ func TestWatchReplaysAnExitedSession(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo already-done"},
+		Argv: script("echo already-done"),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -156,7 +152,7 @@ func TestWatchClosesWithTheSession(t *testing.T) {
 		remote.WithToken(testToken))
 
 	sess, err := client.Start(context.Background(), sandbox.SessionSpec{
-		Argv: []string{"sh", "-c", "echo hi; sleep 5"},
+		Argv: script("echo hi; sleep 5"),
 	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)

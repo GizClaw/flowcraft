@@ -1,7 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path; the Windows backend has its own suite.
-
 package remote_test
 
 import (
@@ -14,7 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote"
 	"github.com/GizClaw/flowcraft/core/sandbox-remote/wire"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
@@ -137,7 +132,7 @@ func TestRemoteOverheadRatio(t *testing.T) {
 func richSpec() sandbox.SessionSpec {
 	return sandbox.SessionSpec{
 		ID:    "bench",
-		Argv:  []string{"sh", "-c", "echo hello"},
+		Argv:  script("echo hello"),
 		TTY:   true,
 		Rows:  40,
 		Cols:  120,
@@ -154,7 +149,7 @@ func richSpec() sandbox.SessionSpec {
 
 func localRunnerForBench(b *testing.B) sandbox.Runner {
 	b.Helper()
-	runner := local.New(b.TempDir())
+	runner := newInner(b, b.TempDir())
 	b.Cleanup(func() { _ = runner.Close() })
 	return runner
 }
@@ -163,7 +158,7 @@ func remoteRunnerForBench(b *testing.B) sandbox.Runner {
 	b.Helper()
 	root := b.TempDir()
 
-	inner := local.New(root)
+	inner := newInner(b, root)
 	b.Cleanup(func() { _ = inner.Close() })
 
 	server, err := remote.NewServer(inner, remote.WithServerToken(testToken))

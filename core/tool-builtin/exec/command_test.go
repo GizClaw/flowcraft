@@ -1,7 +1,3 @@
-//go:build unix
-
-// Sessions run on the unix spawn path; the Windows backend has its own suite.
-
 package exec
 
 import (
@@ -11,13 +7,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
 	"github.com/goccy/go-json"
 )
 
 func newTool(t *testing.T) *CommandTool {
 	t.Helper()
-	runner := local.New(t.TempDir())
+	runner := newRunnerIn(t, t.TempDir())
 	t.Cleanup(func() { _ = runner.Close() })
 	command, err := NewCommand(runner)
 	if err != nil {
@@ -87,7 +82,7 @@ func TestNonZeroExitIsAResult(t *testing.T) {
 // success rather than the file.
 func TestCommandWritesInWorkdir(t *testing.T) {
 	dir := t.TempDir()
-	runner := local.New(dir)
+	runner := newRunnerIn(t, dir)
 	t.Cleanup(func() { _ = runner.Close() })
 	command, err := NewCommand(runner)
 	if err != nil {

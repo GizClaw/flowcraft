@@ -131,8 +131,17 @@ silently widen a tool. Three consequences worth knowing:
 
 No isolation, for trusted workflows: `Capabilities.Enforcement` is empty, so a
 deployment that asks for a network mode or a write boundary is rejected. Unix
-hosts still get memory / cpu sampling and session support; interactive sessions
-are unix-only.
+hosts still get memory / cpu sampling and session support.
+
+Interactive sessions are unix-only **today, by implementation rather than by
+design**: `sessionkit` ships the session machinery for the unix spawn path (pty,
+process groups, signals) and a stub elsewhere, while the Windows session stack
+lives in `sandbox-windows`. The intended shape is one session layer in
+`sessionkit` with the platform differences behind it (pty vs ConPTY, process
+group vs job object), which makes `local` portable and shrinks `sandbox-windows`
+to its policy layer. Until that lands, a Windows deployment uses
+`backend: windows`, whose lifecycle-only mode is the same "no isolation beyond
+the OS keeping the process tree" promise.
 
 ### `bwrap` and `seatbelt`
 
