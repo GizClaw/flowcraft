@@ -26,12 +26,12 @@ func TestRunnerCapabilities(t *testing.T) {
 		t.Errorf("CPUCap = %v, want GroupCapsAvailable() = %v",
 			caps.Policy.CPUCap, sessionkit.GroupCapsAvailable())
 	}
-	// Sessions either exist on the platform with the full local feature
-	// set, or not at all — the three flags must never diverge for
-	// local.Runner.
-	if caps.Features.TTY != caps.Features.Signal ||
-		caps.Features.Signal != caps.Features.Events {
-		t.Errorf("session features diverge: %+v", caps.Features)
+	// The runner advertises what the shared session layer supports on this
+	// platform, not a unix-shaped guess: a Windows session has a TTY and an event
+	// stream but no signal channel, and a runner that claimed otherwise would be
+	// promising a call that returns NotAvailable.
+	if want := sessionkit.SessionFeatures(); caps.Features != want {
+		t.Errorf("session features = %+v, want %+v (the shared layer's)", caps.Features, want)
 	}
 }
 

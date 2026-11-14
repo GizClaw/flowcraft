@@ -64,7 +64,14 @@ func TestConnectHandshakeOverStdio(t *testing.T) {
 
 	// The connection is its own story: it happens before any tool call, and a
 	// failure here is invisible to a tool span that never starts.
-	span := recorder.RequireNamed(t, "mcp.connect")
+	// One span per attempt: the transport retries a failed dial, so the thing
+	// this test pins is that the connection is its own story with the server and
+	// transport on it — not that a loaded machine never retried once.
+	connects := recorder.Named("mcp.connect")
+	if len(connects) == 0 {
+		t.Fatalf("no mcp.connect span among %d", len(recorder.Spans()))
+	}
+	span := connects[len(connects)-1]
 	telemetrytest.RequireAttrString(t, span, telemetry.AttrMCPServer, "helper")
 	telemetrytest.RequireAttrString(t, span, "mcp.transport", "*mcp.reconnectableStdio")
 }
