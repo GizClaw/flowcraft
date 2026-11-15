@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/driver/internal/httpx"
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 )
 
 // ArkResponseLimit bounds one JSON answer. A task query is small, but an embed
@@ -20,19 +19,12 @@ const ArkResponseLimit int64 = 32 << 20
 // parameters; `files` fetches the media URL a finished task names, which is
 // signed on its own host.
 type clients struct {
-	// ark and arkRequestOptions are the not-yet-migrated surfaces' transport
-	// (image, video): they still speak the vendor SDK. Embedding speaks httpx.
-	ark               *arkruntime.Client
-	arkRequestOptions []arkruntime.RequestOption
-	api               *httpx.Client
-	files             *httpx.Client
-	query             url.Values
-	endpoints         map[string]string
-	apiKey            string
-	baseURL           string
-	// httpClient is the transport the not-yet-migrated surfaces still use
-	// directly (image, video); it goes when they do.
-	httpClient *http.Client
+	api       *httpx.Client
+	files     *httpx.Client
+	query     url.Values
+	endpoints map[string]string
+	apiKey    string
+	baseURL   string
 }
 
 func newClients(settings Settings) (*clients, error) {
@@ -66,30 +58,6 @@ func newClients(settings Settings) (*clients, error) {
 	})
 	built.files = httpx.New(httpx.Config{HTTP: transport})
 
-	options := []arkruntime.ConfigOption{
-		arkruntime.WithHTTPClient(transport),
-		arkruntime.WithRetryTimes(settings.Retries),
-	}
-	if settings.BaseURL != "" {
-		options = append(options, arkruntime.WithBaseUrl(settings.BaseURL))
-	}
-	if settings.Region != "" {
-		options = append(options, arkruntime.WithRegion(settings.Region))
-	}
-	if len(settings.Headers) > 0 {
-		built.arkRequestOptions = append(built.arkRequestOptions,
-			arkruntime.WithCustomHeaders(settings.Headers))
-	}
-	for key, value := range settings.Query {
-		built.arkRequestOptions = append(built.arkRequestOptions,
-			arkruntime.WithQuery(key, value))
-	}
-	if settings.Project != "" {
-		built.arkRequestOptions = append(built.arkRequestOptions,
-			arkruntime.WithProjectName(settings.Project))
-	}
-	built.ark = arkruntime.NewClientWithApiKey(strings.TrimSpace(settings.APIKey), options...)
-	built.httpClient = transport
 	return built, nil
 }
 
