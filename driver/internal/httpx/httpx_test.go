@@ -60,6 +60,30 @@ func TestFramesRejectsAnOversizedFrame(t *testing.T) {
 	t.Fatal("oversized frame produced no error")
 }
 
+// TestFramesAcceptsALongLine covers the read-buffer boundary: a single line can
+// run past it, which the scanner accumulates rather than dropping, and the frame
+// after it must still parse from a clean buffer.
+func TestFramesAcceptsALongLine(t *testing.T) {
+	long := strings.Repeat("x", 40<<10)
+	body := "data: " + long + "\n\ndata: short\n\n"
+	var frames []httpx.Frame
+	for frame, err := range httpx.Frames(strings.NewReader(body)) {
+		if err != nil {
+			t.Fatalf("Frames: %v", err)
+		}
+		frames = append(frames, frame)
+	}
+	if len(frames) != 2 {
+		t.Fatalf("frames = %d, want 2", len(frames))
+	}
+	if got := string(frames[0].Data); got != long {
+		t.Fatalf("first frame = %d bytes, want %d", len(got), len(long))
+	}
+	if got := string(frames[1].Data); got != "short" {
+		t.Fatalf("second frame = %q, want short", got)
+	}
+}
+
 // Do classifies what the layer above has to decide about: the status when the
 // body says nothing, the vendor's envelope when it does.
 func TestDoClassifiesFailures(t *testing.T) {
