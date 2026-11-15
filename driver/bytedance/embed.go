@@ -3,6 +3,8 @@ package bytedance
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -11,14 +13,57 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
-
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
+	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 )
 
+// The embedding surfaces are OpenAI-shaped JSON; these are the fields the driver
+// reads and sends, and nothing else. The vendor SDK's types carried the whole
+// catalogue of options for them.
 type embedRequest struct {
-	text       *arkmodel.EmbeddingRequestStrings
-	multimodal []arkmodel.MultiModalEmbeddingRequest
+	text       *embeddingRequest
+	multimodal []multimodalEmbeddingRequest
+}
+
+type embeddingRequest struct {
+	Input          []string `json:"input"`
+	Model          string   `json:"model"`
+	Dimensions     *int     `json:"dimensions,omitempty"`
+	EncodingFormat string   `json:"encoding_format,omitempty"`
+}
+
+type multimodalEmbeddingInput struct {
+	Type     string              `json:"type"`
+	ImageURL *multimodalImageURL `json:"image_url,omitempty"`
+	Text     string              `json:"text,omitempty"`
+}
+
+type multimodalImageURL struct {
+	URL string `json:"url"`
+}
+
+type multimodalEmbeddingRequest struct {
+	Model      string                     `json:"model"`
+	Input      []multimodalEmbeddingInput `json:"input"`
+	Dimensions *int                       `json:"dimensions,omitempty"`
+}
+
+type embeddingResponse struct {
+	Data []struct {
+		Embedding []float32 `json:"embedding"`
+		Index     int       `json:"index"`
+	} `json:"data"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+type multimodalEmbeddingResponse struct {
+	Data struct {
+		Embedding []float32 `json:"embedding"`
+	} `json:"data"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
 }
 
 type embedRaw struct {
@@ -41,15 +86,15 @@ func compileEmbed(
 		for _, item := range request.Input {
 			var text strings.Builder
 			textParts := 0
-			inputs := make([]arkmodel.MultimodalEmbeddingInput, 0, len(item.Parts))
+			inputs := make([]multimodalEmbeddingInput, 0, len(item.Parts))
 			flushText := func() {
 				if text.Len() == 0 {
 					return
 				}
 				value := text.String()
-				inputs = append(inputs, arkmodel.MultimodalEmbeddingInput{
-					Type: arkmodel.MultiModalEmbeddingInputTypeText,
-					Text: &value,
+				inputs = append(inputs, multimodalEmbeddingInput{
+					Type: "text",
+					Text: value,
 				})
 				text.Reset()
 			}
@@ -75,9 +120,9 @@ func compileEmbed(
 					}
 					flushText()
 					url := sourceURI(value.Source)
-					inputs = append(inputs, arkmodel.MultimodalEmbeddingInput{
-						Type:     arkmodel.MultiModalEmbeddingInputTypeImageURL,
-						ImageURL: &arkmodel.MultimodalEmbeddingImageURL{URL: url},
+					inputs = append(inputs, multimodalEmbeddingInput{
+						Type:     "image_url",
+						ImageURL: &multimodalImageURL{URL: url},
 					})
 				default:
 					return protocol.Compiled[*embedRequest]{}, inference.NewError(
@@ -91,7 +136,7 @@ func compileEmbed(
 				continue
 			}
 			if multimodal {
-				fused := arkmodel.MultiModalEmbeddingRequest{Model: endpoint, Input: inputs}
+				fused := multimodalEmbeddingRequest{Model: endpoint, Input: inputs}
 				if request.Dimensions > 0 {
 					dimensions := request.Dimensions
 					fused.Dimensions = &dimensions
@@ -105,16 +150,17 @@ func compileEmbed(
 					fmt.Errorf("bytedance: text embedding accepts one text part per item"),
 				)
 			}
-			texts = append(texts, *inputs[0].Text)
+			texts = append(texts, inputs[0].Text)
 		}
 		if !multimodal {
-			compiled.text = &arkmodel.EmbeddingRequestStrings{
+			compiled.text = &embeddingRequest{
 				Input:          texts,
 				Model:          endpoint,
-				EncodingFormat: arkmodel.EmbeddingEncodingFormatFloat,
+				EncodingFormat: "float",
 			}
 			if request.Dimensions > 0 {
-				compiled.text.Dimensions = request.Dimensions
+				dimensions := request.Dimensions
+				compiled.text.Dimensions = &dimensions
 			}
 		}
 		embedded := len(compiled.multimodal)
@@ -131,27 +177,37 @@ func compileEmbed(
 	}
 }
 
+// embeddingPath and multimodalEmbeddingPath are the two surfaces the platform
+// serves embeddings on: one text batch per call on the first, one fused
+// text-and-image item per call on the second.
+const (
+	embeddingPath           = "/embeddings"
+	multimodalEmbeddingPath = "/embeddings/multimodal"
+)
+
 func transportEmbed(
-	client *arkruntime.Client,
-	options []arkruntime.RequestOption,
+	client *httpx.Client,
+	query url.Values,
 ) protocol.Transport[inference.EmbedRequest, *embedRequest, embedRaw] {
 	return func(ctx context.Context, _ inference.EmbedRequest, request *embedRequest) (embedRaw, error) {
 		if request.text != nil {
-			return transportEmbedText(ctx, client, *request.text, options)
+			return transportEmbedText(ctx, client, query, *request.text)
 		}
-		return transportEmbedMultimodal(ctx, client, request.multimodal, options)
+		return transportEmbedMultimodal(ctx, client, query, request.multimodal)
 	}
 }
 
 func transportEmbedText(
 	ctx context.Context,
-	client *arkruntime.Client,
-	request arkmodel.EmbeddingRequestStrings,
-	options []arkruntime.RequestOption,
+	client *httpx.Client,
+	query url.Values,
+	request embeddingRequest,
 ) (embedRaw, error) {
-	response, err := client.CreateEmbeddings(ctx, request, options...)
-	if err != nil {
-		return embedRaw{}, classifyError(err)
+	var response embeddingResponse
+	if err := client.JSON(ctx, httpx.Op{
+		Method: http.MethodPost, Path: embeddingPath, Body: request, Query: query,
+	}, &response); err != nil {
+		return embedRaw{}, err
 	}
 	vectors := make([][]float32, len(response.Data))
 	for _, item := range response.Data {
@@ -163,17 +219,21 @@ func transportEmbedText(
 	return embedRaw{vectors: vectors, inputTokens: int64(response.Usage.TotalTokens)}, nil
 }
 
+// transportEmbedMultimodal fuses text and image into one vector per item, so the
+// items are embedded one call at a time and the vectors kept in request order.
 func transportEmbedMultimodal(
 	ctx context.Context,
-	client *arkruntime.Client,
-	requests []arkmodel.MultiModalEmbeddingRequest,
-	options []arkruntime.RequestOption,
+	client *httpx.Client,
+	query url.Values,
+	requests []multimodalEmbeddingRequest,
 ) (embedRaw, error) {
 	raw := embedRaw{vectors: make([][]float32, 0, len(requests))}
 	for _, request := range requests {
-		response, err := client.CreateMultiModalEmbeddings(ctx, request, options...)
-		if err != nil {
-			return embedRaw{}, classifyError(err)
+		var response multimodalEmbeddingResponse
+		if err := client.JSON(ctx, httpx.Op{
+			Method: http.MethodPost, Path: multimodalEmbeddingPath, Body: request, Query: query,
+		}, &response); err != nil {
+			return embedRaw{}, err
 		}
 		raw.vectors = append(raw.vectors, response.Data.Embedding)
 		raw.inputTokens += int64(response.Usage.TotalTokens)
@@ -203,7 +263,7 @@ func (d *driver) embed(
 	request inference.EmbedRequest,
 	wire *embedRequest,
 ) (embedRaw, error) {
-	return transportEmbed(d.clients.ark, d.clients.arkRequestOptions)(ctx, request, wire)
+	return transportEmbed(d.clients.api, d.clients.query)(ctx, request, wire)
 }
 
 func (d *driver) compileEmbed(

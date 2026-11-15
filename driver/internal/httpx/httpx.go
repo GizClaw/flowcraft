@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -104,8 +105,12 @@ type Op struct {
 	Method string
 	// Path is appended to the base URL. It may be absolute for a poller that
 	// follows a URL the provider handed back.
-	Path    string
-	Body    any
+	Path string
+	Body any
+	// Query is appended to the URL. A vendor that takes deployment-wide
+	// parameters this way gets them on every call without repeating them in
+	// each path.
+	Query   url.Values
 	Headers map[string]string
 	// Limit overrides the client's body ceiling for this call.
 	Limit int64
@@ -133,6 +138,9 @@ func (c *Client) Do(ctx context.Context, op Op) (*http.Response, error) {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
+	}
+	if len(op.Query) > 0 {
+		target += "?" + op.Query.Encode()
 	}
 	req, err := http.NewRequestWithContext(ctx, op.Method, target, reader)
 	if err != nil {
