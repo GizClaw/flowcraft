@@ -84,19 +84,30 @@ func compileEmbed(
 		compiled := &embedRequest{}
 		texts := make([]string, 0, len(request.Input))
 		for _, item := range request.Input {
-			var text strings.Builder
-			textParts := 0
-			inputs := make([]multimodalEmbeddingInput, 0, len(item.Parts))
+			var (
+				text strings.Builder
+				// flushed holds the text of this item on the text surface, where
+				// it goes into the batch as a string. The fused surface builds
+				// items instead, so a text model pays for neither the slice nor
+				// the wrapper it would never send.
+				flushed   string
+				inputs    []multimodalEmbeddingInput
+				textParts int
+			)
 			flushText := func() {
 				if text.Len() == 0 {
 					return
 				}
 				value := text.String()
+				text.Reset()
+				if !multimodal {
+					flushed = value
+					return
+				}
 				inputs = append(inputs, multimodalEmbeddingInput{
 					Type: "text",
 					Text: value,
 				})
-				text.Reset()
 			}
 			for _, part := range item.Parts {
 				switch value := part.(type) {
@@ -132,7 +143,7 @@ func compileEmbed(
 				}
 			}
 			flushText()
-			if len(inputs) == 0 {
+			if multimodal && len(inputs) == 0 {
 				continue
 			}
 			if multimodal {
@@ -144,13 +155,13 @@ func compileEmbed(
 				compiled.multimodal = append(compiled.multimodal, fused)
 				continue
 			}
-			if textParts > 1 || len(inputs) > 1 {
+			if textParts > 1 {
 				return protocol.Compiled[*embedRequest]{}, inference.NewError(
 					inference.UnsupportedFeature, inference.FieldInput,
 					fmt.Errorf("bytedance: text embedding accepts one text part per item"),
 				)
 			}
-			texts = append(texts, inputs[0].Text)
+			texts = append(texts, flushed)
 		}
 		if !multimodal {
 			compiled.text = &embeddingRequest{
