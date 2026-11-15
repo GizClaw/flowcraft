@@ -202,3 +202,33 @@ func TestPollDrivesATaskToItsTerminalState(t *testing.T) {
 		t.Errorf("state = %q after %d queries, want succeeded after 3", done.State, asked)
 	}
 }
+
+// Stream is the call a driver makes before reading frames: it validates the
+// status like any other call and hands back the body for [Frames].
+func TestStreamReturnsTheEventBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: delta\ndata: 1\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	body, err := httpx.New(httpx.Config{BaseURL: server.URL}).Stream(context.Background(),
+		httpx.Op{Method: http.MethodPost, Path: "/stream"})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer func() { _ = body.Close() }()
+	count := 0
+	for frame, err := range httpx.Frames(body) {
+		if err != nil {
+			t.Fatalf("frames: %v", err)
+		}
+		count++
+		if frame.Event == "delta" && string(frame.Data) != "1" {
+			t.Errorf("frame = %+v", frame)
+		}
+	}
+	if count != 2 {
+		t.Fatalf("frames = %d, want 2", count)
+	}
+}
