@@ -2,7 +2,6 @@ package minimax
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,10 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 	"github.com/goccy/go-json"
 )
-
-// errTest is the cause the classification helpers wrap, so each case exercises
-// the category marker rather than the message text.
-var errTest = errors.New("boom")
 
 // TestReadFailureIsReportedForTheRouterToRetry pins the split: the transport
 // makes one attempt and hands the failure back classified, and `route` is what

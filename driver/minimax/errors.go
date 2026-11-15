@@ -5,8 +5,6 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/goccy/go-json"
 )
 
 // MiniMax's v1 media surfaces answer most failures with HTTP 200 and a
@@ -86,27 +84,5 @@ func classifyCode(code int, err error) error {
 
 // inferenceResponseError classifies an undecodable response body. The response
 // arrived but its shape is not the one the surface promises, so the failure is
-// the provider's, not the caller's.
-func inferenceResponseError(endpoint string, err error) error {
-	return inference.NewError(
-		inference.InvalidProviderResponse, inference.FieldOutput,
-		fmt.Errorf("minimax: decode %s response: %w", endpoint, err),
-	)
-}
-
 // classifyTransport classifies an HTTP failure, refining it with an in-body
 // envelope when the body carries one: the v2 API answers with a status code but
-// may still describe the failure with a base_resp.
-func classifyTransport(status int, body []byte, err error) error {
-	classified := errdefs.ClassifyStatus(status, err)
-	if len(body) == 0 {
-		return classified
-	}
-	var envelope struct {
-		BaseResp baseResp `json:"base_resp"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.BaseResp.Code == 0 {
-		return classified
-	}
-	return classifyCode(envelope.BaseResp.Code, classified)
-}

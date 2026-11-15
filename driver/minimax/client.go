@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 	"github.com/goccy/go-json"
 )
@@ -65,7 +66,13 @@ func envelopeFailure(_ int, body []byte) error {
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope.BaseResp.Code == 0 {
 		return nil
 	}
-	return envelope.BaseResp.err("media call")
+	failure := envelope.BaseResp.err("media call")
+	if id := requestIDOf(body); id != "" {
+		// The platform's own identifier, so a support conversation can start
+		// from the error a caller actually saw.
+		failure = errdefs.WithRequestID(failure, id)
+	}
+	return failure
 }
 
 // postJSON performs one create call and decodes the answer. Every surface that
