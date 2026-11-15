@@ -25,25 +25,6 @@ func testRequest(name string, output inference.Output, content message.Content) 
 	}
 }
 
-func TestCompileText(t *testing.T) {
-	desc := testDescriptor("ark-test", "generate",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartText})
-	request := testRequest("ark-test", inference.OutputText, message.NewTextContent("hello"))
-	compiled, err := compileGenerate("ep-test", desc)(context.Background(), request, protocol.ShapeUnary)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	if compiled.Wire.Model != "ep-test" {
-		t.Fatalf("model = %q", compiled.Wire.Model)
-	}
-	if compiled.Wire.Instructions != nil && *compiled.Wire.Instructions != "" {
-		t.Fatalf("instructions = %q, want unset without a system message", *compiled.Wire.Instructions)
-	}
-	if len(compiled.Fields) == 0 {
-		t.Fatal("compiled fields are empty")
-	}
-}
-
 func TestCompileEmbed(t *testing.T) {
 	desc := testDescriptor("embed-test", "embed",
 		[]message.PartKind{message.PartText}, nil)

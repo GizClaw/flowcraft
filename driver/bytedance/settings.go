@@ -95,9 +95,13 @@ func (m ModelSpec) Validate() error {
 	}
 	switch modelKind(m.Kind) {
 	case kindGenerate:
-		if !hasOutput(m.Capabilities.Outputs, message.PartText) {
-			return fmt.Errorf("generate family must declare text output")
-		}
+		// Text generation is an OpenAI-compatible surface, and the platform
+		// already speaks it: `driver: openai` against Ark's /api/v3. Saying so
+		// here is better than serving a second implementation (and the vendor
+		// SDK it needed) for the same wire.
+		return fmt.Errorf(
+			"text generation is not served by this driver; use driver: openai "+
+				"with base_url %s and api chat (model %q)", ArkOpenAIBaseURL, m.Name)
 	case kindImage:
 		if !hasOutput(m.Capabilities.Outputs, message.PartImage) {
 			return fmt.Errorf("image family must declare image output")
