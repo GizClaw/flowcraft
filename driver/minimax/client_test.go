@@ -2,71 +2,23 @@ package minimax
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 	"github.com/goccy/go-json"
 )
 
-// errTest is the cause the classification helpers wrap, so each case exercises
-// the category marker rather than the message text.
-var errTest = errors.New("boom")
-
-func TestRetryable(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "rate limit", err: errdefs.RateLimit(errTest), want: true},
-		{name: "unavailable", err: errdefs.NotAvailable(errTest), want: true},
-		{name: "timeout", err: errdefs.Timeout(errTest), want: true},
-		{name: "internal", err: errdefs.Internal(errTest), want: true},
-		{name: "validation", err: errdefs.Validation(errTest), want: false},
-		{name: "unauthorized", err: errdefs.Unauthorized(errTest), want: false},
-		{name: "forbidden", err: errdefs.Forbidden(errTest), want: false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := retryable(tc.err); got != tc.want {
-				t.Fatalf("retryable = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestRetryWaitPrefersServerHint(t *testing.T) {
-	hinted := errdefs.WithRetryAfter(errdefs.RateLimit(errTest), 2*time.Second)
-	if got := retryWait(hinted, 0); got != 2*time.Second {
-		t.Fatalf("wait = %v, want the server hint", got)
-	}
-	capped := errdefs.WithRetryAfter(errdefs.RateLimit(errTest), time.Hour)
-	if got := retryWait(capped, 0); got != retryAfterMax {
-		t.Fatalf("wait = %v, want it capped at %v", got, retryAfterMax)
-	}
-	backoff := retryWait(errdefs.RateLimit(errTest), 0)
-	if backoff != retryBackoffBase {
-		t.Fatalf("wait = %v, want %v", backoff, retryBackoffBase)
-	}
-	if later := retryWait(errdefs.RateLimit(errTest), 1); later != 2*retryBackoffBase {
-		t.Fatalf("wait = %v, want the doubled backoff", later)
-	}
-	if capped := retryWait(errdefs.RateLimit(errTest), 20); capped != retryBackoffMax {
-		t.Fatalf("wait = %v, want %v", capped, retryBackoffMax)
-	}
-}
-
-// TestReadRequestsRetryTransientFailures pins the half of the retry budget that
-// is safe: the video task poll is a read, so a transient failure is retried.
-func TestReadRequestsRetryTransientFailures(t *testing.T) {
+// TestReadFailureIsReportedForTheRouterToRetry pins the split: the transport
+// makes one attempt and hands the failure back classified, and `route` is what
+// decides whether another target or another attempt is worth it.
+func TestReadFailureIsReportedForTheRouterToRetry(t *testing.T) {
 	var attempts atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -80,20 +32,18 @@ func TestReadRequestsRetryTransientFailures(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newMediaClient(Settings{BaseURL: server.URL, APIKey: "key", Retries: 1})
+	client := newMediaClient(Settings{BaseURL: server.URL, APIKey: "key"})
 	var out struct {
 		Task struct {
 			Status string `json:"status"`
 		} `json:"task"`
 	}
-	if err := client.getJSON(context.Background(), "/v2/query/video_generation/t1", &out); err != nil {
-		t.Fatalf("getJSON: %v", err)
+	err := client.getJSON(context.Background(), "/v2/query/video_generation/t1", &out)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("error = %v, want a classified NotAvailable for the router", err)
 	}
-	if got := attempts.Load(); got != 2 {
-		t.Fatalf("attempts = %d, want two", got)
-	}
-	if out.Task.Status != "succeeded" {
-		t.Fatalf("status = %q", out.Task.Status)
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want one: retrying belongs to route", got)
 	}
 }
 
@@ -110,7 +60,6 @@ func TestCreateRequestsAreNeverRetried(t *testing.T) {
 	defer server.Close()
 
 	settings := videoSettings(server.URL)
-	settings.Retries = 3
 	provider, err := New(settings)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -136,7 +85,6 @@ func TestSpeechCreateIsNeverRetried(t *testing.T) {
 	defer server.Close()
 
 	settings := speechSettings(server.URL)
-	settings.Retries = 3
 	provider, err := New(settings)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -160,7 +108,6 @@ func TestRequestDoesNotRetryDeterministicFailures(t *testing.T) {
 	defer server.Close()
 
 	settings := speechSettings(server.URL)
-	settings.Retries = 3
 	provider, err := New(settings)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -203,25 +150,24 @@ func TestRequestKeepsCallerHeaders(t *testing.T) {
 	}
 }
 
-// TestJSONResponseBodyIsBounded pins the decode ceiling: an oversized body is
-// reported as oversized, not as a truncated payload.
-func TestJSONResponseBodyIsBounded(t *testing.T) {
+// TestUnaryLimitCoversASpeechAnswer pins the ceiling this driver asks the shared
+// transport for: a unary speech answer carries the whole utterance as hex, so the
+// limit is generous — but finite, because a broken gateway must not decide how
+// much the driver allocates.
+func TestUnaryLimitCoversASpeechAnswer(t *testing.T) {
+	if unaryResponseLimit < 32<<20 {
+		t.Fatalf("unary limit = %d, want at least the 32 MiB a long answer needs", unaryResponseLimit)
+	}
 	var out struct {
 		Value int `json:"value"`
 	}
-	if err := decodeJSONWithin("probe", strings.NewReader(`{"value":1}`), 4, &out); !isErrorKind(err, inference.InvalidProviderResponse) {
-		t.Fatalf("error = %v, want an invalid provider response", err)
-	}
-	out.Value = 0
-	if err := decodeJSONWithin("probe", strings.NewReader(`{"value":1}`), 64, &out); err != nil {
+	// Decoding itself is the transport's test; this only pins that the driver
+	// asks for the bounded path at all.
+	if err := httpx.DecodeJSON("probe", strings.NewReader(`{"value":1}`), unaryResponseLimit, &out); err != nil {
 		t.Fatalf("within-limit body rejected: %v", err)
 	}
 	if out.Value != 1 {
 		t.Fatalf("value = %d", out.Value)
-	}
-	// Malformed JSON is a decode failure, not an oversize failure.
-	if err := decodeJSONWithin("probe", strings.NewReader(`{`), 64, &out); !isErrorKind(err, inference.InvalidProviderResponse) {
-		t.Fatalf("error = %v, want an invalid provider response", err)
 	}
 }
 
@@ -243,31 +189,5 @@ func TestStatusMessageIsTruncated(t *testing.T) {
 	// An empty message keeps a stable placeholder rather than a bare colon.
 	if empty := (baseResp{Code: statusBadParams}).err("op"); !strings.Contains(empty.Error(), "no message") {
 		t.Fatalf("empty message = %q", empty)
-	}
-}
-
-// TestRetryBudgetStopsRetrying pins the total-wait ceiling: a configured retry
-// count is an attempt budget, not a licence to stall.
-func TestRetryBudgetStopsRetrying(t *testing.T) {
-	var attempts atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		attempts.Add(1)
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-
-	client := newMediaClient(Settings{BaseURL: server.URL, APIKey: "key", Retries: 10})
-	client.budget = time.Millisecond
-	var out struct{}
-	err := client.getJSON(context.Background(), "/v2/query/video_generation/t1", &out)
-	if err == nil {
-		t.Fatal("unavailable poll returned no error")
-	}
-	if got := attempts.Load(); got != 1 {
-		t.Fatalf("attempts = %d, want one: the budget is below the first backoff", got)
-	}
-	// The failure handed back is the provider's, not an interruption.
-	if !errdefs.IsNotAvailable(err) {
-		t.Fatalf("error = %v, want the provider's unavailable class", err)
 	}
 }

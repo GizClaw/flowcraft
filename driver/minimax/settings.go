@@ -219,9 +219,6 @@ type Settings struct {
 	// Timeout bounds one wire call. Defaults to ten minutes: a video create
 	// call is answered immediately, but a large speech payload is not.
 	Timeout time.Duration
-	// Retries is the number of wire retries on transient failures. Zero
-	// disables transport retries so the route Router owns the full budget.
-	Retries int
 	// HTTPClient overrides the transport. Nil builds one from the timeout.
 	HTTPClient *http.Client
 	// VideoPollInterval paces video task polling. A non-positive value keeps
@@ -374,9 +371,6 @@ func (s Settings) Validate() error {
 				"minimax: base_url must be a host root without a version segment; " +
 					"/v1/t2a_v2 and /v2/video_generation are appended by the driver")
 		}
-	}
-	if s.Retries < 0 {
-		return fmt.Errorf("minimax: retries must not be negative")
 	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for _, declared := range s.Models {

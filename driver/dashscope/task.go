@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 )
 
 // The async task pipeline is the platform's default shape for media
@@ -109,10 +110,13 @@ func createTask(
 	return created.Output.TaskID, created.RequestID, nil
 }
 
-// awaitTask polls the task endpoint until the task reaches a terminal state.
-// The wait is the operation, not a retry: a media task takes minutes, and
-// the loop ends on the caller's context deadline, on a terminal state, or on
-// a wire error the client already classified.
+// awaitTask drives the task endpoint to its terminal state. The wait is the
+// operation, not a retry: a media task takes minutes, and the loop ends on the
+// caller's context, on a terminal state, or on a failure the transport already
+// classified.
+//
+// The pacing and the "ask, then sleep" loop are the shared poller's; what stays
+// here is what this platform's states mean.
 func awaitTask(
 	ctx context.Context,
 	client *mediaClient,
@@ -120,44 +124,38 @@ func awaitTask(
 	taskID, operation string,
 ) (taskQuery, error) {
 	queryPath := taskPathPrefix + url.PathEscape(taskID)
-	for {
-		var query taskQuery
-		if err := client.getJSON(ctx, queryPath, &query); err != nil {
-			return taskQuery{}, err
-		}
-		if query.Code != "" || query.Message != "" {
-			return taskQuery{}, errorBody{
-				Code:      query.Code,
-				Message:   query.Message,
-				RequestID: query.RequestID,
-			}.failure(operation+" task query", 0)
-		}
-		switch strings.ToUpper(query.Output.TaskStatus) {
-		case taskStatusSucceeded:
-			return query, nil
-		case taskStatusFailed, taskStatusCanceled:
-			return taskQuery{}, errorBody{
-				Code:      query.Output.Code,
-				Message:   query.Output.Message,
-				RequestID: query.RequestID,
-			}.failure(operation, 0)
-		case taskStatusUnknown:
-			return taskQuery{}, errdefs.NotFound(fmt.Errorf(
-				"dashscope: %s task %q is unknown; results are retained for 24 hours",
-				operation, taskID,
-			))
-		case taskStatusPending, taskStatusRunning:
-		default:
-			// An unrecognized status is a state this driver has not seen
-			// before; polling on is the only safe reading, and the
-			// caller's deadline bounds it.
-		}
-		select {
-		case <-ctx.Done():
-			return taskQuery{}, ctx.Err()
-		case <-time.After(interval):
-		}
-	}
+	return httpx.Poll(ctx, client.api, httpx.Await[taskQuery]{
+		Op:       httpx.Op{Method: http.MethodGet, Path: queryPath},
+		Interval: interval,
+		Done: func(query taskQuery) (bool, error) {
+			if query.Code != "" || query.Message != "" {
+				return true, errorBody{
+					Code:      query.Code,
+					Message:   query.Message,
+					RequestID: query.RequestID,
+				}.failure(operation+" task query", 0)
+			}
+			switch strings.ToUpper(query.Output.TaskStatus) {
+			case taskStatusSucceeded:
+				return true, nil
+			case taskStatusFailed, taskStatusCanceled:
+				return true, errorBody{
+					Code:      query.Output.Code,
+					Message:   query.Output.Message,
+					RequestID: query.RequestID,
+				}.failure(operation, 0)
+			case taskStatusUnknown:
+				return true, errdefs.NotFound(fmt.Errorf(
+					"dashscope: %s task %q is unknown; results are retained for 24 hours",
+					operation, taskID,
+				))
+			default:
+				// Pending, running, or a state this driver has not seen: polling
+				// on is the only safe reading, and the caller bounds it.
+				return false, nil
+			}
+		},
+	})
 }
 
 // imageURLs reads the generated links out of a succeeded image task. An

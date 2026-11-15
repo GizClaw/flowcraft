@@ -2,11 +2,15 @@ package a2a_test
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"iter"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -81,12 +85,6 @@ func (s *scripted) Cancel(context.Context, string) error {
 }
 
 func (s *scripted) Close() error { return nil }
-
-func (s *scripted) wasCancelled() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.cancelled
-}
 
 // peerExecutor exposes a scripted engine over A2A. It is deliberately minimal:
 // the client tests care about the protocol, not about a deployment's server.
@@ -436,8 +434,15 @@ func TestRestartKeepsTheRemoteContext(t *testing.T) {
 	}
 }
 
-func TestCancelReachesThePeerAndTheTaskSurvivesARestart(t *testing.T) {
-	ts, engine := peer(t,
+// TestThePausedTaskSurvivesARestart pins the restore path: a task waiting for the
+// caller is read back from the store, and a fresh runner reports the state it was
+// paused in rather than starting over.
+//
+// It deliberately does not cancel: the protocol only allows a cancel while a task
+// is working, so cancelling a paused one asserts a rule the peer is right to
+// refuse. That path is the next test's.
+func TestThePausedTaskSurvivesARestart(t *testing.T) {
+	ts, _ := peer(t,
 		agent.Status{State: agent.StateWorking},
 		agent.Status{State: agent.StateInputRequired},
 	)
@@ -470,10 +475,93 @@ func TestCancelReachesThePeerAndTheTaskSurvivesARestart(t *testing.T) {
 	if state := restored.State(); state != agent.StateInputRequired {
 		t.Errorf("restored state = %s, want input-required", state)
 	}
-	if err := restored.Cancel(ctx, "not needed"); err != nil {
+}
+
+// TestCancelReachesThePeer pins the cancel path: the client sends tasks/cancel for
+// the task it is tracking, and the peer sees that request.
+//
+// The peer here is the wire, not the scripted engine. A scripted a2a server cannot
+// express this case: a cancel that arrives while a run is streaming is handed to
+// the peer's own execution and the call blocks until that execution ends, so a
+// test built on it measures the peer's scheduler instead of what our client sends.
+func TestCancelReachesThePeer(t *testing.T) {
+	var cancelled atomic.Bool
+	var ts *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/agent-card.json", func(w http.ResponseWriter, _ *http.Request) {
+		card := &sdk.AgentCard{
+			Name:    "peer",
+			Version: "1.0.0",
+			SupportedInterfaces: []*sdk.AgentInterface{
+				sdk.NewAgentInterface(ts.URL, sdk.TransportProtocolJSONRPC),
+			},
+		}
+		_ = json.NewEncoder(w).Encode(card)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				ID string `json:"id"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		// The peer pauses with a question, which is the state a cancel is
+		// meaningful from: a stream that ends while working means the task
+		// finished.
+		state := "TASK_STATE_INPUT_REQUIRED"
+		if request.Method == "CancelTask" {
+			cancelled.Store(true)
+			state = "TASK_STATE_CANCELED"
+		}
+		task := map[string]any{
+			"kind":      "task",
+			"id":        "task-1",
+			"contextId": "conv-1",
+			"status":    map[string]any{"state": state},
+		}
+		result, _ := json.Marshal(task)
+		if strings.Contains(r.Header.Get("Accept"), "event-stream") {
+			// A stream frame carries a StreamResponse, which is the union the
+			// task rides in rather than the task itself.
+			frame, _ := json.Marshal(map[string]any{"task": task})
+			envelope := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, request.ID, frame)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", envelope)
+			return
+		}
+		envelope := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":%s}`, request.ID, result)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, envelope)
+	})
+	ts = httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	store := agenttest.NewMemStore()
+	ctx := context.Background()
+	runner, err := a2a.New(ctx, a2a.Config{Peer: ts.URL, SessionID: "conv-1", Store: store})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, err := range runner.Run(ctx, message.NewTextMessage(message.RoleUser, "hi")) {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	}
+	if state := runner.State(); state != agent.StateInputRequired {
+		t.Fatalf("state = %s, want input-required", state)
+	}
+	if err := runner.Cancel(ctx, "not needed"); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if !engine.wasCancelled() {
-		t.Error("the cancel never reached the peer")
+	if !cancelled.Load() {
+		t.Fatal("the cancel never reached the peer")
+	}
+	if state := runner.State(); state != agent.StateCanceled {
+		t.Errorf("state after cancel = %s, want canceled", state)
 	}
 }

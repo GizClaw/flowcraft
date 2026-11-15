@@ -1,11 +1,9 @@
 package bytedance
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,17 +15,14 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 	"github.com/GizClaw/flowcraft/driver/internal/ptr"
-
-	"github.com/goccy/go-json"
-	"github.com/tidwall/sjson"
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
 const generateImagesPath = "/images/generations"
 
 type imageRequest struct {
-	ark        arkmodel.GenerateImagesRequest
+	ark        imageWire
 	count      int
 	background string
 }
@@ -92,7 +87,7 @@ func compileImage(
 			return protocol.Compiled[*imageRequest]{}, err
 		}
 		delivery := "url"
-		compiled := &imageRequest{ark: arkmodel.GenerateImagesRequest{Model: endpoint}, count: 1}
+		compiled := &imageRequest{ark: imageWire{Model: endpoint}, count: 1}
 		var warnings []inference.Warning
 		var prompt, references []string
 		collect := func(parts []message.Part) error {
@@ -142,7 +137,7 @@ func compileImage(
 				compiled.ark.Seed = ptr.Clone(options.Seed)
 			}
 			if options.OutputFormat != "" {
-				format := arkmodel.OutputFormat(options.OutputFormat)
+				format := string(options.OutputFormat)
 				compiled.ark.OutputFormat = &format
 			}
 			switch options.Delivery {
@@ -184,19 +179,17 @@ func applyImageOptions(compiled *imageRequest, options *ImageOptions) error {
 	if options.OptimizePrompt != nil {
 		enabled := true
 		compiled.ark.OptimizePrompt = &enabled
-		optimize := &arkmodel.OptimizePromptOptions{}
+		optimize := &imageOptimizeOptions{}
 		if options.OptimizePrompt.Mode != "" {
-			mode := arkmodel.OptimizePromptMode(options.OptimizePrompt.Mode)
-			optimize.Mode = &mode
+			optimize.Mode = options.OptimizePrompt.Mode
 		}
 		if options.OptimizePrompt.Thinking != "" {
-			thinking := arkmodel.OptimizePromptThinking(options.OptimizePrompt.Thinking)
-			optimize.Thinking = &thinking
+			optimize.Thinking = options.OptimizePrompt.Thinking
 		}
 		compiled.ark.OptimizePromptOptions = optimize
 	}
 	if options.Sequential != nil && *options.Sequential {
-		grouped := arkmodel.SequentialImageGeneration(arkmodel.SequentialImageGenerationAuto)
+		grouped := imageSequentialAuto
 		compiled.ark.SequentialImageGeneration = &grouped
 		maxImages := compiled.count
 		if options.SequentialMaxImages != nil {
@@ -208,7 +201,7 @@ func applyImageOptions(compiled *imageRequest, options *ImageOptions) error {
 		}
 		if maxImages > 1 {
 			compiled.ark.SequentialImageGenerationOptions =
-				&arkmodel.SequentialImageGenerationOptions{MaxImages: &maxImages}
+				&imageSequentialOptions{MaxImages: &maxImages}
 		}
 	}
 	if options.SizeToken != "" {
@@ -220,7 +213,7 @@ func applyImageOptions(compiled *imageRequest, options *ImageOptions) error {
 		compiled.ark.Size = &size
 	}
 	if options.WebSearch != nil && *options.WebSearch {
-		compiled.ark.Tools = []*arkmodel.ContentGenerationTool{{Type: arkmodel.ToolTypeWebSearch}}
+		compiled.ark.Tools = []*videoTool{{Type: "web_search"}}
 	}
 	if options.LayerDecomposition != nil && *options.LayerDecomposition {
 		if len(imageReferences(compiled)) == 0 {
@@ -287,93 +280,43 @@ func transportImage(cls *clients) protocol.Transport[inference.GenerateRequest, 
 	}
 }
 
+// generateOneImage posts one create call. The request id the platform stamps on
+// the response header is what a caller quotes in a support thread, so it rides the
+// raw answer.
 func generateOneImage(ctx context.Context, cls *clients, request *imageRequest) (imageRaw, error) {
-	if request.background == "" {
-		response, err := cls.ark.GenerateImages(ctx, request.ark, cls.arkRequestOptions...)
-		if err != nil {
-			return imageRaw{}, classifyError(err)
-		}
-		return imageRawFromResponse(response)
-	}
-	body, err := imagePayload(request.ark, request.background)
-	if err != nil {
-		return imageRaw{}, errdefs.Validation(fmt.Errorf("bytedance: image request: %w", err))
-	}
-	response, err := cls.postImagesPayload(ctx, body)
+	response, err := cls.api.Do(ctx, httpx.Op{
+		Method: http.MethodPost,
+		Path:   generateImagesPath,
+		Body:   request.ark,
+		Query:  cls.query,
+	})
 	if err != nil {
 		return imageRaw{}, err
 	}
-	return imageRawFromResponse(response)
+	defer func() { _ = response.Body.Close() }()
+	requestID := response.Header.Get(imageRequestIDHeader)
+	var images imagesResponse
+	if err := httpx.DecodeJSON(generateImagesPath, response.Body, ArkResponseLimit, &images); err != nil {
+		return imageRaw{}, err
+	}
+	return imageRawFromResponse(images, requestID)
 }
 
-// imagePayload serialises the SDK request and injects the background field the SDK
-// type does not model. It is one marshal plus one splice: decoding the body into a
-// map and re-encoding it would copy every byte twice for a single field, and an
-// image body carries base64 references.
-func imagePayload(request arkmodel.GenerateImagesRequest, background string) ([]byte, error) {
-	payload, err := json.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
-	value, err := json.Marshal(background)
-	if err != nil {
-		return nil, err
-	}
-	return sjson.SetRawBytes(payload, "background", value)
-}
-
-func imageRawFromResponse(response arkmodel.ImagesResponse) (imageRaw, error) {
+// imageRawFromResponse reads the create answer: the failure envelope the platform
+// may carry on an HTTP 200 first, then the images themselves.
+func imageRawFromResponse(response imagesResponse, requestID string) (imageRaw, error) {
 	if failure := response.Error; failure != nil {
-		return imageRaw{}, classifyResponseError(failure.Code, failure.Message)
+		return imageRaw{}, errdefs.WithRequestID(
+			classifyResponseError(failure.Code, failure.Message), requestID)
 	}
-	raw := imageRaw{requestID: response.Header().Get(arkmodel.ClientRequestHeader)}
+	raw := imageRaw{requestID: requestID}
 	for _, image := range response.Data {
-		raw.images = append(raw.images, rawImage{
-			url: derefString(image.Url), b64: derefString(image.B64Json),
-		})
+		raw.images = append(raw.images, rawImage{url: image.URL, b64: image.B64JSON})
 	}
 	if usage := response.Usage; usage != nil {
 		raw.outputTokens = usage.OutputTokens
 	}
 	return raw, nil
-}
-
-func (c *clients) postImagesPayload(ctx context.Context, payload []byte) (arkmodel.ImagesResponse, error) {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+generateImagesPath, bytes.NewReader(payload))
-	if err != nil {
-		return arkmodel.ImagesResponse{}, err
-	}
-	request.Header.Set("Authorization", "Bearer "+c.apiKey)
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Accept", "application/json")
-	response, err := c.httpClient.Do(request)
-	if err != nil {
-		return arkmodel.ImagesResponse{}, errdefs.NotAvailable(fmt.Errorf("bytedance: image request: %w", err))
-	}
-	defer func() { _ = response.Body.Close() }()
-	requestID := response.Header.Get(arkmodel.ClientRequestHeader)
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return arkmodel.ImagesResponse{}, imageRawError(response.StatusCode, requestID, response.Body)
-	}
-	var images arkmodel.ImagesResponse
-	if err := json.NewDecoder(response.Body).Decode(&images); err != nil {
-		return arkmodel.ImagesResponse{}, errdefs.NotAvailable(fmt.Errorf("bytedance: decode image response: %w", err))
-	}
-	images.SetHeader(response.Header)
-	return images, nil
-}
-
-func imageRawError(status int, requestID string, body io.Reader) error {
-	var envelope arkmodel.ErrorResponse
-	if err := json.NewDecoder(body).Decode(&envelope); err != nil || envelope.Error == nil {
-		return errdefs.WithRequestID(errdefs.ClassifyStatus(status,
-			fmt.Errorf("%s: image request failed with status %d", providerID, status)), requestID)
-	}
-	failure := envelope.Error
-	failure.HTTPStatusCode = status
-	failure.RequestId = requestID
-	return classifyError(failure)
 }
 
 func decodeImage(
@@ -436,14 +379,7 @@ func imagePartFromB64(b64 string) (message.ImagePart, error) {
 	return message.ImagePart{Source: source}, nil
 }
 
-func derefOutputFormat(value *arkmodel.OutputFormat) arkmodel.OutputFormat {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
-func derefString(value *string) string {
+func derefOutputFormat(value *string) string {
 	if value == nil {
 		return ""
 	}

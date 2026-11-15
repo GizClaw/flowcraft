@@ -39,11 +39,6 @@ type Spec struct {
 	// required for RAM sub-account keys and optional for primary-account
 	// keys, so leaving it empty sends no header.
 	WorkspaceID string `json:"workspace_id,omitempty"`
-	// HTTPRetries bounds wire-level HTTP retries. Zero disables transport
-	// retries so the route Router owns the full retry budget; nil keeps
-	// the httpkit default. Task polling is not a retry: it is modeled as
-	// the wait it is.
-	HTTPRetries *int `json:"http_retries,omitempty"`
 	// PollIntervalMillis paces task polling; defaults to 5000. Declared
 	// values below one millisecond keep the default rather than spinning.
 	PollIntervalMillis int `json:"poll_interval_millis,omitempty"`
@@ -786,9 +781,6 @@ func (s Spec) Validate() error {
 	}
 	if s.WorkspaceID != "" && !workspaceIDPattern.MatchString(s.WorkspaceID) {
 		return fmt.Errorf("invalid workspace_id %q", s.WorkspaceID)
-	}
-	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
-		return fmt.Errorf("http_retries must not be negative")
 	}
 	if s.PollIntervalMillis < 0 {
 		return fmt.Errorf("poll_interval_millis must not be negative")

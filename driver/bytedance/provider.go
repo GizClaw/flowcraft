@@ -7,25 +7,22 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
-	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
-
-type arkResponsesRequest = arkresponses.ResponsesRequest
-type arkVideoRequest = arkmodel.CreateContentGenerationTaskRequest
 
 type driver struct {
 	settings Settings
 	clients  *clients
-	text     protocol.GenerateDriver
-	stream   protocol.GenerateStreamDriver
 	image    protocol.GenerateDriver
 	video    protocol.GenerateDriver
 	embedder protocol.EmbedderDriver
 }
 
 // New builds a provider for one deployment.
+// ArkOpenAIBaseURL is Ark's OpenAI-compatible root. Text generation lives there:
+// a deployment writes `driver: openai` with this base_url instead of using this
+// package, which keeps the media surfaces Ark speaks in its own dialect.
+const ArkOpenAIBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
+
 func New(settings Settings) (inference.Provider, error) {
 	settings = settings.normalized()
 	if err := settings.Validate(); err != nil {
@@ -37,26 +34,13 @@ func New(settings Settings) (inference.Provider, error) {
 	}
 	driver := &driver{settings: settings, clients: clients}
 
-	driver.text, err = protocol.BindGenerate(
-		ProviderID, driver.compile, driver.call, decodeGenerate,
-	)
-	if err != nil {
-		return inference.Provider{}, fmt.Errorf("bytedance: %w", err)
-	}
-	driver.stream, err = protocol.BindGenerateStream(
-		ProviderID, driver.compile, openGenerateStream(clients.ark, clients.arkRequestOptions),
-		newGenerateStreamDecoder,
-	)
-	if err != nil {
-		return inference.Provider{}, fmt.Errorf("bytedance: %w", err)
-	}
 	driver.image, err = protocol.BindGenerate(ProviderID, driver.compileImageRequest,
 		transportImage(clients), decodeImage)
 	if err != nil {
 		return inference.Provider{}, fmt.Errorf("bytedance image: %w", err)
 	}
 	driver.video, err = protocol.BindGenerate(ProviderID, driver.compileVideoRequest,
-		transportVideo(clients.ark, settings.VideoPollInterval, clients.arkRequestOptions), decodeVideo)
+		transportVideo(clients.api, clients.query, settings.VideoPollInterval), decodeVideo)
 	if err != nil {
 		return inference.Provider{}, fmt.Errorf("bytedance video: %w", err)
 	}
@@ -93,10 +77,10 @@ func (d *driver) compileVideoRequest(
 	ctx context.Context,
 	request inference.GenerateRequest,
 	shape protocol.Shape,
-) (protocol.Compiled[*arkVideoRequest], error) {
+) (protocol.Compiled[*videoRequest], error) {
 	declared, err := d.videoSpec(request.Model.ID)
 	if err != nil {
-		return protocol.Compiled[*arkVideoRequest]{}, err
+		return protocol.Compiled[*videoRequest]{}, err
 	}
 	return compileVideo(d.clients.endpoint(request.Model.ID.Name), declared)(ctx, request, shape)
 }
@@ -119,7 +103,11 @@ func (d *driver) Execute(
 ) (inference.GenerateResponse, error) {
 	switch request.Output.Kind() {
 	case inference.OutputText:
-		return d.text.Execute(ctx, request)
+		return inference.GenerateResponse{}, inference.NewError(
+			inference.UnsupportedOperation, inference.FieldOutput,
+			fmt.Errorf("bytedance: text generation is driver: openai pointed at Ark "+
+				"(base_url %s, api chat); this driver serves image, video and embedding",
+				ArkOpenAIBaseURL))
 	case inference.OutputImage:
 		return d.image.Execute(ctx, request)
 	case inference.OutputVideo:
@@ -149,12 +137,10 @@ func (d *driver) Open(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.Stream, error) {
-	if request.Output.Kind() != inference.OutputText {
-		return nil, inference.NewError(
-			inference.UnsupportedOperation, inference.FieldStream,
-			fmt.Errorf("bytedance: %q has no streaming surface", request.Output.Kind()))
-	}
-	return d.stream.Open(ctx, request)
+	return nil, inference.NewError(
+		inference.UnsupportedOperation, inference.FieldStream,
+		fmt.Errorf("bytedance: %q has no streaming surface; text streaming is "+
+			"driver: openai pointed at Ark", request.Output.Kind()))
 }
 
 func (d *driver) descriptor(id model.ModelID) (model.ModelDescriptor, error) {
@@ -167,25 +153,4 @@ func (d *driver) descriptor(id model.ModelID) (model.ModelDescriptor, error) {
 		inference.UnknownModel, inference.FieldModel,
 		fmt.Errorf("bytedance: model %q is not declared", id.Name),
 	)
-}
-
-func (d *driver) compile(
-	ctx context.Context,
-	request inference.GenerateRequest,
-	shape protocol.Shape,
-) (protocol.Compiled[*arkResponsesRequest], error) {
-	declared, err := d.descriptor(request.Model.ID)
-	if err != nil {
-		return protocol.Compiled[*arkResponsesRequest]{}, err
-	}
-	return compileGenerate(d.clients.endpoint(request.Model.ID.Name), declared)(ctx, request, shape)
-}
-
-func (d *driver) call(
-	ctx context.Context,
-	request inference.GenerateRequest,
-	wire *arkResponsesRequest,
-) (generateRaw, error) {
-	return transportGenerate(d.clients.ark, d.clients.arkRequestOptions)(ctx, request, wire)
-
 }
