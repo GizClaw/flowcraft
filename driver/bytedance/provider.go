@@ -7,11 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
-
-type arkVideoRequest = arkmodel.CreateContentGenerationTaskRequest
 
 type driver struct {
 	settings Settings
@@ -44,7 +40,7 @@ func New(settings Settings) (inference.Provider, error) {
 		return inference.Provider{}, fmt.Errorf("bytedance image: %w", err)
 	}
 	driver.video, err = protocol.BindGenerate(ProviderID, driver.compileVideoRequest,
-		transportVideo(clients.ark, settings.VideoPollInterval, clients.arkRequestOptions), decodeVideo)
+		transportVideo(clients.api, clients.query, settings.VideoPollInterval), decodeVideo)
 	if err != nil {
 		return inference.Provider{}, fmt.Errorf("bytedance video: %w", err)
 	}
@@ -81,10 +77,10 @@ func (d *driver) compileVideoRequest(
 	ctx context.Context,
 	request inference.GenerateRequest,
 	shape protocol.Shape,
-) (protocol.Compiled[*arkVideoRequest], error) {
+) (protocol.Compiled[*videoRequest], error) {
 	declared, err := d.videoSpec(request.Model.ID)
 	if err != nil {
-		return protocol.Compiled[*arkVideoRequest]{}, err
+		return protocol.Compiled[*videoRequest]{}, err
 	}
 	return compileVideo(d.clients.endpoint(request.Model.ID.Name), declared)(ctx, request, shape)
 }
