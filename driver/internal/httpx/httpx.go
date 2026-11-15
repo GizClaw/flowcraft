@@ -222,6 +222,32 @@ func DecodeJSON(where string, body io.Reader, limit int64, out any) error {
 	return nil
 }
 
+// Bytes performs one call and returns its body, refusing a payload over limit.
+//
+// The ceiling is the caller's because it is the caller's data: a signed artifact
+// link is not a provider response, and how large a result file may be is a
+// property of the surface, not of the transport.
+func (c *Client) Bytes(ctx context.Context, op Op, limit int64) ([]byte, error) {
+	resp, err := c.Do(ctx, op)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if limit <= 0 {
+		limit = c.limit
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s response: %w", op.Path, err)
+	}
+	if int64(len(raw)) > limit {
+		return nil, inference.NewError(
+			inference.InvalidProviderResponse, inference.FieldOutput,
+			fmt.Errorf("%s response exceeds the %d-byte limit", op.Path, limit))
+	}
+	return raw, nil
+}
+
 // Stream performs one call and hands back its event-stream body. The caller
 // closes it.
 func (c *Client) Stream(ctx context.Context, op Op) (io.ReadCloser, error) {

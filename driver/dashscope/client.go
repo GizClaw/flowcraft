@@ -4,26 +4,28 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/driver/internal/httpx"
 	"github.com/goccy/go-json"
 )
 
-// The protocol headers the platform switches behaviour on. async is
-// mandatory on every task-creating call — the media endpoints refuse a
-// synchronous call — and sse is mandatory on the interleaved sync surface,
-// whose endpoint refuses a non-streaming call. workspace rides along only
-// when the deployment declares one.
+// The protocol headers the platform switches behaviour on. async is mandatory on
+// every task-creating call — the media endpoints refuse a synchronous call — and
+// sse is mandatory on the interleaved sync surface, whose endpoint refuses a
+// non-streaming call. workspace rides along only when the deployment declares one.
 const (
 	headerAsync     = "X-DashScope-Async"
 	headerSSE       = "X-DashScope-Sse"
 	headerWorkspace = "X-DashScope-WorkSpace"
 )
+
+// defaultTimeout bounds one wire call. A media task is answered immediately, but
+// a long transcription poll is not.
+const defaultTimeout = 10 * time.Minute
 
 // ProfileSpec overrides provider-level transport facts for one credential
 // profile. DashScope API keys are bound to the region they were created in,
@@ -60,33 +62,47 @@ func newClients(settings Spec) (*clients, error) {
 	return &clients{media: newMediaClient(settings.APIKey, base, settings.WorkspaceID, settings)}, nil
 }
 
-// mediaClient speaks the DashScope native API: plain JSON over HTTP with
-// Bearer auth, the async header on task surfaces, and the optional
-// workspace header.
+// mediaClient speaks the DashScope native API: plain JSON over HTTP with Bearer
+// auth, the async header on task surfaces, and the optional workspace header.
+//
+// Two clients, because one host must not see the other's credential: the API
+// client carries the account key, and the file client fetches the signed result
+// links a finished task names. Those links live on the platform's artifact host
+// and carry their own signature, so sending the key there would spread it for
+// nothing.
+//
+// The transport itself is `driver/internal/httpx`; retries are not here — the
+// route Router owns the attempt budget for every seam.
 type mediaClient struct {
-	http      *http.Client
-	key       string
-	base      string
-	workspace string
-	poll      time.Duration
+	api   *httpx.Client
+	files *httpx.Client
+	poll  time.Duration
 }
 
 func newMediaClient(key, base, workspace string, spec Spec) *mediaClient {
-	client := spec.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Minute}
+	var headers map[string]string
+	if workspace != "" {
+		headers = map[string]string{headerWorkspace: workspace}
+	}
+	transport := spec.HTTPClient
+	if transport == nil {
+		transport = &http.Client{Timeout: defaultTimeout}
 	}
 	return &mediaClient{
-		http:      client,
-		key:       strings.TrimSpace(key),
-		base:      strings.TrimRight(base, "/"),
-		workspace: workspace,
-		poll:      spec.pollInterval(),
+		api: httpx.New(httpx.Config{
+			BaseURL:     base,
+			APIKey:      key,
+			Headers:     headers,
+			HTTP:        transport,
+			Limit:       artifactLimit,
+			DecodeError: envelopeFailure,
+		}),
+		files: httpx.New(httpx.Config{HTTP: transport, Limit: artifactLimit}),
+		poll:  spec.pollInterval(),
 	}
 }
 
-// requestOptions carries the protocol switches a call asks for: async on the
-// task-creating calls, sse on the streamed ones.
+// pollInterval is the pacing task polling uses.
 func (c *mediaClient) pollInterval() time.Duration {
 	if c.poll <= 0 {
 		return defaultPollInterval
@@ -94,106 +110,49 @@ func (c *mediaClient) pollInterval() time.Duration {
 	return c.poll
 }
 
+// requestOptions carries the protocol switches a call asks for: async on the
+// task-creating calls, sse on the streamed ones.
 type requestOptions struct {
 	async bool
 	sse   bool
 }
 
-// request performs one wire call. async marks a task-creating call, which
-// must carry X-DashScope-Async: enable — the platform rejects synchronous
-// media calls with "current user api does not support synchronous calls".
-// sse marks a streamed call: the interleaved surface requires
-// X-DashScope-Sse: enable, which turns the answer into a sequence of events.
-func (c *mediaClient) request(
-	ctx context.Context,
-	method, path string,
-	body any,
-	opts requestOptions,
-) (*http.Response, error) {
-	var payload io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("dashscope: marshal request: %w", err)
-		}
-		payload = bytes.NewReader(raw)
+// op renders one call, adding the headers the platform switches behaviour on.
+func (c *mediaClient) op(method, path string, body any, opts requestOptions) httpx.Op {
+	call := httpx.Op{Method: method, Path: path, Body: body}
+	switch {
+	case opts.async:
+		call.Headers = map[string]string{headerAsync: "enable"}
+	case opts.sse:
+		call.Headers = map[string]string{headerSSE: "enable"}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, payload)
-	if err != nil {
-		return nil, fmt.Errorf("dashscope: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+c.key)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if opts.async {
-		req.Header.Set(headerAsync, "enable")
-	}
-	if opts.sse {
-		req.Header.Set(headerSSE, "enable")
-	}
-	if c.workspace != "" {
-		req.Header.Set(headerWorkspace, c.workspace)
-	}
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("dashscope: %s %s: %w", method, path, err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		defer func() { _ = resp.Body.Close() }()
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		var envelope errorBody
-		_ = json.Unmarshal(snippet, &envelope)
-		detail := strings.TrimSpace(string(snippet))
-		if envelope.Code != "" || envelope.Message != "" {
-			detail = nonEmpty(envelope.Code, "HTTP") + ": " + nonEmpty(envelope.Message, detail)
-		}
-		failure := classifyStatus(resp.StatusCode, envelope.Code, fmt.Errorf(
-			"dashscope: %s %s: HTTP %d: %s", method, path, resp.StatusCode, detail,
-		))
-		if envelope.RequestID != "" {
-			failure = errdefs.WithRequestID(failure, envelope.RequestID)
-		}
-		return nil, errdefs.WithRetryAfter(
-			failure,
-			errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
-		)
-	}
-	return resp, nil
+	return call
 }
 
-// postJSON decodes a JSON response into out; the caller inspects the
-// envelope's code field, because the platform also reports task-level
-// failures on an HTTP 200 create response.
+// envelopeFailure reads DashScope's error envelope out of a failure body, so the
+// classification names the platform's reason rather than only the status.
+func envelopeFailure(_ int, body []byte) error {
+	var envelope errorBody
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil
+	}
+	if envelope.Code == "" && envelope.Message == "" {
+		return nil
+	}
+	return classifyStatus(0, envelope.Code, fmt.Errorf("%s: %s",
+		strings.TrimSpace(envelope.Code), strings.TrimSpace(envelope.Message)))
+}
+
+// postJSON performs one create call. async marks a task-creating call, which must
+// carry X-DashScope-Async: enable — the platform rejects a synchronous media call
+// with "current user api does not support synchronous calls".
 func (c *mediaClient) postJSON(
 	ctx context.Context,
 	path string,
 	async bool,
 	body, out any,
 ) error {
-	resp, err := c.request(ctx, http.MethodPost, path, body, requestOptions{async: async})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("dashscope: decode %s response: %w", path, err)
-	}
-	return nil
-}
-
-// getJSON decodes a JSON response into out; the task query path and the
-// failure paths share it.
-func (c *mediaClient) getJSON(ctx context.Context, path string, out any) error {
-	resp, err := c.request(ctx, http.MethodGet, path, nil, requestOptions{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("dashscope: decode %s response: %w", path, err)
-	}
-	return nil
+	return c.api.JSON(ctx, c.op(http.MethodPost, path, body, requestOptions{async: async}), out)
 }
 
 // artifactLimit bounds one downloaded result file. A transcription result for
@@ -212,29 +171,9 @@ func (c *mediaClient) getArtifact(ctx context.Context, link string) ([]byte, err
 		return nil, fmt.Errorf(
 			"dashscope: result link %q is not an http(s) URL", link)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link, nil)
-	if err != nil {
-		return nil, fmt.Errorf("dashscope: build result request: %w", err)
-	}
-	resp, err := c.http.Do(req)
+	payload, err := c.files.Bytes(ctx, httpx.Op{Method: http.MethodGet, Path: link}, artifactLimit)
 	if err != nil {
 		return nil, fmt.Errorf("dashscope: fetch result file: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, errdefs.ClassifyStatus(resp.StatusCode, fmt.Errorf(
-			"dashscope: fetch result file: HTTP %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(snippet)),
-		))
-	}
-	payload, err := io.ReadAll(io.LimitReader(resp.Body, artifactLimit+1))
-	if err != nil {
-		return nil, fmt.Errorf("dashscope: read result file: %w", err)
-	}
-	if len(payload) > artifactLimit {
-		return nil, fmt.Errorf(
-			"dashscope: result file exceeds %d bytes", artifactLimit)
 	}
 	return payload, nil
 }
@@ -256,14 +195,9 @@ func (c *mediaClient) postSSEEvents(
 	body any,
 	sse bool,
 ) ([][]byte, error) {
-	resp, err := c.request(ctx, http.MethodPost, path, body, requestOptions{sse: sse})
+	raw, err := c.api.Bytes(ctx, c.op(http.MethodPost, path, body, requestOptions{sse: sse}), sseResponseLimit)
 	if err != nil {
 		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, sseResponseLimit))
-	if err != nil {
-		return nil, fmt.Errorf("dashscope: read %s response: %w", path, err)
 	}
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
@@ -272,50 +206,17 @@ func (c *mediaClient) postSSEEvents(
 	if json.Valid(trimmed) {
 		return [][]byte{trimmed}, nil
 	}
-	return sseEvents(trimmed, path)
-}
-
-// sseEvents splits a streamed body into one payload per event. Data lines
-// accumulate until a blank line closes the event, the way the event-stream
-// format specifies; the framing fields a JSON payload never needs —
-// heartbeats and comments, id, event, and retry — are skipped.
-func sseEvents(raw []byte, path string) ([][]byte, error) {
-	var (
-		events  [][]byte
-		payload []string
-	)
-	flush := func() {
-		if len(payload) == 0 {
-			return
+	var events [][]byte
+	for frame, err := range httpx.Frames(bytes.NewReader(trimmed)) {
+		if err != nil {
+			return nil, fmt.Errorf("dashscope: %s: %w", path, err)
 		}
-		events = append(events, []byte(strings.Join(payload, "\n")))
-		payload = nil
-	}
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		switch {
-		case trimmed == "":
-			flush()
-		case strings.HasPrefix(trimmed, "data:"):
-			fragment := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-			if fragment == "" || fragment == "[DONE]" {
-				continue
-			}
-			payload = append(payload, fragment)
-		case strings.HasPrefix(trimmed, ":"),
-			strings.HasPrefix(trimmed, "event:"),
-			strings.HasPrefix(trimmed, "id:"),
-			strings.HasPrefix(trimmed, "retry:"):
-			// Framing without content: a heartbeat, a comment, or the
-			// stream's event name.
-		default:
-			return nil, fmt.Errorf(
-				"dashscope: %s returned an unrecognized event line %q",
-				path, trimmed,
-			)
+		data := bytes.TrimSpace(frame.Data)
+		if len(data) == 0 || string(data) == "[DONE]" {
+			continue
 		}
+		events = append(events, data)
 	}
-	flush()
 	if len(events) == 0 {
 		return nil, fmt.Errorf("dashscope: %s returned no events", path)
 	}
