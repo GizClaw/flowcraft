@@ -2,6 +2,7 @@
 layout: default
 title: Application Runtime
 ---
+
 # Application Runtime Guide
 
 `core/runtime` assembles one agent runtime from a configuration document and
@@ -24,20 +25,20 @@ name: forge
 
 files:
   roots:
-    - /workspace/forge            # absolute; the first root is the default workdir
+    - /workspace/forge # absolute; the first root is the default workdir
 
 sandbox:
-  backend: seatbelt               # local | seatbelt | bwrap | windows | remote
+  backend: seatbelt # local | seatbelt | bwrap | windows | remote
   writes:
     - /workspace/forge/out
   net:
     mode: allow_list
     allow_hosts: [api.openai.com, "*.github.com"]
   timeout: 60s
-  cpu_millicores: 2000            # needs timeout
+  cpu_millicores: 2000 # needs timeout
   memory_mib: 2048
   output_mib: 8
-  journal:                        # presence opts in; absent means no journal
+  journal: # presence opts in; absent means no journal
     exclude: [.git, node_modules]
     retention: 4096
 
@@ -77,31 +78,31 @@ skills:
 
 The process boundary. Nothing here is guessed:
 
-| Field | Meaning |
-| --- | --- |
-| `backend` | Required. `local`, `seatbelt`, `bwrap`, `windows`, or `remote`. There is no default: a boundary picked by guessing is a boundary nobody chose. |
-| `workdir` | Where commands run. Empty means the first files root. |
-| `writes` | Absolute paths a command may write. Empty means read-only. |
-| `net.mode` | `default`, `none` (aliases `deny`, `deny_all`), `allow_list` (alias `allowlist`), `proxy` (alias `proxies`). |
-| `net.allow_hosts` | Only legal with `allow_list`; a host pattern or `*`-glob. |
-| `net.proxy` | Only legal with `proxy`. |
-| `timeout` | Default per-call deadline. A tool may ask for less; this is the ceiling. |
-| `cpu_millicores` | Millicore budget. Rejected without `timeout`, because the budget is derived from it. |
-| `memory_mib` | Address-space cap; zero is unbounded. |
-| `output_mib` | Captured output per call; zero uses the backend default. |
-| `journal` | A settings block. Presence opts in; see [sandbox.md](sandbox.md). |
-| `bwrap`, `seatbelt`, `windows` | The backend's own construction options. Setting one on a different backend is a validation error, not a comment. |
-| `remote` | Client configuration for `backend: remote`; must be absent otherwise. |
+| Field                          | Meaning                                                                                                                                        |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backend`                      | Required. `local`, `seatbelt`, `bwrap`, `windows`, or `remote`. There is no default: a boundary picked by guessing is a boundary nobody chose. |
+| `workdir`                      | Where commands run. Empty means the first files root.                                                                                          |
+| `writes`                       | Absolute paths a command may write. Empty means read-only.                                                                                     |
+| `net.mode`                     | `default`, `none` (aliases `deny`, `deny_all`), `allow_list` (alias `allowlist`), `proxy` (alias `proxies`).                                   |
+| `net.allow_hosts`              | Only legal with `allow_list`; a host pattern or `*`-glob.                                                                                      |
+| `net.proxy`                    | Only legal with `proxy`.                                                                                                                       |
+| `timeout`                      | Default per-call deadline. A tool may ask for less; this is the ceiling.                                                                       |
+| `cpu_millicores`               | Millicore budget. Rejected without `timeout`, because the budget is derived from it.                                                           |
+| `memory_mib`                   | Address-space cap; zero is unbounded.                                                                                                          |
+| `output_mib`                   | Captured output per call; zero uses the backend default.                                                                                       |
+| `journal`                      | A settings block. Presence opts in; see [sandbox.md](sandbox.md).                                                                              |
+| `bwrap`, `seatbelt`, `windows` | The backend's own construction options. Setting one on a different backend is a validation error, not a comment.                               |
+| `remote`                       | Client configuration for `backend: remote`; must be absent otherwise.                                                                          |
 
 ### `files`, `skills`, `tools`
 
-| Section | Rule |
-| --- | --- |
-| `files.roots` | At least one, all absolute; this is also the write policy the file tools enforce. |
-| `skills.roots` | Directories scanned for `SKILL.md`. One index is built and shared by the tools and the host's own prompts. |
-| `tools.enable` | Empty means every registered tool. Names not registered are a build error. |
-| `tools.dynamic` | The projection: `default` (`always` / `direct` / `deferred` / `hidden`), plus `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`. |
-| `tools.middleware` | Named middleware with kind-owned settings, applied in order. |
+| Section              | Rule                                                                                                                                                                                                                                                                                                  |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `files.roots`        | At least one, all absolute; this is also the write policy the file tools enforce.                                                                                                                                                                                                                     |
+| `skills.roots`       | Directories scanned for `SKILL.md`. One index is built and shared by the tools and the host's own prompts.                                                                                                                                                                                            |
+| `tools.enable`       | Empty means every registered tool. Names not registered are a build error.                                                                                                                                                                                                                            |
+| `tools.dynamic`      | The projection: `default` (`always` / `direct` / `deferred` / `hidden`), plus `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`.                                                                                                                                           |
+| `tools.middleware`   | Named middleware with kind-owned settings, applied in order.                                                                                                                                                                                                                                          |
 | `tools.descriptions` | Per-tool and per-parameter replacement of the text the model reads, keyed by tool name. A configured name that matches no wired tool is a build error. Text is prompt surface only: the input schema's types and bounds are never overridden. See [tool.md](tool.md#configuring-a-tools-description). |
 
 ### `inference`
@@ -192,12 +193,12 @@ This is the part that used to be missing: a document could declare a budget that
 nothing enforced. The runtime now projects all four knobs onto every call it
 issues through `engine.WithDefaults`:
 
-| Document | Becomes |
-| --- | --- |
-| `timeout` | `ExecOptions.Timeout` — a ceiling; a tool asking for less keeps its own. |
-| `cpu_millicores` | `Resources.CPU` (derived from the timeout). |
-| `memory_mib` | `Resources.MemoryBytes`. |
-| `writes` | `Permission.Writes` — the files a command may touch. |
+| Document         | Becomes                                                                  |
+| ---------------- | ------------------------------------------------------------------------ |
+| `timeout`        | `ExecOptions.Timeout` — a ceiling; a tool asking for less keeps its own. |
+| `cpu_millicores` | `Resources.CPU` (derived from the timeout).                              |
+| `memory_mib`     | `Resources.MemoryBytes`.                                                 |
+| `writes`         | `Permission.Writes` — the files a command may touch.                     |
 
 Three rules make that honest:
 
@@ -221,7 +222,7 @@ protocol in `core/sandbox-remote/wire`:
 sandbox:
   backend: remote
   remote:
-    transport: http              # http (default) | unix
+    transport: http # http (default) | unix
     endpoint: https://sandbox.internal:8443
     token: "${SANDBOX_TOKEN}"
     timeout: 30s
@@ -229,10 +230,10 @@ sandbox:
     insecure_skip_verify: false
 ```
 
-| Transport | Fields |
-| --- | --- |
-| `http` | `endpoint` required and `http(s)`; `socket` rejected. |
-| `unix` | `socket` required; `endpoint` and `insecure_skip_verify` rejected. A token is optional — the boundary is the directory's permissions. |
+| Transport | Fields                                                                                                                                |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `http`    | `endpoint` required and `http(s)`; `socket` rejected.                                                                                 |
+| `unix`    | `socket` required; `endpoint` and `insecure_skip_verify` rejected. A token is optional — the boundary is the directory's permissions. |
 
 Every other backend's fields behave the same way: the field the transport does
 not use is a validation error, because a socket path beside an endpoint is
@@ -240,16 +241,16 @@ configuration that silently does nothing.
 
 ## Accessors
 
-| Call | Returns |
-| --- | --- |
-| `Config()` | The resolved configuration, layers already merged. |
-| `Provider()`, `Router()`, `DefaultModel()` | The inference side. |
-| `Tools()`, `Assembly()`, `NewCatalogView()` | The tool registry and the per-run projection. |
-| `Runner()`, `Journal()` | The sandbox boundary and its file journal (nil when absent). |
-| `Files()` | The `fsx.Tree` the file tools write through. |
-| `Skills()` | The one `skill.Index` the tools and the host share. |
-| `Context(ctx)` | A context carrying the runtime's identity for tracing. |
-| `Close()` | Tears down, in reverse construction order. |
+| Call                                        | Returns                                                      |
+| ------------------------------------------- | ------------------------------------------------------------ |
+| `Config()`                                  | The resolved configuration, layers already merged.           |
+| `Provider()`, `Router()`, `DefaultModel()`  | The inference side.                                          |
+| `Tools()`, `Assembly()`, `NewCatalogView()` | The tool registry and the per-run projection.                |
+| `Runner()`, `Journal()`                     | The sandbox boundary and its file journal (nil when absent). |
+| `Files()`                                   | The `fsx.Tree` the file tools write through.                 |
+| `Skills()`                                  | The one `skill.Index` the tools and the host share.          |
+| `Context(ctx)`                              | A context carrying the runtime's identity for tracing.       |
+| `Close()`                                   | Tears down, in reverse construction order.                   |
 
 ## Ownership
 
@@ -263,10 +264,10 @@ failing journal must not stop the runner from being closed.
 
 ## What is not here
 
-| Not in `runtime` | Where it lives |
-| --- | --- |
-| Sessions, history, turn loop | `core/agent` and `core/agent-host` |
-| Lifecycle hooks | `agent.Hooks`, attached by a `deploy.HookKind` — see [hooks.md](hooks.md) |
-| Events a UI subscribes to | `agent.Event`, streamed by a session |
-| Reload / hot swap | A host builds a new `Runtime` and drains the old one |
-| Deployment documents | `core/deploy` — see [deploy.md](deploy.md) |
+| Not in `runtime`             | Where it lives                                                            |
+| ---------------------------- | ------------------------------------------------------------------------- |
+| Sessions, history, turn loop | `core/agent` and `core/agent-host`                                        |
+| Lifecycle hooks              | `agent.Hooks`, attached by a `deploy.HookKind` — see [hooks.md](hooks.md) |
+| Events a UI subscribes to    | `agent.Event`, streamed by a session                                      |
+| Reload / hot swap            | A host builds a new `Runtime` and drains the old one                      |
+| Deployment documents         | `core/deploy` — see [deploy.md](deploy.md)                                |

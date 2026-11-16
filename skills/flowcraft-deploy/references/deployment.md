@@ -9,38 +9,38 @@ version: 1
 agents:
   - name: assistant
     engine:
-      kind: graph                     # required, no default
-      settings: {path: ./graphs/assistant.yaml}
+      kind: graph # required, no default
+      settings: { path: ./graphs/assistant.yaml }
     runtime:
-      layers:                        # at least one for a local engine
-        - {priority: 0, path: ./runtime.yaml}
-        - {priority: 10, path: ./local.yaml}
-    catalog: {scope: run}            # run (default) | session
-    protocol:                        # absent: not exposed
+      layers: # at least one for a local engine
+        - { priority: 0, path: ./runtime.yaml }
+        - { priority: 10, path: ./local.yaml }
+    catalog: { scope: run } # run (default) | session
+    protocol: # absent: not exposed
       kind: a2a
-      settings: {card: {version: "1.0.0", url: https://assistant.example}}
-    delegation:                      # absent: no delegation tools at all
+      settings: { card: { version: "1.0.0", url: https://assistant.example } }
+    delegation: # absent: no delegation tools at all
       targets: [reviewer]
       modes: [sync]
-    observability: {trace: run}      # off (default) | run | step | node
-    hooks:                           # chained in declaration order
+    observability: { trace: run } # off (default) | run | step | node
+    hooks: # chained in declaration order
       - kind: audit
-        settings: {sink: stdout}
+        settings: { sink: stdout }
 ```
 
 ## Fields
 
-| Field | Rule |
-| --- | --- |
-| `version` | Must be `1`. |
-| `agents[].name` | Required, unique in the document, and what a caller addresses. |
-| `agents[].engine` | Required. `kind` names a registered kind; there is no default. |
-| `agents[].runtime` | A stack of layers, at least one. Absent is legal only for an engine kind that reports `Local: false`. |
-| `agents[].catalog` | `scope: run` (default) or `session`: how far a tool projection is scoped. |
-| `agents[].protocol` | Absent means the agent is not exposed. `kind` is required when the block is present. |
-| `agents[].delegation` | Absent means **no** delegation tools, not "unrestricted". |
-| `agents[].observability` | Absent fields fall back to the host's bindings; "silent" is not "off". |
-| `agents[].hooks` | Chained in declaration order, before the host's own hooks. |
+| Field                    | Rule                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| `version`                | Must be `1`.                                                                                          |
+| `agents[].name`          | Required, unique in the document, and what a caller addresses.                                        |
+| `agents[].engine`        | Required. `kind` names a registered kind; there is no default.                                        |
+| `agents[].runtime`       | A stack of layers, at least one. Absent is legal only for an engine kind that reports `Local: false`. |
+| `agents[].catalog`       | `scope: run` (default) or `session`: how far a tool projection is scoped.                             |
+| `agents[].protocol`      | Absent means the agent is not exposed. `kind` is required when the block is present.                  |
+| `agents[].delegation`    | Absent means **no** delegation tools, not "unrestricted".                                             |
+| `agents[].observability` | Absent fields fall back to the host's bindings; "silent" is not "off".                                |
+| `agents[].hooks`         | Chained in declaration order, before the host's own hooks.                                            |
 
 Unknown fields, duplicate agent names and unregistered kinds are load errors. A
 kind the document names but the host did not register fails with the registered
@@ -70,11 +70,11 @@ are replaced. A permission list must not grow because somebody added a line.
 Placeholders are resolved once, after the merge, so a value an overriding layer
 replaced is never looked up:
 
-| Form | Resolves through |
-| --- | --- |
-| `${NAME}` | the environment |
+| Form                | Resolves through                |
+| ------------------- | ------------------------------- |
+| `${NAME}`           | the environment                 |
 | `${NAME:-fallback}` | the environment, with a default |
-| `${scheme:arg:arg}` | a resolver the host registered |
+| `${scheme:arg:arg}` | a resolver the host registered  |
 
 ## Placeholders before start
 
@@ -107,7 +107,7 @@ requirement, err := loader.RequiredPlaceholdersFile("deploy.yaml")
 
 It does **not** construct a provider, a sandbox or a tool: settings semantics,
 credentials and endpoint reachability are the host's business at start time, and
-a graph's node *kinds* are checked when the registry exists.
+a graph's node _kinds_ are checked when the registry exists.
 
 ## Errors
 

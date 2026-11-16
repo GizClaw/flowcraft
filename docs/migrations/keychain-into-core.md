@@ -2,6 +2,7 @@
 layout: default
 title: Migrating the keychain secret store into core
 ---
+
 # Migrating the keychain secret store into core
 
 The `backends/secret` module was retired and its one package moved into the
@@ -13,9 +14,9 @@ platform implementation.
 
 ## What moved
 
-| Removed module | Use instead | Package |
-| --- | --- | --- |
-| `backends/secret` | `core` | `github.com/GizClaw/flowcraft/core/secret/keychain` |
+| Removed module    | Use instead | Package                                             |
+| ----------------- | ----------- | --------------------------------------------------- |
+| `backends/secret` | `core`      | `github.com/GizClaw/flowcraft/core/secret/keychain` |
 
 ## Deployment documents
 
@@ -35,8 +36,8 @@ resources:
 
 ## Go callers
 
-| Before | After |
-| --- | --- |
+| Before                                                  | After                                               |
+| ------------------------------------------------------- | --------------------------------------------------- |
 | `github.com/GizClaw/flowcraft/backends/secret/keychain` | `github.com/GizClaw/flowcraft/core/secret/keychain` |
 
 `keychain.Register`, `keychain.NewStore`, `keychain.Manager` and

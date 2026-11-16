@@ -2,6 +2,7 @@
 layout: default
 title: Inference Runtime
 ---
+
 # Inference Runtime Guide
 
 `core/inference` is the contract for model calls, and three packages around it are
@@ -49,9 +50,9 @@ means declaration order.
 ```yaml
 inference:
   providers:
-    - name: luna                   # deployment identity, secret-free
-      driver: openai               # a name the host compiled in
-      settings:                    # the driver's own written form (see below)
+    - name: luna # deployment identity, secret-free
+      driver: openai # a name the host compiled in
+      settings: # the driver's own written form (see below)
         base_url: https://api.openai.com/v1
         api_key: "${OPENAI_API_KEY}"
         api: responses
@@ -61,23 +62,23 @@ inference:
       weight: 100
       # Fill in only what the driver's catalog does not declare; a
       # contradiction is an assembly error, not an override.
-      capabilities: {inputs: [text, image], outputs: [text]}
-      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+      capabilities: { inputs: [text, image], outputs: [text] }
+      limits: { max_input_tokens: 200000, max_output_tokens: 32000 }
   route:
-    selector: weighted             # a name the host registered
+    selector: weighted # a name the host registered
     attempts_per_target: 2
     max_targets: 3
     base_delay: 200ms
     max_delay: 2s
 ```
 
-| Block | Rule |
-| --- | --- |
-| `providers[].name` | The deployment's identity for the account or endpoint; it is what `models[].provider` refers to. |
-| `providers[].driver` | Must be registered on the `Runtime`; an unknown one fails with the offered names. |
-| `providers[].settings` | Opaque to core: the driver's constructor decodes it. |
-| `models[]` | Position is priority — the first model is tried first. Declaring a model is the only way one exists. |
-| `route` | Optional. `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`, `selector`, `selector_settings`. |
+| Block                  | Rule                                                                                                        |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `providers[].name`     | The deployment's identity for the account or endpoint; it is what `models[].provider` refers to.            |
+| `providers[].driver`   | Must be registered on the `Runtime`; an unknown one fails with the offered names.                           |
+| `providers[].settings` | Opaque to core: the driver's constructor decodes it.                                                        |
+| `models[]`             | Position is priority — the first model is tried first. Declaring a model is the only way one exists.        |
+| `route`                | Optional. `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`, `selector`, `selector_settings`. |
 
 ## Drivers and their settings
 
@@ -166,12 +167,12 @@ one), the model it serves, and the deployment profile it belongs to. Dispatch
 stamps the winning target's model identity onto the request, so a caller names a
 model and the answer carries the provider that actually served it.
 
-| Field | Meaning |
-| --- | --- |
-| `Generate`, `Decision` | One selector per seam; a nil selector means every target in order. |
-| `Retry.AttemptsPerTarget` | Tries of one target for a transient failure; zero means one. |
-| `Retry.MaxTargets` | How many candidates are tried; zero means all the selector returned. |
-| `Retry.BaseDelay`, `Retry.MaxDelay` | Backoff, doubling per attempt, capped. |
+| Field                               | Meaning                                                              |
+| ----------------------------------- | -------------------------------------------------------------------- |
+| `Generate`, `Decision`              | One selector per seam; a nil selector means every target in order.   |
+| `Retry.AttemptsPerTarget`           | Tries of one target for a transient failure; zero means one.         |
+| `Retry.MaxTargets`                  | How many candidates are tried; zero means all the selector returned. |
+| `Retry.BaseDelay`, `Retry.MaxDelay` | Backoff, doubling per attempt, capped.                               |
 
 A **selector** is a Go value, and `runtime.Selector` is only the name that lets a
 document refer to one — two typed slots, because
@@ -202,7 +203,7 @@ merges blindly:
 ```yaml
 request:
   extensions:
-    - {name: reasoning, settings: {effort: high}}
+    - { name: reasoning, settings: { effort: high } }
 ```
 
 An extension name is resolved against the `ExtensionDecoder`s the host registered
@@ -233,11 +234,11 @@ host's decision, not the runtime's.
 `Decider.Decide` answers a set of questions in request order and returns one answer
 per question:
 
-| Type | Is |
-| --- | --- |
-| `Question` | One question with a `QuestionKind`: a choice among labelled options, a probability, a free answer. |
-| `ChoiceValue`, `Probability`, `Answer` | The shapes an answer takes. |
-| `DecisionRequest`, `DecisionResponse` | The batch and its results, with usage and the same error vocabulary as generation. |
+| Type                                   | Is                                                                                                 |
+| -------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `Question`                             | One question with a `QuestionKind`: a choice among labelled options, a probability, a free answer. |
+| `ChoiceValue`, `Probability`, `Answer` | The shapes an answer takes.                                                                        |
+| `DecisionRequest`, `DecisionResponse`  | The batch and its results, with usage and the same error vocabulary as generation.                 |
 
 Routing applies to judgment too — `runtime.Selector.Decision` is the other typed
 slot — because "which model judges this" is the same question as "which model
@@ -253,21 +254,21 @@ the request member at fault: `InvalidRequest`, `UnsupportedOperation`,
 A routing decision classifies from that vocabulary, not from a string, and it has
 three outcomes rather than two:
 
-| Outcome | Kinds | Meaning |
-| --- | --- | --- |
-| retry the same target | `ProviderFailure`, `ProviderTruncated` | Transient, or a target worth one more attempt. |
-| move to the next target | `UnknownModel`, `UnsupportedOperation`, `UnsupportedFeature`, and anything unclassified | This target cannot serve the request; another may. |
-| stop | `InvalidRequest`, `InvalidExtension`, `PolicyDenied`, `UndefinedTool`, `CompilerContractViolation`, `OperationInterrupted`, and a cancelled context | Repeating it anywhere produces the same answer. |
+| Outcome                 | Kinds                                                                                                                                               | Meaning                                            |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
+| retry the same target   | `ProviderFailure`, `ProviderTruncated`                                                                                                              | Transient, or a target worth one more attempt.     |
+| move to the next target | `UnknownModel`, `UnsupportedOperation`, `UnsupportedFeature`, and anything unclassified                                                             | This target cannot serve the request; another may. |
+| stop                    | `InvalidRequest`, `InvalidExtension`, `PolicyDenied`, `UndefinedTool`, `CompilerContractViolation`, `OperationInterrupted`, and a cancelled context | Repeating it anywhere produces the same answer.    |
 
 That is what makes a fallback safe: a wrong request is not retried three times
 against three vendors, and a cancelled call is not retried at all.
 
 ## What this is not
 
-| Not here | Where |
-| --- | --- |
+| Not here                                       | Where                                                                                  |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------- |
 | A provider registry with `init()` registration | The host's `runtime.WithDrivers` table: "which drivers exist" is a fact of the binary. |
-| A vendor's model line-up | The deployment declares it; drivers ship none. |
-| Transcription, image generation | Driver extensions (`core/inference-openai`). |
-| Realtime | Reserved; no seam yet. |
-| Token counting | No tokenizer in core. |
+| A vendor's model line-up                       | The deployment declares it; drivers ship none.                                         |
+| Transcription, image generation                | Driver extensions (`core/inference-openai`).                                           |
+| Realtime                                       | Reserved; no seam yet.                                                                 |
+| Token counting                                 | No tokenizer in core.                                                                  |

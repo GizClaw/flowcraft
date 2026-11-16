@@ -2,6 +2,7 @@
 layout: default
 title: Delegation
 ---
+
 # Delegation Guide
 
 `core/delegation` lets one agent hand work to another and get an answer back. A
@@ -30,12 +31,12 @@ Delegation is a block on an agent, not an assembly graph:
 agents:
   - name: forge
     delegation:
-      targets: [forge-review, forge-test]   # empty = every deployed agent except self
-      modes: [sync, async]                  # empty = sync only
-      max_depth: 4                          # zero = 4
-      max_concurrent: 4                     # zero = 4
-      timeout: 5m                           # zero = the caller's context
-      max_input_bytes: 65536                # zero = 64 KiB
+      targets: [forge-review, forge-test] # empty = every deployed agent except self
+      modes: [sync, async] # empty = sync only
+      max_depth: 4 # zero = 4
+      max_concurrent: 4 # zero = 4
+      timeout: 5m # zero = the caller's context
+      max_input_bytes: 65536 # zero = 64 KiB
 ```
 
 An **absent** block means the agent gets no delegation tools at all — not
@@ -45,13 +46,13 @@ against its own agents.
 
 `delegation.Tools(service)` is the model-facing surface:
 
-| Tool | Use |
-| --- | --- |
-| `delegate` | Hand an input to a target; sync waits, async returns a delegation id. |
-| `delegation_targets` | What this agent may reach, from the policy. |
-| `delegation_status` | The state of one delegation, by id, including a question it asked. |
-| `delegation_answer` | Answer a child that is waiting for input. |
-| `delegation_cancel` | Stop a child. |
+| Tool                 | Use                                                                   |
+| -------------------- | --------------------------------------------------------------------- |
+| `delegate`           | Hand an input to a target; sync waits, async returns a delegation id. |
+| `delegation_targets` | What this agent may reach, from the policy.                           |
+| `delegation_status`  | The state of one delegation, by id, including a question it asked.    |
+| `delegation_answer`  | Answer a child that is waiting for input.                             |
+| `delegation_cancel`  | Stop a child.                                                         |
 
 The tools read the policy on every call, so a projection rebuilt for a new
 generation sees that generation's targets.
@@ -88,21 +89,21 @@ and returns as soon as the work is accepted.
 
 ## Statuses and outcomes
 
-| Status | Meaning |
-| --- | --- |
-| `accepted` | An async job is stored and not yet claimed. |
-| `running` | The child is working. |
-| `completed` | The child produced a final answer. |
+| Status           | Meaning                                                         |
+| ---------------- | --------------------------------------------------------------- |
+| `accepted`       | An async job is stored and not yet claimed.                     |
+| `running`        | The child is working.                                           |
+| `completed`      | The child produced a final answer.                              |
 | `input_required` | The child asked a question; answer it with `delegation_answer`. |
-| `failed` | The child failed or was rejected. |
-| `canceled` | The child was stopped. |
+| `failed`         | The child failed or was rejected.                               |
+| `canceled`       | The child was stopped.                                          |
 
 `Outcome` carries the status, the delegation id, the target, the child session id,
 the content or the question, an error string, and the lineage:
 
-| Field | Meaning |
-| --- | --- |
-| `Depth` | Edges above this run; the root sees zero. |
+| Field     | Meaning                                                                                                              |
+| --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `Depth`   | Edges above this run; the root sees zero.                                                                            |
 | `ChainID` | The root delegation of the chain, `sha256(session, task, call)`; every descendant keeps it, so a chain is one trace. |
 
 ## Async jobs

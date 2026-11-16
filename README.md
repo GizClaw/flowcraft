@@ -33,6 +33,8 @@ directly, or start from the forge demo in `examples/forge`.
   each: `bytedance`, `dashscope`, `minimax`.
 - **`examples/forge`** — a runnable local demo: a werewolf table played by a cast
   of agents, with a TUI, scripted tests and self-play.
+- **`examples/parallel`** — a standalone consumer: the HTTP MCP source bridged to
+  Parallel's search server, deliberately pinned to an older `core` release.
 - **`tools/releasegate`** — release automation: changeset validation, release
   planning, changelog aggregation.
 
@@ -42,25 +44,25 @@ Modules are independently versioned; an application adopts only what it needs.
 
 Three files describe one deployment, and each is validated without being built:
 
-| File | Says |
-| --- | --- |
-| `deploy.yaml` | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level |
-| a runtime layer | what one agent runs on: the sandbox boundary, the files it may write, its providers and models, its tools and skills |
-| a graph document | what the graph engine runs: state slots with merge rules, nodes, the conditions on their edges |
+| File             | Says                                                                                                                      |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `deploy.yaml`    | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level |
+| a runtime layer  | what one agent runs on: the sandbox boundary, the files it may write, its providers and models, its tools and skills      |
+| a graph document | what the graph engine runs: state slots with merge rules, nodes, the conditions on their edges                            |
 
 ```yaml
 version: 1
 agents:
   - name: assistant
     engine:
-      kind: graph                       # registered kind, not a built-in name
-      settings: {path: ./graphs/assistant.yaml}
+      kind: graph # registered kind, not a built-in name
+      settings: { path: ./graphs/assistant.yaml }
     runtime:
       layers:
-        - {priority: 0, path: ./runtime.yaml}
+        - { priority: 0, path: ./runtime.yaml }
     protocol:
       kind: a2a
-      settings: {peer: {url: https://client.example}}
+      settings: { peer: { url: https://client.example } }
     delegation:
       targets: [reviewer]
       modes: [sync]
@@ -122,50 +124,61 @@ See [`docs/guides/deploy.md`](docs/guides/deploy.md) and
 
 ## Architecture
 
-`core` is layered: a package imports only from the layers below it.
+`core` is layered: a package imports only from the layers below it, never from
+the ones above.
 
 ```text
-                 ┌──────────────────────────────────────────┐
-                 │            your application              │
-                 │  drivers · secret resolvers · approvals   │
-                 └───────────────────┬──────────────────────┘
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                         your application                        │
+    │              drivers · secret resolvers · approvals             │
+    └────────────────────────────────┬────────────────────────────────┘
                                      ▼
-        ┌────────────────────────────────────────────────────────┐
-        │ deployment   core/deploy (documents, kinds)            │
-        │              core/agent-host (process, sessions)       │
-        ├────────────────────────────────────────────────────────┤
-        │ assembly     core/runtime (provider · tools · sandbox  │
-        │              files · skills · journal; owns them)      │
-        ├────────────────────────────────────────────────────────┤
-        │ execution    core/agent · agent-graph · agent-a2a      │
-        │              core/delegation                           │
-        ├────────────────────────────────────────────────────────┤
-        │ boundaries   core/tool (+engine, middleware, mcp)      │
-        │              core/sandbox (+backends, journal, remote)  │
-        ├────────────────────────────────────────────────────────┤
-        │ inference    core/inference (+openai, +anthropic)       │
-        │              driver/*                                  │
-        ├────────────────────────────────────────────────────────┤
-        │ contracts    message · errdefs · permission · fsx       │
-        │              skill · search                            │
-        └────────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  deployment     agent-host (sessions, bindings)                 │
+    │                 deploy (documents, kinds)                       │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  execution      agent · agent-graph · agent-a2a                 │
+    │                 delegation                                      │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  assembly       runtime                                         │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  boundaries     tool (+engine, middleware, tooltest)            │
+    │                 tool-{builtin,mcp}                              │
+    │                 sandbox (+engine, journal, netpolicy)           │
+    │                 sandbox-{local,bwrap,seatbelt,windows} · remote │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  inference      inference (+model, protocol, route)             │
+    │                 inference-{openai,anthropic}                    │
+    │                 driver/* — shipped providers                    │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  contracts      message · errdefs · permission · fsx            │
+    │                 skill · runtime/runctx                          │
+    └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two rules keep that shape.** A `Runtime` owns what it built and closes it in
-reverse construction order; a value handed in through an option is somebody
-else's to close. And nothing below the assembly layer knows about a conversation:
-`core/agent` owns runs, `core/runtime` owns the substrate, and history is an
-argument to a turn.
+**Two rules keep that shape.** Imports travel downwards only: `agent-graph`
+reaches for `runtime`, `runtime` reaches for `tool` and `sandbox`, and nothing
+below the execution layer knows what a conversation is — `core/agent` owns runs,
+`core/runtime` owns the substrate a run is made of, and history is an argument to a
+turn rather than something a session remembers. `runtime/runctx` is drawn with the
+contracts because it imports `telemetry` alone: any layer can carry run attributes
+without reaching into the assembly. The other rule is ownership — a `Runtime`
+closes what it built in reverse construction order, and a value handed in through
+an option is somebody else's to close.
+
+`core/telemetry` sits outside the ladder: every layer reports through it, so it is
+above nothing and below nothing.
 
 ## Module map
 
-| Path | Role | Distribution |
-| --- | --- | --- |
-| [`core`](core/) | Platform module: contracts, inference, tools, sandbox, runtime, execution, deployment | Versioned Go module |
-| [`driver`](driver/) | Provider adapters that are not protocol families | Versioned Go module |
-| [`examples/forge`](examples/forge/) | Runnable demo: a werewolf table played by agents | Example |
-| [`tools/releasegate`](tools/releasegate/) | Release automation | Tool |
-| [`skills/flowcraft-deploy`](skills/flowcraft-deploy/) | Codex skill: reference cards, templates, validator | Skill |
+| Path                                                  | Role                                                                                  | Distribution        |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------- | ------------------- |
+| [`core`](core/)                                       | Platform module: contracts, inference, tools, sandbox, runtime, execution, deployment | Versioned Go module |
+| [`driver`](driver/)                                   | Provider adapters that are not protocol families                                      | Versioned Go module |
+| [`examples/forge`](examples/forge/)                   | Runnable demo: a werewolf table played by agents                                      | Example             |
+| [`examples/parallel`](examples/parallel/)             | Standalone consumer: MCP search bridge, pinned to an older `core`                     | Example             |
+| [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                    | Tool                |
+| [`skills/flowcraft-deploy`](skills/flowcraft-deploy/) | Codex skill: reference cards, templates, validator                                    | Skill               |
 
 ## Highlights
 
@@ -262,9 +275,11 @@ and a structural validator.
 skills/flowcraft-deploy/scripts/validate-config.sh deploy.yaml
 ```
 
-> The cards and templates in the skill still describe the pre-rebuild
-> configuration model, and the validator pins an older `core` release. They are
-> being rebuilt; until then the guides above are the reference.
+> The validator in `scripts/validator` pins the `core` release its checks were
+> written against. `make check-skill` builds it and runs it over the shipped
+> templates, and `make check-skill-pin` fails when that pin falls behind the newest
+> `core` tag, so a schema change cannot leave the skill checking a shape nobody
+> writes any more.
 
 Install it into Codex (replaces an existing copy, so remove
 `~/.codex/skills/flowcraft-deploy` first if present):

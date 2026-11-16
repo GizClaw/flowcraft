@@ -50,20 +50,20 @@ skills:
 
 ## `sandbox`
 
-| Field | Rule |
-| --- | --- |
-| `backend` | Required, no default. |
-| `workdir` | Where commands run; empty means the first files root. |
-| `writes` | Absolute paths a command may write; empty means read-only. |
-| `net.mode` | `default`, `none`, `allow_list`, `proxy`. |
-| `net.allow_hosts` | Only with `allow_list`. |
-| `net.proxy` | Only with `proxy`. |
-| `timeout` | Default per-call deadline; a tool may ask for less. |
-| `cpu_millicores` | Needs `timeout` (the budget is derived from it). |
-| `memory_mib`, `output_mib` | Caps; zero means unbounded / backend default. |
-| `journal` | A settings block; presence opts in. |
+| Field                          | Rule                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `backend`                      | Required, no default.                                                          |
+| `workdir`                      | Where commands run; empty means the first files root.                          |
+| `writes`                       | Absolute paths a command may write; empty means read-only.                     |
+| `net.mode`                     | `default`, `none`, `allow_list`, `proxy`.                                      |
+| `net.allow_hosts`              | Only with `allow_list`.                                                        |
+| `net.proxy`                    | Only with `proxy`.                                                             |
+| `timeout`                      | Default per-call deadline; a tool may ask for less.                            |
+| `cpu_millicores`               | Needs `timeout` (the budget is derived from it).                               |
+| `memory_mib`, `output_mib`     | Caps; zero means unbounded / backend default.                                  |
+| `journal`                      | A settings block; presence opts in.                                            |
 | `bwrap`, `seatbelt`, `windows` | That backend's own construction options — on any other backend it is an error. |
-| `remote` | Client configuration for `backend: remote`, absent otherwise. |
+| `remote`                       | Client configuration for `backend: remote`, absent otherwise.                  |
 
 The budget reaches every call: `timeout`, `cpu_millicores`, `memory_mib` and
 `writes` are projected onto each command, merged per field and taking the stricter
@@ -74,10 +74,10 @@ side. A cap the backend cannot enforce (a cpu budget on `local`, `writes` on
 
 ```yaml
 sandbox:
-  backend: bwrap            # or seatbelt
+  backend: bwrap # or seatbelt
   bwrap:
-    binary: /usr/bin/bwrap  # resolved against the runner root
-    extra_flags: [--die-with-parent]   # bwrap only; policy-weakening flags are refused
+    binary: /usr/bin/bwrap # resolved against the runner root
+    extra_flags: [--die-with-parent] # bwrap only; policy-weakening flags are refused
     readonly_root: true
 ```
 
@@ -85,7 +85,7 @@ sandbox:
 sandbox:
   backend: windows
   windows:
-    write_confine: true     # Low-integrity token; without it the runner is lifecycle-only
+    write_confine: true # Low-integrity token; without it the runner is lifecycle-only
 ```
 
 ### Journal
@@ -93,10 +93,10 @@ sandbox:
 ```yaml
 sandbox:
   journal:
-    exclude: [.git, node_modules]   # never watched (the cost control)
-    retention: 4096                 # events kept for replay (default 4096)
-    max_watch_set: 20000            # watch budget; past it, a capacity gap
-    ops: [create, rename, remove]   # drop "write" events
+    exclude: [.git, node_modules] # never watched (the cost control)
+    retention: 4096 # events kept for replay (default 4096)
+    max_watch_set: 20000 # watch budget; past it, a capacity gap
+    ops: [create, rename, remove] # drop "write" events
 ```
 
 A platform without a watch source fails the build when a journal is configured.
@@ -107,7 +107,7 @@ A platform without a watch source fails the build when a journal is configured.
 sandbox:
   backend: remote
   remote:
-    transport: unix        # http (default) | unix
+    transport: unix # http (default) | unix
     socket: /run/flowcraft/sandbox.sock
     timeout: 30s
     poll_hold: 15s
@@ -120,14 +120,14 @@ which is why `tools.files` with `backend: remote` warns.
 
 ## `files`, `skills`, `tools`
 
-| Section | Rule |
-| --- | --- |
-| `files.roots` | At least one, all absolute; also the write policy the file tools enforce. |
-| `skills.roots` | Directories scanned for `SKILL.md`; one index, shared by the tools and the host. |
-| `tools.enable` | Tool **groups** (`files`, `exec`, `skills`), not individual tool names; empty enables every registered group. |
-| `tools.dynamic` | The projection: `default`, `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`. |
-| `tools.images` | Publish the image-reading branch of the file tools. |
-| `tools.mcp` | `defer` plus `servers[]`: `transport: stdio|http`, `command`/`url`, `prefix`, `required`, `liveness`. |
+| Section            | Rule                                                                                                                                          |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `files.roots`      | At least one, all absolute; also the write policy the file tools enforce.                                                                     |
+| `skills.roots`     | Directories scanned for `SKILL.md`; one index, shared by the tools and the host.                                                              |
+| `tools.enable`     | Tool **groups** (`files`, `exec`, `skills`), not individual tool names; empty enables every registered group.                                 |
+| `tools.dynamic`    | The projection: `default`, `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`.                                      |
+| `tools.images`     | Publish the image-reading branch of the file tools.                                                                                           |
+| `tools.mcp`        | `defer` plus `servers[]`: `transport: stdio                                                                                                   | http`, `command`/`url`, `prefix`, `required`, `liveness`. |
 | `tools.middleware` | Ordered list of `{name, settings}`; built-ins: `telemetry`, `recover`, `result_limit`, `concurrency`, `redact`. `recover` cannot be disabled. |
 
 ## `inference`

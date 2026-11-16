@@ -253,6 +253,17 @@ jobs:
           globs: |
             README.md
             docs/**/*.md
+      # Linting and formatting are different gates: markdownlint reads structure
+      # (a table with the wrong column count, a heading without a blank line),
+      # prettier reads layout (cell padding, fence indentation, list markers).
+      # Every file it walks is already formatted, `.prettierignore` keeps the
+      # local-only tree out of both, and the version is pinned because a minor
+      # prettier release re-wraps prose and would otherwise redden main on its
+      # own schedule.
+      - name: prettier
+        run: |
+          npx --yes prettier@3.6.2 --check \
+            "README.md" "CONTRIBUTING.md" "docs/**/*.md" "skills/**/*.md"
       # A module that needs a tidy is a module whose go.mod no longer describes
       # its imports; the release gate rejects that state, so catch it earlier.
       - name: go mod tidy

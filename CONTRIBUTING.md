@@ -15,7 +15,10 @@ make release-check
 git diff --check
 ```
 
-Add tests for changed behavior and format Go files with `gofmt`. Commit
+Add tests for changed behavior and format Go files with `gofmt`. Markdown is
+formatted with Prettier (`npx prettier@3.6.2 --write "*.md" "docs/**/*.md"
+"skills/**/*.md"`); the hygiene lane runs the same pinned version in check mode,
+so a formatting-only diff is the one thing CI will reject outright. Commit
 messages use Conventional Commits with a module scope, e.g.
 `feat(driver/openai): add qwen provider` or `fix(core): harden streaming`.
 Keep changes within module boundaries.

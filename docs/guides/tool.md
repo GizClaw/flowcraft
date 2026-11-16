@@ -2,6 +2,7 @@
 layout: default
 title: Tool System
 ---
+
 # Tool System Guide
 
 `core/tool` defines the LLM function-calling contract, a registry/catalog
@@ -9,10 +10,10 @@ directory, the executor dispatcher, and a middleware chain.
 
 ## Roles
 
-| Type | Responsibility |
-| --- | --- |
-| `Registry` | mutable, thread-safe directory of tools |
-| `Catalog` | read-side view (`Get`, `Definitions`) |
+| Type       | Responsibility                           |
+| ---------- | ---------------------------------------- |
+| `Registry` | mutable, thread-safe directory of tools  |
+| `Catalog`  | read-side view (`Get`, `Definitions`)    |
 | `Executor` | dispatches every call through middleware |
 
 `Registry.Add` / `Registry.Remove` register and unregister tools at
@@ -40,15 +41,15 @@ Dynamic injection is configured under `tools.dynamic`:
 
 ```yaml
 tools:
-  enable: [read, write, exec, tool_search]   # empty = every registered tool
+  enable: [read, write, exec, tool_search] # empty = every registered tool
   dynamic:
-    default: deferred          # always | direct | deferred | hidden
-    always: [tool_search]      # forced visible every round
-    hidden: [write]            # never projected
-    budget: 32                 # visible definitions per round
-    max_bytes: 16384           # their encoded size
-    idle_rounds: 10            # pool eviction
-    search_with_load: false    # tool_search returns and loads in one step
+    default: deferred # always | direct | deferred | hidden
+    always: [tool_search] # forced visible every round
+    hidden: [write] # never projected
+    budget: 32 # visible definitions per round
+    max_bytes: 16384 # their encoded size
+    idle_rounds: 10 # pool eviction
+    search_with_load: false # tool_search returns and loads in one step
 ```
 
 `tool_search` is the discovery tool: a query plus an optional limit.
@@ -88,22 +89,22 @@ when a tool from it is loaded.
 ```yaml
 tools:
   mcp:
-    defer: false                   # eager: every server starts with the runtime
+    defer: false # eager: every server starts with the runtime
     servers:
       - name: filesystem
-        transport: stdio           # stdio | http
+        transport: stdio # stdio | http
         command: npx
         args: ["-y", "@modelcontextprotocol/server-filesystem"]
-        env: {TOKEN: "${MCP_TOKEN}"}
-        prefix: fs                 # tool namespace; default "<name>__"
-        description: "Workspace files"   # what search can rank before connecting
-        resources: true            # bridge list_resources / read_resource tools
-        required: true             # the runtime fails if it cannot connect
-        liveness: 30s              # probe interval; "off" disables pings
+        env: { TOKEN: "${MCP_TOKEN}" }
+        prefix: fs # tool namespace; default "<name>__"
+        description: "Workspace files" # what search can rank before connecting
+        resources: true # bridge list_resources / read_resource tools
+        required: true # the runtime fails if it cannot connect
+        liveness: 30s # probe interval; "off" disables pings
       - name: remote
         transport: http
         url: https://mcp.example.com/mcp
-        headers: {Authorization: "Bearer ${MCP_TOKEN}"}
+        headers: { Authorization: "Bearer ${MCP_TOKEN}" }
         http_timeout: 30s
 ```
 
@@ -206,9 +207,9 @@ tools:
   middleware:
     - name: telemetry
     - name: result_limit
-      settings: {max_bytes: 20000}
+      settings: { max_bytes: 20000 }
     - name: concurrency
-      settings: {limit: 8}
+      settings: { limit: 8 }
 ```
 
 An empty list is not "no middleware": the runtime installs `recover` then
@@ -218,13 +219,13 @@ either — when the list omits it, it is prepended and the substitution is logge
 It converts a panicking tool (or inner middleware) into an `IsError` result, and
 `Executor.Execute` still catches a panic escaping the whole chain.
 
-| Name | Settings | Effect |
-| --- | --- | --- |
-| `telemetry` | — | an OpenTelemetry span per call, plus execution/duration/error metrics |
-| `recover` | — | a panic becomes an `IsError` result instead of a process exit |
-| `result_limit` | `max_bytes`, `marker`, `part_budget_bytes` | caps one result's text and the encoded size of its non-text parts |
-| `concurrency` | `limit` (must be positive) | caps in-flight executions; excess callers wait, respecting cancellation |
-| `redact` | `patterns` (required) | masks secret-shaped substrings in results and arguments |
+| Name           | Settings                                   | Effect                                                                  |
+| -------------- | ------------------------------------------ | ----------------------------------------------------------------------- |
+| `telemetry`    | —                                          | an OpenTelemetry span per call, plus execution/duration/error metrics   |
+| `recover`      | —                                          | a panic becomes an `IsError` result instead of a process exit           |
+| `result_limit` | `max_bytes`, `marker`, `part_budget_bytes` | caps one result's text and the encoded size of its non-text parts       |
+| `concurrency`  | `limit` (must be positive)                 | caps in-flight executions; excess callers wait, respecting cancellation |
+| `redact`       | `patterns` (required)                      | masks secret-shaped substrings in results and arguments                 |
 
 Non-text parts are bounded even without a `result_limit`: a tool result rides every
 later turn's context, and an inline image has no natural size.
