@@ -23,15 +23,15 @@ go run . test-auto --raid werewolf --rounds 8     # 让它自己打一局
 
 ## 命令
 
-| 命令 | 作用 |
-|---|---|
-| `forge workspace create --config <raid> --workspace <dir>` | 把副本复制成一个工作区 |
-| `forge workspace inspect --workspace <dir>` | 列出每个 agent：导演还是发言者、名字、图、模型、工具、委派目标、钩子 |
-| `forge inspect <workspace> [--task <id>] [--kind <kind>]` | 从 store 里把一个 run 折叠成时间线 |
-| `forge config raid\|persona\|test list` | 列出场景与测试 |
-| `forge tui new` / `forge tui resume` | 交互式牌桌 |
-| `forge test -test <raid>/<name> [--timeout 2m]` | 跑一条脚本化测试，产物写到 `.out/<run>/` |
-| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | 自动打完整局，人类座位由它自己的 agent 回答 |
+| 命令                                                             | 作用                                                                 |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `forge workspace create --config <raid> --workspace <dir>`       | 把副本复制成一个工作区                                               |
+| `forge workspace inspect --workspace <dir>`                      | 列出每个 agent：导演还是发言者、名字、图、模型、工具、委派目标、钩子 |
+| `forge inspect <workspace> [--task <id>] [--kind <kind>]`        | 从 store 里把一个 run 折叠成时间线                                   |
+| `forge config raid\|persona\|test list`                          | 列出场景与测试                                                       |
+| `forge tui new` / `forge tui resume`                             | 交互式牌桌                                                           |
+| `forge test -test <raid>/<name> [--timeout 2m]`                  | 跑一条脚本化测试，产物写到 `.out/<run>/`                             |
+| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | 自动打完整局，人类座位由它自己的 agent 回答                          |
 
 场景解析顺序：`--scenarios` → `FORGE_SCENARIOS` → 可执行文件目录 → 当前目录 →
 用户配置目录。
@@ -82,12 +82,12 @@ brief 第一行里的对局 id。只有引擎知道一回合何时开始、何�
 
 一个副本 = 一个导演 + 一个班子。目录里的两个副本只差一个维度：**导演说不说话**。
 
-| | werewolf（裁判型） | storyteller（讲述型） |
-|---|---|---|
-| 导演 | `referee`：只有规则，**自己不做模型调用** | `narrator`：两个模型节点 `schedule` / `narrate` |
-| 班子 | 八个玩家，其中一个是人 | 四个角色，没有人 |
-| 真相在哪 | 牌桌状态（`game`） | 蓝图与进度（`story`） |
-| 何时结束 | 牌桌等人，或某一方获胜 | 弧线交还给读者，最后收束 |
+|          | werewolf（裁判型）                        | storyteller（讲述型）                           |
+| -------- | ----------------------------------------- | ----------------------------------------------- |
+| 导演     | `referee`：只有规则，**自己不做模型调用** | `narrator`：两个模型节点 `schedule` / `narrate` |
+| 班子     | 八个玩家，其中一个是人                    | 四个角色，没有人                                |
+| 真相在哪 | 牌桌状态（`game`）                        | 蓝图与进度（`story`）                           |
+| 何时结束 | 牌桌等人，或某一方获胜                    | 弧线交还给读者，最后收束                        |
 
 讲述型副本是**数据**而不只是代码：`rules/seed.star` 铺开十个阶段的蓝图，每段有目标、
 边界、允许发言的人、以及交给读者前跑几拍。规则决定候选名单，调度模型在其中选一位，
@@ -104,8 +104,8 @@ brief 第一行里的对局 id。只有引擎知道一回合何时开始、何�
 
 ```yaml
 # story.yaml
-internal: [schedule]        # 调度控制行不进正文
-until: "故事收束"            # 自动对局停在这句
+internal: [schedule] # 调度控制行不进正文
+until: "故事收束" # 自动对局停在这句
 ```
 
 ```bash
@@ -125,7 +125,7 @@ go run . test-auto --raid storyteller --rounds 12
     path: rules/perform.star
     reads: [game, brief]
     writes: [game, brief, spoken]
-    allow: [tool:delegate]        # 唯一一条会动手的规则
+    allow: [tool:delegate] # 唯一一条会动手的规则
 ```
 
 - **声明即全部**：`reads`/`writes` 就是这条规则的接触面，`allow` 是它能用的全部工具。
@@ -143,11 +143,11 @@ go run . test-auto --raid storyteller --rounds 12
 
 在 `deploy.yaml` 里按 agent 声明：
 
-| 钩子 | 时机 | 失败后果 |
-|---|---|---|
-| `OnSession` | 会话打开或恢复之后、回合之前 | 终止本回合 |
-| `BeforeTurn` | 引擎拿到回合之前，可改写消息 | 终止本回合 |
-| `AfterTurn` | run 结束之后，带状态与结果 | **只记日志，不算失败** |
+| 钩子         | 时机                         | 失败后果               |
+| ------------ | ---------------------------- | ---------------------- |
+| `OnSession`  | 会话打开或恢复之后、回合之前 | 终止本回合             |
+| `BeforeTurn` | 引擎拿到回合之前，可改写消息 | 终止本回合             |
+| `AfterTurn`  | run 结束之后，带状态与结果   | **只记日志，不算失败** |
 
 `AfterTurn` 是那个"不能失败"的：活已经干完，副作用无法撤销，所以一次记忆写入输给竞态
 应该是一行日志，而不是一局游戏卡住。
@@ -183,18 +183,18 @@ step 4  perform  (live)
 
 ## 代码在哪
 
-| 路径 | 职责 |
-|---|---|
-| `internal/app` | 打开工作区：manager、store、会话、一个回合 |
+| 路径                       | 职责                                                  |
+| -------------------------- | ----------------------------------------------------- |
+| `internal/app`             | 打开工作区：manager、store、会话、一个回合            |
 | `internal/app/document.go` | 读 `deploy.yaml`、`${workspace:root}`、缺失的环境变量 |
-| `internal/app/drivers.go` | 这个二进制编进来的 driver 表 |
-| `internal/hooks/memory` | `seat-memory` 钩子类型 |
-| `internal/story` | 这张桌子是谁：导演、发言者、名字、玩家座位 |
-| `internal/simtools` | 场景自带的工具，作为一个 `tool.Source` |
-| `internal/chatfmt` | 事件 → 发言/工具块，TUI 与测试日志共用 |
-| `internal/tui` | bubbletea 界面 |
-| `internal/commands` | CLI 表面，含 `inspect` |
-| `internal/scenario` | 文件解析与复制，与 agent 无关 |
+| `internal/app/drivers.go`  | 这个二进制编进来的 driver 表                          |
+| `internal/hooks/memory`    | `seat-memory` 钩子类型                                |
+| `internal/story`           | 这张桌子是谁：导演、发言者、名字、玩家座位            |
+| `internal/simtools`        | 场景自带的工具，作为一个 `tool.Source`                |
+| `internal/chatfmt`         | 事件 → 发言/工具块，TUI 与测试日志共用                |
+| `internal/tui`             | bubbletea 界面                                        |
+| `internal/commands`        | CLI 表面，含 `inspect`                                |
+| `internal/scenario`        | 文件解析与复制，与 agent 无关                         |
 
 整个 host 就是 `host.New` + `Loader.Load` + `Deploy`：
 
