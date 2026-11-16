@@ -137,7 +137,7 @@ func StartSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 		signal:  func(sig sandbox.SessionSignal) error { return signalSession(pty, pgid, sig) },
 		soft:    func() { killGroup(pgid, syscall.SIGTERM, "sandbox: SIGTERM process group failed") },
 		hard:    func() { killGroup(pgid, syscall.SIGKILL, "sandbox: SIGKILL process group failed") },
-		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, pty, &copiers, sampler) },
+		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, pty, &copiers, sampler, pgid) },
 		release: func() { releaseOnce.Do(func() { releaseSession(s, pty, sampler) }) },
 	}
 
@@ -225,37 +225,38 @@ func killGroup(pgid int, sig syscall.Signal, msg string) {
 	}
 }
 
-// ptyDrainGrace bounds the wait for the copier once the child is reaped. It is
-// the unix sibling of the Windows path's sessionKillTimeout, and deliberately
-// shorter: draining a pty buffer is microseconds of work, so the bound only
-// decides how long a caller waits for a backgrounded grandchild to let go.
-//
-// A caller whose own Wait deadline is shorter than this can see its context
-// expire for a child that already exited. That window is the price of not losing
-// the tail, and it exists only for TTY sessions — engine.Exec never sets one.
+// ptyDrainGrace bounds each step of the drain once the child is reaped.
 const ptyDrainGrace = 500 * time.Millisecond
 
 // drainAndClosePTY hands the copier what the child left behind, then closes the
 // master.
 //
-// The order is the whole point. When a child is reaped, its last write may still
-// sit in the pty buffer, and the copier owns those bytes until it reads the EOF
-// that follows; closing the master first discards them, which is how a short
-// answer reaches the journal empty on a loaded machine. The wait is bounded
-// because a backgrounded grandchild can hold the slave open, and closing the
-// master is exactly what releases a copier blocked on it.
-func drainAndClosePTY(copiers *sync.WaitGroup, pty *ptyHandle, id string) {
+// The ordering is the fix: when a child is reaped its last write can still sit in
+// the pty buffer, and the copier is the only reader that turns those bytes into
+// journal chunks, so closing the master first discards them.
+//
+// It is bounded because closing a pty master does not interrupt a read that is
+// already blocked — not on Linux, not on macOS — so a child that left something
+// holding the slave (a daemon behind `trap ” HUP`) would otherwise leave the
+// copier waiting on a descriptor nobody will close, and Wait would never return.
+// A terminal hangup is what ends such a group in the ordinary case, so the group
+// gets SIGHUP; if that is ignored it gets SIGKILL, which does close the
+// descriptors and lets the copier's read fail. The old order hung in exactly this
+// case, because it relied on the close to interrupt the read.
+func drainAndClosePTY(copiers *sync.WaitGroup, pty *ptyHandle, pgid int, id string) {
 	done := make(chan struct{})
 	go func() {
 		copiers.Wait()
 		close(done)
 	}()
-	timer := time.NewTimer(ptyDrainGrace)
-	select {
-	case <-done:
-	case <-timer.C:
+
+	if !waitClosed(done, ptyDrainGrace) {
+		killGroup(pgid, syscall.SIGHUP, "sandbox: SIGHUP the session group after reap failed")
+		if !waitClosed(done, ptyDrainGrace) {
+			killGroup(pgid, syscall.SIGKILL, "sandbox: SIGKILL the session group after reap failed")
+			waitClosed(done, ptyDrainGrace)
+		}
 	}
-	timer.Stop()
 
 	master := pty.take()
 	if master != nil {
@@ -264,8 +265,22 @@ func drainAndClosePTY(copiers *sync.WaitGroup, pty *ptyHandle, id string) {
 				attribute.String("sandbox.session_id", id))
 		}
 	}
-	// Idempotent once the copier finished above; the release path when it did not.
+	// Idempotent when the copier finished above. After a kill it is the step that
+	// keeps the journal consistent: the log is finished only once no copier can
+	// append again.
 	copiers.Wait()
+}
+
+// waitClosed reports whether done was closed within d.
+func waitClosed(done <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // waitSession reaps the child, drains the pty and classifies the outcome.
@@ -281,13 +296,14 @@ func waitSession(
 	pty *ptyHandle,
 	copiers *sync.WaitGroup,
 	sampler *GroupCapsWatcher,
+	pgid int,
 ) (sandbox.SessionExit, error) {
 	waitErr := cmd.Wait()
 	// A verdict is what the sampler observed while the child ran. Reading it here
 	// keeps the drain below from attributing a background grandchild's memory to a
 	// child that has already exited.
 	sampled := readVerdict(sampler)
-	drainAndClosePTY(copiers, pty, s.id)
+	drainAndClosePTY(copiers, pty, pgid, s.id)
 	return classifyExit(s, sampled, waitErr)
 }
 
