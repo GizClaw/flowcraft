@@ -22,7 +22,10 @@ import (
 // [SessionAttacher.Attach] — the same way: a decorator that swallows one
 // while [Capabilities] keeps advertising it makes the declaration a lie.
 // Embedding sandbox.Runner does not promote those methods; engine.Forwarder is
-// the base that forwards them for you.
+// the base that forwards them for you. It deliberately does not promote
+// [Executor] either: a decorator that re-runs the command must be the outermost
+// value, never wrapped by a plain Forwarder that would turn the override off
+// without an error.
 //
 // Capabilities is mandatory: it is the explicit, wire-safe declaration
 // of what this backend can do. Callers and tools never discover

@@ -41,6 +41,11 @@ func WithEscalationObserver(fn func(EscalationOutcome)) EscalationRunnerOption {
 // NewEscalationRunner wires esc into a runner. Both chains are required: a
 // confined chain with no retry target can only ever fail closed, and a retry
 // target with no confine is not an escalation.
+//
+// The escalation is copied at construction: its fields are exported and mutable,
+// so a host that rebuilt Escalation.Confined afterwards would split the chain
+// Start forwards to from the one Exec re-runs, and leak the runner it swapped
+// in.
 func NewEscalationRunner(esc *Escalation, opts ...EscalationRunnerOption) (*EscalationRunner, error) {
 	if esc == nil {
 		return nil, errdefs.Validationf("sandbox: escalation runner requires an escalation")
@@ -49,11 +54,12 @@ func NewEscalationRunner(esc *Escalation, opts ...EscalationRunnerOption) (*Esca
 		return nil, errdefs.Validationf(
 			"sandbox: escalation requires confined and unconfined runners")
 	}
-	forwarder, err := NewForwarder(esc.Confined)
+	copied := *esc
+	forwarder, err := NewForwarder(copied.Confined)
 	if err != nil {
 		return nil, err
 	}
-	runner := &EscalationRunner{Forwarder: forwarder, escalation: esc}
+	runner := &EscalationRunner{Forwarder: forwarder, escalation: &copied}
 	for _, opt := range opts {
 		opt(runner)
 	}

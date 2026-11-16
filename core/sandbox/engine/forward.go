@@ -31,7 +31,9 @@ import (
 //
 // Forwarder deliberately does not implement [sandbox.Executor]: a decorator that
 // does not care about the one-shot form keeps the derived view over Start, and
-// only a decorator that overrides Exec opts into the override.
+// only a decorator that overrides Exec opts into the override. The flip side is
+// that wrapping an Executor in a plain Forwarder takes the override away without
+// an error — an escalation runner must stay the outermost value.
 type Forwarder struct {
 	// Inner is the runner every forwarded call reaches. It is never nil for a
 	// value produced by [NewForwarder].

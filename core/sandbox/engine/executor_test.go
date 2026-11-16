@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
 // executorRunner opts into the one-shot override: Exec answers and Start fails,
@@ -18,18 +19,21 @@ type executorRunner struct {
 	result  *sandbox.ExecResult
 	execErr error
 
-	execCalls  int
-	startCalls int
-	gotCmd     string
-	gotArgs    []string
-	gotOpts    sandbox.ExecOptions
+	execCalls   int
+	startCalls  int
+	gotCmd      string
+	gotArgs     []string
+	gotOpts     sandbox.ExecOptions
+	gotDeadline bool
+	deadline    time.Time
 }
 
 func (r *executorRunner) Exec(
-	_ context.Context, cmd string, args []string, opts sandbox.ExecOptions,
+	ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions,
 ) (*sandbox.ExecResult, error) {
 	r.execCalls++
 	r.gotCmd, r.gotArgs, r.gotOpts = cmd, args, opts
+	r.deadline, r.gotDeadline = ctx.Deadline()
 	return r.result, r.execErr
 }
 
@@ -100,5 +104,42 @@ func TestExecKeepsDerivedViewWithoutExecutor(t *testing.T) {
 	_, err := engine.Exec(context.Background(), stubRunner{}, "true", nil, sandbox.ExecOptions{})
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("err = %v, want NotAvailable from the Start-derived path", err)
+	}
+}
+
+// A decorated chain is one command and one span: only the outermost Exec is
+// instrumented, so a latency histogram does not count each layer as a call.
+// Before the decorators used the uninstrumented path this test saw two or three
+// identically named spans.
+func TestExecDecoratedChainEmitsOneSpan(t *testing.T) {
+	skipOnWindows(t)
+	recorder := telemetrytest.New(t)
+
+	chain := engine.WithDefaults(
+		engine.AllowCommands(localRunner(t), []string{"echo"}),
+		sandbox.ExecOptions{Timeout: 5 * time.Second},
+	)
+	if _, err := engine.Exec(context.Background(), chain, "echo", []string{"hi"},
+		sandbox.ExecOptions{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	recorder.RequireNamed(t, "sandbox.exec")
+}
+
+// The per-call deadline is in force before the override is entered. A gate or an
+// escalation retry therefore shares one budget with the call instead of running
+// outside it and restarting the clock on every attempt.
+func TestExecAppliesTimeoutBeforeDispatch(t *testing.T) {
+	runner := &executorRunner{result: &sandbox.ExecResult{}}
+	start := time.Now()
+	if _, err := engine.Exec(context.Background(), runner, "true", nil,
+		sandbox.ExecOptions{Timeout: time.Second}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if !runner.gotDeadline {
+		t.Fatal("the executor was entered without the per-call deadline")
+	}
+	if remaining := runner.deadline.Sub(start); remaining > time.Second+100*time.Millisecond {
+		t.Fatalf("deadline is %v from the call, want at most the 1s budget", remaining)
 	}
 }

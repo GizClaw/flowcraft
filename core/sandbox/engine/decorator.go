@@ -32,7 +32,7 @@ func (r *allowCommandsRunner) Exec(ctx context.Context, cmd string, args []strin
 	if !r.whitelist[cmd] {
 		return nil, errdefs.PolicyDeniedf("sandbox: command %q is not in the whitelist", cmd)
 	}
-	return Exec(ctx, r.inner, cmd, args, opts)
+	return runOneShot(ctx, r.inner, cmd, args, opts)
 }
 
 // Start implements Runner with the same gate as Exec: the
@@ -101,7 +101,10 @@ func (r *allowCommandsRunner) OpenJournal(ctx context.Context) (sandbox.FileJour
 //     defaults.Stdin (rare in practice; here for symmetry). It is
 //     Exec-only: Start never delivers those bytes and never treats
 //     them as an input side, so a merged-into-Start spec still runs on
-//     /dev/null and Write reports NotAvailable.
+//     /dev/null and Write reports NotAvailable. Note the consequence on
+//     a one-shot call: a deployment default here feeds stdin to a
+//     command that asked for none, which the exec tool otherwise
+//     promises is /dev/null.
 //   - Timeout: min(caller, defaults) when both > 0. A non-zero side
 //     overrides a zero side. Zero on both sides means "no
 //     sandbox-imposed timeout"; the caller's ctx still applies. The
@@ -161,7 +164,7 @@ type defaultsRunner struct {
 }
 
 func (r *defaultsRunner) Exec(ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions) (*sandbox.ExecResult, error) {
-	return Exec(ctx, r.inner, cmd, args, r.merge(opts))
+	return runOneShot(ctx, r.inner, cmd, args, r.merge(opts))
 }
 
 // Start implements Runner: the session's Opts go through the

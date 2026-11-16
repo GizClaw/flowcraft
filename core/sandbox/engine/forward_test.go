@@ -151,3 +151,24 @@ func TestForwarderDoesNotOverrideOneShot(t *testing.T) {
 		t.Fatalf("Exec err = %v, want the Start-derived path to reach the inner runner", err)
 	}
 }
+
+// A plain Forwarder takes the one-shot override away even when its inner has it:
+// the method set is the Forwarder's, not the inner's. That is why the documented
+// wrapping order puts an escalation runner outermost.
+func TestForwarderHidesAnInnerExecutor(t *testing.T) {
+	inner := &executorRunner{result: &sandbox.ExecResult{Stdout: "unused"}}
+	fwd, err := engine.NewForwarder(inner)
+	if err != nil {
+		t.Fatalf("NewForwarder: %v", err)
+	}
+	if _, ok := any(fwd).(sandbox.Executor); ok {
+		t.Fatal("Forwarder adopted its inner's Executor capability; the override must be explicit")
+	}
+	if _, err := engine.Exec(context.Background(), fwd, "true", nil, sandbox.ExecOptions{}); err == nil {
+		t.Fatal("Exec succeeded through a Forwarder that hides an Executor")
+	}
+	if inner.execCalls != 0 || inner.startCalls != 1 {
+		t.Fatalf("exec calls = %d, start calls = %d; want 0 and 1",
+			inner.execCalls, inner.startCalls)
+	}
+}
