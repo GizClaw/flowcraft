@@ -193,6 +193,9 @@ func (r *Runtime) buildTools(ctx context.Context) error {
 		// deferred tool set is never unreachable.
 		options = append(options, engine.WithDynamic(policy))
 	}
+	if decorator := r.cfg.Tools.Descriptions.withDefinitionDecorator(ctx); decorator != nil {
+		options = append(options, engine.WithDefinitionDecorator(decorator))
+	}
 	assembly, err := engine.NewAssembly(sources, options...)
 	if err != nil {
 		return errdefs.Validationf("tools: %w", err)
@@ -200,6 +203,13 @@ func (r *Runtime) buildTools(ctx context.Context) error {
 	r.assembly = assembly
 	r.registry = assembly.Registry()
 	r.closers = append(r.closers, assembly)
+	// A description names a tool, and a tool only exists once its source has
+	// published it — after the assembly, because that is when a deferred source
+	// attaches. Registered before the check, so the caller's cleanup path closes a
+	// rejected assembly like any other half-built resource.
+	if err := r.cfg.Tools.Descriptions.validateAgainst(r.registry); err != nil {
+		return err
+	}
 	return nil
 }
 

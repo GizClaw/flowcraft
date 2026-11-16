@@ -38,6 +38,7 @@ const (
 
 type options struct {
 	conflict ConflictPolicy
+	decorate DefinitionDecorator
 }
 
 // Option configures a Registry.
@@ -47,6 +48,28 @@ type Option func(*options)
 // ConflictError; pass ConflictOverwrite to let later sources win.
 func WithConflictPolicy(p ConflictPolicy) Option {
 	return func(o *options) { o.conflict = p }
+}
+
+// DefinitionDecorator rewrites one model-facing definition. It must be
+// deterministic, must not mutate its input, and must keep Name: the
+// registry keys its catalog by the name a tool declared, so a decorator
+// that renames a tool changes nothing but the label the model reads.
+// Returning the input unchanged is the no-op path.
+type DefinitionDecorator func(message.ToolDefinition) message.ToolDefinition
+
+// WithDefinitionDecorator installs a transformation applied to every
+// definition when the model-facing list is built — the one seam a
+// deployment has for rewriting descriptions without reimplementing the
+// tools. The result is cached with the rest of the definitions, so fn
+// runs once per rebuild (an Add, a Remove, or a deferred tool finishing
+// its load), never per round.
+//
+// It affects [Registry.Definitions] only: [Registry.Get] still returns the
+// tool, and a tool's own Definition keeps saying what its author wrote.
+// Execution, extension and approval are untouched — this is text the model
+// reads, not part of the tool contract.
+func WithDefinitionDecorator(fn DefinitionDecorator) Option {
+	return func(o *options) { o.decorate = fn }
 }
 
 // Registry aggregates tools from many [Source] values. It implements
@@ -65,6 +88,7 @@ type Registry struct {
 	tools     map[string]Tool
 	order     []string
 	conflict  ConflictPolicy
+	decorate  DefinitionDecorator
 	closed    bool
 	detachers []RegistryDetacher
 	// defs caches the sorted definitions; nil means rebuild. Atomic because a
@@ -93,6 +117,7 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 	r := &Registry{
 		tools:    make(map[string]Tool),
 		conflict: o.conflict,
+		decorate: o.decorate,
 	}
 	for _, src := range sources {
 		if src == nil {
@@ -220,19 +245,44 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // its load (its definition replaces the placeholder) — and the pointer is atomic
 // so that a load, which holds the proxy lock, can invalidate without taking the
 // registry lock and inverting the lock order.
+//
+// The registry snapshot is taken under the lock and the definitions are built
+// after it is released: a Definition() call reaches a deferred proxy's own lock,
+// and a decorator is caller code that must never run holding this lock.
+//
+// Because the lock is not held while the list is built, an invalidation can land
+// in that window — a deferred tool finishing its load, an MCP server publishing
+// more. Recording a list built from the older snapshot would then keep it cached
+// under the newer epoch, permanently, which is the state the epoch exists to rule
+// out; the epoch is therefore checked before the result is published.
 func (r *Registry) Definitions() []message.ToolDefinition {
 	if cached := r.defs.Load(); cached != nil {
 		return cloneDefinitions(*cached)
 	}
+	epoch := r.defsEpoch.Load()
 	r.mu.RLock()
-	defs := make([]message.ToolDefinition, 0, len(r.tools))
+	tools := make([]Tool, 0, len(r.tools))
 	for _, name := range r.order {
-		defs = append(defs, r.tools[name].Definition())
+		tools = append(tools, r.tools[name])
 	}
 	r.mu.RUnlock()
+	defs := make([]message.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		defs = append(defs, r.decorateDefinition(t.Definition()))
+	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	r.defs.Store(&defs)
+	if r.defsEpoch.Load() == epoch {
+		r.defs.Store(&defs)
+	}
 	return cloneDefinitions(defs)
+}
+
+// decorateDefinition applies the configured decorator, if any.
+func (r *Registry) decorateDefinition(def message.ToolDefinition) message.ToolDefinition {
+	if r.decorate == nil {
+		return def
+	}
+	return r.decorate(def)
 }
 
 // cloneDefinitions returns a copy, so a caller that appends cannot corrupt the

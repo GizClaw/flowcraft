@@ -100,3 +100,31 @@ func BenchmarkRequestHash(b *testing.B) {
 		})
 	}
 }
+
+// A deployment can rewrite a tool's description (runtime's tools.descriptions).
+// The wording is part of what the model is asked, so it is part of the request's
+// identity: a cached answer generated under one description must not be served for
+// another, and a prompt cache must be invalidated when one changes.
+func TestRequestHashTracksToolDescriptions(t *testing.T) {
+	describe := func(text string) inference.GenerateRequest {
+		t.Helper()
+		tools, err := inference.NewToolset([]message.ToolDefinition{{
+			Name:        "read_file",
+			Description: text,
+			InputSchema: []byte(`{"type":"object"}`),
+		}})
+		if err != nil {
+			t.Fatalf("NewToolset: %v", err)
+		}
+		request := hashRequest(t)
+		request.Tools = tools
+		return request
+	}
+	first := describe("read a file")
+	if got, want := inference.RequestHash(first), inference.RequestHash(describe("read a file")); got != want {
+		t.Errorf("hash is not stable: %q != %q", got, want)
+	}
+	if inference.RequestHash(describe("read a file")) == inference.RequestHash(describe("read a file, fast")) {
+		t.Error("a changed tool description kept the hash")
+	}
+}

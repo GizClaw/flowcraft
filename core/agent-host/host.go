@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -379,6 +380,23 @@ func (m *Manager) Session(name, sessionID string) (*Session, bool) {
 		return nil, false
 	}
 	return deployed.session(sessionID), true
+}
+
+// ToolDefinitions reports what one deployed agent's model reads: every wired tool's
+// definition, descriptions and schemas included.
+//
+// It is the list the deployment's manifest is hashed over, exposed because a
+// description is configuration — a deployment that overrode one has to be able to
+// see the wording it is prompting with, instead of guessing at what the tool would
+// have said.
+func (m *Manager) ToolDefinitions(name string) ([]message.ToolDefinition, bool) {
+	m.mu.Lock()
+	deployed, found := m.agents[name]
+	m.mu.Unlock()
+	if !found || deployed.rt == nil {
+		return nil, false
+	}
+	return deployed.rt.Tools().Definitions(), true
 }
 
 // Drain stops every agent from accepting work and waits for what is in flight.
