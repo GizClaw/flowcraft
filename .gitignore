@@ -23,6 +23,13 @@
 # ── Go CI ──
 !.golangci.yml
 
+# ── Repository tooling ──
+# New top-level files are ignored until they are named here, which is how a
+# whole PR's worth of configuration can be written, reviewed and merged without
+# ever being committed. These two were exactly that.
+!.prettierrc.json
+!.prettierignore
+
 # ── Go source ──
 !go.mod
 !go.sum
