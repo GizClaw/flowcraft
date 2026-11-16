@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
@@ -93,102 +94,109 @@ func TestExtensionValidation(t *testing.T) {
 	}
 }
 
-// Clone is what the runtime hands a second caller: a clone must not share storage
-// with the original, or one request's tuning would leak into another's.
-func TestExtensionCloneIsDeep(t *testing.T) {
+// The contract every extension owes — an addressable identity, an ActiveFields
+// that reports exactly the options it sets, a Validate that accepts its own
+// sample, and a Clone that owns its storage — is verified by the shared suite
+// rather than re-derived here. What stays in this file is this driver's own
+// business: which declarations the platform refuses.
+func TestExtensionContract(t *testing.T) {
 	generate := GenerateOptions{
-		Temperature: extPtr(1.0),
-		Stop:        []string{"\n\n"},
+		Temperature:            extPtr(1.0),
+		TopP:                   extPtr(0.9),
+		MaxOutputTokens:        extPtr(1024),
+		Seed:                   extPtr(int64(7)),
+		TopK:                   extPtr(10),
+		RepetitionPenalty:      extPtr(1.05),
+		PresencePenalty:        extPtr(0.1),
+		Stop:                   []string{"\n\n"},
+		ParallelToolCalls:      extPtr(true),
+		EnableSearch:           extPtr(true),
+		ThinkingBudget:         extPtr(512),
+		VlHighResolutionImages: extPtr(true),
 		ResponseFormat: &ResponseFormat{
-			Kind: "json_schema", Name: "out", Schema: []byte(`{"type":"object"}`),
+			Kind: "json_schema", Name: "out", Schema: []byte(`{"type":"object"}`), Strict: true,
 		},
 	}
-	clonedGenerate := generate.Clone().(*GenerateOptions)
-	*clonedGenerate.Temperature = 0.1
-	clonedGenerate.Stop[0] = "END"
-	clonedGenerate.ResponseFormat.Name = "other"
-	clonedGenerate.ResponseFormat.Schema[0] = '['
-	if *generate.Temperature != 1.0 {
-		t.Errorf("temperature mutated through the clone: %v", *generate.Temperature)
+	tts := TTSOptions{Voice: "Cherry", Language: "zh"}
+	image := ImageOptions{
+		Size:             &media.ImageSize{Width: 1024, Height: 1024},
+		Count:            extPtr(2),
+		Seed:             extPtr(int64(3)),
+		OutputFormat:     media.ImageFormatPNG,
+		NegativePrompt:   "blurry",
+		PromptExtend:     extPtr(true),
+		Watermark:        extPtr(false),
+		Style:            "photographic",
+		RefStrength:      extPtr(0.5),
+		RefMode:          "repaint",
+		Function:         "text_to_image",
+		IsSketch:         extPtr(false),
+		UpscaleFactor:    extPtr(2.0),
+		EnableInterleave: extPtr(true),
 	}
-	if generate.Stop[0] != "\n\n" {
-		t.Errorf("stop mutated through the clone: %v", generate.Stop)
+	video := VideoOptions{
+		DurationMillis: extPtr(int64(5000)),
+		Resolution:     "1080P",
+		AspectRatio:    "16:9",
+		Seed:           extPtr(int64(9)),
+		Watermark:      extPtr(true),
+		NegativePrompt: "shake",
+		PromptExtend:   extPtr(false),
+		ShotType:       "multi",
+		Audio:          extPtr(true),
+		Template:       "news",
+		Link:           "https://example.test/clip.mp4",
+		SmartDuration:  true,
 	}
-	if generate.ResponseFormat.Name != "out" {
-		t.Errorf("response format mutated through the clone: %v", generate.ResponseFormat.Name)
-	}
-	if string(generate.ResponseFormat.Schema) != `{"type":"object"}` {
-		t.Errorf("schema mutated through the clone: %s", generate.ResponseFormat.Schema)
-	}
-
-	image := ImageOptions{Size: &media.ImageSize{Width: 1024, Height: 1024}, Count: extPtr(2)}
-	clonedImage := image.Clone().(*ImageOptions)
-	clonedImage.Size.Width = 512
-	*clonedImage.Count = 1
-	if image.Size.Width != 1024 || *image.Count != 2 {
-		t.Errorf("image options mutated through the clone: %+v", image)
-	}
-
-	video := VideoOptions{DurationMillis: extPtr(int64(5000)), Watermark: extPtr(false)}
-	clonedVideo := video.Clone().(*VideoOptions)
-	*clonedVideo.DurationMillis = 1
-	*clonedVideo.Watermark = true
-	if *video.DurationMillis != 5000 || *video.Watermark {
-		t.Errorf("video options mutated through the clone: %+v", video)
-	}
-
-	// The vocabulary is a map: a shallow copy would let one transcription's terms
-	// reach another's.
 	transcribe := TranscribeOptions{
 		ChannelID:  extPtr(1),
 		Vocabulary: map[string]int{"flow": 50, "craft": 3},
 	}
-	clonedTranscribe := transcribe.Clone().(*TranscribeOptions)
-	*clonedTranscribe.ChannelID = 2
-	clonedTranscribe.Vocabulary["flow"] = 1
-	delete(clonedTranscribe.Vocabulary, "craft")
-	if *transcribe.ChannelID != 1 {
-		t.Errorf("channel id mutated through the clone: %v", *transcribe.ChannelID)
-	}
-	if transcribe.Vocabulary["flow"] != 50 || transcribe.Vocabulary["craft"] != 3 {
-		t.Errorf("vocabulary mutated through the clone: %v", transcribe.Vocabulary)
-	}
-
-	// The types that hold no storage clone to themselves; asserting the id keeps
-	// the table honest if one grows a field later.
-	for _, extension := range []inference.Extension{
-		EmbedOptions{TextType: "query"},
-		TTSOptions{Voice: "Cherry"},
-	} {
-		cloned := extension.Clone()
-		if cloned.ExtensionID() != extension.ExtensionID() {
-			t.Errorf("%T clone has id %q, want %q",
-				extension, cloned.ExtensionID(), extension.ExtensionID())
-		}
-	}
-}
-
-// ActiveFields is what the runtime uses to report which declarations a request
-// actually used, so a field present in the document but not set must not be
-// reported.
-func TestExtensionActiveFields(t *testing.T) {
-	options := GenerateOptions{Temperature: extPtr(0.5), Stop: []string{"x"}}
-	fields := options.ActiveFields()
-	seen := map[inference.ExtensionField]bool{}
-	for _, field := range fields {
-		seen[field] = true
-	}
-	if !seen["temperature"] || !seen["stop"] {
-		t.Errorf("active fields = %v, want temperature and stop", fields)
-	}
-	if seen["max_output_tokens"] {
-		t.Errorf("unset field reported: %v", fields)
-	}
-
-	tts := TTSOptions{Voice: "Cherry"}
-	if fields := tts.ActiveFields(); len(fields) != 1 || fields[0] != "voice" {
-		t.Errorf("tts active fields = %v, want voice", fields)
-	}
+	inferencetest.RunExtensions(t,
+		inferencetest.ExtensionSample{
+			Name:  generate.ExtensionID(),
+			Value: &generate,
+			Fields: []inference.ExtensionField{
+				"temperature", "top_p", "max_output_tokens", "seed", "top_k",
+				"repetition_penalty", "presence_penalty", "stop",
+				"parallel_tool_calls", "enable_search", "thinking_budget",
+				"vl_high_resolution_images", "response_format",
+			},
+		},
+		inferencetest.ExtensionSample{
+			Name:   EmbedOptions{}.ExtensionID(),
+			Value:  &EmbedOptions{TextType: "query"},
+			Fields: []inference.ExtensionField{"text_type"},
+		},
+		inferencetest.ExtensionSample{
+			Name:   tts.ExtensionID(),
+			Value:  &tts,
+			Fields: []inference.ExtensionField{"voice", "language"},
+		},
+		inferencetest.ExtensionSample{
+			Name:  image.ExtensionID(),
+			Value: &image,
+			Fields: []inference.ExtensionField{
+				"size", "count", "seed", "output_format", "negative_prompt",
+				"prompt_extend", "watermark", "style", "ref_strength", "ref_mode",
+				"function", "is_sketch", "upscale_factor", "enable_interleave",
+			},
+		},
+		inferencetest.ExtensionSample{
+			Name:  video.ExtensionID(),
+			Value: &video,
+			Fields: []inference.ExtensionField{
+				"duration_millis", "resolution", "aspect_ratio", "seed", "watermark",
+				"negative_prompt", "prompt_extend", "shot_type", "audio", "template",
+				"link", "smart_duration",
+			},
+		},
+		inferencetest.ExtensionSample{
+			Name:   transcribe.ExtensionID(),
+			Value:  &transcribe,
+			Fields: []inference.ExtensionField{"channel_id", "vocabulary"},
+		},
+	)
 }
 
 // ProviderID namespaces an extension's document key, so a provider without one
@@ -201,14 +209,8 @@ func TestExtensionProviderID(t *testing.T) {
 	if got := custom.ProviderID(); got != "custom" {
 		t.Errorf("provider = %q, want custom", got)
 	}
-	if (GenerateOptions{}).ExtensionID() != extensionGenerate {
-		t.Errorf("generate id = %q", (GenerateOptions{}).ExtensionID())
-	}
 }
 
-// The runtime clones an extension set before it builds a request. A clone has to
-// stay the type this driver asserts on, or a deployment's own options stop being
-// understood the moment the framework copies them.
 func TestAClonedExtensionIsStillUnderstood(t *testing.T) {
 	cloned := inference.Extensions{&GenerateOptions{Temperature: extPtr(0.3)}}.Clone()
 	options, err := generateOptions(cloned)

@@ -4,38 +4,39 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 )
 
 // mmPtr is the pointer helper these tables read better with. `internal/ptr`
 // clones a pointer but cannot make one, so a literal needs this.
 func mmPtr[T any](value T) *T { return &value }
 
-// Clone is what the runtime hands a second caller. A shared pointer would let one
-// conversation's speech settings change another's, so the clone must own its
-// leaves.
+// The contract every extension owes — an addressable identity, an ActiveFields
+// that reports exactly the options it sets, a Validate that accepts its own
+// sample, and a Clone that owns its storage — is verified by the shared suite
+// rather than re-derived here.
 //
-// The validation tables live in conformance_test.go, which already covers the
-// TTS and video rules.
-func TestExtensionCloneIsDeep(t *testing.T) {
-	tts := TTSOptions{Speed: mmPtr(1.25)}
-	clonedTTS := tts.Clone().(*TTSOptions)
-	*clonedTTS.Speed = 0.5
-	if *tts.Speed != 1.25 {
-		t.Errorf("speed mutated through the clone: %v", *tts.Speed)
-	}
-
+// The validation tables live in conformance_test.go, which already covers the TTS
+// and video rules.
+func TestExtensionContract(t *testing.T) {
+	tts := TTSOptions{Speed: mmPtr(1.25), Voice: "Cherry", Language: "zh"}
 	video := VideoOptions{
 		DurationMillis: mmPtr(int64(6000)),
 		Watermark:      mmPtr(false),
 		LastFrameOnly:  mmPtr(true),
 	}
-	clonedVideo := video.Clone().(*VideoOptions)
-	*clonedVideo.DurationMillis = 1
-	*clonedVideo.Watermark = true
-	*clonedVideo.LastFrameOnly = false
-	if *video.DurationMillis != 6000 || *video.Watermark || !*video.LastFrameOnly {
-		t.Errorf("video options mutated through the clone: %+v", video)
-	}
+	inferencetest.RunExtensions(t,
+		inferencetest.ExtensionSample{
+			Name:   tts.ExtensionID(),
+			Value:  &tts,
+			Fields: []inference.ExtensionField{"speed", "voice", "language"},
+		},
+		inferencetest.ExtensionSample{
+			Name:   video.ExtensionID(),
+			Value:  &video,
+			Fields: []inference.ExtensionField{"duration_millis", "watermark", "last_frame_only"},
+		},
+	)
 }
 
 // The runtime clones an extension set before it builds a request. A clone has to

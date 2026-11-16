@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
@@ -98,74 +99,86 @@ func TestExtensionValidationAccepts(t *testing.T) {
 	}
 }
 
-// Clone must not share storage with the original: the runtime hands clones to
-// callers, and a shared pointer would let one deployment's tuning reach another's
-// request.
-func TestExtensionCloneIsDeep(t *testing.T) {
+// The contract every extension owes — an addressable identity, an ActiveFields
+// that reports exactly the options it sets, a Validate that accepts its own
+// sample, and a Clone that owns its storage — is verified by the shared suite
+// rather than re-derived here. What stays in this file is this driver's own
+// business: which declarations the platform refuses.
+func TestExtensionContract(t *testing.T) {
 	image := ImageOptions{
-		Size:           &media.ImageSize{Width: 2048, Height: 2048},
-		Count:          extPtr(2),
-		Watermark:      extPtr(false),
-		OptimizePrompt: &ImageOptimizePrompt{Mode: "fast"},
+		Size:                &media.ImageSize{Width: 2048, Height: 2048},
+		Count:               extPtr(2),
+		Seed:                extPtr(int64(42)),
+		OutputFormat:        media.ImageFormatJPEG,
+		Delivery:            media.SourceInline,
+		Quality:             media.ImageQualityHigh,
+		GuidanceScale:       extPtr(5.5),
+		Watermark:           extPtr(false),
+		OptimizePrompt:      &ImageOptimizePrompt{Mode: "fast", Thinking: "enabled"},
+		Sequential:          extPtr(true),
+		SequentialMaxImages: extPtr(4),
+		SizeToken:           "2k",
+		WebSearch:           extPtr(true),
+		Background:          "transparent",
 	}
-	clonedImage := image.Clone().(*ImageOptions)
-	clonedImage.Size.Width = 512
-	*clonedImage.Count = 9
-	*clonedImage.Watermark = true
-	clonedImage.OptimizePrompt.Mode = "standard"
-	if image.Size.Width != 2048 {
-		t.Errorf("size mutated through the clone: %+v", image.Size)
+	// Layering and a background are mutually exclusive, so the one option this
+	// sample cannot carry gets its own.
+	layered := ImageOptions{LayerDecomposition: extPtr(true), SizeToken: "adaptive"}
+	video := VideoOptions{
+		DurationMillis:        extPtr(int64(5000)),
+		Resolution:            "720p",
+		AspectRatio:           "16:9",
+		Seed:                  extPtr(int64(7)),
+		Watermark:             extPtr(true),
+		CameraFixed:           extPtr(false),
+		GenerateAudio:         extPtr(true),
+		ServiceTier:           "flex",
+		ExecutionExpiresAfter: extPtr(int64(3600)),
+		Priority:              extPtr(int32(3)),
+		OutputFormat:          extPtr("mov"),
+		OmniReferenceTaskType: extPtr("edit"),
+		WebSearch:             extPtr(true),
+		CallbackURL:           extPtr("https://example.test/hook"),
+		SafetyIdentifier:      extPtr("tenant-7"),
 	}
-	if *image.Count != 2 || *image.Watermark || image.OptimizePrompt.Mode != "fast" {
-		t.Errorf("image options mutated through the clone: %+v", image)
-	}
-
-	video := VideoOptions{Priority: extPtr(int32(3)), OutputFormat: extPtr("mp4")}
-	clonedVideo := video.Clone().(*VideoOptions)
-	*clonedVideo.Priority = 0
-	*clonedVideo.OutputFormat = "mov"
-	if *video.Priority != 3 || *video.OutputFormat != "mp4" {
-		t.Errorf("video options mutated through the clone: %+v", video)
-	}
-}
-
-// ActiveFields reports what a request actually used: a field declared in the
-// document but left unset must not be reported as active.
-func TestExtensionActiveFields(t *testing.T) {
-	image := ImageOptions{Count: extPtr(2), Watermark: extPtr(false)}
-	fields := image.ActiveFields()
-	seen := map[inference.ExtensionField]bool{}
-	for _, field := range fields {
-		seen[field] = true
-	}
-	if !seen["count"] || !seen["watermark"] {
-		t.Errorf("active fields = %v, want count and watermark", fields)
-	}
-	if seen["seed"] {
-		t.Errorf("unset field reported: %v", fields)
-	}
-
-	video := VideoOptions{Seed: extPtr(int64(1))}
-	if fields := video.ActiveFields(); len(fields) != 1 || fields[0] != "seed" {
-		t.Errorf("video active fields = %v, want seed", fields)
-	}
+	inferencetest.RunExtensions(t,
+		inferencetest.ExtensionSample{
+			Name:  image.ExtensionID(),
+			Value: &image,
+			Fields: []inference.ExtensionField{
+				"size", "count", "seed", "output_format", "delivery", "quality",
+				"guidance_scale", "watermark", "optimize_prompt", "sequential",
+				"sequential_max_images", "size_token", "web_search", "background",
+			},
+		},
+		inferencetest.ExtensionSample{
+			Name:   image.ExtensionID() + "-layered",
+			Value:  &layered,
+			Fields: []inference.ExtensionField{"layer_decomposition", "size_token"},
+		},
+		inferencetest.ExtensionSample{
+			Name:  video.ExtensionID(),
+			Value: &video,
+			Fields: []inference.ExtensionField{
+				"duration_millis", "resolution", "aspect_ratio", "seed", "watermark",
+				"camera_fixed", "generate_audio", "service_tier",
+				"execution_expires_after", "priority", "output_format",
+				"omni_reference_task_type", "web_search", "callback_url",
+				"safety_identifier",
+			},
+		},
+	)
 }
 
 // The document key an extension lands under is namespaced by provider, so a
 // deployment that names one gets its own namespace and a plain document gets this
 // driver's.
-func TestExtensionProviderAndID(t *testing.T) {
+func TestExtensionProvider(t *testing.T) {
 	if got := (ImageOptions{}).ProviderID(); got != ProviderID {
 		t.Errorf("provider = %q, want %q", got, ProviderID)
 	}
 	if got := (ImageOptions{Provider: "custom"}).ProviderID(); got != "custom" {
 		t.Errorf("provider = %q, want custom", got)
-	}
-	if got := (ImageOptions{}).ExtensionID(); got != extensionImage {
-		t.Errorf("image id = %q, want %q", got, extensionImage)
-	}
-	if got := (VideoOptions{}).ExtensionID(); got != extensionVideo {
-		t.Errorf("video id = %q, want %q", got, extensionVideo)
 	}
 }
 
