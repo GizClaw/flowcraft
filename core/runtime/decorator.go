@@ -32,7 +32,8 @@ type Sandbox struct {
 	Net permission.NetPolicy
 	// Defaults is exactly what the runtime merges into every call through
 	// engine.WithDefaults: the timeout ceiling, the cpu and memory budgets, and
-	// — on a backend that confines them — the configured writes.
+	// — on a backend that can enforce them — the configured writes and network
+	// posture.
 	//
 	// It shares its *permission.Policy, slices and maps with the composed chain,
 	// so treat it as read-only: changing a field here rewrites the boundary the
@@ -49,7 +50,7 @@ type Sandbox struct {
 // Ordering is deliberate: engine.WithDefaults is inside the decorator (it is
 // already applied to the runner the decorator receives and is repeated in
 // [Sandbox.Defaults]), so a host observes the deployment's effective timeout,
-// budget and write posture rather than the caller's raw request.
+// budget, write and network posture rather than the caller's raw request.
 //
 // The decorator must return a non-nil runner. An error or a nil fails [New] and
 // closes the runner it was given, like any other build step; a typed-nil value

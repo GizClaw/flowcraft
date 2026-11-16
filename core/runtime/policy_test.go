@@ -2,12 +2,15 @@ package runtime
 
 import (
 	"context"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // policyRunner records what reached the backend, so "the document takes effect"
@@ -37,6 +40,7 @@ func (p *policyRunner) Terminate(context.Context, string) error             { re
 func confiningCaps() sandbox.Capabilities {
 	return sandbox.Capabilities{Policy: sandbox.Enforcement{
 		EnvAllowList:     true,
+		NetModes:         permission.IsolatingNetModes(),
 		MemoryCap:        true,
 		CPUCap:           true,
 		WriteConfinement: true,
@@ -91,6 +95,7 @@ func TestResolveSandboxCarriesTheResolvedView(t *testing.T) {
 		WorkDir: workDir,
 		Timeout: "5s",
 		Writes:  []string{root},
+		Net:     NetConfig{Mode: "none"},
 	})
 	inner := &policyRunner{caps: confiningCaps()}
 
@@ -109,6 +114,9 @@ func TestResolveSandboxCarriesTheResolvedView(t *testing.T) {
 	}
 	if paths := spec.Defaults.Permission.Writes.Paths; len(paths) != 1 || paths[0] != root {
 		t.Errorf("Defaults.Permission.Writes = %v, want [%s]", paths, root)
+	}
+	if spec.Defaults.Net.Mode != permission.NetDenyAll {
+		t.Errorf("Defaults.Net.Mode = %v, want the document's NetDenyAll", spec.Defaults.Net.Mode)
 	}
 	if spec.Config.Sandbox.Backend != BackendLocal {
 		t.Errorf("Config backend = %q, want the resolved document", spec.Config.Sandbox.Backend)
@@ -147,6 +155,126 @@ func TestSandboxPolicyReachesEveryCall(t *testing.T) {
 	}
 	if opts.Permission == nil || len(opts.Permission.Writes.Paths) != 1 || opts.Permission.Writes.Paths[0] != root {
 		t.Fatalf("Permission = %+v, want the configured write boundary", opts.Permission)
+	}
+}
+
+// sandbox.net is a posture the deployment states once, and engine.WithDefaults
+// replaces the tool's per-call value with the chain's default (defaults win
+// entirely). Without projecting it here the parsed policy was handed down and
+// then overwritten with "host default", so the backend never saw it.
+func TestSandboxNetPolicyReachesEnforcingBackends(t *testing.T) {
+	cases := []struct {
+		name string
+		net  NetConfig
+		want permission.NetMode
+	}{
+		{
+			name: "allow_list",
+			net:  NetConfig{Mode: "allow_list", AllowHosts: []string{"api.example.com"}},
+			want: permission.NetAllowList,
+		},
+		{
+			name: "proxy",
+			net:  NetConfig{Mode: "proxy", Proxy: "socks5://proxy.example:1080"},
+			want: permission.NetProxy,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := policyRuntime(t, SandboxConfig{Net: tc.net})
+			inner := &policyRunner{caps: confiningCaps()}
+
+			runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{})
+			if err != nil {
+				t.Fatalf("policyChain: %v", err)
+			}
+			opts := startThrough(t, inner, runner, sandbox.ExecOptions{})
+			if opts.Net.Mode != tc.want {
+				t.Fatalf("Net.Mode = %v, want %v", opts.Net.Mode, tc.want)
+			}
+			if tc.net.AllowHosts != nil &&
+				(len(opts.Net.AllowHosts) != 1 || opts.Net.AllowHosts[0] != tc.net.AllowHosts[0]) {
+				t.Fatalf("Net.AllowHosts = %v, want %v", opts.Net.AllowHosts, tc.net.AllowHosts)
+			}
+			if tc.net.Proxy != "" && opts.Net.Proxy != tc.net.Proxy {
+				t.Fatalf("Net.Proxy = %q, want %q", opts.Net.Proxy, tc.net.Proxy)
+			}
+		})
+	}
+}
+
+// Without a backend that can enforce the mode the call still runs: the local
+// runner has no OS boundary and rejects such a call rather than running it
+// unconfined, so the value is not projected.
+func TestSandboxNetPolicyStaysAdvisoryWithoutEnforcement(t *testing.T) {
+	rt := policyRuntime(t, SandboxConfig{Net: NetConfig{Mode: "none"}})
+	inner := &policyRunner{caps: sandbox.Capabilities{}}
+
+	runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{})
+	if err != nil {
+		t.Fatalf("policyChain: %v", err)
+	}
+	if opts := startThrough(t, inner, runner, sandbox.ExecOptions{}); opts.Net.Mode != permission.NetDefault {
+		t.Fatalf("Net.Mode = %v, want the zero posture on a backend that cannot enforce one", opts.Net.Mode)
+	}
+}
+
+// A real local runtime keeps running with an unenforceable net block: the
+// advisory path must not turn every command into NotAvailable.
+func TestSandboxNetPolicyKeepsLocalCommandsRunning(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell")
+	}
+	cfg := validConfig(t.TempDir())
+	cfg.Sandbox.Net = NetConfig{Mode: "none"}
+
+	rt, err := New(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
+
+	result, err := sandboxengine.Exec(t.Context(), rt.Runner(), "/bin/sh",
+		[]string{"-c", "exit 0"}, sandbox.ExecOptions{})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit code = %d", result.ExitCode)
+	}
+}
+
+// A remote runner reports the server's declaration verbatim and the wire carries
+// Net, so the capability gate answers for it exactly as it does locally: a server
+// that declares the mode receives the policy, and one that cannot is advisory.
+func TestSandboxNetPolicyFollowsTheRemoteDeclaration(t *testing.T) {
+	cases := []struct {
+		name string
+		caps sandbox.Capabilities
+		want permission.NetMode
+	}{
+		{name: "server declares the mode", caps: confiningCaps(), want: permission.NetDenyAll},
+		{name: "server cannot enforce it", caps: sandbox.Capabilities{}, want: permission.NetDefault},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig(t.TempDir())
+			cfg.Sandbox = SandboxConfig{
+				Backend: BackendRemote,
+				Net:     NetConfig{Mode: "none"},
+				Remote:  RemoteConfig{Endpoint: "https://sandbox.example"},
+			}
+			rt := &Runtime{cfg: cfg}
+			inner := &policyRunner{caps: tc.caps}
+
+			runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{})
+			if err != nil {
+				t.Fatalf("policyChain: %v", err)
+			}
+			if opts := startThrough(t, inner, runner, sandbox.ExecOptions{}); opts.Net.Mode != tc.want {
+				t.Fatalf("Net.Mode = %v, want %v", opts.Net.Mode, tc.want)
+			}
+		})
 	}
 }
 

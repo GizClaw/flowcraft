@@ -345,7 +345,8 @@ Three rules make the seam safe:
   `engine.WithDefaults`, and before the journal is opened. `exec_command`,
   `exec_session`, `Runtime.Runner()` and the journal therefore see the same
   value, and the confined chain it receives already carries the document's
-  timeout, budgets and writes.
+  timeout, budgets, writes and — where the backend declares the mode — its
+  network posture.
 - **One-shot.** `exec_command` reaches the escalation only because the runner
   implements `sandbox.Executor`, which `engine.Exec` dispatches to. Session calls
   keep forwarding to `Confined`: a session refused over many reads is not what a
@@ -358,8 +359,11 @@ Three rules make the seam safe:
 
 The retry receives the confined call's `ExecOptions` byte for byte, but
 `engine.WithDefaults` takes `Net` from the chain's own defaults (defaults win
-entirely), so a retry chain states its posture explicitly — `Net: sb.Net` —
-rather than relying on the call's. `sb.Defaults.Permission` is the document's
+entirely). `sb.Defaults.Net` is the posture the composed chain carries — empty on
+a backend that cannot enforce the mode — while `sb.Net` is the document's
+declaration either way. A `local` retry neither enforces it nor accepts a
+per-call policy, so leave `Net` out there.
+`sb.Defaults.Permission` is the document's
 write boundary: do not hand it to a `local` retry chain, which rejects a per-call
 permission — decide the floor the retry keeps. `engine.WithEscalationObserver`
 sees every one-shot outcome, including a plain confined success, for the audit

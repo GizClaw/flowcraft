@@ -193,8 +193,8 @@ without side effects:
 ## The sandbox policy reaches the commands
 
 This is the part that used to be missing: a document could declare a budget that
-nothing enforced. The runtime now projects all four knobs onto every call it
-issues through `engine.WithDefaults`:
+nothing enforced. The runtime now projects every per-call knob of the section
+onto each call it issues through `engine.WithDefaults`:
 
 | Document         | Becomes                                                                  |
 | ---------------- | ------------------------------------------------------------------------ |
@@ -202,6 +202,7 @@ issues through `engine.WithDefaults`:
 | `cpu_millicores` | `Resources.CPU` (derived from the timeout).                              |
 | `memory_mib`     | `Resources.MemoryBytes`.                                                 |
 | `writes`         | `Permission.Writes` — the files a command may touch.                     |
+| `net`            | `Net` — projected where the backend declares the mode it can enforce.    |
 
 Three rules make that honest:
 
@@ -212,9 +213,15 @@ Three rules make that honest:
 2. **An unenforceable cap is a build error.** `writes` is only projected onto a
    backend that has write confinement; asking for a cap a backend cannot apply
    names the field instead of pretending.
-3. **`writes` on `local`/`remote` warns.** `local` enforces no boundary and
-   `remote` enforces it on the server, so the value would be decoration; the
-   runtime logs a warning rather than implying enforcement.
+3. **A backend that cannot enforce `writes` or `net` warns.** `local` enforces
+   no OS boundary, so either value would be decoration; the runtime logs a
+   warning rather than implying enforcement. `net` is projected only when the
+   mode appears in `Capabilities.NetModes`, and a remote runner reports the
+   server's declaration, so the same test answers for it. Not projecting would
+   discard the policy silently, because `engine.WithDefaults` replaces a tool's
+   own `Net` with the chain default. On `bwrap`, `allow_list` and `proxy` also
+   need `bwrap.MaybeBridge` in the host main; without that hook those modes fail
+   per call.
 
 ## Decorating the runner
 
