@@ -1,0 +1,54 @@
+name: OpenAI PR review
+
+# Three ways in, all of them answered by the same reusable workflow:
+#
+#   - a pull request opens (not a draft: the reusable job refuses those, and a
+#     review of a half-written branch spends budget on nothing);
+#   - a maintainer comments `@codex review` on a pull request. The reusable
+#     workflow checks the commenter's permission before doing anything, which is
+#     what makes a trigger on every comment acceptable here;
+#   - a manual dispatch names a pull request, which is how a review is re-run
+#     after the branch moved.
+#
+# A fork pull request cannot reach the secret, so the reusable workflow marks it
+# ineligible rather than failing a check nobody can fix.
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Open pull request to review.
+        required: true
+        type: string
+
+permissions:
+  checks: write
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: >-
+    openai-pr-review-${{ github.event.pull_request.number ||
+    github.event.issue.number || inputs.pull_request_number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Pinned to the commit behind the 0.1.2 tag rather than the tag itself: a
+    # movable reference to a workflow that receives an API key is someone else's
+    # promise, and this caller can name the commit it agreed to.
+    # A `uses:` reference cannot be wrapped: the commit SHA is the whole point.
+    uses: GizClaw/github-workflows/.github/workflows/codex-openai-review.yml@73b65594a0ba26838bf428ce16fb058924d95f4b  # yamllint disable-line rule:line-length
+    with:
+      model: gpt-5.6-terra
+      effort: medium
+      review-instructions: >-
+        Review only the pull-request diff and report actionable correctness,
+        security, regression, cross-module contract, and test-coverage findings.
+      pull_request_number: ${{ inputs.pull_request_number }}
+    secrets:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
