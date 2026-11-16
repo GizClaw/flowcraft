@@ -6,7 +6,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/permission"
 )
 
-// ExecOptions configures one Runner.Exec call.
+// ExecOptions configures one one-shot call — [Executor.Exec] when the runner
+// implements that capability, otherwise the derivation over Start.
 //
 // Field semantics:
 //

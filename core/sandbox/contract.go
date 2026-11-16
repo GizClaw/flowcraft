@@ -7,19 +7,25 @@ import (
 // Runner is a sandbox: it starts interactive process sessions under the
 // sandbox's policy and manages their lifecycle. The one-shot form is a
 // derived view over Start — engine.Exec drains a session and truncates its
-// output, so a backend has no second code path to keep in step. Implementations
-// MUST honour
-// ExecOptions.Timeout and reject any policy they cannot enforce with
-// an errdefs.NotAvailable error rather than silently downgrading the
-// request.
+// output, so a backend has no second code path to keep in step. The one
+// documented override is a decorator that needs the completed result and
+// implements the optional [Executor] capability; it carries the whole one-shot
+// contract from then on. Implementations MUST honour ExecOptions.Timeout and
+// reject any policy they cannot enforce with an errdefs.NotAvailable error
+// rather than silently downgrading the request.
 //
 // Lifecycle is part of the contract, not a convention: Close releases
 // every resource the runner owns — active sessions, forked daemons,
 // sockets, backend state. Decorators MUST forward Close to their inner
 // runner so wrapping never hides the backend's cleanup, and they MUST
-// forward [JournalProvider.OpenJournal] the same way: a decorator that
-// swallows the journal while [Capabilities] keeps advertising it makes
-// the declaration a lie.
+// forward the optional capabilities — [JournalProvider.OpenJournal] and
+// [SessionAttacher.Attach] — the same way: a decorator that swallows one
+// while [Capabilities] keeps advertising it makes the declaration a lie.
+// Embedding sandbox.Runner does not promote those methods; engine.Forwarder is
+// the base that forwards them for you. It deliberately does not promote
+// [Executor] either: a decorator that re-runs the command must be the outermost
+// value, never wrapped by a plain Forwarder that would turn the override off
+// without an error.
 //
 // Capabilities is mandatory: it is the explicit, wire-safe declaration
 // of what this backend can do. Callers and tools never discover

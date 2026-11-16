@@ -8,7 +8,10 @@
 // process — output is an append-only log read by cursor, input is a stream, and
 // exit is a cached value. The one-shot form is derived, not part of the
 // interface: engine.Exec drains a session, so a new backend gets one-shot
-// execution for free and has no second code path to keep in step.
+// execution for free and has no second code path to keep in step. The exception
+// is a decorator that needs the completed result — [Executor] — and even that
+// delegates to engine.Exec one layer down rather than re-implementing the
+// drain.
 //
 // Two rules make a backend honest, and both are enforced by review rather than
 // by the type system:

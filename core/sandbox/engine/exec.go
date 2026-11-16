@@ -53,12 +53,18 @@ func Exec(
 			telemetry.AttrSandboxTimeoutMs, opts.Timeout.Milliseconds()))
 	}
 
-	result, err := runCommand(ctx, runner, cmd, args, opts)
+	result, err := runOneShot(ctx, runner, cmd, args, opts)
 	if err != nil {
 		// The status label is the classification, never the command or its
 		// output: argv can carry a secret, and stderr can echo one back.
 		span.SetStatus(codes.Error, execOutcome(err))
 		return result, err
+	}
+	if result == nil {
+		// A derived call always produces a result; an Executor is foreign code
+		// and may not, so a nil is a contract violation rather than a panic.
+		span.SetStatus(codes.Error, "exec_failed")
+		return nil, errdefs.Internalf("sandbox: runner %T returned no result", runner)
 	}
 	span.SetAttributes(attribute.Int(
 		telemetry.AttrSandboxExitCode, result.ExitCode))
@@ -78,8 +84,19 @@ func execOutcome(err error) string {
 	}
 }
 
-// runCommand is the uninstrumented one-shot execution.
-func runCommand(
+// runOneShot is the uninstrumented one-shot execution: it applies the per-call
+// deadline, then finds who owns the path.
+//
+// A runner that implements [sandbox.Executor] owns it: its Exec may run the
+// command more than once (escalation re-runs an OS-refused call), which draining
+// a single session can never express. Everything else keeps the derived view over
+// Start, so a backend still has one code path to keep in step.
+//
+// The deadline lives here rather than in [Exec] so it covers the whole call — the
+// approval prompt, an escalation retry, the drain — while every delegated layer
+// wraps a context that is already bounded: one budget for one command, however
+// many attempts the chain makes.
+func runOneShot(
 	ctx context.Context,
 	runner sandbox.Runner,
 	cmd string,
@@ -91,7 +108,21 @@ func runCommand(
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
 		defer cancel()
 	}
+	if executor, ok := runner.(sandbox.Executor); ok {
+		return executor.Exec(ctx, cmd, args, opts)
+	}
+	return runCommand(ctx, runner, cmd, args, opts)
+}
 
+// runCommand drains one session: the derived one-shot form, with the deadline
+// already applied by [runOneShot].
+func runCommand(
+	ctx context.Context,
+	runner sandbox.Runner,
+	cmd string,
+	args []string,
+	opts sandbox.ExecOptions,
+) (*sandbox.ExecResult, error) {
 	spec := sandbox.SessionSpec{
 		Argv: append([]string{cmd}, args...),
 		Opts: opts,

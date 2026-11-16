@@ -24,7 +24,7 @@ func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, op
 	if err := r.authorize(ctx, req); err != nil {
 		return nil, err
 	}
-	return Exec(ctx, r.inner, cmd, args, opts)
+	return runOneShot(ctx, r.inner, cmd, args, opts)
 }
 
 // authorize runs the allowlist / predicate / approver chain for one
@@ -154,3 +154,5 @@ func (r *approvalRunner) Close() error {
 func (r *approvalRunner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
 	return sandbox.OpenJournal(ctx, r.inner)
 }
+
+var _ sandbox.Executor = (*approvalRunner)(nil)
