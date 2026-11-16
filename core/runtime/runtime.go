@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"sync"
 
@@ -45,10 +46,11 @@ type Runtime struct {
 	sessions io.Closer
 	sources  []tool.Source
 
-	closers []io.Closer
+	sandboxDecorator func(Sandbox, sandbox.Runner) (sandbox.Runner, error)
 
-	once sync.Once
-	err  error
+	closers []io.Closer
+	once    sync.Once
+	err     error
 }
 
 // Option adjusts how a Runtime is built.
@@ -59,6 +61,8 @@ type options struct {
 	selectors  []Selector
 	middleware []MiddlewareOption
 	sources    []tool.Source
+
+	sandboxDecorator func(Sandbox, sandbox.Runner) (sandbox.Runner, error)
 }
 
 // WithSelectors declares the selection strategies YAML may name. Pure Go callers
@@ -110,6 +114,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Runtime, error) {
 		cfg:               cfg,
 		middlewareOptions: settings.middleware,
 		sources:           settings.sources,
+		sandboxDecorator:  settings.sandboxDecorator,
 	}
 	if err := rt.build(ctx, drivers, selectors); err != nil {
 		_ = rt.Close()
@@ -209,6 +214,7 @@ func (r *Runtime) Close() error {
 func (r *Runtime) logAssembled(ctx context.Context) {
 	attrs := append(runctx.Attrs(r.Context(ctx)),
 		attribute.String("sandbox.backend", r.cfg.Sandbox.Backend),
+		attribute.String("sandbox.runner", fmt.Sprintf("%T", r.runner)),
 		attribute.StringSlice("files.roots", r.cfg.Files.Roots),
 		attribute.StringSlice("sandbox.writes", r.cfg.Sandbox.Writes),
 		attribute.String("sandbox.net", r.cfg.Sandbox.Net.Mode),

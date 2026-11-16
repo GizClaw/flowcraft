@@ -297,6 +297,8 @@ Semantics worth relying on:
 - **`Escalation` is not a `Runner`.** Only a completed result tells a refusal
   from an ordinary failure, so the retry lives at the Exec level. Interactive
   sessions keep their own chains and never restart behind the user's back.
+  `engine.EscalationRunner` is the adapter when the caller only has a `Runner`:
+  its `Exec` runs the escalation, every session call forwards to `Confined`.
 - **A delegated subagent is a separate session.** A mode store keyed on session
   identity answers for the subagent's own session, not the caller's, and core
   derives no mode for it: `delegation.Policy` bounds delegation (targets, modes,
@@ -307,6 +309,56 @@ Semantics worth relying on:
 
 `outcome` reports `Refused` / `Approved` / `Remembered`, so a host can attach its
 audit note without re-deriving what happened.
+
+### Wiring escalation into a runtime
+
+A host that assembles its tools through `core/runtime` does not build the
+confined chain itself, so the retry attaches to the runner the runtime composed
+(`runtime.WithSandboxDecorator`). `engine.EscalationRunner` is that adapter:
+
+```go
+rt, err := runtime.New(ctx, cfg,
+    runtime.WithSandboxDecorator(func(sb runtime.Sandbox, confined sandbox.Runner) (sandbox.Runner, error) {
+        return engine.NewEscalationRunner(&engine.Escalation{
+            Confined: confined, // backend + approval + the document's defaults
+            // The retry chain is its own: keep the floor an escalation must not
+            // drop. sb.WorkDir is the effective directory; cfg.Sandbox.Workdir
+            // is empty whenever the deployment used files.roots.
+            Unconfined: engine.WithDefaults(local.New(sb.WorkDir), engine.ExecOptions{
+                Timeout:   sb.Defaults.Timeout,
+                Resources: sb.Defaults.Resources,
+            }),
+            Escalate: policy, // the ask channel
+            Rules:    policy, // remembered "run outside" rules
+            Gate:     host,   // mode owner: is the retry offerable?
+        })
+    }),
+)
+```
+
+Three rules make the seam safe:
+
+- **Ordering.** The decorator runs after the backend and after
+  `engine.WithDefaults`, and before the journal is opened. `exec_command`,
+  `exec_session`, `Runtime.Runner()` and the journal therefore see the same
+  value, and the confined chain it receives already carries the document's
+  timeout, budgets and writes.
+- **One-shot.** `exec_command` reaches the escalation only because the runner
+  implements `sandbox.Executor`, which `engine.Exec` dispatches to. Session calls
+  keep forwarding to `Confined`: a session refused over many reads is not what a
+  one-shot retry covers.
+- **Ownership.** The runtime closes the returned value exactly once, and only
+  that value. The retry chain belongs to the decorator — `EscalationRunner.Close`
+  releases it — so building one cannot leak it. `engine.Forwarder` is the base
+  that also forwards `OpenJournal` and `Attach`; embedding `sandbox.Runner`
+  directly promotes neither and silently drops the journal.
+
+The retry receives the confined call's `ExecOptions` byte for byte, which is how
+it inherits the deployment's net posture without the decorator asking for it.
+`sb.Defaults.Permission` is the document's write boundary: do not hand it to a
+`local` retry chain, which rejects a per-call permission — decide the floor the
+retry keeps. `engine.WithEscalationObserver` sees every one-shot outcome,
+including a plain confined success, for the audit note.
 
 ## File journal
 
