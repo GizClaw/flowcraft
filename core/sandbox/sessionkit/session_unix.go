@@ -137,7 +137,7 @@ func StartSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 		signal:  func(sig sandbox.SessionSignal) error { return signalSession(pty, pgid, sig) },
 		soft:    func() { killGroup(pgid, syscall.SIGTERM, "sandbox: SIGTERM process group failed") },
 		hard:    func() { killGroup(pgid, syscall.SIGKILL, "sandbox: SIGKILL process group failed") },
-		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, pty, &copiers, sampler) },
+		wait:    func() (sandbox.SessionExit, error) { return waitSession(s, cmd, pty, &copiers, sampler, pgid) },
 		release: func() { releaseOnce.Do(func() { releaseSession(s, pty, sampler) }) },
 	}
 
@@ -225,26 +225,86 @@ func killGroup(pgid int, sig syscall.Signal, msg string) {
 	}
 }
 
-// waitSession reaps the child, closes the pty and classifies the outcome. It
-// also waits for the pty copier, which may still hold bytes read before the
-// child's last write flushed, so EOF is never reported early.
+// ptyDrainGrace bounds each step of the drain once the child is reaped.
+const ptyDrainGrace = 500 * time.Millisecond
+
+// drainAndClosePTY hands the copier what the child left behind, then closes the
+// master.
+//
+// The ordering is the fix: when a child is reaped its last write can still sit in
+// the pty buffer, and the copier is the only reader that turns those bytes into
+// journal chunks, so closing the master first discards them.
+//
+// It is bounded because closing a pty master does not interrupt a read that is
+// already blocked — not on Linux, not on macOS — so a child that left something
+// holding the slave (a daemon behind `trap ” HUP`) would otherwise leave the
+// copier waiting on a descriptor nobody will close, and Wait would never return.
+// A terminal hangup is what ends such a group in the ordinary case, so the group
+// gets SIGHUP; if that is ignored it gets SIGKILL, which does close the
+// descriptors and lets the copier's read fail. The old order hung in exactly this
+// case, because it relied on the close to interrupt the read.
+func drainAndClosePTY(copiers *sync.WaitGroup, pty *ptyHandle, pgid int, id string) {
+	done := make(chan struct{})
+	go func() {
+		copiers.Wait()
+		close(done)
+	}()
+
+	if !waitClosed(done, ptyDrainGrace) {
+		killGroup(pgid, syscall.SIGHUP, "sandbox: SIGHUP the session group after reap failed")
+		if !waitClosed(done, ptyDrainGrace) {
+			killGroup(pgid, syscall.SIGKILL, "sandbox: SIGKILL the session group after reap failed")
+			waitClosed(done, ptyDrainGrace)
+		}
+	}
+
+	master := pty.take()
+	if master != nil {
+		if err := master.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
+				attribute.String("sandbox.session_id", id))
+		}
+	}
+	// Idempotent when the copier finished above. After a kill it is the step that
+	// keeps the journal consistent: the log is finished only once no copier can
+	// append again.
+	copiers.Wait()
+}
+
+// waitClosed reports whether done was closed within d.
+func waitClosed(done <-chan struct{}, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+// waitSession reaps the child, drains the pty and classifies the outcome.
+//
+// The drain is bounded (see [ptyDrainGrace]): a copier whose slave is still held
+// by a backgrounded grandchild is released by closing the master, so EOF can
+// arrive while that grandchild lives. What the bound buys is the other case —
+// bytes the child wrote but nobody had read yet — and that is the one a caller
+// notices.
 func waitSession(
 	s *session,
 	cmd *exec.Cmd,
 	pty *ptyHandle,
 	copiers *sync.WaitGroup,
 	sampler *GroupCapsWatcher,
+	pgid int,
 ) (sandbox.SessionExit, error) {
 	waitErr := cmd.Wait()
-	master := pty.take()
-	if master != nil {
-		if err := master.Close(); err != nil {
-			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
-				attribute.String("sandbox.session_id", s.id))
-		}
-	}
-	copiers.Wait()
-	return classifyExit(s, sampler, waitErr)
+	// A verdict is what the sampler observed while the child ran. Reading it here
+	// keeps the drain below from attributing a background grandchild's memory to a
+	// child that has already exited.
+	sampled := readVerdict(sampler)
+	drainAndClosePTY(copiers, pty, pgid, s.id)
+	return classifyExit(s, sampled, waitErr)
 }
 
 // releaseSession frees the platform handles. It is called from reap and from
@@ -274,16 +334,30 @@ func releaseSession(s *session, pty *ptyHandle, sampler *GroupCapsWatcher) {
 
 // classifyExit turns a wait result plus the session's own flags into what the
 // contract reports.
-func classifyExit(s *session, sampler *GroupCapsWatcher, waitErr error) (sandbox.SessionExit, error) {
-	if sampler != nil {
+// capsVerdict is what the resource sampler concluded while the child ran.
+type capsVerdict struct {
+	unenforceable error
+	exceeded      string
+}
+
+// readVerdict reads the sampler once, at reap time.
+func readVerdict(sampler *GroupCapsWatcher) capsVerdict {
+	if sampler == nil {
+		return capsVerdict{}
+	}
+	return capsVerdict{unenforceable: sampler.Unenforceable(), exceeded: sampler.Exceeded()}
+}
+
+func classifyExit(s *session, sampled capsVerdict, waitErr error) (sandbox.SessionExit, error) {
+	if sampled.unenforceable != nil || sampled.exceeded != "" {
 		// Order matters: a watcher that gave up on sampling killed the process,
 		// so its own verdict is what the caller has to see.
-		if sampleErr := sampler.Unenforceable(); sampleErr != nil {
+		if sampleErr := sampled.unenforceable; sampleErr != nil {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 				errdefs.NotAvailablef(
 					"sandbox: resource caps became unenforceable while running process: %w", sampleErr)
 		}
-		if cap := sampler.Exceeded(); cap != "" {
+		if cap := sampled.exceeded; cap != "" {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 				errdefs.BudgetExceededf(
 					"sandbox: %s resource cap exceeded while running process", cap)

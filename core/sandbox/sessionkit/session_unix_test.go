@@ -6,8 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"runtime"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -185,6 +189,115 @@ func TestStartSessionTTY(t *testing.T) {
 	}
 	if exit.Code != 0 {
 		t.Errorf("exit = %+v", exit)
+	}
+}
+
+// A tty session has to keep the tail a child wrote just before it died: the pty
+// buffer still holds those bytes when the child is reaped, and closing the master
+// before the copier drains them discards the answer's last words. Under load that
+// is an intermittently empty result.
+func TestStartSessionTTYKeepsTheTailOfADyingChild(t *testing.T) {
+	for range 20 {
+		sess := startSh(t, sandbox.SessionSpec{TTY: true, Rows: 24, Cols: 200},
+			"printf tty-tail; kill -9 $$")
+		streams, exit, err := drain(t, sess)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if !strings.Contains(streams[sandbox.SessionStreamTTY], "tty-tail") {
+			t.Fatalf("tty output = %q, want the tail the child wrote before dying",
+				streams[sandbox.SessionStreamTTY])
+		}
+		// The reordering sits in front of the classification: a child killed by a
+		// signal is still reported as signaled.
+		if exit.Reason != sandbox.SessionSignaled || exit.Signal != int(syscall.SIGKILL) {
+			t.Fatalf("exit = %+v, want it signalled by SIGKILL", exit)
+		}
+	}
+}
+
+// A backgrounded grandchild that ignores the hangup keeps the pty slave open after
+// the child exits. Closing the master does not interrupt a read that is already
+// blocked, so without the kill the copier would wait on a descriptor nobody will
+// close and Wait would never return. The tail still arrives, and the call is
+// bounded.
+func TestStartSessionTTYReturnsWhileAGrandchildHoldsTheSlave(t *testing.T) {
+	sess := startSh(t, sandbox.SessionSpec{TTY: true, Rows: 24, Cols: 200},
+		`trap "" HUP; sleep 30 & printf tty-tail`)
+	start := time.Now()
+	streams, _, err := drain(t, sess)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	// The grace is 500 ms per step, so three steps plus the helper's own work is
+	// well inside two seconds; anything near the helper's deadline means the drain
+	// is not bounded.
+	elapsed := time.Since(start)
+	if elapsed > 2*time.Second {
+		t.Errorf("drain took %s, want the drain bounded by ptyDrainGrace", elapsed)
+	}
+	// On Linux the ignored hangup keeps the slave open, so the drain has to spend
+	// its grace and then kill the group: measuring that proves this test exercises
+	// the bound instead of passing on a tty that closed by itself. macOS closes the
+	// terminal with the session leader, so there the same child costs nothing and
+	// the assertion would be false.
+	if runtime.GOOS == "linux" && elapsed < ptyDrainGrace {
+		t.Errorf("drain took %s, want at least the %s grace: the grandchild was gone, so this test proved nothing",
+			elapsed, ptyDrainGrace)
+	}
+	if !strings.Contains(streams[sandbox.SessionStreamTTY], "tty-tail") {
+		t.Errorf("tty output = %q, want the tail before the grandchild", streams[sandbox.SessionStreamTTY])
+	}
+}
+
+// The ordering itself, without a child to race: the master must stay open while
+// the copier works and close once it is done. A pipe stands in for the pty master
+// because it reports the same two states — readable-with-deadline while open,
+// os.ErrClosed after — and unlike a pty it honours a read deadline.
+func TestDrainAndClosePTYClosesAfterTheCopier(t *testing.T) {
+	master, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+	pty := &ptyHandle{}
+	pty.set(master)
+
+	var copiers sync.WaitGroup
+	copiers.Add(1)
+	released := make(chan struct{})
+	go func() {
+		defer copiers.Done()
+		<-released
+	}()
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		drainAndClosePTY(&copiers, pty, syscall.Getpgrp(), "test")
+	}()
+
+	// While the copier is still working the master has to be open: this is the
+	// window in which the child's last write is read.
+	if err := master.SetReadDeadline(time.Now().Add(20 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	buf := make([]byte, 1)
+	_, readErr := master.Read(buf)
+	if errors.Is(readErr, os.ErrClosed) {
+		t.Fatal("the master was closed while the copier was still reading")
+	}
+
+	close(released)
+	select {
+	case <-drained:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the drain did not return after the copier finished")
+	}
+	// And once the drain returned, the master is closed — exactly one close, by
+	// the function that owns the order.
+	if _, err := master.Read(buf); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("master still readable after the drain: %v", err)
 	}
 }
 
