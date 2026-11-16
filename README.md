@@ -122,40 +122,50 @@ See [`docs/guides/deploy.md`](docs/guides/deploy.md) and
 
 ## Architecture
 
-`core` is layered: a package imports only from the layers below it.
+`core` is layered: a package imports only from the layers below it, never from
+the ones above.
 
 ```text
-                 ┌──────────────────────────────────────────┐
-                 │            your application              │
-                 │  drivers · secret resolvers · approvals   │
-                 └───────────────────┬──────────────────────┘
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                         your application                        │
+    │              drivers · secret resolvers · approvals             │
+    └────────────────────────────────┬────────────────────────────────┘
                                      ▼
-        ┌────────────────────────────────────────────────────────┐
-        │ deployment   core/deploy (documents, kinds)            │
-        │              core/agent-host (process, sessions)       │
-        ├────────────────────────────────────────────────────────┤
-        │ assembly     core/runtime (provider · tools · sandbox  │
-        │              files · skills · journal; owns them)      │
-        ├────────────────────────────────────────────────────────┤
-        │ execution    core/agent · agent-graph · agent-a2a      │
-        │              core/delegation                           │
-        ├────────────────────────────────────────────────────────┤
-        │ boundaries   core/tool (+engine, middleware, mcp)      │
-        │              core/sandbox (+backends, journal, remote)  │
-        ├────────────────────────────────────────────────────────┤
-        │ inference    core/inference (+openai, +anthropic)       │
-        │              driver/*                                  │
-        ├────────────────────────────────────────────────────────┤
-        │ contracts    message · errdefs · permission · fsx       │
-        │              skill · search                            │
-        └────────────────────────────────────────────────────────┘
+    ┌─────────────────────────────────────────────────────────────────┐
+    │  deployment     agent-host (sessions, bindings)                 │
+    │                 deploy (documents, kinds)                       │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  execution      agent · agent-graph · agent-a2a                 │
+    │                 delegation                                      │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  assembly       runtime                                         │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  boundaries     tool (+engine, middleware, mcp)                 │
+    │                 tool-{builtin,mcp}                              │
+    │                 sandbox (+engine, journal, netpolicy)           │
+    │                 sandbox-{local,bwrap,seatbelt,windows} · remote │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  inference      inference (+model, protocol, route)             │
+    │                 inference-{openai,anthropic}                    │
+    │                 driver/* — shipped providers                    │
+    ├─────────────────────────────────────────────────────────────────┤
+    │  contracts      message · errdefs · permission · fsx            │
+    │                 skill · search · runtime/runctx                 │
+    └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two rules keep that shape.** A `Runtime` owns what it built and closes it in
-reverse construction order; a value handed in through an option is somebody
-else's to close. And nothing below the assembly layer knows about a conversation:
-`core/agent` owns runs, `core/runtime` owns the substrate, and history is an
-argument to a turn.
+**Two rules keep that shape.** Imports travel downwards only: `agent-graph`
+reaches for `runtime`, `runtime` reaches for `tool` and `sandbox`, and nothing
+below the execution layer knows what a conversation is — `core/agent` owns runs,
+`core/runtime` owns the substrate a run is made of, and history is an argument to a
+turn rather than something a session remembers. `runtime/runctx` is drawn with the
+contracts because it imports `telemetry` alone: any layer can carry run attributes
+without reaching into the assembly. The other rule is ownership — a `Runtime`
+closes what it built in reverse construction order, and a value handed in through
+an option is somebody else's to close.
+
+`core/telemetry` sits outside the ladder: every layer reports through it, so it is
+above nothing and below nothing.
 
 ## Module map
 
