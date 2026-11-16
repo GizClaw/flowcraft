@@ -154,3 +154,5 @@ func (r *approvalRunner) Close() error {
 func (r *approvalRunner) OpenJournal(ctx context.Context) (sandbox.FileJournal, error) {
 	return sandbox.OpenJournal(ctx, r.inner)
 }
+
+var _ sandbox.Executor = (*approvalRunner)(nil)

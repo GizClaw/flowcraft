@@ -304,3 +304,12 @@ func mergeEnv(caller, def sandbox.EnvPolicy) sandbox.EnvPolicy {
 	out.Inject = merged
 	return out
 }
+
+// The policy decorators implement the optional one-shot capability so
+// engine.Exec keeps taking their Exec path: a gate or a defaults merge must
+// happen once per call, whether the caller drains a session itself or hands the
+// call to a decorator that re-runs it.
+var (
+	_ sandbox.Executor = (*allowCommandsRunner)(nil)
+	_ sandbox.Executor = (*defaultsRunner)(nil)
+)

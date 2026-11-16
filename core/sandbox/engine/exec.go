@@ -79,6 +79,12 @@ func execOutcome(err error) string {
 }
 
 // runCommand is the uninstrumented one-shot execution.
+//
+// A runner that implements [sandbox.Executor] owns the one-shot path: its Exec
+// may run the command more than once (escalation re-runs an OS-refused call),
+// which draining a single session can never express. Everything else keeps the
+// derived view over Start, so a backend still has one code path to keep in
+// step.
 func runCommand(
 	ctx context.Context,
 	runner sandbox.Runner,
@@ -86,6 +92,9 @@ func runCommand(
 	args []string,
 	opts sandbox.ExecOptions,
 ) (*sandbox.ExecResult, error) {
+	if executor, ok := runner.(sandbox.Executor); ok {
+		return executor.Exec(ctx, cmd, args, opts)
+	}
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
