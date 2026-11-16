@@ -28,7 +28,10 @@ var (
 	arkRefusedCodes = []string{
 		"accessdenied", "accountoverdue", "arrearage", "insufficientbalance", "quotaexceeded",
 	}
-	arkRefusedProse = []string{"insufficient balance", "arrearage", "account is overdue", "quota is exhausted"}
+	arkRefusedProse = []string{
+		"access denied", "insufficient balance", "arrearage", "account is overdue",
+		"quota is exhausted",
+	}
 
 	// The request itself is wrong, or the platform refused its content: repeating
 	// it anywhere produces the same refusal.
