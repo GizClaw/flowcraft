@@ -12,7 +12,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.11.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.11.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 | `craft` | `-` | Application assembly layer: craft.yaml, capabilities, the MCP plugin host and host primitives, and process lifecycle. |
 
 ## [Unreleased]
@@ -20,6 +20,12 @@ Release PR before their tags are published.
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.11.1` - 2026-11-16
+
+### Changed
+
+- feat(core/tool): configure tool descriptions per deployment — `tools.descriptions` replaces the text a tool shows the model, whole or per input-schema parameter, because a description is prompt surface rather than contract and the answer differs per deployment; replacement rather than composition, since the common motive is deleting a sentence that is wrong here and a template cannot delete, with the assembled text available from `Manager.ToolDefinitions` as a starting point. test(core/inference): add the extension conformance suite every driver runs — `inferencetest.RunExtensions` checks what an `inference.Extension` owes the runtime (an addressable identity, an `ActiveFields` that reports exactly the options it sets, a `Validate` that accepts its own sample) and walks a `Clone` with reflection to prove it owns its storage, because a shared pointer, slice or map lets one request's tuning reach another's and surfaces much later as an answer nobody can explain; the three drivers keep their own copies until this package is released, since the driver module builds against its pinned core under `GOWORK=off`. test(core/agent-a2a): give the cancel path a peer that answers it — the cancelled-task test cancelled a task the peer had already paused, which the protocol refuses, so it passed only when its cancel outran the peer's status update and lost that race on a loaded runner; it is now two promises with two peers, and the package runs five times under `-race` in the time the old shape used to hang.
 
 ## `core/v0.11.0` - 2026-11-14
 
