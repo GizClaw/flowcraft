@@ -113,7 +113,7 @@ func (o TTSOptions) Validate() error {
 
 func (o TTSOptions) Clone() inference.Extension {
 	o.Speed = ptr.Clone(o.Speed)
-	return o
+	return &o
 }
 
 // VideoOptions carries the H3 task settings that have no canonical
@@ -197,7 +197,7 @@ func (o VideoOptions) Clone() inference.Extension {
 	o.DurationMillis = ptr.Clone(o.DurationMillis)
 	o.Watermark = ptr.Clone(o.Watermark)
 	o.LastFrameOnly = ptr.Clone(o.LastFrameOnly)
-	return o
+	return &o
 }
 
 // ttsOptions extracts this driver's speech extension from a request. A second

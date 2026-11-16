@@ -108,7 +108,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 		Watermark:      extPtr(false),
 		OptimizePrompt: &ImageOptimizePrompt{Mode: "fast"},
 	}
-	clonedImage := image.Clone().(ImageOptions)
+	clonedImage := image.Clone().(*ImageOptions)
 	clonedImage.Size.Width = 512
 	*clonedImage.Count = 9
 	*clonedImage.Watermark = true
@@ -121,7 +121,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 	}
 
 	video := VideoOptions{Priority: extPtr(int32(3)), OutputFormat: extPtr("mp4")}
-	clonedVideo := video.Clone().(VideoOptions)
+	clonedVideo := video.Clone().(*VideoOptions)
 	*clonedVideo.Priority = 0
 	*clonedVideo.OutputFormat = "mov"
 	if *video.Priority != 3 || *video.OutputFormat != "mp4" {
@@ -166,5 +166,21 @@ func TestExtensionProviderAndID(t *testing.T) {
 	}
 	if got := (VideoOptions{}).ExtensionID(); got != extensionVideo {
 		t.Errorf("video id = %q, want %q", got, extensionVideo)
+	}
+}
+
+// The runtime clones an extension set before it builds a request
+// ([inference.Extensions.Clone], which a graph node's model config and
+// GenerateRequest.Clone both use). A clone has to stay the type this driver
+// asserts on, or a deployment's own options stop being understood the moment the
+// framework copies them.
+func TestAClonedExtensionIsStillUnderstood(t *testing.T) {
+	cloned := inference.Extensions{&ImageOptions{Count: extPtr(2)}}.Clone()
+	options, err := imageOptions(cloned)
+	if err != nil {
+		t.Fatalf("a cloned extension was not understood: %s", causeText(err))
+	}
+	if options.Count == nil || *options.Count != 2 {
+		t.Errorf("count = %v, want the clone's 2", options.Count)
 	}
 }

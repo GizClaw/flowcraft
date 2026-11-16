@@ -232,7 +232,7 @@ func (o ImageOptions) Clone() inference.Extension {
 		optimize := *o.OptimizePrompt
 		o.OptimizePrompt = &optimize
 	}
-	return o
+	return &o
 }
 
 // ---------------------------------------------------------------------------
@@ -390,5 +390,5 @@ func (o VideoOptions) Clone() inference.Extension {
 	o.WebSearch = ptr.Clone(o.WebSearch)
 	o.CallbackURL = ptr.Clone(o.CallbackURL)
 	o.SafetyIdentifier = ptr.Clone(o.SafetyIdentifier)
-	return o
+	return &o
 }

@@ -148,7 +148,7 @@ func (o GenerateOptions) Clone() inference.Extension {
 		format.Schema = append(json.RawMessage(nil), o.ResponseFormat.Schema...)
 		o.ResponseFormat = &format
 	}
-	return o
+	return &o
 }
 
 // EmbedOptions carries text-embedding controls.
@@ -160,7 +160,7 @@ type EmbedOptions struct {
 
 func (o EmbedOptions) ProviderID() string         { return extensionProvider(o.Provider) }
 func (o EmbedOptions) ExtensionID() string        { return extensionEmbed }
-func (o EmbedOptions) Clone() inference.Extension { return o }
+func (o EmbedOptions) Clone() inference.Extension { return &o }
 
 func (o EmbedOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
@@ -191,7 +191,7 @@ type TTSOptions struct {
 
 func (o TTSOptions) ProviderID() string         { return extensionProvider(o.Provider) }
 func (o TTSOptions) ExtensionID() string        { return "tts_options" }
-func (o TTSOptions) Clone() inference.Extension { return o }
+func (o TTSOptions) Clone() inference.Extension { return &o }
 
 func (o TTSOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
@@ -238,7 +238,7 @@ func (o ImageOptions) Clone() inference.Extension {
 	o.IsSketch = ptr.Clone(o.IsSketch)
 	o.UpscaleFactor = ptr.Clone(o.UpscaleFactor)
 	o.EnableInterleave = ptr.Clone(o.EnableInterleave)
-	return o
+	return &o
 }
 func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
@@ -341,7 +341,7 @@ func (o VideoOptions) Clone() inference.Extension {
 	o.Watermark = ptr.Clone(o.Watermark)
 	o.PromptExtend = ptr.Clone(o.PromptExtend)
 	o.Audio = ptr.Clone(o.Audio)
-	return o
+	return &o
 }
 func (o VideoOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
@@ -425,7 +425,7 @@ func (o TranscribeOptions) Clone() inference.Extension {
 		}
 		o.Vocabulary = m
 	}
-	return o
+	return &o
 }
 func (o TranscribeOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField

@@ -103,7 +103,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 			Kind: "json_schema", Name: "out", Schema: []byte(`{"type":"object"}`),
 		},
 	}
-	clonedGenerate := generate.Clone().(GenerateOptions)
+	clonedGenerate := generate.Clone().(*GenerateOptions)
 	*clonedGenerate.Temperature = 0.1
 	clonedGenerate.Stop[0] = "END"
 	clonedGenerate.ResponseFormat.Name = "other"
@@ -122,7 +122,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 	}
 
 	image := ImageOptions{Size: &media.ImageSize{Width: 1024, Height: 1024}, Count: extPtr(2)}
-	clonedImage := image.Clone().(ImageOptions)
+	clonedImage := image.Clone().(*ImageOptions)
 	clonedImage.Size.Width = 512
 	*clonedImage.Count = 1
 	if image.Size.Width != 1024 || *image.Count != 2 {
@@ -130,7 +130,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 	}
 
 	video := VideoOptions{DurationMillis: extPtr(int64(5000)), Watermark: extPtr(false)}
-	clonedVideo := video.Clone().(VideoOptions)
+	clonedVideo := video.Clone().(*VideoOptions)
 	*clonedVideo.DurationMillis = 1
 	*clonedVideo.Watermark = true
 	if *video.DurationMillis != 5000 || *video.Watermark {
@@ -143,7 +143,7 @@ func TestExtensionCloneIsDeep(t *testing.T) {
 		ChannelID:  extPtr(1),
 		Vocabulary: map[string]int{"flow": 50, "craft": 3},
 	}
-	clonedTranscribe := transcribe.Clone().(TranscribeOptions)
+	clonedTranscribe := transcribe.Clone().(*TranscribeOptions)
 	*clonedTranscribe.ChannelID = 2
 	clonedTranscribe.Vocabulary["flow"] = 1
 	delete(clonedTranscribe.Vocabulary, "craft")
@@ -203,5 +203,19 @@ func TestExtensionProviderID(t *testing.T) {
 	}
 	if (GenerateOptions{}).ExtensionID() != extensionGenerate {
 		t.Errorf("generate id = %q", (GenerateOptions{}).ExtensionID())
+	}
+}
+
+// The runtime clones an extension set before it builds a request. A clone has to
+// stay the type this driver asserts on, or a deployment's own options stop being
+// understood the moment the framework copies them.
+func TestAClonedExtensionIsStillUnderstood(t *testing.T) {
+	cloned := inference.Extensions{&GenerateOptions{Temperature: extPtr(0.3)}}.Clone()
+	options, err := generateOptions(cloned)
+	if err != nil {
+		t.Fatalf("a cloned extension was not understood: %v", err)
+	}
+	if options.Temperature == nil || *options.Temperature != 0.3 {
+		t.Errorf("temperature = %v, want the clone's 0.3", options.Temperature)
 	}
 }
