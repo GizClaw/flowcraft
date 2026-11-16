@@ -1,0 +1,16 @@
+# Local-only working documents: design plans and research reports that live in a
+# checkout and never reach the repository. The markdownlint config ignores the
+# same trees.
+docs/plans/
+docs/reporters/
+docs/reports/
+docs/reviews/
+docs/week_reporters/
+
+# Generated: the release gate aggregates changeset summaries into it, and those
+# summaries are prose rather than Markdown.
+CHANGELOG.md
+
+# Local-only agent instructions. `.gitignore` whitelists what is tracked, and
+# this file is not part of it.
+AGENTS.md
