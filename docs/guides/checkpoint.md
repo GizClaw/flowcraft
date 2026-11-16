@@ -2,6 +2,7 @@
 layout: default
 title: Checkpoints
 ---
+
 # Checkpoints Guide
 
 `core/agent` defines what a checkpoint is and what a store must do; a backend
@@ -48,15 +49,15 @@ The interface is semantic rather than relational: a task is addressed by id, and
 a first save is just a save, so create and append collapse into `Save`. Where
 state lives — a local file, Postgres, an object store — is a deployment decision.
 
-| Call | Answers |
-| --- | --- |
-| `Save` | Writes the projection and appends this round's events in **one transaction**; returns the sequence range it assigned. |
-| `Load` | The newest projection of one task. It does not replay: `Task.History` is always empty. |
-| `LatestForSession` | The newest task of a session — what resuming a session needs, since checkpoints are keyed by task. |
-| `Events` / `EventsAfter` | Every appended fact, or the suffix after a sequence, oldest first. |
-| `SetServerVersion` | Advances the adapter's counter without rewriting the projection. |
-| `TruncateEvents` | Drops events at or before a sequence, optionally only those of some kinds. |
-| `PutBlob` | Stores bytes by content hash: the same bytes must yield the same reference, so a repeated write costs nothing. |
+| Call                     | Answers                                                                                                               |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
+| `Save`                   | Writes the projection and appends this round's events in **one transaction**; returns the sequence range it assigned. |
+| `Load`                   | The newest projection of one task. It does not replay: `Task.History` is always empty.                                |
+| `LatestForSession`       | The newest task of a session — what resuming a session needs, since checkpoints are keyed by task.                    |
+| `Events` / `EventsAfter` | Every appended fact, or the suffix after a sequence, oldest first.                                                    |
+| `SetServerVersion`       | Advances the adapter's counter without rewriting the projection.                                                      |
+| `TruncateEvents`         | Drops events at or before a sequence, optionally only those of some kinds.                                            |
+| `PutBlob`                | Stores bytes by content hash: the same bytes must yield the same reference, so a repeated write costs nothing.        |
 
 A missing task is `agent.ErrNoCheckpoint`, not an empty struct — a resume that
 cannot tell "nothing yet" from "an empty task" is a resume that silently starts
@@ -83,9 +84,9 @@ event is never removable, so sequence numbers stay monotonic.
 
 ## Two counters
 
-| Counter | Owned by | Advances on |
-| --- | --- | --- |
-| `Version` | the store | every save; it is what a concurrent writer is compared against. |
+| Counter         | Owned by           | Advances on                                                                         |
+| --------------- | ------------------ | ----------------------------------------------------------------------------------- |
+| `Version`       | the store          | every save; it is what a concurrent writer is compared against.                     |
 | `ServerVersion` | a protocol adapter | only that adapter, through `SetServerVersion`. The loop's own saves never touch it. |
 
 Two writers sharing one counter would reject each other's writes, and both are
@@ -102,11 +103,11 @@ editing the graph invalidates the checkpoints taken under the old one.
 
 ## Who writes what
 
-| Writer | Boundary | Notes |
-| --- | --- | --- |
+| Writer             | Boundary                                               | Notes                                                                                                        |
+| ------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
 | `core/agent-graph` | every step, plus a base every `checkpoint.every` steps | A base carries the whole state; the interval is the price paid for a short replay. See [graph.md](graph.md). |
-| `core/agent-a2a` | every task state transition | the remote task id and the already-seen message ids ride in the payload |
-| `core/agent-host` | every turn | the session table resumes a conversation with `LatestForSession` |
+| `core/agent-a2a`   | every task state transition                            | the remote task id and the already-seen message ids ride in the payload                                      |
+| `core/agent-host`  | every turn                                             | the session table resumes a conversation with `LatestForSession`                                             |
 
 ## Backends
 

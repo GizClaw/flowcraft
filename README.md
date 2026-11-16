@@ -176,7 +176,7 @@ above nothing and below nothing.
 | [`core`](core/)                                       | Platform module: contracts, inference, tools, sandbox, runtime, execution, deployment | Versioned Go module |
 | [`driver`](driver/)                                   | Provider adapters that are not protocol families                                      | Versioned Go module |
 | [`examples/forge`](examples/forge/)                   | Runnable demo: a werewolf table played by agents                                      | Example             |
-| [`examples/parallel`](examples/parallel/)             | Standalone consumer: MCP search bridge, pinned to an older `core`                      | Example             |
+| [`examples/parallel`](examples/parallel/)             | Standalone consumer: MCP search bridge, pinned to an older `core`                     | Example             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                    | Tool                |
 | [`skills/flowcraft-deploy`](skills/flowcraft-deploy/) | Codex skill: reference cards, templates, validator                                    | Skill               |
 

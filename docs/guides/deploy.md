@@ -2,6 +2,7 @@
 layout: default
 title: Deployment Assembly
 ---
+
 # Deployment Assembly Guide
 
 `core/deploy` is the document and kind layer: it turns a deployment file into
@@ -24,7 +25,7 @@ agents:
   - name: forge
     engine:
       kind: graph
-      settings: { ... }          # decoded by the kind
+      settings: { ... } # decoded by the kind
     runtime:
       layers:
         - { priority: 0, path: base.yaml }
@@ -45,17 +46,17 @@ agents:
         settings: { ... }
 ```
 
-| Field | Rule |
-| --- | --- |
-| `version` | Must be `1`. Anything else is rejected instead of being read as a coincidence. |
-| `agents[].name` | Required, unique within the document, and what a caller addresses. |
-| `agents[].engine` | Required. `kind` has no default: an agent that does not say what it is cannot be deployed meaningfully. |
-| `agents[].runtime` | A stack of layers, at least one. Absent is only legal for an engine kind that reports `Local: false`. |
-| `agents[].catalog` | `scope: run` (default) or `session`: how far a tool projection is scoped. |
-| `agents[].protocol` | Absent means the agent is not exposed. `kind` is required when the block is present. |
-| `agents[].delegation` | Absent means the agent gets no delegation tools at all — not "unrestricted". |
+| Field                    | Rule                                                                                                              |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| `version`                | Must be `1`. Anything else is rejected instead of being read as a coincidence.                                    |
+| `agents[].name`          | Required, unique within the document, and what a caller addresses.                                                |
+| `agents[].engine`        | Required. `kind` has no default: an agent that does not say what it is cannot be deployed meaningfully.           |
+| `agents[].runtime`       | A stack of layers, at least one. Absent is only legal for an engine kind that reports `Local: false`.             |
+| `agents[].catalog`       | `scope: run` (default) or `session`: how far a tool projection is scoped.                                         |
+| `agents[].protocol`      | Absent means the agent is not exposed. `kind` is required when the block is present.                              |
+| `agents[].delegation`    | Absent means the agent gets no delegation tools at all — not "unrestricted".                                      |
 | `agents[].observability` | Absent fields fall back to the host's bindings, which is why the written form keeps "silent" distinct from "off". |
-| `agents[].hooks` | Chained in declaration order, before the host's own hooks. |
+| `agents[].hooks`         | Chained in declaration order, before the host's own hooks.                                                        |
 
 Unknown fields, duplicate agent names and unregistered kinds are load errors. A
 kind the document names but the host did not register fails with the registered
@@ -128,10 +129,10 @@ kinds := deploy.BuiltinKinds().
 
 Every string in the document may name a placeholder. Three forms:
 
-| Form | Resolves through |
-| --- | --- |
-| `${NAME}` | the built-in `env` scheme (`SchemeEnv`) |
-| `${NAME:-fallback}` | `env`, with a default when unset |
+| Form                | Resolves through                                  |
+| ------------------- | ------------------------------------------------- |
+| `${NAME}`           | the built-in `env` scheme (`SchemeEnv`)           |
+| `${NAME:-fallback}` | `env`, with a default when unset                  |
 | `${scheme:arg:arg}` | a resolver registered with `runtime.WithResolver` |
 
 Arguments after the scheme are split on `:` and handed to the resolver
@@ -164,16 +165,16 @@ specs, err := loader.LoadFile(ctx, "deploy.yaml")
 
 A `deploy.Spec` is the validated form of one agent:
 
-| Field | Meaning |
-| --- | --- |
-| `Name` | The agent's address. |
-| `Engine` | Kind plus raw settings; the kind decodes them again when it builds. |
-| `Protocol` | Nil when the agent is not exposed. |
-| `Runtime` | A resolved `runtime.Config` — layers already merged and expanded. Absent for a remote engine. |
-| `Catalog` | Validated projection scope. |
-| `Delegation` | Nil when the document declared none. |
-| `Observability` | "Silent" is an empty `Trace` and a nil `Bodies`, not zero values. |
-| `Hooks` | In declaration order. |
+| Field                        | Meaning                                                                                                           |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `Name`                       | The agent's address.                                                                                              |
+| `Engine`                     | Kind plus raw settings; the kind decodes them again when it builds.                                               |
+| `Protocol`                   | Nil when the agent is not exposed.                                                                                |
+| `Runtime`                    | A resolved `runtime.Config` — layers already merged and expanded. Absent for a remote engine.                     |
+| `Catalog`                    | Validated projection scope.                                                                                       |
+| `Delegation`                 | Nil when the document declared none.                                                                              |
+| `Observability`              | "Silent" is an empty `Trace` and a nil `Bodies`, not zero values.                                                 |
+| `Hooks`                      | In declaration order.                                                                                             |
 | `IdleTimeout`, `MaxSessions` | Host decisions, not document fields: a session lives in the store, so eviction is a cache concern, not data loss. |
 
 Errors are `errdefs.Validation` and name the path, e.g.
@@ -199,28 +200,28 @@ sess, _ := manager.Session("forge", sessionID)
 for event, err := range sess.Run(ctx, message.NewTextMessage(message.RoleUser, "hi")) { ... }
 ```
 
-| Call | Use |
-| --- | --- |
-| `Deploy` | Add or replace a batch of specs. |
-| `Add` / `Replace` / `Remove` | Single-agent management. |
-| `Handler(name)` | The protocol's `http.Handler`, for `net/http`. |
-| `Session(name, id)` | The session table entry: `Run`, `State`, `Cancel`, `Result`. |
-| `Drain` / `Close` | Stop accepting, then tear down. `Drain` finishes what is running. |
+| Call                         | Use                                                               |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `Deploy`                     | Add or replace a batch of specs.                                  |
+| `Add` / `Replace` / `Remove` | Single-agent management.                                          |
+| `Handler(name)`              | The protocol's `http.Handler`, for `net/http`.                    |
+| `Session(name, id)`          | The session table entry: `Run`, `State`, `Cancel`, `Result`.      |
+| `Drain` / `Close`            | Stop accepting, then tear down. `Drain` finishes what is running. |
 
 Callbacks run synchronously on the run's goroutine, so they must be fast and
 non-blocking: a slow `OnEvent` stalls the run and its protocol stream.
 
 ## Where each piece lives
 
-| Package | Role |
-| --- | --- |
-| `core/deploy` | Documents, specs, kinds, loading, placeholders. |
-| `core/deploy/a2aprotocol` | The A2A server (protocol implementation). |
-| `core/agent-a2a` | The A2A client, as a remote engine kind. |
-| `core/agent-host` | Manager, bindings, session table, deployment lifecycle. |
-| `core/runtime` | The substrate one agent runs on; see [runtime.md](runtime.md). |
-| `core/agent-graph` | The `graph` engine kind. See [graph.md](graph.md). |
-| `core/delegation` | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
+| Package                   | Role                                                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------- |
+| `core/deploy`             | Documents, specs, kinds, loading, placeholders.                                                 |
+| `core/deploy/a2aprotocol` | The A2A server (protocol implementation).                                                       |
+| `core/agent-a2a`          | The A2A client, as a remote engine kind.                                                        |
+| `core/agent-host`         | Manager, bindings, session table, deployment lifecycle.                                         |
+| `core/runtime`            | The substrate one agent runs on; see [runtime.md](runtime.md).                                  |
+| `core/agent-graph`        | The `graph` engine kind. See [graph.md](graph.md).                                              |
+| `core/delegation`         | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
 
 ## What was removed, and why
 

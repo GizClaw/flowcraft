@@ -2,6 +2,7 @@
 layout: default
 title: Agent Skills
 ---
+
 # Agent Skills Guide
 
 `core/skill` is the read-only half of the Agent Skills convention
@@ -31,18 +32,19 @@ description: Draft release notes from a merged PR list. Use when preparing a rel
 ---
 
 # Release notes
+
 ...
 ```
 
-| Field | Rule |
-| --- | --- |
-| `name` | lowercase letters, digits and hyphens, ≤ 64 characters. A missing or invalid name falls back to the slugified directory name, with a warning; a directory name with no ASCII left to slugify is a parse error. |
-| `description` | required; truncated to 1024 characters (runes, not bytes). |
-| `metadata.short-description` | optional non-standard extension, surfaced for compact listings. |
-| file size | ≤ 256 KiB; larger files are refused. |
-| other fields | tolerated: the frontmatter decode is lenient, so vendor extensions (`license`, `version`, …) do not fail the parse. |
-| frontmatter keys | two distinct keys spelling one JSON key (`1` beside `"1"`) load with a warning naming the collision; a key the conversion cannot spell refuses the parse, named rather than left to map order. |
-| encoding | a UTF-8 BOM before the frontmatter and CRLF line endings are accepted. |
+| Field                        | Rule                                                                                                                                                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name`                       | lowercase letters, digits and hyphens, ≤ 64 characters. A missing or invalid name falls back to the slugified directory name, with a warning; a directory name with no ASCII left to slugify is a parse error. |
+| `description`                | required; truncated to 1024 characters (runes, not bytes).                                                                                                                                                     |
+| `metadata.short-description` | optional non-standard extension, surfaced for compact listings.                                                                                                                                                |
+| file size                    | ≤ 256 KiB; larger files are refused.                                                                                                                                                                           |
+| other fields                 | tolerated: the frontmatter decode is lenient, so vendor extensions (`license`, `version`, …) do not fail the parse.                                                                                            |
+| frontmatter keys             | two distinct keys spelling one JSON key (`1` beside `"1"`) load with a warning naming the collision; a key the conversion cannot spell refuses the parse, named rather than left to map order.                 |
+| encoding                     | a UTF-8 BOM before the frontmatter and CRLF line endings are accepted.                                                                                                                                         |
 
 The standard expects `name` to equal the directory name; a mismatch is accepted
 with a warning. Only malformed files fail: missing frontmatter, an empty body, a
@@ -87,13 +89,13 @@ A host that reloads skills builds a new index rather than mutating the old one,
 which is what keeps every read lock-free; `core/runtime` keeps exactly one per
 runtime and hands it to both the tools and `Runtime.Skills()`.
 
-| Method | Purpose |
-| --- | --- |
-| `Len()` | how many skills the pass found |
-| `All()` | every skill, in discovery order (a stable list, not a map) |
-| `ByName(name)` | one skill and whether it exists |
-| `RankScored(query, topN, minScore)` | skills with their scores, best first |
-| `Rank(query, topN, minScore)` | the same list without scores |
+| Method                              | Purpose                                                    |
+| ----------------------------------- | ---------------------------------------------------------- |
+| `Len()`                             | how many skills the pass found                             |
+| `All()`                             | every skill, in discovery order (a stable list, not a map) |
+| `ByName(name)`                      | one skill and whether it exists                            |
+| `RankScored(query, topN, minScore)` | skills with their scores, best first                       |
+| `Rank(query, topN, minScore)`       | the same list without scores                               |
 
 ## Ranking
 
@@ -121,10 +123,10 @@ body, err := tree.Read(ctx, meta.Path)   // frontmatter included
 `core/tool-builtin/skills` ships the two actions a model can take on the catalog,
 over the index the host already built:
 
-| Tool | Use |
-| --- | --- |
+| Tool           | Use                                                                |
+| -------------- | ------------------------------------------------------------------ |
 | `skill_search` | rank the catalog against a query, returning names and descriptions |
-| `skill_read` | load one skill's full `SKILL.md` by name |
+| `skill_read`   | load one skill's full `SKILL.md` by name                           |
 
 The index is a parameter rather than something the tools build, which is what
 makes "what the model can search" and "what the host reports through
@@ -132,10 +134,10 @@ makes "what the model can search" and "what the host reports through
 
 ## What is not here
 
-| Not in `core/skill` | Where it belongs |
-| --- | --- |
-| Installing, updating or removing skills | The host, or whatever package manager it trusts. |
-| Authoring rules and linting beyond the frontmatter contract | The skill's own tooling. |
-| Usage accounting and retirement | The host's telemetry. |
-| The per-turn `## Skills` block | The host composes it from `Rank` (and from whatever mention syntax it wants); the package renders no prompt text. |
-| Mention resolution (`$name`) | Removed: the tools are the discovery path, and a mention syntax is a prompt decision, not a catalog one. |
+| Not in `core/skill`                                         | Where it belongs                                                                                                  |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Installing, updating or removing skills                     | The host, or whatever package manager it trusts.                                                                  |
+| Authoring rules and linting beyond the frontmatter contract | The skill's own tooling.                                                                                          |
+| Usage accounting and retirement                             | The host's telemetry.                                                                                             |
+| The per-turn `## Skills` block                              | The host composes it from `Rank` (and from whatever mention syntax it wants); the package renders no prompt text. |
+| Mention resolution (`$name`)                                | Removed: the tools are the discovery path, and a mention syntax is a prompt decision, not a catalog one.          |

@@ -2,6 +2,7 @@
 layout: default
 title: Script Rules
 ---
+
 # Script Rules
 
 `core/agent-graph/script` binds a rule script to a graph node. A rule reads
@@ -33,7 +34,7 @@ The default source is a `FileSource` rooted at the process working directory;
 `script.WithSource` replaces it for embedded or generated rules.
 
 That is the whole reason it can be bounded, tested and replayed. It is also what
-makes it *not* the script runtime this repository removed: there is no board, no
+makes it _not_ the script runtime this repository removed: there is no board, no
 channel and no publish — the graph's state already is the board.
 
 ## Configuration
@@ -41,28 +42,28 @@ channel and no publish — the graph's state already is the board.
 ```yaml
 - id: tally
   kind: script
-  timeout: 2s                       # the engine bounds one invocation
+  timeout: 2s # the engine bounds one invocation
   config:
-    backend: starlark               # resolved against the host's backend table
-    path: rules/vote_tally.star     # handed to the source
-    reads:  [game, public_log]      # projected into the script
-    writes: [game, public_log]      # the only keys it may return
-    allow:  [tool:werewolf_game_event]   # empty means it can call nothing
-    max_output_bytes: 65536         # over the cap fails, never truncates
+    backend: starlark # resolved against the host's backend table
+    path: rules/vote_tally.star # handed to the source
+    reads: [game, public_log] # projected into the script
+    writes: [game, public_log] # the only keys it may return
+    allow: [tool:werewolf_game_event] # empty means it can call nothing
+    max_output_bytes: 65536 # over the cap fails, never truncates
     budget:
-      max_steps: 200000             # reproducible: same source, same state, same steps
-      memory_mib: 64                # only a backend that declares it may be asked
-    version: pinned                 # pinned | latest
+      max_steps: 200000 # reproducible: same source, same state, same steps
+      memory_mib: 64 # only a backend that declares it may be asked
+    version: pinned # pinned | latest
 ```
 
 A configuration states what it needs, and construction fails when the backend
 cannot honour it:
 
-| configuration | requires |
-| --- | --- |
-| `budget.max_steps` | `Capabilities.Terminating` |
-| `budget.memory_mib` | `Capabilities.MemoryBounded` |
-| `allow` | `Capabilities.Tools`, and a runtime to dispatch through |
+| configuration       | requires                                                |
+| ------------------- | ------------------------------------------------------- |
+| `budget.max_steps`  | `Capabilities.Terminating`                              |
+| `budget.memory_mib` | `Capabilities.MemoryBounded`                            |
+| `allow`             | `Capabilities.Tools`, and a runtime to dispatch through |
 
 That is deliberate: a document must never run with less than it asked for.
 
@@ -96,13 +97,13 @@ def run(state):
 `t[i]` (negative indices included), `t[a:b]` and `for message in t` all work — but
 it is answered lazily:
 
-| question | cost |
-| --- | --- |
-| `len(t)` / `t.count` | O(1) |
-| `t.last` / `t.first` | one dict |
-| `t[i]`, `t[-2:]` | the messages asked for |
-| `for message in t` | every message, which is what asking for them means |
-| `str(t)` | every message, because that is what printing asks |
+| question             | cost                                               |
+| -------------------- | -------------------------------------------------- |
+| `len(t)` / `t.count` | O(1)                                               |
+| `t.last` / `t.first` | one dict                                           |
+| `t[i]`, `t[-2:]`     | the messages asked for                             |
+| `for message in t`   | every message, which is what asking for them means |
+| `str(t)`             | every message, because that is what printing asks  |
 
 The point is the shape a rule usually has: "how many turns have we had" and
 "what did they just say" cost nothing, and a 5,000-message transcript is the same
@@ -168,9 +169,9 @@ call records `script.tool`, both of them durably with the step.
 
 ## Backends
 
-| backend | deterministic | terminating | memory bound | isolated | tools | cost |
-| --- | --- | --- | --- | --- | --- | --- |
-| `starlark` | ✓ language | ✓ language | ✗ | ✗ | ✓ | ~6 µs per rule |
+| backend    | deterministic | terminating | memory bound | isolated | tools | cost           |
+| ---------- | ------------- | ----------- | ------------ | -------- | ----- | -------------- |
+| `starlark` | ✓ language    | ✓ language  | ✗            | ✗        | ✓     | ~6 µs per rule |
 
 A backend is a language: `Compile(ctx, Script) (Program, error)` and
 `Run(ctx, Program, state, budget, host)`. To add one:
@@ -183,10 +184,10 @@ A backend is a language: `Compile(ctx, Script) (Program, error)` and
 
 ## Errors
 
-| failure | class |
-| --- | --- |
-| bad config, missing source, compile error | `Validation` |
-| a script that fails while running | `Aborted` |
-| a budget that runs out | `BudgetExceeded` |
-| a write the config does not declare, or the wrong kind | `Validation` |
-| a tool outside `allow` | `Forbidden` |
+| failure                                                | class            |
+| ------------------------------------------------------ | ---------------- |
+| bad config, missing source, compile error              | `Validation`     |
+| a script that fails while running                      | `Aborted`        |
+| a budget that runs out                                 | `BudgetExceeded` |
+| a write the config does not declare, or the wrong kind | `Validation`     |
+| a tool outside `allow`                                 | `Forbidden`      |

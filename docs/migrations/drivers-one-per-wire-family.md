@@ -2,6 +2,7 @@
 layout: default
 title: Migrating to one driver per wire family
 ---
+
 # Migrating to one driver per wire family
 
 The provider drivers were consolidated: one configurable driver serves a whole
@@ -11,13 +12,13 @@ modules that are now gone.
 
 ## What moved
 
-| Removed module | Use instead | How the new driver is pointed |
-| --- | --- | --- |
-| `driver/azure` | `driver/openai` | `spec.endpoint.routing: azure_deployment`, with the resource URL as `spec.endpoint.base_url`. The SDK's Azure mode then owns the parts that are easy to get wrong: the `Api-Key` header, the `api-version` query (default `2025-04-01-preview`, overridable through `spec.endpoint.query["api-version"]`), and the deployment-path rewriting for the routes its rewrite table covers — `/chat/completions`, `/embeddings`, `/images/generations`, `/images/edits`, `/audio/speech`, `/audio/transcriptions`, `/audio/translations`. `api: responses` is *not* in that table: it is posted to `<base_url>/openai/responses` with the deployment id only in the body, while Azure documents the deployment-scoped `/openai/deployments/{deployment}/responses`. Verify that route against your resource before moving an Azure deployment to the Responses surface |
-| `driver/deepseek` | `driver/openai` | `spec.endpoint.base_url` for the compatible surface, `spec.wire` for its dialect differences, and a complete `spec.models` declaration: the OpenAI driver ships no line-up, so nothing is inherited from a name |
-| `driver/kimi` | `driver/openai` | same shape: `base_url` plus `api: chat`, which is the only surface Moonshot serves |
-| `driver/qwen` | — | no replacement: there is no DashScope environment to verify a driver against, so the module was removed rather than carried untested |
-| `driver/minimax`, `kind: generate` | `driver/anthropic` | `spec.endpoint.base_url` pointing at the `/anthropic` Messages surface |
+| Removed module                     | Use instead        | How the new driver is pointed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `driver/azure`                     | `driver/openai`    | `spec.endpoint.routing: azure_deployment`, with the resource URL as `spec.endpoint.base_url`. The SDK's Azure mode then owns the parts that are easy to get wrong: the `Api-Key` header, the `api-version` query (default `2025-04-01-preview`, overridable through `spec.endpoint.query["api-version"]`), and the deployment-path rewriting for the routes its rewrite table covers — `/chat/completions`, `/embeddings`, `/images/generations`, `/images/edits`, `/audio/speech`, `/audio/transcriptions`, `/audio/translations`. `api: responses` is _not_ in that table: it is posted to `<base_url>/openai/responses` with the deployment id only in the body, while Azure documents the deployment-scoped `/openai/deployments/{deployment}/responses`. Verify that route against your resource before moving an Azure deployment to the Responses surface |
+| `driver/deepseek`                  | `driver/openai`    | `spec.endpoint.base_url` for the compatible surface, `spec.wire` for its dialect differences, and a complete `spec.models` declaration: the OpenAI driver ships no line-up, so nothing is inherited from a name                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `driver/kimi`                      | `driver/openai`    | same shape: `base_url` plus `api: chat`, which is the only surface Moonshot serves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `driver/qwen`                      | —                  | no replacement: there is no DashScope environment to verify a driver against, so the module was removed rather than carried untested                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `driver/minimax`, `kind: generate` | `driver/anthropic` | `spec.endpoint.base_url` pointing at the `/anthropic` Messages surface                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 `driver/minimax` still exists for its native media API — `kind: image`, `tts`,
 `music`, `video` and `context_ir`. Only its `generate` kind moved.
@@ -58,7 +59,7 @@ provider:
       endpoint:
         base_url: https://api.deepseek.com
       wire:
-        reasoning_channel: text   # DeepSeek streams plain reasoning text
+        reasoning_channel: text # DeepSeek streams plain reasoning text
       models:
         - name: deepseek-flash
           kind: generate
@@ -86,13 +87,13 @@ the default.
 
 Imports and factory registrations follow the same move:
 
-| Before | After |
-| --- | --- |
-| `reg.MustRegister(azure.Factory())` | `reg.MustRegister(openai.Factory())` |
-| `reg.MustRegister(deepseek.Factory())` | `reg.MustRegister(openai.Factory())` |
-| `reg.MustRegister(kimi.Factory())` | `reg.MustRegister(openai.Factory())` |
+| Before                                                 | After                                                                                               |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| `reg.MustRegister(azure.Factory())`                    | `reg.MustRegister(openai.Factory())`                                                                |
+| `reg.MustRegister(deepseek.Factory())`                 | `reg.MustRegister(openai.Factory())`                                                                |
+| `reg.MustRegister(kimi.Factory())`                     | `reg.MustRegister(openai.Factory())`                                                                |
 | generate through `reg.MustRegister(minimax.Factory())` | `reg.MustRegister(anthropic.Factory())` for generate, `minimax.Factory()` stays for the media kinds |
-| `reg.MustRegister(qwen.Factory())` | — |
+| `reg.MustRegister(qwen.Factory())`                     | —                                                                                                   |
 
 The `impl:` string in a deployment document must match the module that
 registers the factory (`openai`, `anthropic`, `bytedance`, `minimax`), and each

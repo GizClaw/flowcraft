@@ -2,6 +2,7 @@
 layout: default
 title: Graph Engine
 ---
+
 # Graph Engine Guide
 
 `core/agent-graph` is an `agent.Engine`: an agent as a graph of nodes driven by a
@@ -57,7 +58,7 @@ agents:
       settings:
         path: ./graphs/react.yaml
     runtime:
-      layers: [{priority: 0, path: ./runtime.yaml}]
+      layers: [{ priority: 0, path: ./runtime.yaml }]
 ```
 
 ```yaml
@@ -74,15 +75,15 @@ limits:
   concurrency: 4
 
 checkpoint:
-  every: 8              # also write a base every N steps
+  every: 8 # also write a base every N steps
 
 stream:
-  state: false          # report each step's writes as a GraphState event
+  state: false # report each step's writes as a GraphState event
 
 state:
-  messages: {type: messages, merge: append, carry: true}
-  pending: {type: json}
-  answer: {type: text}
+  messages: { type: messages, merge: append, carry: true }
+  pending: { type: json }
+  answer: { type: text }
 
 nodes:
   - id: model
@@ -92,9 +93,9 @@ nodes:
       pending: pending
       usage: usage
       request:
-        model: {provider: openai, name: gpt-5}
+        model: { provider: openai, name: gpt-5 }
         system: "You are a coding agent."
-        tools: {names: [read, write, exec]}
+        tools: { names: [read, write, exec] }
   - id: tools
     kind: tool
     config:
@@ -107,33 +108,33 @@ nodes:
       key: answer
 
 edges:
-  - {from: model, to: tools, when: "len(pending) > 0"}
-  - {from: model, to: done, when: "len(pending) == 0"}
-  - {from: tools, to: model}
+  - { from: model, to: tools, when: "len(pending) > 0" }
+  - { from: model, to: done, when: "len(pending) == 0" }
+  - { from: tools, to: model }
 
 output:
   key: answer
 ```
 
-| Field | Rule |
-| --- | --- |
-| `version` | Must be `1`. |
-| `entry` | The node the first frontier holds. |
-| `input` | The state key `Start` seeds with the run's messages. Empty means the graph takes no input, and a caller that supplies some is refused. |
-| `limits` | `max_steps`, `max_nodes` (skipped nodes count: a cycle of skipped nodes still spends budget), `timeout`, `concurrency`. Zero means no cap — the caller's context is always the outer bound. |
-| `checkpoint.every` | `0` writes a base only when the deltas would be missing; a positive value also writes one every N steps, bounding how long a restart replays. |
-| `stream.state` | Emit a `GraphState` event per step. Off by default: it costs a JSON projection per step, and a run nobody is watching should not pay for one. |
-| `output.key` | The state key a finished run reports. |
+| Field              | Rule                                                                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`          | Must be `1`.                                                                                                                                                                                |
+| `entry`            | The node the first frontier holds.                                                                                                                                                          |
+| `input`            | The state key `Start` seeds with the run's messages. Empty means the graph takes no input, and a caller that supplies some is refused.                                                      |
+| `limits`           | `max_steps`, `max_nodes` (skipped nodes count: a cycle of skipped nodes still spends budget), `timeout`, `concurrency`. Zero means no cap — the caller's context is always the outer bound. |
+| `checkpoint.every` | `0` writes a base only when the deltas would be missing; a positive value also writes one every N steps, bounding how long a restart replays.                                               |
+| `stream.state`     | Emit a `GraphState` event per step. Off by default: it costs a JSON projection per step, and a run nobody is watching should not pay for one.                                               |
+| `output.key`       | The state key a finished run reports.                                                                                                                                                       |
 
 YAML is the written form and JSON is accepted; both go through one strict
 decoding, so an unknown field is an error either way.
 
 ## State
 
-| Field | Values |
-| --- | --- |
-| `type` | `text`, `json`, `messages`, `bool`. |
-| `merge` | `single` (default: a second write in one step is an error), `last` (last write wins), `append` (the writes concatenate). |
+| Field   | Values                                                                                                                                |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `type`  | `text`, `json`, `messages`, `bool`.                                                                                                   |
+| `merge` | `single` (default: a second write in one step is an error), `last` (last write wins), `append` (the writes concatenate).              |
 | `carry` | Keep this key across the tasks of one session: a new task seeds it from the previous task's state instead of the declared zero value. |
 
 `carry` is the document's way to say "this is the conversation, not the
@@ -150,12 +151,12 @@ apply after the step, in declaration order — which is why `merge: single` turn
 ## Nodes
 
 ```yaml
-- id: model                 # unique within the document
-  kind: model               # a registered kind; unknown is a load error
-  config: { ... }           # the kind decodes this strictly
-  skip: "step > 10"         # a condition: when it holds, the node is not invoked
-  timeout: 90s              # one invocation
-  retries: 2                # retryable failures
+- id: model # unique within the document
+  kind: model # a registered kind; unknown is a load error
+  config: { ... } # the kind decodes this strictly
+  skip: "step > 10" # a condition: when it holds, the node is not invoked
+  timeout: 90s # one invocation
+  retries: 2 # retryable failures
 ```
 
 A skipped node is not invoked, **but its outgoing edges still fire**: it routes
@@ -165,27 +166,27 @@ without running. That is what makes `skip` useful for a terminating branch.
 
 One model call per invocation.
 
-| Config | Meaning |
-| --- | --- |
-| `messages` | State key carrying the conversation (a `messages` value). |
-| `pending` | State key the call's tool calls are written to. |
-| `usage` | State key the token usage is appended to. |
-| `output` | State key the response text is written to. |
-| `request.stream` | Nil streams (incremental events, what a reader watches); `false` returns one finished response for a call whose answer is data. |
-| `request.model` | `provider`, `name`, `profile` — resolved against the runtime's routing table. |
-| `request.system` | The system framing for this call. |
-| `request.tools` | `enabled`, `names` (restrict the offer), `require` (force visible in a dynamic catalog), `choice`. |
-| `request.extensions` | Provider extensions, decoded by the registered `ExtensionDecoder`s. |
+| Config               | Meaning                                                                                                                         |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`           | State key carrying the conversation (a `messages` value).                                                                       |
+| `pending`            | State key the call's tool calls are written to.                                                                                 |
+| `usage`              | State key the token usage is appended to.                                                                                       |
+| `output`             | State key the response text is written to.                                                                                      |
+| `request.stream`     | Nil streams (incremental events, what a reader watches); `false` returns one finished response for a call whose answer is data. |
+| `request.model`      | `provider`, `name`, `profile` — resolved against the runtime's routing table.                                                   |
+| `request.system`     | The system framing for this call.                                                                                               |
+| `request.tools`      | `enabled`, `names` (restrict the offer), `require` (force visible in a dynamic catalog), `choice`.                              |
+| `request.extensions` | Provider extensions, decoded by the registered `ExtensionDecoder`s.                                                             |
 
 ### `tool`
 
 Executes the pending tool calls.
 
-| Config | Meaning |
-| --- | --- |
-| `messages`, `pending` | As above: read the conversation, drain the pending calls. |
-| `effects` | `after` (default) records a finished call; `before` writes the started record before the tool runs, so a crash leaves an outcome to reconcile instead of a silent duplicate. |
-| `parallelism` | Caps how many calls of one batch run at once; `0` leaves the batch unbounded. |
+| Config                | Meaning                                                                                                                                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `messages`, `pending` | As above: read the conversation, drain the pending calls.                                                                                                                    |
+| `effects`             | `after` (default) records a finished call; `before` writes the started record before the tool runs, so a crash leaves an outcome to reconcile instead of a silent duplicate. |
+| `parallelism`         | Caps how many calls of one batch run at once; `0` leaves the batch unbounded.                                                                                                |
 
 ### `condition`
 
@@ -194,7 +195,7 @@ Evaluates an expression and writes the branch it took.
 ```yaml
 - id: done
   kind: condition
-  config: {key: answer, when: "answer != nil", then: yes, else: no}
+  config: { key: answer, when: "answer != nil", then: yes, else: no }
 ```
 
 ### `script`
@@ -235,15 +236,15 @@ type ConfigDecoder interface {
 
 `Invoke` carries everything a node needs and nothing it could misuse:
 
-| Field | Use |
-| --- | --- |
-| `Node`, `Config`, `Decoded` | The instance id, its raw settings, and the value `Build` decoded. |
-| `State(key)`, `Snapshot()` | Read a declared key, or the whole step. The snapshot is read-only: it is shared by every node of the step. |
-| `Step` | The loop counter, so a node can decide to stop. |
-| `Answer` | The reply to a question this node asked by suspending. |
-| `Lookup`, `Replay` | A recorded model call by request hash, and whether the run must answer from records (a miss is an error, not a silent live call). |
-| `Records(kind)`, `Checkpoint` | Durable facts earlier steps recorded, and an immediate write for a side effect that must be recorded before it runs. |
-| `Trace`, `Bodies` | How much is traced, and whether response bytes are kept. |
+| Field                         | Use                                                                                                                               |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `Node`, `Config`, `Decoded`   | The instance id, its raw settings, and the value `Build` decoded.                                                                 |
+| `State(key)`, `Snapshot()`    | Read a declared key, or the whole step. The snapshot is read-only: it is shared by every node of the step.                        |
+| `Step`                        | The loop counter, so a node can decide to stop.                                                                                   |
+| `Answer`                      | The reply to a question this node asked by suspending.                                                                            |
+| `Lookup`, `Replay`            | A recorded model call by request hash, and whether the run must answer from records (a miss is an error, not a silent live call). |
+| `Records(kind)`, `Checkpoint` | Durable facts earlier steps recorded, and an immediate write for a side effect that must be recorded before it runs.              |
+| `Trace`, `Bodies`             | How much is traced, and whether response bytes are kept.                                                                          |
 
 A node returns a `NodeStream` rather than calling back into the engine — the
 engine pulls, so backpressure and cancellation are the contract rather than a
@@ -306,10 +307,10 @@ forwards them without knowing the graph exists.
 
 ## What replaced what
 
-| Gone | Now |
-| --- | --- |
+| Gone                                  | Now                                                      |
+| ------------------------------------- | -------------------------------------------------------- |
 | `core/graph`, a board of untyped vars | `core/agent-graph`, declared state keys with merge rules |
-| Message channels copied per branch | Persistent message sequences, shared on append |
-| `reflect.DeepEqual` + `MergeFunc` | `merge: single / last / append`, declared per key |
-| Edges as bare connections | Edges carrying a compiled condition |
-| A fixed node set | A registry of kind names, extended by the host |
+| Message channels copied per branch    | Persistent message sequences, shared on append           |
+| `reflect.DeepEqual` + `MergeFunc`     | `merge: single / last / append`, declared per key        |
+| Edges as bare connections             | Edges carrying a compiled condition                      |
+| A fixed node set                      | A registry of kind names, extended by the host           |

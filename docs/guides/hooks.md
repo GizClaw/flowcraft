@@ -2,6 +2,7 @@
 layout: default
 title: Hooks
 ---
+
 # Hooks Guide
 
 A hook is the host's policy at the boundaries of a turn. `core/agent` defines the
@@ -35,11 +36,11 @@ model node whose own code sits between the run and the provider.
 
 ## The three slots
 
-| Slot | Runs | Receives | An error means |
-| --- | --- | --- | --- |
-| `OnSession` | After a session is opened or restored, before its turn | `SessionInfo`: agent, session id, task id, state, `Resumed` | The open fails. A host that cannot prepare its memory refuses the turn instead of running it blind. |
-| `BeforeTurn` | Before the turn reaches the engine | `*Turn`: agent, session, message (mutable) | The turn stops before it starts. Nothing was sent, so nothing has to be undone. |
-| `AfterTurn` | After the run ends | `Turn` and the `Result` it reached | Logged, and the turn stands. |
+| Slot         | Runs                                                   | Receives                                                    | An error means                                                                                      |
+| ------------ | ------------------------------------------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `OnSession`  | After a session is opened or restored, before its turn | `SessionInfo`: agent, session id, task id, state, `Resumed` | The open fails. A host that cannot prepare its memory refuses the turn instead of running it blind. |
+| `BeforeTurn` | Before the turn reaches the engine                     | `*Turn`: agent, session, message (mutable)                  | The turn stops before it starts. Nothing was sent, so nothing has to be undone.                     |
+| `AfterTurn`  | After the run ends                                     | `Turn` and the `Result` it reached                          | Logged, and the turn stands.                                                                        |
 
 The `AfterTurn` asymmetry is not an oversight. The work is already durable, and
 reporting an error after the terminal event would break the stream contract every
@@ -102,13 +103,13 @@ kinds := deploy.BuiltinKinds().WithHooks(deploy.HookKind{
 })
 ```
 
-| `HookDeps` field | What it gives the kind |
-| --- | --- |
-| `Agent` | The deployment name the hook is attached to — what a seat-bound policy keys itself by. |
-| `Spec` | The kind and its raw settings. |
-| `Runtime` | The agent's substrate; nil for a remote engine, because a hook that only observes turns does not need one. |
-| `Store` | The checkpoint store, so a hook can read the task log to assemble what it needs. |
-| `LoadOptions` | Placeholder resolvers, for a kind that reads its own documents. |
+| `HookDeps` field | What it gives the kind                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| `Agent`          | The deployment name the hook is attached to — what a seat-bound policy keys itself by.                     |
+| `Spec`           | The kind and its raw settings.                                                                             |
+| `Runtime`        | The agent's substrate; nil for a remote engine, because a hook that only observes turns does not need one. |
+| `Store`          | The checkpoint store, so a hook can read the task log to assemble what it needs.                           |
+| `LoadOptions`    | Placeholder resolvers, for a kind that reads its own documents.                                            |
 
 `Decode` runs at load (so a typo fails before the agent is built) and again inside
 `Build` for the typed value — the same two-phase contract engine and protocol

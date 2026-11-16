@@ -2,6 +2,7 @@
 layout: default
 title: Migrating to core/v0.9.0
 ---
+
 # Migrating to `core/v0.9.0`
 
 `core/v0.9.0` replaces the stringly-typed assembly protocol with a typed one.
@@ -57,12 +58,12 @@ func (AssemblyFactory) New(ctx context.Context, in resource.Input) (*tool.Assemb
 `Spec.Deps` holds `[]resource.Requirement`. Build each one from the handle that
 reads it:
 
-| before | after |
-| --- | --- |
-| `{Name: "tool", Type: "tool.Source", Required: true, Many: true}` | `resource.RequireMany[tool.Source]("tool").Spec()` |
-| `{Name: "target", Type: "inference.Assembly", Required: true}` | `resource.Require[*inference.Assembly]("target").Spec()` |
-| `{Name: "inference", Type: "inference.Assembly"}` | `resource.Optional[*inference.Assembly]("inference").Spec()` |
-| `ItemType: "memory.System"` | `Items: reflect.TypeFor[*memory.Assembly]()` |
+| before                                                            | after                                                        |
+| ----------------------------------------------------------------- | ------------------------------------------------------------ |
+| `{Name: "tool", Type: "tool.Source", Required: true, Many: true}` | `resource.RequireMany[tool.Source]("tool").Spec()`           |
+| `{Name: "target", Type: "inference.Assembly", Required: true}`    | `resource.Require[*inference.Assembly]("target").Spec()`     |
+| `{Name: "inference", Type: "inference.Assembly"}`                 | `resource.Optional[*inference.Assembly]("inference").Spec()` |
+| `ItemType: "memory.System"`                                       | `Items: reflect.TypeFor[*memory.Assembly]()`                 |
 
 Reading: `in.Dep("x")` becomes `depX.Get(in)` (an error) or `depX.TryGet(in)`
 (optional), and `in.DepsMany("x")` becomes `depX.GetAll(in)` or
@@ -90,7 +91,7 @@ bus, err := deploy.Resolve[event.Bus](result, cfg.EventBus)          // one valu
 binders := deploy.CollectNamed[session.ManagerBinder](result)        // every match, with its resource name
 ```
 
-`Result.Value(name) (any, bool)` survives as the *dynamic* accessor, for
+`Result.Value(name) (any, bool)` survives as the _dynamic_ accessor, for
 host-level discovery where the resource name comes from configuration and no
 type is known at compile time (`runtime.Runtime.Resource`,
 `delegation/hostwrap`). Do not use it for wiring you control.

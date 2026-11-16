@@ -2,10 +2,11 @@
 layout: default
 title: Migrating to core/v0.10.0
 ---
+
 # Migrating to `core/v0.10.0`
 
 `core/v0.10.0` is the follow-up to the v0.9.0 review. Most of it is about
-what happens *after* something has gone wrong — a panicking tool, an aborted
+what happens _after_ something has gone wrong — a panicking tool, an aborted
 reload, a credential store that lost an index entry — so a host that never
 hits those paths sees no difference. The one structural break is on the graph
 side: node types are deployment resources now, so every graph engine document
@@ -39,7 +40,7 @@ agents:
         workspace: ws
         script_runtime: js
       settings:
-        graph: {file: ./graphs/assistant.yaml}
+        graph: { file: ./graphs/assistant.yaml }
 ```
 
 After:
@@ -49,15 +50,15 @@ resources:
   node_inference:
     kind: graph.NodeType
     impl: inference
-    deps: {inference: infer, router: router, tools: tools}
+    deps: { inference: infer, router: router, tools: tools }
   node_tool:
     kind: graph.NodeType
     impl: tool
-    deps: {tools: tools}
+    deps: { tools: tools }
   node_script:
     kind: graph.NodeType
     impl: script
-    deps: {script_runtime.js: js, tools: tools, workspace: ws}
+    deps: { script_runtime.js: js, tools: tools, workspace: ws }
 
 agents:
   assistant:
@@ -69,7 +70,7 @@ agents:
         node_type.tool: node_tool
         node_type.script: node_script
       settings:
-        graph: {file: ./graphs/assistant.json}
+        graph: { file: ./graphs/assistant.json }
 ```
 
 What moved:
@@ -114,7 +115,7 @@ tools:
   impl: middleware
   settings:
     middlewares:
-      recover: {enabled: false}   # opt out; on by default
+      recover: { enabled: false } # opt out; on by default
 ```
 
 The middlewares that stay opt-in are unchanged (`telemetry`, `timeout`,
@@ -160,7 +161,7 @@ error, matching `result_limit.max`. Omit the block to run without the limiter:
 
 ```yaml
 middlewares:
-  concurrency: {limit: 8}   # limit must be > 0 when the block is present
+  concurrency: { limit: 8 } # limit must be > 0 when the block is present
 ```
 
 ## The keychain store is one handle per directory
@@ -288,12 +289,12 @@ Three things change, and none of them change what a caller reads:
 
 Adoption is a deployment knob and a store contract:
 
-| Surface | Before | After |
-| --- | --- | --- |
-| `deploy.yaml` graph build settings | — | `build.checkpoint_compaction: <increments>` (optional, default `32`; a chain holds at most that many) |
-| A custom `agent.CheckpointStore` | `Save`/`Load` | unchanged; add `WriteBase`/`Append` to take increments |
-| `Host.Checkpoint` | called by every engine | still called, but through `agent.CheckpointWriter` |
-| A custom `Host` (`HostFuncs`, `TracingMiddleware`) | — | unchanged; both forward the inner host's answer |
+| Surface                                            | Before                 | After                                                                                                 |
+| -------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------- |
+| `deploy.yaml` graph build settings                 | —                      | `build.checkpoint_compaction: <increments>` (optional, default `32`; a chain holds at most that many) |
+| A custom `agent.CheckpointStore`                   | `Save`/`Load`          | unchanged; add `WriteBase`/`Append` to take increments                                                |
+| `Host.Checkpoint`                                  | called by every engine | still called, but through `agent.CheckpointWriter`                                                    |
+| A custom `Host` (`HostFuncs`, `TracingMiddleware`) | —                      | unchanged; both forward the inner host's answer                                                       |
 
 Two behaviours change for a deployment that reconfigured nothing, both on the
 error path:

@@ -2,6 +2,7 @@
 layout: default
 title: Remote Sandbox
 ---
+
 # Remote Sandbox Guide
 
 `core/sandbox-remote` runs a `sandbox.Runner` across a process or host boundary.
@@ -34,23 +35,23 @@ by id.
 sandbox:
   backend: remote
   remote:
-    transport: http              # http (default) | unix
+    transport: http # http (default) | unix
     endpoint: https://sandbox.internal:8443
     token: "${SANDBOX_TOKEN}"
-    timeout: 30s                 # per request; zero uses the client default
-    poll_hold: 15s               # how long a read or wait asks the server to hold
+    timeout: 30s # per request; zero uses the client default
+    poll_hold: 15s # how long a read or wait asks the server to hold
     insecure_skip_verify: false
 ```
 
-| Field | Rule |
-| --- | --- |
-| `transport` | `http` (aliases `https`, `tcp`) or `unix` (alias `socket`). |
-| `endpoint` | Required for `http`, must be `http(s)`; rejected with `unix`. |
-| `socket` | Required for `unix`; rejected with `http`. |
-| `token` | Bearer credential. Optional over a unix socket, where the boundary is the directory's permissions. |
-| `timeout` | Per-request deadline. |
-| `poll_hold` | How long a read or a wait asks the server to hold before answering "nothing yet". Must stay under any proxy's idle timeout. |
-| `insecure_skip_verify` | Only meaningful over TLS; rejected with `unix`, which carries none. |
+| Field                  | Rule                                                                                                                        |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `transport`            | `http` (aliases `https`, `tcp`) or `unix` (alias `socket`).                                                                 |
+| `endpoint`             | Required for `http`, must be `http(s)`; rejected with `unix`.                                                               |
+| `socket`               | Required for `unix`; rejected with `http`.                                                                                  |
+| `token`                | Bearer credential. Optional over a unix socket, where the boundary is the directory's permissions.                          |
+| `timeout`              | Per-request deadline.                                                                                                       |
+| `poll_hold`            | How long a read or a wait asks the server to hold before answering "nothing yet". Must stay under any proxy's idle timeout. |
+| `insecure_skip_verify` | Only meaningful over TLS; rejected with `unix`, which carries none.                                                         |
 
 The field a transport does not use is a validation error, not a comment: a
 socket path beside an endpoint is configuration that silently does nothing.
@@ -97,10 +98,10 @@ The server refuses to be built without an authentication decision: either a
 bearer token (`WithServerToken`) or an explicit `WithoutAuth()` for a listener
 that already sits behind an authenticator.
 
-| Transport | Boundary |
-| --- | --- |
-| `http` | Bearer token in the `Authorization` header, never in a query string — query strings end up in proxy logs. TLS is the deployment's job (`remote.WithHTTPOptions(remote.WithHTTPTLS(...))`). |
-| `unix` | The socket's directory. `ListenUnix` creates the parent `0700` and the socket `0600`, and a token is optional. |
+| Transport | Boundary                                                                                                                                                                                   |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `http`    | Bearer token in the `Authorization` header, never in a query string — query strings end up in proxy logs. TLS is the deployment's job (`remote.WithHTTPOptions(remote.WithHTTPTLS(...))`). |
+| `unix`    | The socket's directory. `ListenUnix` creates the parent `0700` and the socket `0600`, and a token is optional.                                                                             |
 
 The socket path is bounded (`maxUnixPathBytes = 100`, under `UNIX_PATH_MAX` of
 108 on Windows and 104 on macOS), and the check happens before the listen so a
@@ -139,18 +140,18 @@ operation, and an error envelope that carries `errdefs.Kind` so the client
 rebuilds the same error class (`NotFound`, `NotAvailable`, `Cancelled`, …)
 instead of flattening everything into one status.
 
-| Route | Operation |
-| --- | --- |
-| `POST /v1/hello` | Version handshake; a mismatch fails the client before any session. |
-| `POST /v1/start`, `/attach`, `/list`, `/terminate`, `/close` | Session lifecycle. |
-| `POST /v1/read`, `/write`, `/close-input`, `/resize`, `/signal`, `/wait` | Session I/O, all addressed by opaque id. |
-| `POST /v1/journal` | Journal read, carrying the cursor. |
-| `POST /v1/events` | The SSE stream above. |
+| Route                                                                    | Operation                                                          |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| `POST /v1/hello`                                                         | Version handshake; a mismatch fails the client before any session. |
+| `POST /v1/start`, `/attach`, `/list`, `/terminate`, `/close`             | Session lifecycle.                                                 |
+| `POST /v1/read`, `/write`, `/close-input`, `/resize`, `/signal`, `/wait` | Session I/O, all addressed by opaque id.                           |
+| `POST /v1/journal`                                                       | Journal read, carrying the cursor.                                 |
+| `POST /v1/events`                                                        | The SSE stream above.                                              |
 
 Two operations are binary, not JSON:
 
 - **read** answers with a framed body — `FSR1 | flags | count | next_seq |
-  [seq | stream | pad | len | data]…` — so a megabyte of output is not base64'd
+[seq | stream | pad | len | data]…` — so a megabyte of output is not base64'd
   and re-escaped. The client exposes `ReadResponseSize` so a handler can set
   `Content-Length`.
 - **write** sends `FSW1 | id_len | id | len | data`, with `Content-Type` chosen

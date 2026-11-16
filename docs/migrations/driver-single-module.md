@@ -2,6 +2,7 @@
 layout: default
 title: Migrating to one driver module
 ---
+
 # Migrating to one driver module
 
 The provider adapters were consolidated from six Go modules into one:
@@ -14,14 +15,14 @@ The provider adapters were consolidated from six Go modules into one:
 Nothing on disk moved. The packages keep their directories and their import
 paths, so a Go caller changes one line of `go.mod` and no `import` at all:
 
-| Before | After |
-| --- | --- |
+| Before                 | After        |
+| ---------------------- | ------------ |
 | `.../driver/anthropic` | `.../driver` |
 | `.../driver/bytedance` | `.../driver` |
 | `.../driver/dashscope` | `.../driver` |
-| `.../driver/minimax` | `.../driver` |
-| `.../driver/openai` | `.../driver` |
-| `.../driver/typesafe` | `.../driver` |
+| `.../driver/minimax`   | `.../driver` |
+| `.../driver/openai`    | `.../driver` |
+| `.../driver/typesafe`  | `.../driver` |
 
 ```go
 import "github.com/GizClaw/flowcraft/driver/openai" // unchanged

@@ -2,15 +2,16 @@
 layout: default
 title: Sandbox
 ---
+
 # Sandbox Guide
 
 `core/sandbox` is the command execution boundary, and it is three layers:
 
-| Layer | Package | Role |
-| --- | --- | --- |
-| Contract | `core/sandbox` | `Runner`, `ExecOptions`, `Session`, `Capabilities`, `Journal`, `Attach`. No behaviour beyond validation helpers. |
-| Policy | `core/sandbox/engine` | The one-shot `Exec`, the decorators (defaults, allowlist, approval, escalation), the safe-read-only classifier, `ValidateExecPolicy`. |
-| Backends | `core/sandbox-local`, `-bwrap`, `-seatbelt`, `-windows`, `-remote` | The process boundary itself. |
+| Layer    | Package                                                            | Role                                                                                                                                  |
+| -------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Contract | `core/sandbox`                                                     | `Runner`, `ExecOptions`, `Session`, `Capabilities`, `Journal`, `Attach`. No behaviour beyond validation helpers.                      |
+| Policy   | `core/sandbox/engine`                                              | The one-shot `Exec`, the decorators (defaults, allowlist, approval, escalation), the safe-read-only classifier, `ValidateExecPolicy`. |
+| Backends | `core/sandbox-local`, `-bwrap`, `-seatbelt`, `-windows`, `-remote` | The process boundary itself.                                                                                                          |
 
 The split exists so a contract package never imports `os/exec` and a backend
 never re-derives the policy rules. The backends are siblings of `core/sandbox`
@@ -90,28 +91,28 @@ A backend is chosen in the runtime document, not in a resource table:
 
 ```yaml
 sandbox:
-  backend: seatbelt            # local | seatbelt | bwrap | windows | remote
-  workdir: /workspace/forge    # default: the first files root
+  backend: seatbelt # local | seatbelt | bwrap | windows | remote
+  workdir: /workspace/forge # default: the first files root
   writes: [/workspace/forge/out]
   net:
     mode: allow_list
     allow_hosts: [api.openai.com]
-  timeout: 60s                 # ceiling; a tool may ask for less
-  cpu_millicores: 2000         # rejected without timeout
+  timeout: 60s # ceiling; a tool may ask for less
+  cpu_millicores: 2000 # rejected without timeout
   memory_mib: 2048
   output_mib: 8
 ```
 
-| Field | Meaning |
-| --- | --- |
-| `backend` | Required, no default: a boundary picked by guessing is a boundary nobody chose. |
-| `workdir` | Where commands run; empty means the first files root. |
-| `writes` | Absolute paths a command may write; empty means read-only. |
-| `net` | `mode` plus `allow_hosts` (allow-list only) and `proxy` (proxy only). |
-| `timeout`, `cpu_millicores`, `memory_mib`, `output_mib` | The resource budget. |
-| `journal` | A settings block; presence opts in. See [File journal](#file-journal). |
-| `bwrap`, `seatbelt`, `windows` | The backend's own construction options. |
-| `remote` | Client configuration for `backend: remote`. See [sandbox-remote.md](sandbox-remote.md). |
+| Field                                                   | Meaning                                                                                 |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `backend`                                               | Required, no default: a boundary picked by guessing is a boundary nobody chose.         |
+| `workdir`                                               | Where commands run; empty means the first files root.                                   |
+| `writes`                                                | Absolute paths a command may write; empty means read-only.                              |
+| `net`                                                   | `mode` plus `allow_hosts` (allow-list only) and `proxy` (proxy only).                   |
+| `timeout`, `cpu_millicores`, `memory_mib`, `output_mib` | The resource budget.                                                                    |
+| `journal`                                               | A settings block; presence opts in. See [File journal](#file-journal).                  |
+| `bwrap`, `seatbelt`, `windows`                          | The backend's own construction options.                                                 |
+| `remote`                                                | Client configuration for `backend: remote`. See [sandbox-remote.md](sandbox-remote.md). |
 
 The budget reaches every call: the runtime wraps the backend with
 `engine.WithDefaults`, which projects `timeout`, `cpu_millicores`, `memory_mib`
@@ -147,18 +148,18 @@ the OS keeping the process tree" promise.
 
 ```yaml
 sandbox:
-  backend: bwrap               # or seatbelt
+  backend: bwrap # or seatbelt
   bwrap:
-    binary: /usr/bin/bwrap     # optional; resolved against the root
-    extra_flags: [--die-with-parent]   # bwrap only
-    readonly_root: true        # keep the runner root read-only
+    binary: /usr/bin/bwrap # optional; resolved against the root
+    extra_flags: [--die-with-parent] # bwrap only
+    readonly_root: true # keep the runner root read-only
 ```
 
-| Field | Rule |
-| --- | --- |
-| `binary` | Overrides the backend executable; resolved against the runner root. |
+| Field           | Rule                                                                                                                                                                  |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `binary`        | Overrides the backend executable; resolved against the runner root.                                                                                                   |
 | `readonly_root` | Keeps the runner root read-only for every exec. Explicit `writes` stay writable, and a `writes` entry that resolves to the root is rejected instead of being dropped. |
-| `extra_flags` | bwrap only. A flag that could weaken the policy (`--ro-bind`, `--args`, …) is rejected at build time. |
+| `extra_flags`   | bwrap only. A flag that could weaken the policy (`--ro-bind`, `--args`, …) is rejected at build time.                                                                 |
 
 Both enforce namespaces (bwrap) or a Seatbelt profile (seatbelt), and both
 support `NetDefault`, `NetDenyAll`, `NetAllowList` and `NetProxy`.
@@ -169,7 +170,7 @@ support `NetDefault`, `NetDenyAll`, `NetAllowList` and `NetProxy`.
 sandbox:
   backend: windows
   windows:
-    write_confine: true        # opt-in Low-integrity write confinement
+    write_confine: true # opt-in Low-integrity write confinement
 ```
 
 Every child runs in its own Job Object: timeout, cancel and close terminate the
@@ -314,13 +315,13 @@ event stream: knowing which artifacts a turn produced, without scanning trees
 before and after. It exists on the backends and platforms that have a watch
 source, and each source reports in the unit its kernel charges for:
 
-| Backend | Source | Cost of one watch | Rename pairing | Identity (`Dev`/`Ino`) |
-|---|---|---|---|---|
-| `local` | inotify (Linux) / kqueue (macOS) / ReadDirectoryChangesW (Windows) | per directory / per entry / per directory + its change buffer | yes (within one directory on Windows) | yes on the unices, no on Windows |
-| `bwrap` | inotify (Linux) | per directory | yes | yes |
-| `seatbelt` | kqueue (macOS) | per entry | yes | yes |
-| `windows` | ReadDirectoryChangesW (Windows) | per directory + its change buffer | within one directory | no |
-| `remote` | whatever the server's backend has | the server's | the server's | the server's |
+| Backend    | Source                                                             | Cost of one watch                                             | Rename pairing                        | Identity (`Dev`/`Ino`)           |
+| ---------- | ------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------- | -------------------------------- |
+| `local`    | inotify (Linux) / kqueue (macOS) / ReadDirectoryChangesW (Windows) | per directory / per entry / per directory + its change buffer | yes (within one directory on Windows) | yes on the unices, no on Windows |
+| `bwrap`    | inotify (Linux)                                                    | per directory                                                 | yes                                   | yes                              |
+| `seatbelt` | kqueue (macOS)                                                     | per entry                                                     | yes                                   | yes                              |
+| `windows`  | ReadDirectoryChangesW (Windows)                                    | per directory + its change buffer                             | within one directory                  | no                               |
+| `remote`   | whatever the server's backend has                                  | the server's                                                  | the server's                          | the server's                     |
 
 Writer attribution is `no` everywhere (`WriteEvent.Session` stays empty): inotify
 cannot name the writer without `CAP_SYS_ADMIN`, kqueue cannot name it at all, and
@@ -335,9 +336,9 @@ watch), and the zero block is a fully enabled journal with every default:
 sandbox:
   journal:
     exclude: [.git, node_modules, dist, target, .venv]
-    retention: 4096            # events kept for replay; DefaultJournalRetention
-    max_watch_set: 20000       # watch budget; past it, a capacity gap
-    ops: [create, rename, remove]   # drop "write" events; a filtered op is not a gap
+    retention: 4096 # events kept for replay; DefaultJournalRetention
+    max_watch_set: 20000 # watch budget; past it, a capacity gap
+    ops: [create, rename, remove] # drop "write" events; a filtered op is not a gap
 ```
 
 `exclude` lists directories relative to the runner root whose subtree is never
@@ -345,7 +346,7 @@ watched; it is the cost control (about 1 KB of kernel memory per directory watch
 on Linux, one descriptor per watched entry on macOS), and the journal applies no
 default list of its own — an implicit filter would hide writes a deployment
 believes it is watching. `retention` bounds the replay window; `max_watch_set`
-bounds the watch set (*how many* watches, in the platform's unit above). Both are
+bounds the watch set (_how many_ watches, in the platform's unit above). Both are
 validated at build time, and the cheap invariants (op names, negative values)
 fail at load, where the field is still visible.
 

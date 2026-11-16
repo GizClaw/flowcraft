@@ -1,17 +1,17 @@
 ---
 name: flowcraft-deploy
-description: "Author, validate, and troubleshoot a FlowCraft deployment: the deployment document (agents, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level), the runtime layer one agent runs on (sandbox boundary and its journal, files, providers and models, tools and skills), and the graph document an engine of kind graph executes (state slots, nodes, the conditions on their edges). Use when writing or reviewing a FlowCraft deployment, adding a runtime layer or session settings, writing a graph document, resolving load failures (\"is not registered\", unknown field, an unenforceable cap, a missing graph path), or copying a minimal runnable FlowCraft deployment."
+description: 'Author, validate, and troubleshoot a FlowCraft deployment: the deployment document (agents, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level), the runtime layer one agent runs on (sandbox boundary and its journal, files, providers and models, tools and skills), and the graph document an engine of kind graph executes (state slots, nodes, the conditions on their edges). Use when writing or reviewing a FlowCraft deployment, adding a runtime layer or session settings, writing a graph document, resolving load failures ("is not registered", unknown field, an unenforceable cap, a missing graph path), or copying a minimal runnable FlowCraft deployment.'
 ---
 
 # FlowCraft Deployment Authoring
 
 A deployment is three documents, and each one is validated without being built.
 
-| Document | Says | Card |
-| --- | --- | --- |
-| `deploy.yaml` | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level | [references/deployment.md](references/deployment.md) |
-| a runtime layer | what one agent runs on: the sandbox boundary, files, providers and models, tools, skills | [references/runtime.md](references/runtime.md) |
-| a graph document | what the `graph` engine runs: state slots, nodes, the conditions on their edges | [references/graph.md](references/graph.md) |
+| Document         | Says                                                                                                                      | Card                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `deploy.yaml`    | which agents exist, each with an engine plus optionally a protocol, hooks, a delegation policy and an observability level | [references/deployment.md](references/deployment.md) |
+| a runtime layer  | what one agent runs on: the sandbox boundary, files, providers and models, tools, skills                                  | [references/runtime.md](references/runtime.md)       |
+| a graph document | what the `graph` engine runs: state slots, nodes, the conditions on their edges                                           | [references/graph.md](references/graph.md)           |
 
 "Not registered" nearly always means a kind, a driver, a selector or a middleware
 name the host did not compile in; [references/pitfalls.md](references/pitfalls.md)
@@ -63,7 +63,7 @@ What it checks, because it is the loader:
   real nodes, and its conditions compile.
 
 What it does **not** check: provider settings semantics, credentials, endpoint
-reachability, the graph's node *kinds* (a registry only exists at build time), and
+reachability, the graph's node _kinds_ (a registry only exists at build time), and
 anything a deployed turn does.
 
 ## The rules that bite
