@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/skills/flowcraft-deploy/scripts/validator
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.11.0
+	github.com/GizClaw/flowcraft/core v0.11.1
 	go.yaml.in/yaml/v3 v3.0.5
 )
 
