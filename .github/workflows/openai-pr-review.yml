@@ -38,6 +38,12 @@ concurrency:
 
 jobs:
   review:
+    # A release PR is pushed by the automation token, so its actor is the bot —
+    # and `openai/codex-action` refuses to run for an actor without write access
+    # ("Actor 'github-actions[bot]' must have write access"). Nothing here needs a
+    # review of a changelog aggregation, so the workflow leaves bot-authored pull
+    # requests alone instead of reporting a red check on every release.
+    if: github.actor != 'github-actions[bot]'
     # Pinned to the commit behind the 0.1.2 tag rather than the tag itself: a
     # movable reference to a workflow that receives an API key is someone else's
     # promise, and this caller can name the commit it agreed to.
