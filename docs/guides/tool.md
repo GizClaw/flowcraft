@@ -128,6 +128,59 @@ For a runnable anonymous search and fetch example over the HTTP bridge, see
 it connects a server, discovers its tools and executes them through the ordinary
 registry and executor, with no model provider.
 
+## Configuring a tool's description
+
+A tool's description is prompt surface, not contract: it is how the model decides
+which tool to call and what to put in its arguments. The same tool belongs to
+deployments whose instructions differ, so the wording is configuration —
+`tools.descriptions` replaces it per deployment.
+
+```yaml
+tools:
+  descriptions:
+    # whole description, replaced
+    read_file: |-
+      Read a text file and return one window of it. Paths are absolute.
+    bash:
+      text: |-
+        Run one command line. There is no terminal: give every search a path.
+      params:
+        workdir: "Absolute directory to run in; stays under the workspace."
+```
+
+The one-line form is shorthand for `{text: ...}`. A tool whose parameters are not
+configured takes the one-line form only; `params` needs the object form.
+
+Semantics, in full:
+
+- **Replacement, never composition.** The configured text is the text: nothing of
+  the generated description survives. Composition was rejected because the common
+  motive for overriding is deleting a sentence that is wrong for this deployment,
+  and a template cannot delete. What a deployment starts from is the generated
+  text itself — `forge describe tools <workspace>` prints the descriptions and
+  parameter texts the runtime currently assembles, in this configuration's shape,
+  ready to edit and paste back.
+- **Parameters are text too, and only text.** `params` rewrites
+  `properties.<name>.description` of the tool's input schema. Types, `required`,
+  bounds and `enum` stay exactly as the tool declared them, because those are what
+  the arguments are validated against. Only top-level properties are reachable.
+- **Model-facing only.** The registry applies overrides when it builds
+  `Definitions()`, so what the loop sends and what `tool_search` ranks on are the
+  configured words. `Catalog.Get` still returns the tool, and its own
+  `Definition()` still says what its author wrote.
+- **Everything else is unchanged.** Execution, approval, middleware and the
+  parameters a tool accepts are untouched by a description override.
+- **It is part of the deployment's identity.** Descriptions enter the runtime
+  digest and the request hash, so editing one makes sessions started under the
+  previous text unresumable and invalidates its prompt cache. That is deliberate:
+  the model was choosing tools by one description and would otherwise continue
+  under another.
+- **A name that matches nothing fails the build.** An unknown tool name, or an
+  unknown parameter name for a wired tool, is a configuration error reported with
+  the names that exist. A tool that only a deferred MCP server publishes is not
+  listable at build time, so it is reported as unknown too: a typo that waits is a
+  typo nobody finds.
+
 ## Middleware chain
 
 `tools.middleware` is the list above, applied in written order — first written is
