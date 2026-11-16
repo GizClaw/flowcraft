@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -134,16 +135,35 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	if err != nil {
 		return errdefs.Validationf("sandbox.backend %q: %w", r.cfg.Sandbox.Backend, err)
 	}
+	// resolveSandbox runs after the backend exists because the write projection
+	// depends on what the backend declares it can confine.
+	spec, err := r.resolveSandbox(ctx, limits, runner.Capabilities())
+	if err != nil {
+		r.closeBackend(ctx, runner)
+		return err
+	}
 	// applySandboxPolicy returns nil on error, so close the runner it was given
 	// rather than the decoration that does not exist.
-	built, err := r.applySandboxPolicy(ctx, runner, limits)
+	built, err := r.applySandboxPolicy(runner, spec)
 	if err != nil {
-		if cerr := runner.Close(); cerr != nil {
-			telemetry.WarnErr(ctx, "sandbox: close the backend after a policy failure", cerr)
-		}
+		r.closeBackend(ctx, runner)
 		return err
 	}
 	runner = built
+	if r.sandboxDecorator != nil {
+		decorated, err := r.sandboxDecorator(spec, runner)
+		if err != nil {
+			r.closeBackend(ctx, runner)
+			// Name the seam and keep the host's error kind: an operator seeing a
+			// bare host error cannot tell which build step produced it.
+			return fmt.Errorf("sandbox: WithSandboxDecorator: %w", err)
+		}
+		if decorated == nil {
+			r.closeBackend(ctx, runner)
+			return errdefs.Validationf("sandbox: WithSandboxDecorator returned a nil runner")
+		}
+		runner = decorated
+	}
 	r.runner = runner
 	r.closers = append(r.closers, runner)
 
@@ -162,6 +182,16 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	}
 	journal, err := sandbox.OpenJournal(ctx, runner)
 	if err != nil {
+		// A decorator that drops JournalProvider is the common cause here, and
+		// blaming the backend for it sends the operator to the wrong file: the
+		// composed runner still advertised the journal, the wrapper swallowed it.
+		if r.sandboxDecorator != nil {
+			if _, ok := built.(sandbox.JournalProvider); ok {
+				return errdefs.Validationf(
+					"sandbox.journal: the decorated runner (%T) does not forward OpenJournal; "+
+						"wrap with engine.Forwarder: %w", runner, err)
+			}
+		}
 		return errdefs.Validationf(
 			"sandbox.journal: %q does not serve a file journal: %w", r.cfg.Sandbox.Backend, err)
 	}
@@ -437,7 +467,8 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 	return strings.Join(names, ", ")
 }
 
-// applySandboxPolicy projects the document's sandbox policy onto every call.
+// resolveSandbox projects the document's sandbox section onto the values every
+// call is merged with, and onto the [Sandbox] a decorator receives.
 //
 // The document is the only place a deployment states its boundary, so the fields
 // it sets have to reach the commands: without this, cpu_millicores, memory_mib and
@@ -455,25 +486,19 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 //     server's own document, so both warn instead of failing every command.
 //   - sandbox.timeout is a ceiling: a tool may ask for a shorter deadline, never
 //     a longer one (the decorator takes the smaller).
-func (r *Runtime) applySandboxPolicy(ctx context.Context, runner sandbox.Runner, limits sandbox.ResourceLimits) (sandbox.Runner, error) {
-	backend := r.cfg.Sandbox.Backend
-	caps := runner.Capabilities().Policy
-
-	if limits.CPUMillicores > 0 && !caps.CPUCap {
-		return nil, errdefs.Validationf(
-			"sandbox.cpu_millicores: backend %q cannot enforce a cpu budget; "+
-				"drop it or pick a backend that samples the process group", backend)
+//
+// It runs after the backend exists because two of those decisions depend on what
+// the backend declares it can enforce.
+func (r *Runtime) resolveSandbox(ctx context.Context, limits sandbox.ResourceLimits, caps sandbox.Capabilities) (Sandbox, error) {
+	policy, err := r.cfg.Sandbox.permission()
+	if err != nil {
+		return Sandbox{}, err
 	}
-	if limits.MemoryBytes > 0 && !caps.MemoryCap {
-		return nil, errdefs.Validationf(
-			"sandbox.memory_mib: backend %q cannot enforce a memory budget; "+
-				"drop it or pick a backend that samples the process group", backend)
-	}
-
 	timeout, err := r.cfg.Sandbox.timeout()
 	if err != nil {
-		return nil, err
+		return Sandbox{}, err
 	}
+	backend := r.cfg.Sandbox.Backend
 	defaults := sandbox.ExecOptions{
 		Timeout: timeout,
 		Resources: sandbox.ResourceLimits{
@@ -489,7 +514,7 @@ func (r *Runtime) applySandboxPolicy(ctx context.Context, runner sandbox.Runner,
 			telemetry.Warn(ctx,
 				"sandbox.writes is decided by the server's own document; this list does not reach it",
 				attribute.String(telemetry.AttrSandboxEndpoint, r.cfg.Sandbox.Remote.Endpoint))
-		case !caps.WriteConfinement:
+		case !caps.Policy.WriteConfinement:
 			telemetry.Warn(ctx,
 				"this backend cannot confine writes per call; sandbox.writes is only advisory here",
 				attribute.String("sandbox.backend", backend))
@@ -499,7 +524,40 @@ func (r *Runtime) applySandboxPolicy(ctx context.Context, runner sandbox.Runner,
 			}
 		}
 	}
-	return sandboxengine.WithDefaults(runner, defaults), nil
+	return Sandbox{
+		Config:   r.cfg,
+		WorkDir:  r.cfg.workDir(),
+		Net:      policy.Net,
+		Defaults: defaults,
+	}, nil
+}
+
+// applySandboxPolicy fixes the resolved defaults onto every call, after checking
+// that the backend can enforce the budgets they carry.
+func (r *Runtime) applySandboxPolicy(runner sandbox.Runner, spec Sandbox) (sandbox.Runner, error) {
+	backend := r.cfg.Sandbox.Backend
+	caps := runner.Capabilities().Policy
+	limits := spec.Defaults.Resources
+
+	if limits.CPUMillicores > 0 && !caps.CPUCap {
+		return nil, errdefs.Validationf(
+			"sandbox.cpu_millicores: backend %q cannot enforce a cpu budget; "+
+				"drop it or pick a backend that samples the process group", backend)
+	}
+	if limits.MemoryBytes > 0 && !caps.MemoryCap {
+		return nil, errdefs.Validationf(
+			"sandbox.memory_mib: backend %q cannot enforce a memory budget; "+
+				"drop it or pick a backend that samples the process group", backend)
+	}
+	return sandboxengine.WithDefaults(runner, spec.Defaults), nil
+}
+
+// closeBackend releases a backend that failed a build step and is not
+// registered as a closer yet: nothing else owns it at that point.
+func (r *Runtime) closeBackend(ctx context.Context, runner sandbox.Runner) {
+	if err := runner.Close(); err != nil {
+		telemetry.WarnErr(ctx, "sandbox: close the backend after a build step failed", err)
+	}
 }
 
 // journalConfig resolves the journal block into engine configuration, or nil when

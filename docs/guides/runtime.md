@@ -162,6 +162,9 @@ rt, err := runtime.New(ctx, cfg,
     // Middleware that needs a Go value cannot come from YAML, so the host
     // registers it under the name the document lists.
     runtime.WithMiddleware(runtime.MiddlewareOption{Name: "approve", Build: approve}),
+    // The composed sandbox runner, after the document's policy: wrap it before
+    // the tools are built (instrumentation, an escalation retry).
+    runtime.WithSandboxDecorator(wrapSandbox),
 )
 defer rt.Close()
 ```
@@ -212,6 +215,64 @@ Three rules make that honest:
 3. **`writes` on `local`/`remote` warns.** `local` enforces no boundary and
    `remote` enforces it on the server, so the value would be decoration; the
    runtime logs a warning rather than implying enforcement.
+
+## Decorating the runner
+
+`WithSandboxDecorator` wraps the runner the runtime composed — backend plus the
+policy above — before the tool set is built:
+
+```go
+type audited struct {
+    *sandboxengine.Forwarder
+    sink Sink
+}
+
+func (a *audited) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+    a.sink.Record(spec.Argv)
+    return a.Forwarder.Start(ctx, spec)
+}
+
+rt, err := runtime.New(ctx, cfg, runtime.WithSandboxDecorator(
+    func(sb runtime.Sandbox, composed sandbox.Runner) (sandbox.Runner, error) {
+        forwarder, err := sandboxengine.NewForwarder(composed)
+        if err != nil {
+            return nil, err
+        }
+        return &audited{Forwarder: forwarder, sink: sink}, nil
+    }))
+```
+
+`runtime.Sandbox` is the resolved view of the document: `WorkDir` is the
+_effective_ directory (`sandbox.workdir`, otherwise the first files root), `Net`
+the posture the document declares, and `Defaults` exactly what
+`engine.WithDefaults` applies. A host that builds a second chain from it does not
+re-derive the document; anything that reproduces the `workDir()` fallback or the
+default merge by hand drifts from it. Treat `Config` and `Defaults` as read-only:
+their slices and policy pointers are shared with the composed chain, so editing
+one rewrites the boundary that chain enforces.
+
+Ordering is the reason the seam is on the runner rather than a tool option: the
+decorator runs after the policy and before the journal, so `exec_command`,
+`exec_session`, `Runtime.Runner()` and the journal all see the decorated value.
+
+Two rules keep it honest:
+
+- **Forward the optional capabilities.** `engine.Forwarder` forwards `Runner`
+  plus `OpenJournal` and `Attach`. Embedding `sandbox.Runner` directly promotes
+  neither, so such a decorator silently loses a configured journal — and `New`
+  fails, because the runtime opens the journal against the decorated value.
+- **`Close` is the runtime's, once.** The decorator must return a non-nil runner;
+  an error or a nil fails `New` (a typed nil — a nil pointer widened into the
+  interface — is not detected). The runtime closes the returned value exactly
+  once and only that value, so whatever the decorator created (a retry chain, a
+  sink) is its own to close, and one that replaces rather than wraps must close
+  what it drops.
+
+A runner that needs the completed result of a command — escalation recognizes an
+OS refusal in it — implements `sandbox.Executor`, which `engine.Exec` dispatches
+to; `Start` keeps the derived view. See
+[sandbox.md](sandbox.md#wiring-escalation-into-a-runtime) for the escalation
+wiring.
 
 ## The remote backend
 

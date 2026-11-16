@@ -69,6 +69,52 @@ func startThrough(t *testing.T, rec *policyRunner, runner sandbox.Runner, opts s
 	return rec.started[len(rec.started)-1]
 }
 
+// policyChain runs the two build steps the runtime runs — resolve the document,
+// then fix the defaults onto the calls — so a test exercises the same projection
+// and enforcement the assembly does.
+func policyChain(t *testing.T, rt *Runtime, inner *policyRunner, limits sandbox.ResourceLimits) (sandbox.Runner, error) {
+	t.Helper()
+	spec, err := rt.resolveSandbox(context.Background(), limits, inner.Capabilities())
+	if err != nil {
+		return nil, err
+	}
+	return rt.applySandboxPolicy(inner, spec)
+}
+
+// The resolved view a decorator receives carries the effective workdir and the
+// write boundary the composed chain applies, so a companion chain does not
+// re-derive the document — and cannot silently root itself elsewhere.
+func TestResolveSandboxCarriesTheResolvedView(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	rt := policyRuntime(t, SandboxConfig{
+		WorkDir: workDir,
+		Timeout: "5s",
+		Writes:  []string{root},
+	})
+	inner := &policyRunner{caps: confiningCaps()}
+
+	spec, err := rt.resolveSandbox(context.Background(), sandbox.ResourceLimits{}, inner.Capabilities())
+	if err != nil {
+		t.Fatalf("resolveSandbox: %v", err)
+	}
+	if spec.WorkDir != workDir {
+		t.Errorf("WorkDir = %q, want sandbox.workdir %q", spec.WorkDir, workDir)
+	}
+	if spec.Defaults.Timeout != 5*time.Second {
+		t.Errorf("Defaults.Timeout = %v, want 5s", spec.Defaults.Timeout)
+	}
+	if spec.Defaults.Permission == nil {
+		t.Fatal("Defaults.Permission = nil; the configured writes did not reach the view")
+	}
+	if paths := spec.Defaults.Permission.Writes.Paths; len(paths) != 1 || paths[0] != root {
+		t.Errorf("Defaults.Permission.Writes = %v, want [%s]", paths, root)
+	}
+	if spec.Config.Sandbox.Backend != BackendLocal {
+		t.Errorf("Config backend = %q, want the resolved document", spec.Config.Sandbox.Backend)
+	}
+}
+
 // The document's cpu and memory budgets reach every call, and its writes become
 // the per-call boundary on a backend that can confine them.
 func TestSandboxPolicyReachesEveryCall(t *testing.T) {
@@ -81,7 +127,7 @@ func TestSandboxPolicyReachesEveryCall(t *testing.T) {
 	})
 	inner := &policyRunner{caps: confiningCaps()}
 
-	runner, err := rt.applySandboxPolicy(context.Background(), inner, sandbox.ResourceLimits{
+	runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{
 		CPUMillicores: 1500,
 		MemoryBytes:   256 << 20,
 	})
@@ -109,7 +155,7 @@ func TestSandboxPolicyReachesEveryCall(t *testing.T) {
 func TestSandboxPolicyRejectsUnenforceableCaps(t *testing.T) {
 	rt := policyRuntime(t, SandboxConfig{Timeout: "1s", MemoryMiB: 64})
 	inner := &policyRunner{caps: sandbox.Capabilities{Policy: sandbox.Enforcement{}}}
-	_, err := rt.applySandboxPolicy(context.Background(), inner, sandbox.ResourceLimits{MemoryBytes: 64 << 20})
+	_, err := policyChain(t, rt, inner, sandbox.ResourceLimits{MemoryBytes: 64 << 20})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("err = %v, want Validation", err)
 	}
@@ -120,7 +166,8 @@ func TestSandboxPolicyRejectsUnenforceableCaps(t *testing.T) {
 	// which buildRunner does.
 
 	rt = policyRuntime(t, SandboxConfig{Timeout: "1s", CPU: 500})
-	_, err = rt.applySandboxPolicy(context.Background(), &policyRunner{caps: sandbox.Capabilities{}}, sandbox.ResourceLimits{CPUMillicores: 500})
+	cpuInner := &policyRunner{caps: sandbox.Capabilities{}}
+	_, err = policyChain(t, rt, cpuInner, sandbox.ResourceLimits{CPUMillicores: 500})
 	if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "sandbox.cpu_millicores") {
 		t.Fatalf("err = %v, want a Validation naming sandbox.cpu_millicores", err)
 	}
@@ -135,7 +182,7 @@ func TestSandboxPolicyLeavesWritesAdvisoryWithoutConfinement(t *testing.T) {
 	caps.Policy.FilesystemBounds = false
 	inner := &policyRunner{caps: caps}
 
-	runner, err := rt.applySandboxPolicy(context.Background(), inner, sandbox.ResourceLimits{})
+	runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("applySandboxPolicy: %v", err)
 	}
@@ -148,7 +195,7 @@ func TestSandboxPolicyLeavesWritesAdvisoryWithoutConfinement(t *testing.T) {
 func TestSandboxPolicyTimeoutIsACeiling(t *testing.T) {
 	rt := policyRuntime(t, SandboxConfig{Timeout: "30s"})
 	inner := &policyRunner{caps: confiningCaps()}
-	runner, err := rt.applySandboxPolicy(context.Background(), inner, sandbox.ResourceLimits{})
+	runner, err := policyChain(t, rt, inner, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("applySandboxPolicy: %v", err)
 	}
