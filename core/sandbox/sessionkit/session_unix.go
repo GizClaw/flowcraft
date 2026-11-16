@@ -225,9 +225,56 @@ func killGroup(pgid int, sig syscall.Signal, msg string) {
 	}
 }
 
-// waitSession reaps the child, closes the pty and classifies the outcome. It
-// also waits for the pty copier, which may still hold bytes read before the
-// child's last write flushed, so EOF is never reported early.
+// ptyDrainGrace bounds the wait for the copier once the child is reaped. It is
+// the unix sibling of the Windows path's sessionKillTimeout, and deliberately
+// shorter: draining a pty buffer is microseconds of work, so the bound only
+// decides how long a caller waits for a backgrounded grandchild to let go.
+//
+// A caller whose own Wait deadline is shorter than this can see its context
+// expire for a child that already exited. That window is the price of not losing
+// the tail, and it exists only for TTY sessions — engine.Exec never sets one.
+const ptyDrainGrace = 500 * time.Millisecond
+
+// drainAndClosePTY hands the copier what the child left behind, then closes the
+// master.
+//
+// The order is the whole point. When a child is reaped, its last write may still
+// sit in the pty buffer, and the copier owns those bytes until it reads the EOF
+// that follows; closing the master first discards them, which is how a short
+// answer reaches the journal empty on a loaded machine. The wait is bounded
+// because a backgrounded grandchild can hold the slave open, and closing the
+// master is exactly what releases a copier blocked on it.
+func drainAndClosePTY(copiers *sync.WaitGroup, pty *ptyHandle, id string) {
+	done := make(chan struct{})
+	go func() {
+		copiers.Wait()
+		close(done)
+	}()
+	timer := time.NewTimer(ptyDrainGrace)
+	select {
+	case <-done:
+	case <-timer.C:
+	}
+	timer.Stop()
+
+	master := pty.take()
+	if master != nil {
+		if err := master.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
+				attribute.String("sandbox.session_id", id))
+		}
+	}
+	// Idempotent once the copier finished above; the release path when it did not.
+	copiers.Wait()
+}
+
+// waitSession reaps the child, drains the pty and classifies the outcome.
+//
+// The drain is bounded (see [ptyDrainGrace]): a copier whose slave is still held
+// by a backgrounded grandchild is released by closing the master, so EOF can
+// arrive while that grandchild lives. What the bound buys is the other case —
+// bytes the child wrote but nobody had read yet — and that is the one a caller
+// notices.
 func waitSession(
 	s *session,
 	cmd *exec.Cmd,
@@ -236,15 +283,12 @@ func waitSession(
 	sampler *GroupCapsWatcher,
 ) (sandbox.SessionExit, error) {
 	waitErr := cmd.Wait()
-	master := pty.take()
-	if master != nil {
-		if err := master.Close(); err != nil {
-			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
-				attribute.String("sandbox.session_id", s.id))
-		}
-	}
-	copiers.Wait()
-	return classifyExit(s, sampler, waitErr)
+	// A verdict is what the sampler observed while the child ran. Reading it here
+	// keeps the drain below from attributing a background grandchild's memory to a
+	// child that has already exited.
+	sampled := readVerdict(sampler)
+	drainAndClosePTY(copiers, pty, s.id)
+	return classifyExit(s, sampled, waitErr)
 }
 
 // releaseSession frees the platform handles. It is called from reap and from
@@ -274,16 +318,30 @@ func releaseSession(s *session, pty *ptyHandle, sampler *GroupCapsWatcher) {
 
 // classifyExit turns a wait result plus the session's own flags into what the
 // contract reports.
-func classifyExit(s *session, sampler *GroupCapsWatcher, waitErr error) (sandbox.SessionExit, error) {
-	if sampler != nil {
+// capsVerdict is what the resource sampler concluded while the child ran.
+type capsVerdict struct {
+	unenforceable error
+	exceeded      string
+}
+
+// readVerdict reads the sampler once, at reap time.
+func readVerdict(sampler *GroupCapsWatcher) capsVerdict {
+	if sampler == nil {
+		return capsVerdict{}
+	}
+	return capsVerdict{unenforceable: sampler.Unenforceable(), exceeded: sampler.Exceeded()}
+}
+
+func classifyExit(s *session, sampled capsVerdict, waitErr error) (sandbox.SessionExit, error) {
+	if sampled.unenforceable != nil || sampled.exceeded != "" {
 		// Order matters: a watcher that gave up on sampling killed the process,
 		// so its own verdict is what the caller has to see.
-		if sampleErr := sampler.Unenforceable(); sampleErr != nil {
+		if sampleErr := sampled.unenforceable; sampleErr != nil {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 				errdefs.NotAvailablef(
 					"sandbox: resource caps became unenforceable while running process: %w", sampleErr)
 		}
-		if cap := sampler.Exceeded(); cap != "" {
+		if cap := sampled.exceeded; cap != "" {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 				errdefs.BudgetExceededf(
 					"sandbox: %s resource cap exceeded while running process", cap)

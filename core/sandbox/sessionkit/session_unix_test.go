@@ -188,6 +188,44 @@ func TestStartSessionTTY(t *testing.T) {
 	}
 }
 
+// A tty session has to keep the tail a child wrote just before it died: the pty
+// buffer still holds those bytes when the child is reaped, and closing the master
+// before the copier drains them discards the answer's last words. Under load that
+// is an intermittently empty result.
+func TestStartSessionTTYKeepsTheTailOfADyingChild(t *testing.T) {
+	for range 20 {
+		sess := startSh(t, sandbox.SessionSpec{TTY: true, Rows: 24, Cols: 200},
+			"printf tty-tail; kill -9 $$")
+		streams, _, err := drain(t, sess)
+		if err != nil {
+			t.Fatalf("drain: %v", err)
+		}
+		if !strings.Contains(streams[sandbox.SessionStreamTTY], "tty-tail") {
+			t.Fatalf("tty output = %q, want the tail the child wrote before dying",
+				streams[sandbox.SessionStreamTTY])
+		}
+	}
+}
+
+// A backgrounded grandchild holds the pty slave open after the child exits, so the
+// copier would block on it forever. The drain is bounded for exactly that case: the
+// tail still arrives, and Wait returns instead of hanging.
+func TestStartSessionTTYReturnsWhileAGrandchildHoldsTheSlave(t *testing.T) {
+	sess := startSh(t, sandbox.SessionSpec{TTY: true, Rows: 24, Cols: 200},
+		"sleep 30 & printf tty-tail")
+	start := time.Now()
+	streams, _, err := drain(t, sess)
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("drain took %s, want it bounded by the drain grace", elapsed)
+	}
+	if !strings.Contains(streams[sandbox.SessionStreamTTY], "tty-tail") {
+		t.Errorf("tty output = %q, want the tail before the grandchild", streams[sandbox.SessionStreamTTY])
+	}
+}
+
 // A timeout is a classification, not just an exit code: the caller has to be able
 // to tell "it ran out of time" from "it failed".
 func TestStartSessionTimeout(t *testing.T) {
