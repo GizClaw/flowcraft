@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	goruntime "runtime"
+	"slices"
 	"sort"
 	"strings"
 
@@ -474,7 +475,7 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 // it sets have to reach the commands: without this, cpu_millicores, memory_mib and
 // writes were parsed, validated and then ignored.
 //
-// Three rules, all "narrow, never widen":
+// Four rules, all "narrow, never widen":
 //
 //   - A cpu or memory budget becomes the Resources default on every call. A
 //     backend that does not enforce the cap is a build error rather than a
@@ -484,6 +485,13 @@ func offeredDrivers(drivers map[string]DriverFunc) string {
 //     backend confines writes at the OS level. The local runner has no boundary
 //     and rejects a per-call one, and a remote runner's boundary belongs to the
 //     server's own document, so both warn instead of failing every command.
+//   - sandbox.net becomes the per-call network posture, under the same rule:
+//     only a backend that declares the mode in Capabilities.NetModes gets it,
+//     and a remote runner reports the server's declaration, so one test answers
+//     for both. Not projecting it would discard the policy silently, because
+//     defaults win entirely: the empty default replaces whatever the tool
+//     passed. A tool's own Net never wins either direction — the deployment's
+//     posture is the only one this projection carries.
 //   - sandbox.timeout is a ceiling: a tool may ask for a shorter deadline, never
 //     a longer one (the decorator takes the smaller).
 //
@@ -522,6 +530,19 @@ func (r *Runtime) resolveSandbox(ctx context.Context, limits sandbox.ResourceLim
 			defaults.Permission = &permission.Policy{
 				Writes: permission.Writes{Paths: writes},
 			}
+		}
+	}
+	// sandbox.net is projected when the backend declares it can enforce the mode.
+	// A backend that cannot keeps the host posture and says so: projecting would
+	// fail every command on a boundary it does not have, and dropping it silently
+	// is what this projection exists to stop.
+	if mode := policy.Net.Mode; mode != permission.NetDefault {
+		if slices.Contains(caps.Policy.NetModes, mode) {
+			defaults.Net = policy.Net
+		} else {
+			telemetry.Warn(ctx,
+				"this backend cannot enforce sandbox.net at the OS level; it is advisory here",
+				attribute.String("sandbox.backend", backend))
 		}
 	}
 	return Sandbox{
