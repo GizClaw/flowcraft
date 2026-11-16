@@ -25,15 +25,15 @@ go run . test-auto --raid werewolf --rounds 8     # let it play itself
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `forge workspace create --config <raid> --workspace <dir>` | copy a raid into a workspace |
-| `forge workspace inspect --workspace <dir>` | every agent: director or speaker, label, graph, models, tools, delegates, hooks |
-| `forge inspect <workspace> [--task <id>] [--kind <kind>]` | one run's timeline, read back from the store |
-| `forge config raid\|persona\|test list` | list scenarios and tests |
-| `forge tui new` / `forge tui resume` | the interactive table |
-| `forge test -test <raid>/<name> [--timeout 2m]` | one scripted test, written to `.out/<run>/` |
-| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | play a whole game, the human seat answered by its own agent |
+| Command                                                          | What it does                                                                    |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `forge workspace create --config <raid> --workspace <dir>`       | copy a raid into a workspace                                                    |
+| `forge workspace inspect --workspace <dir>`                      | every agent: director or speaker, label, graph, models, tools, delegates, hooks |
+| `forge inspect <workspace> [--task <id>] [--kind <kind>]`        | one run's timeline, read back from the store                                    |
+| `forge config raid\|persona\|test list`                          | list scenarios and tests                                                        |
+| `forge tui new` / `forge tui resume`                             | the interactive table                                                           |
+| `forge test -test <raid>/<name> [--timeout 2m]`                  | one scripted test, written to `.out/<run>/`                                     |
+| `forge test-auto --raid <raid> [--player <agent>] [--rounds 24]` | play a whole game, the human seat answered by its own agent                     |
 
 Scenarios resolve from `--scenarios`, `FORGE_SCENARIOS`, the executable's
 directory, the working directory and the per-user config directory, in that order.
@@ -68,7 +68,7 @@ agents:
 The referee's graph is the game: eleven script nodes (`seed`, `input`, `route`,
 `night`, `dawn`, `day`, `vote`, `exile`, `hunter`, `postgame`, `perform`) over state
 that holds the table. It is the only node that acts — `perform` calls `delegate` —
-so the graph decides *who* and the rule decides *what to ask*.
+so the graph decides _who_ and the rule decides _what to ask_.
 
 ```text
 input → route → night|dawn|day|vote|exile|hunter|postgame → perform → route
@@ -88,12 +88,12 @@ kind exists for.
 A raid is one director and a cast. The two raids in this directory differ in one
 axis: whether the director speaks.
 
-| | werewolf (refereed) | storyteller (narrated) |
-|---|---|---|
-| director | `referee`: rules only, **no model call of its own** | `narrator`: two model nodes, `schedule` and `narrate` |
-| cast | eight players, one of them a person | four characters, nobody |
-| truth | the game state (`game`) | the blueprint and the progress (`story`) |
-| ends when | the table waits for a person, or a side wins | the arc hands back to the reader, then closes |
+|           | werewolf (refereed)                                 | storyteller (narrated)                                |
+| --------- | --------------------------------------------------- | ----------------------------------------------------- |
+| director  | `referee`: rules only, **no model call of its own** | `narrator`: two model nodes, `schedule` and `narrate` |
+| cast      | eight players, one of them a person                 | four characters, nobody                               |
+| truth     | the game state (`game`)                             | the blueprint and the progress (`story`)              |
+| ends when | the table waits for a person, or a side wins        | the arc hands back to the reader, then closes         |
 
 The narrated raid is data as much as code: `rules/seed.star` deals a blueprint of ten
 phases, each with a goal, a boundary, the speakers it allows and how many beats it
@@ -113,8 +113,8 @@ A deployment says which nodes do not speak for the reader, and a surface filters
 
 ```yaml
 # story.yaml
-internal: [schedule]        # the control line stays off the table
-until: "故事收束"            # what an autoplay stops on
+internal: [schedule] # the control line stays off the table
+until: "故事收束" # what an autoplay stops on
 ```
 
 ```bash
@@ -134,7 +134,7 @@ A rule is a Starlark source, run in-process by `core/agent-graph/script`:
     path: rules/perform.star
     reads: [game, brief]
     writes: [game, brief, spoken]
-    allow: [tool:delegate]        # the one rule that acts
+    allow: [tool:delegate] # the one rule that acts
 ```
 
 - **Declared, not ambient**: `reads`/`writes` are the rule's whole surface, and
@@ -156,11 +156,11 @@ replacement.
 
 Three moments, declared per agent in `deploy.yaml`:
 
-| Hook | When | Failure |
-|---|---|---|
-| `OnSession` | after a session opens or is restored, before its turn | stops the turn |
-| `BeforeTurn` | before the engine sees the turn; may rewrite the message | stops the turn |
-| `AfterTurn` | after the run ends, with state and result | **logged, not fatal** |
+| Hook         | When                                                     | Failure               |
+| ------------ | -------------------------------------------------------- | --------------------- |
+| `OnSession`  | after a session opens or is restored, before its turn    | stops the turn        |
+| `BeforeTurn` | before the engine sees the turn; may rewrite the message | stops the turn        |
+| `AfterTurn`  | after the run ends, with state and result                | **logged, not fatal** |
 
 `AfterTurn` is the one that must not fail: the work is done and side effects cannot
 be undone, so a memory write that loses a race is a log line, not a failed game.
@@ -199,18 +199,18 @@ re-ask a seat whose vote they could not read, once, before recording an abstenti
 
 ## Where the code is
 
-| Path | Job |
-|---|---|
-| `internal/app` | opens a workspace: manager, store, sessions, one turn |
-| `internal/app/document.go` | reads `deploy.yaml`, `${workspace:root}`, missing env |
-| `internal/app/drivers.go` | the driver table this binary compiles in |
-| `internal/hooks/memory` | the `seat-memory` hook kind |
-| `internal/story` | who the table is: director, speakers, labels, player seat |
-| `internal/simtools` | the scenario's own tools, as a `tool.Source` |
-| `internal/chatfmt` | events → speech/tool blocks, shared by TUI and test logs |
-| `internal/tui` | the bubbletea interface |
-| `internal/commands` | the CLI surface, including `inspect` |
-| `internal/scenario` | file resolution and copying; nothing about agents |
+| Path                       | Job                                                       |
+| -------------------------- | --------------------------------------------------------- |
+| `internal/app`             | opens a workspace: manager, store, sessions, one turn     |
+| `internal/app/document.go` | reads `deploy.yaml`, `${workspace:root}`, missing env     |
+| `internal/app/drivers.go`  | the driver table this binary compiles in                  |
+| `internal/hooks/memory`    | the `seat-memory` hook kind                               |
+| `internal/story`           | who the table is: director, speakers, labels, player seat |
+| `internal/simtools`        | the scenario's own tools, as a `tool.Source`              |
+| `internal/chatfmt`         | events → speech/tool blocks, shared by TUI and test logs  |
+| `internal/tui`             | the bubbletea interface                                   |
+| `internal/commands`        | the CLI surface, including `inspect`                      |
+| `internal/scenario`        | file resolution and copying; nothing about agents         |
 
 The whole host is `host.New` + `Loader.Load` + `Deploy`:
 

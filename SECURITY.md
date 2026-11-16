@@ -5,10 +5,10 @@ fixes are issued against the latest release of each versioned module.
 
 ## Supported Versions
 
-| Module           | Supported tag stream |
-| ---------------- | -------------------- |
-| `core`           | latest `core/v0.x` |
-| `driver/*`       | latest `driver/<name>/v0.x` |
+| Module       | Supported tag stream          |
+| ------------ | ----------------------------- |
+| `core`       | latest `core/v0.x`            |
+| `driver/*`   | latest `driver/<name>/v0.x`   |
 | `backends/*` | latest `backends/<name>/v0.x` |
 
 Older minor versions are not patched; please upgrade before reporting issues
