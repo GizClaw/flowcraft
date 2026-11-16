@@ -25,6 +25,7 @@ type assemblyOptions struct {
 	conflict   tool.ConflictPolicy
 	middleware []tool.Middleware
 	dynamic    *Policy
+	decorate   tool.DefinitionDecorator
 }
 
 // AssemblyOption configures NewAssembly.
@@ -54,6 +55,13 @@ func WithDynamic(p Policy) AssemblyOption {
 	}
 }
 
+// WithDefinitionDecorator installs a transformation applied to every
+// model-facing definition, including the ones a deferred source publishes
+// after construction. See [tool.WithDefinitionDecorator].
+func WithDefinitionDecorator(fn tool.DefinitionDecorator) AssemblyOption {
+	return func(o *assemblyOptions) { o.decorate = fn }
+}
+
 // NewAssembly builds an assembly from sources. With dynamic enabled,
 // the built-in tool_search tool is appended as a source so it is part
 // of the registry from construction (no post-build mutation).
@@ -81,7 +89,9 @@ func NewAssembly(sources []tool.Source, opts ...AssemblyOption) (*Assembly, erro
 		sources = append(sources, searchToolSource{})
 	}
 
-	registry, err := tool.NewRegistry(sources, tool.WithConflictPolicy(o.conflict))
+	registry, err := tool.NewRegistry(sources,
+		tool.WithConflictPolicy(o.conflict),
+		tool.WithDefinitionDecorator(o.decorate))
 	if err != nil {
 		return nil, err
 	}
