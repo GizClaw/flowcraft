@@ -223,6 +223,15 @@ func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	defer s.mu.Unlock()
 	s.bumpEpoch()
 
+	// Sizes come from the catalog's definitions, which is what the pool and the
+	// per-round budget are measured against: a deployment that rewrote a
+	// description changed the bytes on the wire, and measuring the tool's own
+	// text here would make the two disagree.
+	sizes := map[string]int64{}
+	for _, def := range s.catalog.Definitions() {
+		sizes[def.Name] = definitionBytes(def)
+	}
+
 	reasons := make(map[string]string, len(names))
 	changed := false
 	rank := 0
@@ -238,9 +247,13 @@ func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 			reasons[name] = "not_discoverable"
 			continue
 		}
+		size, measured := sizes[name]
+		if !measured {
+			size = definitionBytes(t.Definition())
+		}
 		// names is ranked: rank 0 is the best hit, and the per-round
 		// visible budget keeps the smaller ranks when it has to cut.
-		s.st.touch(name, definitionBytes(t.Definition()), rank)
+		s.st.touch(name, size, rank)
 		rank++
 		changed = true
 	}

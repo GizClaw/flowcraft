@@ -249,10 +249,17 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // The registry snapshot is taken under the lock and the definitions are built
 // after it is released: a Definition() call reaches a deferred proxy's own lock,
 // and a decorator is caller code that must never run holding this lock.
+//
+// Because the lock is not held while the list is built, an invalidation can land
+// in that window — a deferred tool finishing its load, an MCP server publishing
+// more. Recording a list built from the older snapshot would then keep it cached
+// under the newer epoch, permanently, which is the state the epoch exists to rule
+// out; the epoch is therefore checked before the result is published.
 func (r *Registry) Definitions() []message.ToolDefinition {
 	if cached := r.defs.Load(); cached != nil {
 		return cloneDefinitions(*cached)
 	}
+	epoch := r.defsEpoch.Load()
 	r.mu.RLock()
 	tools := make([]Tool, 0, len(r.tools))
 	for _, name := range r.order {
@@ -264,7 +271,9 @@ func (r *Registry) Definitions() []message.ToolDefinition {
 		defs = append(defs, r.decorateDefinition(t.Definition()))
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
-	r.defs.Store(&defs)
+	if r.defsEpoch.Load() == epoch {
+		r.defs.Store(&defs)
+	}
 	return cloneDefinitions(defs)
 }
 

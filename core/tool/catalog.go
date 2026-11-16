@@ -10,5 +10,9 @@ type Catalog interface {
 	// Get returns the tool registered under name.
 	Get(name string) (Tool, bool)
 	// Definitions returns the Definition of every tool in the catalog.
+	//
+	// A Registry with a decorator ([WithDefinitionDecorator]) returns the decorated
+	// text, which is what the model reads: a reader that re-derives the list from
+	// Get alone would silently undo a deployment's overrides.
 	Definitions() []message.ToolDefinition
 }

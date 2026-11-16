@@ -2,11 +2,13 @@ package runtime
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
 
@@ -45,15 +47,101 @@ descriptions:
 	}
 }
 
-func TestDescriptionsRequireText(t *testing.T) {
+func TestDescriptionsRequireTextOrParams(t *testing.T) {
 	cfg := validConfig(t.TempDir())
 	cfg.Tools.Descriptions = DescriptionsConfig{"bash": {Text: "   "}}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("empty text accepted")
+		t.Fatal("an entry with neither text nor params was accepted")
 	}
 	if !strings.Contains(err.Error(), "tools.descriptions.bash") {
 		t.Errorf("error %q does not name the entry", err)
+	}
+}
+
+// A parameter-only entry is the common edit when the tool's own description is
+// fine and one argument's is not: restating the description to change it would be
+// the drift this feature exists to remove.
+func TestDescriptionsAllowAParameterOnlyEntry(t *testing.T) {
+	cfg := validConfig(t.TempDir())
+	cfg.Tools.Descriptions = DescriptionsConfig{"grep": {
+		Params: map[string]string{"max_matches": "Keep it small."},
+	}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("parameter-only entry rejected: %v", err)
+	}
+	baseline := definitionOf(t, plainRuntime(t), "grep")
+	patched := definitionOf(t, describedRuntime(t, cfg.Tools.Descriptions), "grep")
+	if patched.Description != baseline.Description {
+		t.Errorf("description = %q, want the tool's own text", patched.Description)
+	}
+	if got := descriptionOf(t, propertiesOf(t, patched)["max_matches"]); got != "Keep it small." {
+		t.Errorf("max_matches description = %q", got)
+	}
+}
+
+// A boolean subschema or a bare null is legal JSON Schema with nowhere to put a
+// description. The pairing has to fail at build time: at definition time it would
+// be a warning nobody reads, or a write into a nil map.
+func TestDescriptionsRejectAParameterSchemaWithNoObject(t *testing.T) {
+	for _, body := range []string{"null", "true"} {
+		catalog := fixtureCatalog{"thing": {
+			Name:        "thing",
+			InputSchema: []byte(`{"type":"object","properties":{"flag":` + body + `}}`),
+		}}
+		cfg := DescriptionsConfig{"thing": {Params: map[string]string{"flag": "text"}}}
+		err := cfg.validateAgainst(catalog)
+		if err == nil {
+			t.Fatalf("a %s parameter schema accepted an override", body)
+		}
+		if !strings.Contains(err.Error(), "not an object") {
+			t.Errorf("error %q does not say why", err)
+		}
+	}
+}
+
+// The patch itself must never panic on a body it cannot edit: it runs inside
+// Definitions, which is the loop's own path and has no recover.
+func TestPatchParameterDescriptionsRefusesBodiesItCannotEdit(t *testing.T) {
+	for _, tc := range []struct{ name, schema string }{
+		{"no properties", `{"type":"object"}`},
+		{"null property", `{"type":"object","properties":{"p":null}}`},
+		{"boolean property", `{"type":"object","properties":{"p":true}}`},
+		{"properties not an object", `{"type":"object","properties":[]}`},
+	} {
+		if _, err := patchParameterDescriptions([]byte(tc.schema),
+			map[string]string{"p": "text"}); err == nil {
+			t.Errorf("%s: patched instead of refusing", tc.name)
+		}
+	}
+}
+
+// When the patch cannot be applied the description still lands: losing a cosmetic
+// edit is better than refusing to start, and much better than panicking the loop.
+func TestDecoratorKeepsTheTextWhenTheSchemaCannotBePatched(t *testing.T) {
+	cfg := DescriptionsConfig{"thing": {Text: "own text", Params: map[string]string{"p": "x"}}}
+	decorate := cfg.withDefinitionDecorator(context.Background())
+	out := decorate(message.ToolDefinition{
+		Name:        "thing",
+		Description: "generated",
+		InputSchema: []byte(`{"type":"object"}`),
+	})
+	if out.Description != "own text" {
+		t.Errorf("description = %q, want the configured text", out.Description)
+	}
+	if string(out.InputSchema) != `{"type":"object"}` {
+		t.Errorf("schema = %s, want it untouched", out.InputSchema)
+	}
+}
+
+// The text is prompt surface, so a multi-line description has to arrive as
+// written, minus the surrounding blank lines a YAML block scalar can add.
+func TestDescriptionsKeepMultiLineText(t *testing.T) {
+	rt := describedRuntime(t, DescriptionsConfig{"read_file": {
+		Text: "First line.\nSecond line.\n",
+	}})
+	if got := definitionOf(t, rt, "read_file").Description; got != "First line.\nSecond line." {
+		t.Errorf("description = %q, want both lines without the trailing newline", got)
 	}
 }
 
@@ -63,8 +151,12 @@ func TestDescriptionsRequireParameterText(t *testing.T) {
 		Text:   "Run a command.",
 		Params: map[string]string{"workdir": ""},
 	}}
-	if err := cfg.Validate(); err == nil {
+	err := cfg.Validate()
+	if err == nil {
 		t.Fatal("empty parameter text accepted")
+	}
+	if !strings.Contains(err.Error(), "tools.descriptions.bash.params.workdir") {
+		t.Errorf("error %q does not name the entry", err)
 	}
 }
 
@@ -168,6 +260,18 @@ func TestDescriptionsLeaveEveryOtherToolAlone(t *testing.T) {
 // Editing a description changes what the model reads, so it changes the
 // deployment's identity: a session that started under one text must not resume
 // under another. The digest is where that is enforced.
+// Upgrading must not rotate the identity of a deployment that configures nothing:
+// a nil and an empty map both have to marshal away.
+func TestDigestIgnoresAnUnconfiguredDescriptionMap(t *testing.T) {
+	root := t.TempDir()
+	plain := validConfig(root)
+	empty := validConfig(root)
+	empty.Tools.Descriptions = DescriptionsConfig{}
+	if plain.Digest() != empty.Digest() {
+		t.Error("an empty descriptions map changed the digest")
+	}
+}
+
 func TestDigestTracksDescriptions(t *testing.T) {
 	root := t.TempDir()
 	cfg := validConfig(root)
@@ -249,7 +353,7 @@ func keysOf(t *testing.T, body string) string {
 	for key := range fields {
 		keys = append(keys, key)
 	}
-	sortStrings(keys)
+	sort.Strings(keys)
 	return strings.Join(keys, ",")
 }
 
@@ -271,10 +375,26 @@ func fieldOfRaw(t *testing.T, schema json.RawMessage, key string) string {
 	return string(fields[key])
 }
 
-func sortStrings(values []string) {
-	for i := 1; i < len(values); i++ {
-		for j := i; j > 0 && values[j] < values[j-1]; j-- {
-			values[j], values[j-1] = values[j-1], values[j]
-		}
+// fixtureCatalog is the read side validateAgainst needs, over a fixed set of
+// definitions: the checks here are about names and schema shapes, not about a
+// runtime.
+type fixtureCatalog map[string]message.ToolDefinition
+
+func (c fixtureCatalog) Get(name string) (tool.Tool, bool) {
+	def, ok := c[name]
+	if !ok {
+		return nil, false
 	}
+	return tool.FuncTool(def, func(context.Context, string) (message.Content, error) {
+		return message.NewTextContent("ok"), nil
+	}), true
+}
+
+func (c fixtureCatalog) Names() []string {
+	names := make([]string, 0, len(c))
+	for name := range c {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

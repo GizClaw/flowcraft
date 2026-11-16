@@ -281,7 +281,11 @@ type ToolsConfig struct {
 	// reads. A configured text participates in the runtime digest, so editing it
 	// makes sessions started under the previous text unresumable — the model was
 	// choosing tools by one description and would continue under another.
-	Descriptions DescriptionsConfig `json:"descriptions"`
+	//
+	// omitempty keeps an unconfigured deployment's digest stable across the
+	// release that introduced this field: without it every stored checkpoint of
+	// every existing deployment would stop resuming on upgrade, for no change.
+	Descriptions DescriptionsConfig `json:"descriptions,omitempty"`
 	// Middleware lists the dispatch chain, outermost first. Omitted means
 	// [recover, telemetry]: a tool call should produce a span and must not be
 	// able to stop the process.

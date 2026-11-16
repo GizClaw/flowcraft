@@ -28,14 +28,16 @@ import (
 // A configured text is the text: nothing of the generated description survives.
 // Composition was considered and rejected — a template cannot delete the sentence
 // that is wrong for this deployment, and deleting is the common case. What a
-// deployment needs to start from is the generated text itself, which
-// `forge describe tools` prints.
+// deployment needs to start from is the assembled text itself, which a host reads
+// through host.Manager.ToolDefinitions rather than from the Go source.
 type DescriptionsConfig map[string]DescriptionConfig
 
 // DescriptionConfig replaces one tool's description and, optionally, the
 // description shown for individual top-level parameters.
 type DescriptionConfig struct {
-	// Text replaces the tool description.
+	// Text replaces the tool description. Empty keeps the text the tool ships
+	// with, so a deployment that only wants to reword a parameter does not have to
+	// restate a description it was not changing.
 	Text string `json:"text"`
 	// Params replaces parameter descriptions, keyed by the property name in the
 	// tool's input schema. Only the description changes: type, required, bounds
@@ -76,9 +78,9 @@ func (d *DescriptionConfig) UnmarshalJSON(data []byte) error {
 func (c DescriptionsConfig) validate() error {
 	for _, name := range c.sortedNames() {
 		override := c[name]
-		if strings.TrimSpace(override.Text) == "" {
+		if strings.TrimSpace(override.Text) == "" && len(override.Params) == 0 {
 			return errdefs.Validationf(
-				"tools.descriptions.%s: text is required", name)
+				"tools.descriptions.%s: text or params is required", name)
 		}
 		for _, param := range sortedKeys(override.Params) {
 			if strings.TrimSpace(override.Params[param]) == "" {
@@ -118,10 +120,20 @@ func (c DescriptionsConfig) validateAgainst(catalog toolLookup) error {
 				"tools.descriptions.%s: input schema: %w", name, err)
 		}
 		for _, param := range sortedKeys(override.Params) {
-			if _, ok := properties[param]; !ok {
+			body, ok := properties[param]
+			if !ok {
 				return errdefs.Validationf(
 					"tools.descriptions.%s: unknown parameter %q; it takes: %s",
 					name, param, summarise(sortedKeys(properties)))
+			}
+			// The patcher can only add a sibling to an object subschema. A boolean
+			// schema or a bare null is legal JSON Schema and has nowhere to put a
+			// description, so the pairing has to fail here rather than turn into a
+			// warning nobody reads after the deployment started.
+			if !isJSONObject(body) {
+				return errdefs.Validationf(
+					"tools.descriptions.%s.params.%s: parameter schema is not an object, "+
+						"so it has no description to replace", name, param)
 			}
 		}
 	}
@@ -135,14 +147,16 @@ func (c DescriptionsConfig) withDefinitionDecorator(ctx context.Context) tool.De
 	if len(c) == 0 {
 		return nil
 	}
-	state := &descriptionState{ctx: ctx}
+	state := &descriptionState{ctx: context.WithoutCancel(ctx)}
 	return func(def message.ToolDefinition) message.ToolDefinition {
 		override, ok := c[def.Name]
 		if !ok {
 			return def
 		}
 		decorated := def.Clone()
-		decorated.Description = strings.TrimSpace(override.Text)
+		if text := strings.TrimSpace(override.Text); text != "" {
+			decorated.Description = text
+		}
 		if len(override.Params) == 0 {
 			return decorated
 		}
@@ -213,6 +227,11 @@ func patchParameterDescriptions(schema json.RawMessage, params map[string]string
 		if err := json.Unmarshal(body, &property); err != nil {
 			return nil, errdefs.Validationf("parameter %q: %w", name, err)
 		}
+		if property == nil {
+			// A null body decodes into a nil map without an error; writing to it
+			// would panic inside Definitions, which is the loop's own path.
+			return nil, errdefs.Validationf("parameter %q: schema is null", name)
+		}
 		description, err := json.Marshal(strings.TrimSpace(params[name]))
 		if err != nil {
 			return nil, err
@@ -248,6 +267,13 @@ func topLevelProperties(schema json.RawMessage) (map[string]json.RawMessage, err
 		return nil, err
 	}
 	return root.Properties, nil
+}
+
+// isJSONObject reports whether raw JSON is an object, which is the only schema
+// shape a sibling description can be added to.
+func isJSONObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
 }
 
 // toolLookup is the read side validateAgainst needs; *tool.Registry implements it.
