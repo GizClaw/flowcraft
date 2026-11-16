@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	goruntime "runtime"
 	"sort"
 	"strings"
@@ -153,7 +154,9 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 		decorated, err := r.sandboxDecorator(spec, runner)
 		if err != nil {
 			r.closeBackend(ctx, runner)
-			return err
+			// Name the seam and keep the host's error kind: an operator seeing a
+			// bare host error cannot tell which build step produced it.
+			return fmt.Errorf("sandbox: WithSandboxDecorator: %w", err)
 		}
 		if decorated == nil {
 			r.closeBackend(ctx, runner)
@@ -179,6 +182,16 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 	}
 	journal, err := sandbox.OpenJournal(ctx, runner)
 	if err != nil {
+		// A decorator that drops JournalProvider is the common cause here, and
+		// blaming the backend for it sends the operator to the wrong file: the
+		// composed runner still advertised the journal, the wrapper swallowed it.
+		if r.sandboxDecorator != nil {
+			if _, ok := built.(sandbox.JournalProvider); ok {
+				return errdefs.Validationf(
+					"sandbox.journal: the decorated runner (%T) does not forward OpenJournal; "+
+						"wrap with engine.Forwarder: %w", runner, err)
+			}
+		}
 		return errdefs.Validationf(
 			"sandbox.journal: %q does not serve a file journal: %w", r.cfg.Sandbox.Backend, err)
 	}

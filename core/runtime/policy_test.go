@@ -81,6 +81,40 @@ func policyChain(t *testing.T, rt *Runtime, inner *policyRunner, limits sandbox.
 	return rt.applySandboxPolicy(inner, spec)
 }
 
+// The resolved view a decorator receives carries the effective workdir and the
+// write boundary the composed chain applies, so a companion chain does not
+// re-derive the document — and cannot silently root itself elsewhere.
+func TestResolveSandboxCarriesTheResolvedView(t *testing.T) {
+	root := t.TempDir()
+	workDir := t.TempDir()
+	rt := policyRuntime(t, SandboxConfig{
+		WorkDir: workDir,
+		Timeout: "5s",
+		Writes:  []string{root},
+	})
+	inner := &policyRunner{caps: confiningCaps()}
+
+	spec, err := rt.resolveSandbox(context.Background(), sandbox.ResourceLimits{}, inner.Capabilities())
+	if err != nil {
+		t.Fatalf("resolveSandbox: %v", err)
+	}
+	if spec.WorkDir != workDir {
+		t.Errorf("WorkDir = %q, want sandbox.workdir %q", spec.WorkDir, workDir)
+	}
+	if spec.Defaults.Timeout != 5*time.Second {
+		t.Errorf("Defaults.Timeout = %v, want 5s", spec.Defaults.Timeout)
+	}
+	if spec.Defaults.Permission == nil {
+		t.Fatal("Defaults.Permission = nil; the configured writes did not reach the view")
+	}
+	if paths := spec.Defaults.Permission.Writes.Paths; len(paths) != 1 || paths[0] != root {
+		t.Errorf("Defaults.Permission.Writes = %v, want [%s]", paths, root)
+	}
+	if spec.Config.Sandbox.Backend != BackendLocal {
+		t.Errorf("Config backend = %q, want the resolved document", spec.Config.Sandbox.Backend)
+	}
+}
+
 // The document's cpu and memory budgets reach every call, and its writes become
 // the per-call boundary on a backend that can confine them.
 func TestSandboxPolicyReachesEveryCall(t *testing.T) {

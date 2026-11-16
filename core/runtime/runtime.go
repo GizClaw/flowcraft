@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"sync"
 
@@ -214,7 +213,7 @@ func (r *Runtime) Close() error {
 func (r *Runtime) logAssembled(ctx context.Context) {
 	attrs := append(runctx.Attrs(r.Context(ctx)),
 		attribute.String("sandbox.backend", r.cfg.Sandbox.Backend),
-		attribute.String("sandbox.runner", fmt.Sprintf("%T", r.runner)),
+		attribute.Bool("sandbox.decorated", r.sandboxDecorator != nil),
 		attribute.StringSlice("files.roots", r.cfg.Files.Roots),
 		attribute.StringSlice("sandbox.writes", r.cfg.Sandbox.Writes),
 		attribute.String("sandbox.net", r.cfg.Sandbox.Net.Mode),

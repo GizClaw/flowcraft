@@ -9,9 +9,13 @@ import (
 // values the composed chain was built from, handed to [WithSandboxDecorator] so a
 // host that builds a second chain does not re-derive the document — and does not
 // drift from it.
+//
+// It is the composed view, not [SandboxConfig], the block a host writes in the
+// document: the fallbacks below are already applied.
 type Sandbox struct {
 	// Config is the validated document, for the backend blocks the resolved
-	// fields below do not cover (seatbelt, bwrap, windows, remote).
+	// fields below do not cover (seatbelt, bwrap, windows, remote). The runtime
+	// keeps using it, so treat it as read-only.
 	Config Config
 	// WorkDir is the effective working directory: sandbox.workdir when set,
 	// otherwise the first files root. It is where commands run, and the
@@ -19,15 +23,20 @@ type Sandbox struct {
 	// Config.Sandbox.WorkDir directly is not the same thing: it is empty
 	// whenever the deployment relied on the files root.
 	WorkDir string
-	// Net is the outbound posture the exec tools pass on every call.
+	// Net is the posture the document declares, for a companion chain to adopt
+	// as its own.
 	//
-	// A retry chain inherits it without asking, because a retried call carries
-	// the original ExecOptions; it is here for a chain that wants its own
-	// construction-time posture.
+	// It is not inherited from the call: engine.WithDefaults takes Net from the
+	// chain's defaults (defaults win entirely), so the value the exec tools pass
+	// per call does not survive a retry chain unless that chain sets it.
 	Net permission.NetPolicy
 	// Defaults is exactly what the runtime merges into every call through
 	// engine.WithDefaults: the timeout ceiling, the cpu and memory budgets, and
 	// — on a backend that confines them — the configured writes.
+	//
+	// It shares its *permission.Policy, slices and maps with the composed chain,
+	// so treat it as read-only: changing a field here rewrites the boundary the
+	// confined chain enforces instead of your copy.
 	Defaults sandbox.ExecOptions
 }
 
@@ -43,7 +52,9 @@ type Sandbox struct {
 // budget and write posture rather than the caller's raw request.
 //
 // The decorator must return a non-nil runner. An error or a nil fails [New] and
-// closes the runner it was given, like any other build step.
+// closes the runner it was given, like any other build step; a typed-nil value
+// (a nil pointer widened into the interface) is not detected, so the decorator
+// itself must not return one.
 //
 // Ownership stays with the runtime: it closes the returned value exactly once,
 // and only that value. Anything the decorator creates — a retry chain, a metrics

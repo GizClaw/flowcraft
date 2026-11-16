@@ -80,15 +80,14 @@ func recordingDecorator(t *testing.T, outer **recordingRunner, inner **closeReco
 }
 
 // The decorator runs after the backend and after the document's policy, so the
-// runner it receives already carries engine.WithDefaults: a call that asks for
-// nothing still hits the deployment's timeout ceiling. A host that wanted to
-// wire a retry chain without this would have to rebuild the policy itself.
-func TestSandboxDecoratorReceivesComposedRunner(t *testing.T) {
-	if goruntime.GOOS == "windows" {
-		t.Skip("uses a POSIX shell for the timeout probe")
-	}
+// runner it receives already carries engine.WithDefaults, and the resolved view
+// gives a host what it needs to build a companion chain. This part needs no
+// command, so it runs on every platform, including the Windows lane.
+func TestSandboxDecoratorResolvesTheDocument(t *testing.T) {
+	workDir := t.TempDir()
 	cfg := localConfig(t)
-	cfg.Sandbox.Timeout = "300ms"
+	cfg.Sandbox.WorkDir = workDir
+	cfg.Sandbox.Timeout = "7s"
 
 	var (
 		seen     Sandbox
@@ -104,15 +103,37 @@ func TestSandboxDecoratorReceivesComposedRunner(t *testing.T) {
 	}
 	defer func() { _ = rt.Close() }()
 
-	// The resolved view gives a host what it needs to build a companion chain:
-	// the effective workdir (Sandbox.WorkDir is empty here; the files root
-	// supplies it) and the defaults the composed chain already applies.
-	if seen.WorkDir != cfg.Files.Roots[0] {
-		t.Fatalf("WorkDir = %q, want the first files root %q", seen.WorkDir, cfg.Files.Roots[0])
+	if seen.WorkDir != workDir {
+		t.Fatalf("WorkDir = %q, want sandbox.workdir %q", seen.WorkDir, workDir)
 	}
-	if seen.Defaults.Timeout != 300*time.Millisecond {
-		t.Fatalf("Defaults.Timeout = %v, want 300ms", seen.Defaults.Timeout)
+	if seen.Defaults.Timeout != 7*time.Second {
+		t.Fatalf("Defaults.Timeout = %v, want 7s", seen.Defaults.Timeout)
 	}
+	if composed == nil {
+		t.Fatal("the decorator received no runner")
+	}
+}
+
+// The runner the decorator receives is the composed chain, defaults included: a
+// call that asks for nothing still hits the deployment's timeout ceiling. A host
+// that wanted to wire a retry chain without this would rebuild the policy.
+func TestSandboxDecoratorReceivesComposedRunner(t *testing.T) {
+	if goruntime.GOOS == "windows" {
+		t.Skip("uses a POSIX shell for the timeout probe")
+	}
+	cfg := localConfig(t)
+	cfg.Sandbox.Timeout = "300ms"
+
+	var composed sandbox.Runner
+	rt, err := New(t.Context(), cfg, WithSandboxDecorator(
+		func(_ Sandbox, runner sandbox.Runner) (sandbox.Runner, error) {
+			composed = runner
+			return runner, nil
+		}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = rt.Close() }()
 
 	start := time.Now()
 	_, err = sandboxengine.Exec(t.Context(), composed,
@@ -121,6 +142,9 @@ func TestSandboxDecoratorReceivesComposedRunner(t *testing.T) {
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("the composed runner ran a command the deployment's timeout should have cut off")
+	}
+	if !errdefs.IsTimeout(err) && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the 300ms ceiling to surface as a timeout", err)
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("elapsed = %v; the 300ms ceiling was not applied inside the decorator", elapsed)
@@ -179,7 +203,6 @@ func TestSandboxDecoratorSeesBothToolPaths(t *testing.T) {
 
 // The runtime is the sole owner of the value the decorator returns: it closes it
 // once, that value forwards to the composed chain, and a second Close is a no-op.
-// With no decorator the runtime closes the runner it built, exactly as before.
 func TestSandboxDecoratorIsClosedExactlyOnce(t *testing.T) {
 	var (
 		recorder *recordingRunner
@@ -250,4 +273,24 @@ func TestSandboxDecoratorKeepsTheJournal(t *testing.T) {
 	if rt.Journal() == nil {
 		t.Fatal("the configured journal did not survive the decorator")
 	}
+
+	// The trap engine.Forwarder exists for: embedding sandbox.Runner promotes
+	// neither OpenJournal nor Attach, so New has to fail rather than run with a
+	// journal the capabilities still advertise.
+	t.Run("a decorator that drops the journal fails the build", func(t *testing.T) {
+		cfg := localConfig(t)
+		cfg.Sandbox.Journal = &journal.Settings{}
+
+		_, err := New(t.Context(), cfg, WithSandboxDecorator(
+			func(_ Sandbox, runner sandbox.Runner) (sandbox.Runner, error) {
+				return &lossyRunner{runner}, nil
+			}))
+		if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "OpenJournal") {
+			t.Fatalf("err = %v, want a validation error naming OpenJournal", err)
+		}
+	})
 }
+
+// lossyRunner embeds the interface, which is the documented trap: it has no
+// OpenJournal or Attach even when the runner it wraps does.
+type lossyRunner struct{ sandbox.Runner }

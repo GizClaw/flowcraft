@@ -244,9 +244,12 @@ rt, err := runtime.New(ctx, cfg, runtime.WithSandboxDecorator(
 
 `runtime.Sandbox` is the resolved view of the document: `WorkDir` is the
 _effective_ directory (`sandbox.workdir`, otherwise the first files root), `Net`
-the outbound posture, and `Defaults` exactly what `engine.WithDefaults` applies.
-A host that builds a second chain from it does not re-derive the document — copy
-`workDir()` and the defaults instead and the two drift.
+the posture the document declares, and `Defaults` exactly what
+`engine.WithDefaults` applies. A host that builds a second chain from it does not
+re-derive the document; anything that reproduces the `workDir()` fallback or the
+default merge by hand drifts from it. Treat `Config` and `Defaults` as read-only:
+their slices and policy pointers are shared with the composed chain, so editing
+one rewrites the boundary that chain enforces.
 
 Ordering is the reason the seam is on the runner rather than a tool option: the
 decorator runs after the policy and before the journal, so `exec_command`,
@@ -259,7 +262,8 @@ Two rules keep it honest:
   neither, so such a decorator silently loses a configured journal — and `New`
   fails, because the runtime opens the journal against the decorated value.
 - **`Close` is the runtime's, once.** The decorator must return a non-nil runner;
-  an error or a nil fails `New`. The runtime closes the returned value exactly
+  an error or a nil fails `New` (a typed nil — a nil pointer widened into the
+  interface — is not detected). The runtime closes the returned value exactly
   once and only that value, so whatever the decorator created (a retry chain, a
   sink) is its own to close, and one that replaces rather than wraps must close
   what it drops.

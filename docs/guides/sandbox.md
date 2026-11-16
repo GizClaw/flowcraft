@@ -9,7 +9,7 @@ title: Sandbox
 
 | Layer    | Package                                                            | Role                                                                                                                                  |
 | -------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Contract | `core/sandbox`                                                     | `Runner`, `ExecOptions`, `Session`, `Capabilities`, `Journal`, `Attach`. No behaviour beyond validation helpers.                      |
+| Contract | `core/sandbox`                                                     | `Runner`, `Executor`, `ExecOptions`, `Session`, `Capabilities`, `Journal`, `Attach`. No behaviour beyond validation helpers.          |
 | Policy   | `core/sandbox/engine`                                              | The one-shot `Exec`, the decorators (defaults, allowlist, approval, escalation), the safe-read-only classifier, `ValidateExecPolicy`. |
 | Backends | `core/sandbox-local`, `-bwrap`, `-seatbelt`, `-windows`, `-remote` | The process boundary itself.                                                                                                          |
 
@@ -35,7 +35,10 @@ type Runner interface {
 
 Every runner is a session manager. The one-shot form is
 `engine.Exec(ctx, runner, cmd, args, opts)` — a derived view over `Start` plus
-the terminal status, and the only place a call is known to be finished.
+the terminal status, and the only place a call is known to be finished. A
+decorator that needs that completed result implements `sandbox.Executor`, which
+`engine.Exec` dispatches to instead (see
+[Wiring escalation into a runtime](#wiring-escalation-into-a-runtime)).
 
 Backends must reject a policy they cannot enforce rather than silently
 downgrade: `engine.ValidateExecPolicy(opts, caps)` is the shared check, and
@@ -322,7 +325,7 @@ rt, err := runtime.New(ctx, cfg,
         return engine.NewEscalationRunner(&engine.Escalation{
             Confined: confined, // backend + approval + the document's defaults
             // The retry chain is its own: keep the floor an escalation must not
-            // drop. sb.WorkDir is the effective directory; cfg.Sandbox.Workdir
+            // drop. sb.WorkDir is the effective directory; cfg.Sandbox.WorkDir
             // is empty whenever the deployment used files.roots.
             Unconfined: engine.WithDefaults(local.New(sb.WorkDir), engine.ExecOptions{
                 Timeout:   sb.Defaults.Timeout,
@@ -353,12 +356,14 @@ Three rules make the seam safe:
   that also forwards `OpenJournal` and `Attach`; embedding `sandbox.Runner`
   directly promotes neither and silently drops the journal.
 
-The retry receives the confined call's `ExecOptions` byte for byte, which is how
-it inherits the deployment's net posture without the decorator asking for it.
-`sb.Defaults.Permission` is the document's write boundary: do not hand it to a
-`local` retry chain, which rejects a per-call permission — decide the floor the
-retry keeps. `engine.WithEscalationObserver` sees every one-shot outcome,
-including a plain confined success, for the audit note.
+The retry receives the confined call's `ExecOptions` byte for byte, but
+`engine.WithDefaults` takes `Net` from the chain's own defaults (defaults win
+entirely), so a retry chain states its posture explicitly — `Net: sb.Net` —
+rather than relying on the call's. `sb.Defaults.Permission` is the document's
+write boundary: do not hand it to a `local` retry chain, which rejects a per-call
+permission — decide the floor the retry keeps. `engine.WithEscalationObserver`
+sees every one-shot outcome, including a plain confined success, for the audit
+note.
 
 ## File journal
 
