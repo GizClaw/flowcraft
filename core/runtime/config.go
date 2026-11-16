@@ -276,6 +276,12 @@ type ToolsConfig struct {
 	// MCP declares MCP servers, which are one more tool source. Declaring a
 	// server is what enables it; there is no separate name in enable.
 	MCP MCPConfig `json:"mcp"`
+	// Descriptions replaces the model-facing description of individual tools and
+	// parameters. Omitted means the text each tool ships with is what the model
+	// reads. A configured text participates in the runtime digest, so editing it
+	// makes sessions started under the previous text unresumable — the model was
+	// choosing tools by one description and would continue under another.
+	Descriptions DescriptionsConfig `json:"descriptions"`
 	// Middleware lists the dispatch chain, outermost first. Omitted means
 	// [recover, telemetry]: a tool call should produce a span and must not be
 	// able to stop the process.
@@ -606,6 +612,9 @@ func (t ToolsConfig) validate() error {
 		}
 	}
 	if err := t.MCP.validate(); err != nil {
+		return err
+	}
+	if err := t.Descriptions.validate(); err != nil {
 		return err
 	}
 	for _, name := range t.Enable {
