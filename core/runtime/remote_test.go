@@ -284,3 +284,49 @@ func TestConfigValidatesTheRemoteTransport(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteBackendParamsRejectsWhatValidateWould covers the parsed view's own
+// error branches. Through New they are unreachable — Validate refuses the block
+// first — so a backend that is handed a block from somewhere else (a test fixture,
+// a host assembling its own document) is the only caller that can see them, and it
+// should see a named error rather than a zero value.
+func TestRemoteBackendParamsRejectsWhatValidateWould(t *testing.T) {
+	cases := map[string]struct {
+		cfg  RemoteConfig
+		want string
+	}{
+		"unknown transport":  {RemoteConfig{Transport: "pigeon"}, "sandbox.remote.transport"},
+		"unparsable timeout": {RemoteConfig{Timeout: "soon"}, "sandbox.remote.timeout"},
+		"unparsable hold":    {RemoteConfig{PollHold: "later"}, "sandbox.remote.poll_hold"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			params, err := tc.cfg.BackendParams()
+			if err == nil {
+				t.Fatalf("BackendParams() = %+v, want an error", params)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to name %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("parses a valid block", func(t *testing.T) {
+		params, err := RemoteConfig{
+			Transport:          "unix",
+			Socket:             "/run/flowcraft/sandbox.sock",
+			Token:              "t",
+			Timeout:            "10s",
+			PollHold:           "2s",
+			InsecureSkipVerify: true,
+		}.BackendParams()
+		if err != nil {
+			t.Fatalf("BackendParams(): %v", err)
+		}
+		if !params.Unix || params.Socket != "/run/flowcraft/sandbox.sock" ||
+			params.Timeout != 10*time.Second || params.PollHold != 2*time.Second ||
+			!params.InsecureSkipVerify || params.Token != "t" {
+			t.Errorf("params = %+v", params)
+		}
+	})
+}
