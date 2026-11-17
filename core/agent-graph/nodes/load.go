@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -91,7 +92,7 @@ func load(ctx context.Context, path string) (graph.Document, error) {
 	if err != nil {
 		return graph.Document{}, errdefs.Validationf("graph: read %s: %w", path, err)
 	}
-	expanded, err := runtime.ExpandDocument(ctx, body)
+	expanded, err := config.ExpandDocument(ctx, body)
 	if err != nil {
 		return graph.Document{}, errdefs.Validationf("graph: %s: %w", path, err)
 	}

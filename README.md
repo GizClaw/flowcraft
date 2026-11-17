@@ -101,7 +101,7 @@ specs, err := loader.LoadFile(ctx, "deploy.yaml")   // strict; unknown fields fa
 manager := host.New(deploy.BuiltinKinds(), host.Bindings{
     Store:          store,                          // sessions survive a restart
     RuntimeOptions: []runtime.Option{runtime.WithDrivers(myDrivers...)},
-    LoadOptions:    []runtime.LoadOption{runtime.WithResolver("secret", vault.Resolve)},
+    LoadOptions:    []config.Option{config.WithResolver("secret", vault.Resolve)},
     Harness:        "myapp@1.0.0",
 })
 defer manager.Close()

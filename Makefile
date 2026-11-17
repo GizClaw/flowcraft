@@ -213,7 +213,8 @@ cover:
 
 .PHONY: test-shuffle
 test-shuffle:
-	@$(call GO_FOREACH,$(MODULES_WORK),test-shuffle,go test -shuffle=on -count=3 ./...)
+	@$(call GO_FOREACH,$(MODULES_TEST),test-shuffle,go test -shuffle=on -count=3 ./...)
+	@$(call GO_FOREACH,$(MODULES_CONSUMER),test-shuffle-consumer,GOWORK=off go test -shuffle=on -count=3 ./...)
 
 .PHONY: fuzz
 fuzz:

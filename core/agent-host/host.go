@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -33,9 +34,9 @@ type Bindings struct {
 	// RuntimeOptions are the construction options: driver table, selectors,
 	// secret resolvers. They are per process, not per agent.
 	RuntimeOptions []runtime.Option
-	// LoadOptions are handed to runtime.LoadLayers: resolvers for placeholder
+	// LoadOptions are handed to the layer loader: resolvers for placeholder
 	// schemes.
-	LoadOptions []runtime.LoadOption
+	LoadOptions []config.Option
 	// OnEvent observes every event of every session, named by agent. The
 	// agent name is not decoration: one host usually serves many agents.
 	//

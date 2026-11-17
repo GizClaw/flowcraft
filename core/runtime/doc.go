@@ -19,5 +19,7 @@
 // hold the human-facing units (mebibytes, mode names, paths) and convert to the
 // contract types. The contracts carry no serialization tags, so the wire format
 // of a policy is not part of its public API. Layers let a deployment stack a
-// base file, a profile and a local override; see [LoadLayers].
+// base file, a profile and a local override; the merge itself belongs to
+// `core/config`, and [LoadLayers] is the entry point that also validates the
+// result.
 package runtime
