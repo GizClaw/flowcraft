@@ -1,11 +1,17 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/goccy/go-json"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func TestDecodeRejectsMissingTransport(t *testing.T) {
@@ -155,6 +161,74 @@ func TestDecodeRejectsInvalidLiveness(t *testing.T) {
 		if err == nil {
 			t.Fatalf("Decode accepted invalid liveness %s", raw)
 		}
+	}
+}
+
+// TestHTTPTimeoutDoesNotRetryToolCalls is the regression test for a client
+// that installed the transport retry layer whenever http_timeout was set:
+// tools/call is not idempotent, so a 5xx answered after the server already ran
+// the tool must not be replayed. The count below is wire attempts on the
+// tools/call POST, taken from the fake server in front of a real MCP server.
+func TestHTTPTimeoutDoesNotRetryToolCalls(t *testing.T) {
+	server := mcpsdk.NewServer(
+		&mcpsdk.Implementation{Name: "retry-helper", Version: "test"}, nil)
+	server.AddTool(&mcpsdk.Tool{
+		Name:        "http_tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
+		}, nil
+	})
+
+	handler := mcpsdk.NewStreamableHTTPHandler(
+		func(*http.Request) *mcpsdk.Server { return server }, nil)
+	var toolCallPosts atomic.Int32
+	listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if r.Method == http.MethodPost && bytes.Contains(body, []byte(`"tools/call"`)) {
+			toolCallPosts.Add(1)
+			// 5xx is exactly what the retry layer used to replay.
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(listener.Close)
+
+	spec, err := Decode(json.RawMessage(`{
+		"servers": [{
+			"name": "remote",
+			"transport": "http",
+			"url": "` + listener.URL + `",
+			"http_timeout": "30s"
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+
+	ctx := context.Background()
+	source, err := Connect(ctx, spec)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = source.Close() })
+
+	waitFor(t, 5*time.Second, "http tool published", func() bool {
+		return len(source.Tools()) == 1
+	})
+
+	if _, err := source.CallTool(ctx, "remote", "http_tool", map[string]any{}); err == nil {
+		t.Fatal("CallTool succeeded despite the 500, want the server error")
+	}
+	if got := toolCallPosts.Load(); got != 1 {
+		t.Fatalf("tools/call POSTs = %d, want 1 (a retried tools/call runs the tool again)", got)
 	}
 }
 
