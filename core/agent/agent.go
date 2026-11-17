@@ -177,12 +177,13 @@ type session struct {
 	// cancelRequested latches a Cancel that landed while no run held the slot,
 	// because an engine with no run in flight has nothing of its own to stop and
 	// would drop the stop. The run that takes the slot next starts from an
-	// already-cancelled context: it has to observe the cancellation rather than
-	// be prevented from starting, since the graph loop checks ctx.Err() at the
-	// top of every iteration and exits cancelled, persisting the terminal state.
-	// It carries Cancel's reason rather than a flag, so a pending stop keeps what
-	// the caller said.
-	cancelRequested string
+	// already-cancelled context, so it has to observe the cancellation rather
+	// than be prevented from starting: the graph loop announces itself, then
+	// sees ctx.Err() at the top of its first iteration, unwinds cancelled and
+	// persists the terminal state. It is a flag and not the caller's reason
+	// because nothing reads a pending reason — the reason goes to the engine at
+	// the moment Cancel is called.
+	cancelRequested bool
 	// done is closed when the current run ends, so a caller that arrived while
 	// the session was busy can wait for the bookkeeping instead of racing
 	// it.
@@ -191,8 +192,8 @@ type session struct {
 	// instead of building a second runner, and no table lock is held while the
 	// store or the peer is being reached.
 	opening chan struct{}
-	// openErr is set when the build failed; the waiter that observes it drops
-	// the entry.
+	// openErr is set when the build failed; a waiter that observes it drops the
+	// entry (acquire and ensure both do).
 	openErr error
 	// turn counts accepted Run calls for this session in this process. It is
 	// carried across a terminal task replacement and is not persisted.
@@ -513,7 +514,11 @@ func (a *Agent) Steer(ctx context.Context, sessionID string, msg message.Message
 
 // Cancel stops the session's Task. A session that is not open is
 // looked up in the store, so a task paused by a process that has since died is
-// still cancellable. Nothing to cancel is not an error.
+// still cancellable. Nothing to cancel is not an error, but two cases are
+// reported: a cancel that had to open the session and found the open failed
+// returns that error rather than claiming the stop landed, and a cancel that
+// arrives before the session has an entry at all (a host without a store) is not
+// remembered — there is nothing to attach the stop to.
 func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 	if strings.TrimSpace(sessionID) == "" {
 		return ErrSessionRequired
@@ -534,8 +539,16 @@ func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 		}
 		if entry.runner == nil {
 			// The open failed, so this cancel had nothing to reach: reporting the
-			// failure beats claiming the stop landed.
-			return entry.openErr
+			// failure beats claiming the stop landed. Drop the poisoned entry the
+			// way acquire and ensure do, so a transient store error does not stick
+			// to every later cancel.
+			err := entry.openErr
+			shard.mu.Lock()
+			if shard.entries[sessionID] == entry {
+				shard.remove(sessionID)
+			}
+			shard.mu.Unlock()
+			return err
 		}
 		return a.stopSession(ctx, entry, reason)
 	}
@@ -559,9 +572,6 @@ func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 	opened, err := a.ensure(ctx, sessionID, checkpoint.Task.ID)
 	if err != nil {
 		return err
-	}
-	if opened.runner == nil {
-		return nil
 	}
 	return a.stopSession(ctx, opened, reason)
 }
@@ -726,8 +736,8 @@ func (a *Agent) acquire(ctx context.Context, sessionID, taskID string) (*session
 			// A cancel that landed before this slot was taken is applied here, so
 			// the run unwinds as cancelled instead of doing work the caller
 			// stopped.
-			if entry.cancelRequested != "" {
-				entry.cancelRequested = ""
+			if entry.cancelRequested {
+				entry.cancelRequested = false
 				cancel()
 			}
 			shard.begin()
@@ -906,9 +916,22 @@ func (a *Agent) stopSession(ctx context.Context, entry *session, reason string) 
 	// it can act on (one paused by an earlier process, which this process never
 	// drove), but it is a no-op for a run that has not started, so the latch is
 	// what makes the stop stick for the run that takes the slot next.
-	entry.cancelRequested = reason
+	//
+	// The latch is armed before the engine is called because a run can take the
+	// slot as soon as the lock is released; it is disarmed again if the engine
+	// refuses, so a caller told the cancel failed does not have its next run
+	// stopped behind its back.
+	entry.cancelRequested = true
 	shard.mu.Unlock()
-	return entry.runner.Cancel(ctx, reason)
+	if err := entry.runner.Cancel(ctx, reason); err != nil {
+		shard.mu.Lock()
+		if shard.entries[entry.id] == entry {
+			entry.cancelRequested = false
+		}
+		shard.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // waitOpening blocks until the session's runner is built.
@@ -937,7 +960,7 @@ func (a *Agent) release(entry *session) {
 	entry.cancelRun = nil
 	// The finished run consumed any latch it started with; a cancel that arrives
 	// after this point belongs to the next run, which latches it again.
-	entry.cancelRequested = ""
+	entry.cancelRequested = false
 	entry.lastUsed = time.Now()
 	if entry.done != nil {
 		close(entry.done)
