@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 
@@ -98,13 +99,30 @@ type dynamicView struct {
 	st viewState
 	// epoch bumps on every mutation that can change the visible set.
 	epoch uint64
-	// defBytes caches the serialized size of each definition for the current
-	// epoch; RecordCall needs it on the hot path.
-	defBytes map[string]int64
+	// snapshot caches the catalog-derived half of the visible set. Guarded by
+	// mu; catalogSnapshotLocked is the only reader and writer.
+	snapshot catalogSnapshot
 	// searchCache is the assembly-wide BM25 index. Nil for a view built by hand
 	// (tests, a fixture): such a view keeps no index between calls, which is the
 	// behaviour every view had before the cache existed.
 	searchCache *searchIndexCache
+}
+
+// catalogSnapshot is the part of the visible set that depends only on the
+// catalog's definitions: the candidates (name, definition, exposure — the
+// exposure comes from the per-view policy, which is fixed after construction)
+// and the serialized size of each definition. The discovery pool and the
+// per-round budget are state-dependent and are applied per call.
+//
+// epoch is the catalog's definition epoch the snapshot was built from; keyed
+// records that the catalog offers one at all. A catalog without the capability
+// keeps the rebuild-per-call behaviour.
+type catalogSnapshot struct {
+	cands []candidate
+	sizes map[string]int64
+
+	epoch uint64
+	keyed bool
 }
 
 // Epoch implements CatalogView.
@@ -123,43 +141,57 @@ func (s *dynamicView) Get(name string) (tool.Tool, bool) {
 
 func (s *dynamicView) Definitions() []message.ToolDefinition {
 	s.mu.Lock()
-	policy := s.policy
-	st := s.st.snapshot()
+	out := s.visibleDefinitionsLocked()
 	s.mu.Unlock()
-
-	visible, sizes := s.visibleSet(policy, st)
-	s.mu.Lock()
-	s.defBytes = sizes
-	s.mu.Unlock()
-	out := make([]message.ToolDefinition, 0, len(visible))
-	for _, cand := range visible {
-		out = append(out, cand.def)
-	}
 	return out
 }
 
-// visibleSet computes the candidates that reach the model for one state
-// and policy, applying the discovery pool cap and the per-round budget.
-// Definitions() and Discover() share it so the exposure report can never
-// drift from the definitions that are actually sent.
-func (s *dynamicView) visibleSet(policy Policy, st stateSnapshot) ([]candidate, map[string]int64) {
-	all := s.catalog.Definitions()
-	sizes := make(map[string]int64, len(all))
-	cands := make([]candidate, 0, len(all))
-	for _, def := range all {
-		sizes[def.Name] = definitionBytes(def)
-		cands = append(cands, candidate{
+// visibleDefinitionsLocked computes the definitions that reach the model for the
+// current state and policy, applying the discovery pool cap and the per-round
+// budget. Definitions() and Discover() share it so the exposure report can
+// never drift from the definitions that are actually sent. Callers hold mu.
+func (s *dynamicView) visibleDefinitionsLocked() []message.ToolDefinition {
+	policy := s.policy
+	snap := s.catalogSnapshotLocked()
+	st := fitDiscoveryPool(s.st.snapshot(), snap.sizes, policy.Discovery)
+	return visibleDefinitions(snap.cands, st, policy)
+}
+
+// catalogSnapshotLocked returns the catalog-derived half of the visible set,
+// rebuilding it only when the catalog's definition epoch moved. The epoch is
+// read, the definitions are measured, and the result is published only when the
+// epoch is still the one the definitions belong to: a derivation of an older
+// catalog published under a newer epoch would keep stale definitions — and the
+// byte sizes the discovery pool is accounted against — for as long as the
+// catalog stood still. Callers hold mu.
+func (s *dynamicView) catalogSnapshotLocked() catalogSnapshot {
+	aware, keyed := s.catalog.(definitionEpoch)
+	var epoch uint64
+	if keyed {
+		epoch = aware.DefinitionsEpoch()
+		if s.snapshot.keyed && s.snapshot.cands != nil && s.snapshot.epoch == epoch {
+			return s.snapshot
+		}
+	}
+	defs := s.catalog.Definitions()
+	snap := catalogSnapshot{
+		cands: make([]candidate, 0, len(defs)),
+		sizes: make(map[string]int64, len(defs)),
+		epoch: epoch,
+		keyed: keyed,
+	}
+	for _, def := range defs {
+		snap.sizes[def.Name] = definitionBytes(def)
+		snap.cands = append(snap.cands, candidate{
 			name: def.Name,
 			def:  def,
-			exp:  policy.exposureOf(def.Name),
+			exp:  s.policy.exposureOf(def.Name),
 		})
 	}
-	st = fitDiscoveryPool(st, sizes, policy.Discovery)
-
-	// RecordCall uses the same figure; recomputing it per executed call would
-	// re-marshal a schema that this pass already measured. The caller stores it,
-	// because Discover calls this while holding mu.
-	return visibleCandidates(cands, st, policy), sizes
+	if !keyed || aware.DefinitionsEpoch() == epoch {
+		s.snapshot = snap
+	}
+	return snap
 }
 
 // fitDiscoveryPool restricts the snapshot's discovered set to the pool
@@ -226,11 +258,9 @@ func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	// Sizes come from the catalog's definitions, which is what the pool and the
 	// per-round budget are measured against: a deployment that rewrote a
 	// description changed the bytes on the wire, and measuring the tool's own
-	// text here would make the two disagree.
-	sizes := map[string]int64{}
-	for _, def := range s.catalog.Definitions() {
-		sizes[def.Name] = definitionBytes(def)
-	}
+	// text here would make the two disagree. The snapshot is shared with
+	// Definitions(), so both budget computations use the same figures.
+	sizes := s.catalogSnapshotLocked().sizes
 
 	reasons := make(map[string]string, len(names))
 	changed := false
@@ -268,10 +298,8 @@ func (s *dynamicView) Discover(names ...string) DiscoverOutcome {
 	var visible map[string]struct{}
 	if changed {
 		visible = make(map[string]struct{})
-		cands, sizes := s.visibleSet(s.policy, s.st.snapshot())
-		s.defBytes = sizes
-		for _, cand := range cands {
-			visible[cand.name] = struct{}{}
+		for _, def := range s.visibleDefinitionsLocked() {
+			visible[def.Name] = struct{}{}
 		}
 	}
 	results := make([]DiscoverResult, 0, len(names))
@@ -354,8 +382,8 @@ func (s *dynamicView) RecordCall(call message.ToolCall) {
 	if !ok {
 		return
 	}
-	size, cached := s.defBytes[call.Name]
-	if !cached {
+	size, measured := s.catalogSnapshotLocked().sizes[call.Name]
+	if !measured {
 		size = definitionBytes(t.Definition())
 	}
 	s.st.touch(call.Name, size, 0)
@@ -438,29 +466,29 @@ func (s *dynamicView) index(policy Policy) (*searchIndex, error) {
 }
 
 func (s *dynamicView) Load(ctx context.Context) error {
-	var first error
+	var errs []error
 	for _, def := range s.catalog.Definitions() {
-		if err := s.EnsureLoaded(ctx, def.Name); err != nil && first == nil {
-			first = err
+		if err := s.EnsureLoaded(ctx, def.Name); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return first
+	return errors.Join(errs...)
 }
 
 func (s *dynamicView) EnsureLoaded(ctx context.Context, names ...string) error {
-	var first error
+	var errs []error
 	for _, name := range names {
 		t, ok := s.catalog.Get(name)
 		if !ok {
 			continue
 		}
 		if lazy, ok := t.(interface{ EnsureLoaded(context.Context) error }); ok {
-			if err := lazy.EnsureLoaded(ctx); err != nil && first == nil {
-				first = err
+			if err := lazy.EnsureLoaded(ctx); err != nil {
+				errs = append(errs, err)
 			}
 		}
 	}
-	return first
+	return errors.Join(errs...)
 }
 
 // staticView is the non-dynamic view: every tool visible, no state.

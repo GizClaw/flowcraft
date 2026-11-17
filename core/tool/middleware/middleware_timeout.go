@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -36,9 +35,9 @@ func Timeout(defaultTimeout time.Duration, perTool map[string]time.Duration) too
 // being wrapped in a second, competing deadline.
 //
 // Metadata is read once per tool, on first sight, matching
-// [RateLimit]: chains are immutable by design, so a tool re-registered
-// with different metadata needs a new Executor. catalog must be
-// non-nil.
+// [RateLimit] (see [toolMemo]): chains are immutable by design, so a
+// tool re-registered with different metadata needs a new Executor.
+// catalog must be non-nil.
 func TimeoutWithCatalog(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[string]time.Duration) tool.Middleware {
 	if catalog == nil {
 		panic("middleware.TimeoutWithCatalog: catalog is nil")
@@ -47,14 +46,23 @@ func TimeoutWithCatalog(catalog tool.Catalog, defaultTimeout time.Duration, perT
 }
 
 func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[string]time.Duration) tool.Middleware {
-	exempt := &selfTimeoutCache{catalog: catalog}
+	// A nil catalog means the claim is unavailable, so every tool is treated as
+	// not exempt — the behaviour [Timeout] had before the field existed — and
+	// no lookup or cache is involved at all.
+	var exempt *toolMemo[bool]
+	if catalog != nil {
+		exempt = newToolMemo(func(name string) bool {
+			t, ok := catalog.Get(name)
+			return ok && tool.MetadataOf(t).SelfTimeout
+		})
+	}
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			limit := defaultTimeout
 			override, explicit := perTool[call.Name]
 			if explicit {
 				limit = override
-			} else if exempt.forTool(call.Name) {
+			} else if exempt != nil && exempt.get(call.Name) {
 				// The tool says it bounds itself and the host has not
 				// overridden that, so impose nothing.
 				return next(ctx, call)
@@ -74,34 +82,4 @@ func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[str
 			return res
 		}
 	}
-}
-
-// selfTimeoutCache resolves and memoizes each tool's SelfTimeout
-// claim. A nil catalog means the claim is unavailable, so every tool is
-// treated as not exempt — the behaviour [Timeout] had before the field
-// existed.
-type selfTimeoutCache struct {
-	mu      sync.Mutex
-	byTool  map[string]bool
-	catalog tool.Catalog
-}
-
-func (c *selfTimeoutCache) forTool(name string) bool {
-	if c.catalog == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if exempt, ok := c.byTool[name]; ok {
-		return exempt
-	}
-	exempt := false
-	if t, ok := c.catalog.Get(name); ok {
-		exempt = tool.MetadataOf(t).SelfTimeout
-	}
-	if c.byTool == nil {
-		c.byTool = make(map[string]bool)
-	}
-	c.byTool[name] = exempt
-	return exempt
 }

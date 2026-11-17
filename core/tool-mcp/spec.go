@@ -226,7 +226,10 @@ func (s ServerSpec) transport(client *http.Client) (mcpsdk.Transport, error) {
 				return nil, errdefs.Validationf(
 					"mcp: server %q: http_timeout: %w", s.Name, err)
 			}
-			client = httpkit.NewHTTPClient(httpkit.WithTimeout(timeout))
+			// No transport retries: tools/call is not idempotent, so a
+			// replayed 5xx or timeout runs the tool again on the server.
+			client = httpkit.NewHTTPClient(
+				httpkit.WithTimeout(timeout), httpkit.WithoutRetry())
 		}
 		return StreamableHTTP(s.URL, s.Headers, client)
 	default:
