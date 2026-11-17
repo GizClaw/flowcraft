@@ -109,12 +109,41 @@ editing the graph invalidates the checkpoints taken under the old one.
 | `core/agent-a2a`   | every task state transition                            | the remote task id and the already-seen message ids ride in the payload                                      |
 | `core/agent-host`  | every turn                                             | the session table resumes a conversation with `LatestForSession`                                             |
 
+## Durability
+
+The store defaults to `SynchronousFull`: every save fsyncs its commit, so a power
+loss cannot drop one. `WithSynchronous(checkpoint.SynchronousNormal)` drops the
+per-commit fsync. Under WAL that is still durable against a process crash — the
+write-ahead log is replayed on the next open — but a power loss can lose the last
+commits that had not reached the disk. What makes the trade acceptable is that a
+checkpoint is reconstructible: the event log plus the last base snapshot is what
+replays the lost rounds forward, and a round is the unit that is either durably
+there or not, so `NORMAL` never leaves a task that mentions a message the event
+log does not have. What a host gives up is the guarantee, not the data it can
+rebuild from — the replay is the cost, and how much of it depends on how often
+the engine writes a base.
+
+The store also keeps one connection (`SetMaxOpenConns(1)`) and applies its
+pragmas per connection. That is deliberate — two connections writing at once
+return `SQLITE_BUSY` even with a busy timeout — and it means every session's
+saves serialise through one commit, and under `FULL` one fsync. A host with a
+single conversation does not notice. A host with many concurrent sessions should
+measure its own write path before choosing `SynchronousNormal`, rather than
+assume the per-step checkpoint cost is bounded by the engine.
+
+A save writes the round's events as multi-row `INSERT`s, chunked under SQLite's
+variable limit, so a round costs one commit rather than one statement per fact.
+
 ## Backends
 
 ```go
 store, err := checkpoint.Open("state.db", checkpoint.WithSynchronous(checkpoint.SynchronousNormal))
 defer store.Close()
 ```
+
+The option is what makes the line explicit: the default is `SynchronousFull`
+(see [Durability](#durability)), and a host that picks `NORMAL` is saying it
+would rather replay than fsync.
 
 `core/agent/checkpoint` is two tables plus a blob table:
 
