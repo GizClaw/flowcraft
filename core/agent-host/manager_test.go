@@ -77,7 +77,7 @@ func TestAddValidatesTheEngineKind(t *testing.T) {
 		"remote with a runtime": {
 			Name:    "c",
 			Engine:  deploy.EngineSpec{Kind: "a2a", Settings: rawSettings(map[string]any{"peer": "https://peer.test"})},
-			Runtime: config(t),
+			Runtime: newConfig(t),
 		},
 		"remote without a peer": {Name: "d", Engine: deploy.EngineSpec{Kind: "a2a"}},
 	}

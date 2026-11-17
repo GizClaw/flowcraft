@@ -7,6 +7,7 @@ import (
 	goruntime "runtime"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/runctx"
@@ -35,16 +36,19 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	}
 	t.Setenv("RUNTIME_ROOT", root)
 
-	cfg, provenance, err := runtime.LoadLayers(context.Background(), []runtime.Layer{{
-		Priority: 0, Name: "forge.yaml", Path: filepath.Join("testdata", "forge.yaml"),
-	}})
+	cfg, doc, err := config.Load[runtime.Config](context.Background(),
+		[]config.Layer{{Priority: 0, Name: "forge.yaml", Source: config.File(filepath.Join("testdata", "forge.yaml"))}},
+		config.Strict[runtime.Config])
 	if err != nil {
-		t.Fatalf("LoadLayers: %v", err)
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
 	if got := cfg.Files.Roots[0]; got != root {
 		t.Errorf("files.roots = %q, want the expanded %q", got, root)
 	}
-	if ref, ok := provenance["sandbox.backend"]; !ok || ref.Name != "forge.yaml" {
+	if ref, ok := doc.Origin("sandbox", "backend"); !ok || ref.Name != "forge.yaml" {
 		t.Errorf("provenance for sandbox.backend = %+v, %v", ref, ok)
 	}
 

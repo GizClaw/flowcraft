@@ -148,7 +148,7 @@ func rootFor(t *testing.T) string {
 	return root
 }
 
-func config(t *testing.T) runtime.Config {
+func newConfig(t *testing.T) runtime.Config {
 	t.Helper()
 	root := rootFor(t)
 	return runtime.Config{
@@ -283,7 +283,7 @@ func testHost(t *testing.T) Bindings {
 // testSpec is one agent on a fresh runtime: the shape every manager test needs.
 func testSpec(t *testing.T, name, kind string) deploy.Spec {
 	t.Helper()
-	return deploy.Spec{Name: name, Engine: deploy.EngineSpec{Kind: kind}, Runtime: config(t)}
+	return deploy.Spec{Name: name, Engine: deploy.EngineSpec{Kind: kind}, Runtime: newConfig(t)}
 }
 
 // rawJSON turns a Go literal into the JSON a settings block now is.

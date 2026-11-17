@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
@@ -114,10 +114,10 @@ type ProtocolDocument struct {
 // unregistered kind is rejected at load time, with the registered names in the
 // error, rather than failing halfway through assembling an agent.
 type Loader struct {
-	// LoadOptions are handed to runtime.LoadLayers: resolvers for placeholder
+	// LoadOptions are handed to [config.Load]: resolvers for placeholder
 	// schemes. They are not Spec fields because they are host wiring, not
 	// deployment data.
-	LoadOptions []runtime.LoadOption
+	LoadOptions []config.Option
 	// Kinds are the registered engines and protocols. Decode is invoked here, so
 	// a bad settings block fails at load time.
 	Kinds Kinds
@@ -136,32 +136,29 @@ func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
 // before the document is loaded. Load fails at the first unset reference; this
 // reports all of them in one pass, which is what a host needs to print a startup
 // checklist instead of a restart loop.
-func (l Loader) RequiredPlaceholders(body []byte) (runtime.PlaceholderRequirement, error) {
-	return runtime.RequiredPlaceholdersDocument(body, "deployment document")
+func (l Loader) RequiredPlaceholders(body []byte) (config.Requirement, error) {
+	return config.RequiredPlaceholdersDocument(body, "deployment document")
 }
 
 // RequiredPlaceholdersFile reads a document and reports its environment requirements.
-func (l Loader) RequiredPlaceholdersFile(path string) (runtime.PlaceholderRequirement, error) {
+func (l Loader) RequiredPlaceholdersFile(path string) (config.Requirement, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return runtime.PlaceholderRequirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
+		return config.Requirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
 	}
-	return runtime.RequiredPlaceholdersDocument(body, path)
+	return config.RequiredPlaceholdersDocument(body, path)
 }
 
 // Load parses and validates a deployment document.
 func (l Loader) Load(ctx context.Context, body []byte) ([]Spec, error) {
-	var document Document
-	// Placeholders are expanded by the same code a runtime layer uses, on the
-	// parsed values: peer, auth, card and settings can all name a secret, and a
-	// host should not have to learn a second rule for the outer document.
-	expanded, err := runtime.ExpandDocument(ctx, body, l.LoadOptions...)
+	// Placeholders are expanded by the same code a configuration layer uses, on
+	// the parsed values: peer, auth, card and settings can all name a secret, and
+	// a host should not have to learn a second rule for the outer document.
+	settings := append([]config.Option{}, l.LoadOptions...)
+	settings = append(settings, config.WithLabel("manage: deployment document"))
+	document, err := config.Decode[Document](ctx, body, config.Strict[Document], settings...)
 	if err != nil {
-		return nil, errdefs.Validationf("manage: %w", err)
-	}
-	document, err = decode.Decode[Document](expanded)
-	if err != nil {
-		return nil, errdefs.Validationf("manage: deployment document: %v", err)
+		return nil, err
 	}
 	if document.Version != 1 {
 		return nil, errdefs.Validationf(
@@ -278,31 +275,31 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		if err != nil {
 			return Spec{}, err
 		}
-		config, _, err := runtime.LoadLayers(ctx, layers, l.LoadOptions...)
+		built, err := runtime.LoadLayers(ctx, layers, l.LoadOptions...)
 		if err != nil {
 			return Spec{}, errdefs.Validationf("manage: agents[%s]: %w", agent.Name, err)
 		}
-		spec.Runtime = config
+		spec.Runtime = built
 	}
 	return spec, nil
 }
 
-// layers turns the document's stack into runtime layers.
-func (l Loader) layers(agent string, runtimeDocument *RuntimeDocument) ([]runtime.Layer, error) {
+// layers turns the document's stack into configuration layers.
+func (l Loader) layers(agent string, runtimeDocument *RuntimeDocument) ([]config.Layer, error) {
 	if len(runtimeDocument.Layers) == 0 {
 		return nil, errdefs.Validationf(
 			"manage: agents[%s].runtime: at least one layer is required", agent)
 	}
-	layers := make([]runtime.Layer, 0, len(runtimeDocument.Layers))
+	layers := make([]config.Layer, 0, len(runtimeDocument.Layers))
 	for i, layer := range runtimeDocument.Layers {
 		if strings.TrimSpace(layer.Path) == "" {
 			return nil, errdefs.Validationf(
 				"manage: agents[%s].runtime.layers[%d]: path is required", agent, i)
 		}
-		layers = append(layers, runtime.Layer{
+		layers = append(layers, config.Layer{
 			Priority: layer.Priority,
 			Name:     layer.Path,
-			Path:     layer.Path,
+			Source:   config.File(layer.Path),
 		})
 	}
 	return layers, nil

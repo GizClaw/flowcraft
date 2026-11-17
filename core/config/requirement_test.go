@@ -1,4 +1,4 @@
-package runtime
+package config
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 )
 
 func envLayer() Layer {
-	return Layer{Priority: 0, Name: "forge.yaml", Bytes: []byte(`
+	return Layer{Priority: 0, Name: "forge.yaml", Source: Bytes([]byte(`
 sandbox:
   backend: local
 files:
@@ -23,13 +23,13 @@ inference:
         token: "${TOKEN}"
         region: "${REGION:-us-east-1}"
 # a commented reference is not a reference: ${IGNORED}
-`)}
+`))}
 }
 
 // A host can describe what it needs before anything is set, instead of failing
 // one variable per restart.
 func TestRequiredPlaceholdersClassifiesReferences(t *testing.T) {
-	requirement, err := RequiredPlaceholders(envLayer())
+	requirement, err := RequiredPlaceholders(context.Background(), envLayer())
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
@@ -39,11 +39,9 @@ func TestRequiredPlaceholdersClassifiesReferences(t *testing.T) {
 	if got := strings.Join(requirement.Optional, ","); got != "REGION" {
 		t.Errorf("optional = %q, want REGION", got)
 	}
-	for _, unexpected := range []string{"IGNORED"} {
-		for _, name := range append(requirement.Required, requirement.Optional...) {
-			if name == unexpected {
-				t.Errorf("%s was collected from a comment", unexpected)
-			}
+	for _, name := range append(requirement.Required, requirement.Optional...) {
+		if name == "IGNORED" {
+			t.Errorf("%s was collected from a comment", name)
 		}
 	}
 	if got := requirement.Sources["ROOT"]; len(got) != 1 || got[0] != "forge.yaml" {
@@ -51,8 +49,8 @@ func TestRequiredPlaceholdersClassifiesReferences(t *testing.T) {
 	}
 }
 
-func TestPlaceholderRequirementMissing(t *testing.T) {
-	requirement, err := RequiredPlaceholders(envLayer())
+func TestRequirementMissing(t *testing.T) {
+	requirement, err := RequiredPlaceholders(context.Background(), envLayer())
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
@@ -69,16 +67,32 @@ func TestPlaceholderRequirementMissing(t *testing.T) {
 	}
 }
 
+// The same variable in two layers is reported once, under both names, so the
+// reader is sent to every file that has to change.
+func TestRequiredPlaceholdersNamesEverySource(t *testing.T) {
+	requirement, err := RequiredPlaceholders(context.Background(),
+		Layer{Priority: 0, Name: "base.yaml", Source: Bytes([]byte("name: ${TOKEN}\n"))},
+		Layer{Priority: 10, Name: "local.yaml", Source: Bytes([]byte("other: ${TOKEN}\n"))},
+	)
+	if err != nil {
+		t.Fatalf("RequiredPlaceholders: %v", err)
+	}
+	if got := strings.Join(requirement.Sources["TOKEN"], ","); got != "base.yaml,local.yaml" {
+		t.Errorf("sources = %q", got)
+	}
+	if len(requirement.Required) != 1 {
+		t.Errorf("required = %v, want TOKEN once", requirement.Required)
+	}
+}
+
 // "$$" is a literal dollar, not a reference, while a real reference on the same
 // line still counts. The scanner is shared with expansion, so both views must
 // agree about which is which.
 func TestRequiredPlaceholdersAndExpansionAgree(t *testing.T) {
-	layer := Layer{Name: "a.yaml", Bytes: []byte(`
-sandbox: {backend: local}
-files: {roots: ["/work"]}
+	layer := Layer{Name: "a.yaml", Source: Bytes([]byte(`
 name: "cost is $$5, not ${MONEY}"
-`)}
-	requirement, err := RequiredPlaceholders(layer)
+`))}
+	requirement, err := RequiredPlaceholders(context.Background(), layer)
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
@@ -87,7 +101,7 @@ name: "cost is $$5, not ${MONEY}"
 	}
 
 	t.Setenv("MONEY", "free")
-	body, err := layer.body()
+	body, err := layer.body(context.Background(), defaultLabel)
 	if err != nil {
 		t.Fatalf("body: %v", err)
 	}
@@ -95,7 +109,7 @@ name: "cost is $$5, not ${MONEY}"
 	if err := yaml.Unmarshal(body, &document); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if err := resolvePlaceholders(context.Background(), documentBody(&document), "", loadOptions{}); err != nil {
+	if err := resolvePlaceholders(context.Background(), documentBody(&document), "", newOptions(nil)); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	encoded, err := yaml.Marshal(&document)
@@ -107,8 +121,9 @@ name: "cost is $$5, not ${MONEY}"
 	}
 }
 
-// One document, no layers: the deployment loader needs the answer before it can
-// build the layer stack, and it needs to name the file to edit.
+// One document, no layers: a host that owns the whole file needs the answer
+// before it can build a layer stack, and it needs the source named so the error
+// points at the file to edit.
 func TestRequiredPlaceholdersDocument(t *testing.T) {
 	requirement, err := RequiredPlaceholdersDocument([]byte(`
 name: ${NAME}

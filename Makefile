@@ -41,6 +41,15 @@ CONSUMER_MODULES := $(filter-out $(CONSUMER_EXEMPT),$(patsubst %/go.mod,%,$(wild
 # `make fmt` mirrors the CI gofmt -s gate.
 ALL_MODULES := $(MODULES_WORK)
 
+# A workspace member that is also a consumer pins released versions, so its vet
+# and test run with GOWORK=off — the way a reader builds it. Inside the
+# workspace it would be compiled against the working tree, and a core change
+# the pin never sees would redden a module that does not depend on it.
+# Splitting the set here rather than naming forge keeps the rule automatic when
+# an example joins or leaves the workspace.
+MODULES_TEST := $(filter-out $(CONSUMER_MODULES),$(MODULES_WORK))
+MODULES_CONSUMER := $(filter-out $(MODULES_TEST),$(MODULES_WORK))
+
 # `set -e` inside the for-loop body so a failure in any submodule stops the
 # loop. The previous form (` ( cd $$m && ... ) `) silently swallowed errors
 # from the subshell because the for-body's last command was the `done`, not
@@ -52,8 +61,9 @@ GO_FOREACH = set -e; for m in $(1); do echo "==> $(2) $$m"; ( cd $$m && $(3) ); 
 help:
 	@echo "FlowCraft"
 	@echo ""
-	@echo "  make vet         Run go vet on all modules"
-	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
+	@echo "  make vet         Run go vet on all modules (consumers outside the workspace)"
+	@echo "  make test        Run tests on all modules (excl. Go benchmarks; consumers"
+	@echo "                   outside the workspace)"
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
@@ -80,11 +90,13 @@ help:
 VET_TAGS = -tags integration_bwrap
 
 vet:
-	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet $(VET_TAGS) ./...)
+	@$(call GO_FOREACH,$(MODULES_TEST),vet,go vet $(VET_TAGS) ./...)
+	@$(call GO_FOREACH,$(MODULES_CONSUMER),vet-consumer,GOWORK=off go vet $(VET_TAGS) ./...)
 
 .PHONY: test
 test:
-	@$(call GO_FOREACH,$(MODULES_WORK),test,go test $(VET_TAGS) ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_TEST),test,go test $(VET_TAGS) ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_CONSUMER),test-consumer,GOWORK=off go test $(VET_TAGS) ./... -count=1)
 
 .PHONY: fmt
 fmt:
@@ -201,7 +213,8 @@ cover:
 
 .PHONY: test-shuffle
 test-shuffle:
-	@$(call GO_FOREACH,$(MODULES_WORK),test-shuffle,go test -shuffle=on -count=3 ./...)
+	@$(call GO_FOREACH,$(MODULES_TEST),test-shuffle,go test -shuffle=on -count=3 ./...)
+	@$(call GO_FOREACH,$(MODULES_CONSUMER),test-shuffle-consumer,GOWORK=off go test -shuffle=on -count=3 ./...)
 
 .PHONY: fuzz
 fuzz:

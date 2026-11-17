@@ -129,11 +129,11 @@ kinds := deploy.BuiltinKinds().
 
 Every string in the document may name a placeholder. Three forms:
 
-| Form                | Resolves through                                  |
-| ------------------- | ------------------------------------------------- |
-| `${NAME}`           | the built-in `env` scheme (`SchemeEnv`)           |
-| `${NAME:-fallback}` | `env`, with a default when unset                  |
-| `${scheme:arg:arg}` | a resolver registered with `runtime.WithResolver` |
+| Form                | Resolves through                                 |
+| ------------------- | ------------------------------------------------ |
+| `${NAME}`           | the built-in `env` scheme (`SchemeEnv`)          |
+| `${NAME:-fallback}` | `env`, with a default when unset                 |
+| `${scheme:arg:arg}` | a resolver registered with `config.WithResolver` |
 
 Arguments after the scheme are split on `:` and handed to the resolver
 untouched — `${secret:openai:luna}` reaches the `secret` resolver as
@@ -157,7 +157,7 @@ req, err := loader.RequiredPlaceholdersFile("deploy.yaml")
 ```go
 loader := deploy.Loader{
     Kinds:       kinds,
-    LoadOptions: []runtime.LoadOption{runtime.WithResolver("secret", vault.Resolve)},
+    LoadOptions: []config.Option{config.WithResolver("secret", vault.Resolve)},
 }
 
 specs, err := loader.LoadFile(ctx, "deploy.yaml")
@@ -188,7 +188,7 @@ Errors are `errdefs.Validation` and name the path, e.g.
 manager := host.New(kinds, host.Bindings{
     Store:          sqliteStore,          // nil keeps sessions in memory only
     RuntimeOptions: []runtime.Option{runtime.WithDrivers(driver)},
-    LoadOptions:    []runtime.LoadOption{runtime.WithResolver("secret", vault.Resolve)},
+    LoadOptions:    []config.Option{config.WithResolver("secret", vault.Resolve)},
     OnEvent:        func(agentName, sessionID string, event agent.Event) { ... },
     Trace:          telemetry.TraceRun,   // for agents whose document is silent
     Harness:        "forge@1.2.3",

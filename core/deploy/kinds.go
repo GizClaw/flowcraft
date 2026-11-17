@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -110,7 +111,7 @@ type HookDeps struct {
 	// to assemble what it needs.
 	Store agent.Store
 	// LoadOptions resolve placeholders for a kind that reads its own documents.
-	LoadOptions []runtime.LoadOption
+	LoadOptions []config.Option
 }
 
 // HookKind registers one host hook kind: a policy attached to an agent's lifecycle.

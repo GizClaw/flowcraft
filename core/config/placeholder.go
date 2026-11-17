@@ -1,4 +1,4 @@
-package runtime
+package config
 
 import (
 	"context"
@@ -22,21 +22,14 @@ type ResolverFunc func(ctx context.Context, args []string) (string, error)
 // SchemeEnv is the built-in scheme behind bare ${NAME} and ${NAME:-fallback}.
 const SchemeEnv = "env"
 
-// LoadOption configures how placeholders are resolved.
-type LoadOption func(*loadOptions)
-
-type loadOptions struct {
-	resolvers map[string]ResolverFunc
-}
-
 // WithResolver registers a scheme. A scheme is looked up only when a
 // placeholder names it, so a host pays nothing for schemes it never uses.
 //
 // The resolver receives the load context: reading a secret store may need a
 // deadline and a cancellation path, and pretending otherwise would force every
 // host to hide I/O behind a package-level client.
-func WithResolver(scheme string, resolve ResolverFunc) LoadOption {
-	return func(o *loadOptions) {
+func WithResolver(scheme string, resolve ResolverFunc) Option {
+	return func(o *options) {
 		if o.resolvers == nil {
 			o.resolvers = make(map[string]ResolverFunc, 2)
 		}
@@ -61,9 +54,11 @@ type placeholder struct {
 
 // scanPlaceholders splits one value into literals and references.
 //
-// It is the single parser: expansion, [RequiredPlaceholders] and [Required] all read the
-// same split, so they cannot disagree about what counts as a reference.
-func scanPlaceholders(value, where string) ([]placeholder, error) {
+// It is the single parser: expansion and [RequiredPlaceholders] all read the
+// same split, so they cannot disagree about what counts as a reference. "$$" is
+// a literal dollar, a "$" not followed by "{" is a literal dollar, and only
+// "${...}" is a reference.
+func scanPlaceholders(value, label, path string) ([]placeholder, error) {
 	out := make([]placeholder, 0, 4)
 	var literal strings.Builder
 	for i := 0; i < len(value); {
@@ -86,14 +81,14 @@ func scanPlaceholders(value, where string) ([]placeholder, error) {
 		end := strings.IndexByte(value[i+2:], '}')
 		if end < 0 {
 			return nil, errdefs.Validationf(
-				"runtime: %s: unterminated ${ in configuration", where)
+				"%s: unterminated ${ in configuration", at(label, path))
 		}
 		body := value[i+2 : i+2+end]
 		if body == "" {
 			return nil, errdefs.Validationf(
-				"runtime: %s: empty ${} reference", where)
+				"%s: empty ${} reference", at(label, path))
 		}
-		parsed, err := parseReference(body, where)
+		parsed, err := parseReference(body, label, path)
 		if err != nil {
 			return nil, err
 		}
@@ -111,16 +106,16 @@ func scanPlaceholders(value, where string) ([]placeholder, error) {
 // The fallback form is checked first: ${NAME:-fallback} starts with the same
 // colon a scheme reference would use, so parsing the scheme first would read
 // "REGION" as a scheme and "-us-east-1" as its argument.
-func parseReference(body, where string) (placeholder, error) {
+func parseReference(body, label, path string) (placeholder, error) {
 	if name, fallback, hasFallback := strings.Cut(body, ":-"); hasFallback {
 		if name == "" {
 			return placeholder{}, errdefs.Validationf(
-				"runtime: %s: empty ${} reference", where)
+				"%s: empty ${} reference", at(label, path))
 		}
 		if strings.Contains(name, ":") {
 			return placeholder{}, errdefs.Validationf(
-				"runtime: %s: ${%s} uses a fallback, which only an environment variable supports",
-				where, body)
+				"%s: ${%s} uses a fallback, which only an environment variable supports",
+				at(label, path), body)
 		}
 		return placeholder{
 			scheme:      SchemeEnv,
@@ -135,13 +130,13 @@ func parseReference(body, where string) (placeholder, error) {
 	}
 	if scheme == "" || rest == "" {
 		return placeholder{}, errdefs.Validationf(
-			"runtime: %s: malformed ${%s}", where, body)
+			"%s: malformed ${%s}", at(label, path), body)
 	}
 	return placeholder{scheme: scheme, args: strings.Split(rest, ":")}, nil
 }
 
 // resolvePlaceholders expands every reference in a parsed document.
-func resolvePlaceholders(ctx context.Context, node *yaml.Node, path string, options loadOptions) error {
+func resolvePlaceholders(ctx context.Context, node *yaml.Node, path string, options options) error {
 	switch node.Kind {
 	case yaml.DocumentNode, yaml.SequenceNode:
 		for _, child := range node.Content {
@@ -151,12 +146,20 @@ func resolvePlaceholders(ctx context.Context, node *yaml.Node, path string, opti
 		}
 	case yaml.MappingNode:
 		for i := 0; i+1 < len(node.Content); i += 2 {
-			if err := resolvePlaceholders(ctx, node.Content[i+1], joinPath(path, node.Content[i].Value), options); err != nil {
+			child := node.Content[i].Value
+			if path != "" {
+				child = path + "." + child
+			}
+			if err := resolvePlaceholders(ctx, node.Content[i+1], child, options); err != nil {
 				return err
 			}
 		}
 	case yaml.ScalarNode:
-		if node.Tag != "!!str" || !strings.Contains(node.Value, "${") {
+		// Any value holding a dollar sign is scanned, not only one holding ${.
+		// The escape has to mean the same thing wherever it appears: "$$5"
+		// collapses to "$5" whether or not the same string also references a
+		// variable, and a lone "$" is left alone.
+		if node.Tag != "!!str" || !strings.Contains(node.Value, "$") {
 			return nil
 		}
 		expanded, err := expandValue(ctx, node.Value, path, options)
@@ -169,8 +172,8 @@ func resolvePlaceholders(ctx context.Context, node *yaml.Node, path string, opti
 }
 
 // expandValue resolves one string value.
-func expandValue(ctx context.Context, value, path string, options loadOptions) (string, error) {
-	placeholders, err := scanPlaceholders(value, path)
+func expandValue(ctx context.Context, value, path string, options options) (string, error) {
+	placeholders, err := scanPlaceholders(value, options.label, path)
 	if err != nil {
 		return "", err
 	}
@@ -189,7 +192,7 @@ func expandValue(ctx context.Context, value, path string, options loadOptions) (
 	return out.String(), nil
 }
 
-func resolveOne(ctx context.Context, item placeholder, path string, options loadOptions) (string, error) {
+func resolveOne(ctx context.Context, item placeholder, path string, options options) (string, error) {
 	if item.scheme == SchemeEnv {
 		name := item.args[0]
 		if value, set := os.LookupEnv(name); set {
@@ -199,20 +202,20 @@ func resolveOne(ctx context.Context, item placeholder, path string, options load
 			return item.fallback, nil
 		}
 		return "", errdefs.Validationf(
-			"runtime: %s: ${%s} is not set and has no ${%s:-fallback}",
-			path, name, name)
+			"%s: ${%s} is not set and has no ${%s:-fallback}",
+			at(options.label, path), name, name)
 	}
 	resolve, known := options.resolvers[item.scheme]
 	if !known {
 		return "", errdefs.Validationf(
-			"runtime: %s: unknown placeholder scheme %q; offered: %s",
-			path, item.scheme, offeredSchemes(options.resolvers))
+			"%s: unknown placeholder scheme %q; offered: %s",
+			at(options.label, path), item.scheme, offeredSchemes(options.resolvers))
 	}
 	value, err := resolve(ctx, item.args)
 	if err != nil {
 		return "", errdefs.Validationf(
-			"runtime: %s: ${%s:%s}: %w",
-			path, item.scheme, strings.Join(item.args, ":"), err)
+			"%s: ${%s:%s}: %w",
+			at(options.label, path), item.scheme, strings.Join(item.args, ":"), err)
 	}
 	return value, nil
 }
@@ -226,30 +229,38 @@ func offeredSchemes(resolvers map[string]ResolverFunc) string {
 	return strings.Join(names, ", ")
 }
 
+// at renders the location of a value: the document's label, then its path.
+func at(label, path string) string {
+	if path == "" {
+		return label
+	}
+	return label + ": " + path
+}
+
 // ExpandDocument resolves the placeholders in one YAML document and returns the
 // document with them replaced.
 //
-// The rules are the ones LoadLayers applies to a layer: parse first, expand the
+// The rules are the ones [Load] applies to a layer: parse first, expand the
 // values, and treat an unregistered scheme as an error rather than a literal.
 // Nothing here knows what the document means, so a deployment document and a
-// runtime layer cannot drift apart.
-func ExpandDocument(ctx context.Context, body []byte, opts ...LoadOption) ([]byte, error) {
-	var document yaml.Node
-	if err := yaml.Unmarshal(body, &document); err != nil {
-		return nil, errdefs.Validationf("runtime: parse document: %v", err)
+// configuration layer cannot drift apart.
+func ExpandDocument(ctx context.Context, body []byte, opts ...Option) ([]byte, error) {
+	settings := newOptions(opts)
+	document, err := parseDocument(body)
+	if err != nil {
+		return nil, errdefs.Validationf("%s: %v", settings.label, err)
 	}
-	settings := loadOptions{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(&settings)
-		}
+	if document == nil {
+		// Comments only: there is nothing to expand, and re-encoding would
+		// hand the caller an empty document it did not write.
+		return body, nil
 	}
-	if err := resolvePlaceholders(ctx, &document, "", settings); err != nil {
+	if err := resolvePlaceholders(ctx, document, "", settings); err != nil {
 		return nil, err
 	}
-	expanded, err := yaml.Marshal(&document)
+	expanded, err := yaml.Marshal(document)
 	if err != nil {
-		return nil, errdefs.Validationf("runtime: encode document: %v", err)
+		return nil, errdefs.Validationf("%s: encode document: %v", settings.label, err)
 	}
 	return expanded, nil
 }

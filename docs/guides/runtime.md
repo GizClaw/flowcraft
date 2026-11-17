@@ -116,14 +116,21 @@ capabilities, limits}`. `route` decides how a request picks among them:
 ## Layers
 
 A deployment usually stacks three files: a base, a profile, a local override.
+The merge itself lives in `core/config`; `runtime.LoadLayers` is the entry point
+that also validates the result.
 
 ```go
-cfg, provenance, err := runtime.LoadLayers(ctx, []runtime.Layer{
-    {Priority: 0,  Name: "base.yaml",    Path: "base.yaml"},
-    {Priority: 10, Name: "profile.yaml", Path: "profile.yaml"},
-    {Priority: 20, Name: "local.yaml",   Bytes: embedded},
-}, runtime.WithResolver("secret", vault.Resolve))
+cfg, err := runtime.LoadLayers(ctx, []config.Layer{
+    {Priority: 0,  Name: "base.yaml",    Source: config.File("base.yaml")},
+    {Priority: 10, Name: "profile.yaml", Source: config.File("profile.yaml")},
+    {Priority: 20, Name: "local.yaml",   Source: config.Bytes(embedded)},
+}, config.WithResolver("secret", vault.Resolve))
 ```
+
+A layer's bytes come from a `config.Source`, so a stack is not limited to files
+on disk: `config.File`, `config.Bytes`, `config.FS` for any `io/fs` filesystem
+(an `//go:embed` tree included), and `config.Func` for a document that has to be
+fetched, decrypted or generated.
 
 - Layers merge in **ascending priority**; a higher priority wins.
 - Duplicate priorities are rejected. Order in the slice is not order of
@@ -132,20 +139,35 @@ cfg, provenance, err := runtime.LoadLayers(ctx, []runtime.Layer{
 - Merge rules are per node kind and nothing is inferred by reflection: mappings
   merge key by key, **sequences are replaced whole**, scalars are replaced. A
   permission list must not grow silently because someone added one line.
+- The same key written twice inside one layer is rejected: YAML would take the
+  last value and the merge would report nothing.
+- **One YAML document per layer.** A second `---` is refused rather than
+  silently dropping everything after it. A comment-only layer contributes
+  nothing and is skipped. JSON is a YAML subset, so a `.json` layer needs no
+  second parser.
 - Placeholders are resolved **once, after the merge**, so a value an overriding
   layer replaced is never looked up. Resolvers may read a secret store, log an
   access or fail; doing that for dead values is waste. Forms: `${NAME}`,
   `${NAME:-fallback}` (both `env`), and `${scheme:arg:arg}` for anything
-  registered with `runtime.WithResolver`.
-- `provenance` maps a dotted path to the layer that last set it — the answer to
-  "which file put this value here", which a merged policy otherwise lacks.
+  registered with `config.WithResolver`.
+- `$$` is a literal `$` in any string value, whether or not the same value also
+  names a reference: `command: "sh -c 'kill -9 $$'"` reaches the command as
+  `kill -9 $`. A lone `$` is left alone.
+- A `<<` merge key is expanded when the layer is parsed, so a key it contributes
+  is what `Doc.Raw`, `Doc.Origin` and the merged document all report; an explicit
+  key wins over a merged one, and an earlier source wins over a later one.
+- A caller that also wants provenance — the layer that last set a value, or the
+  merged document's canonical bytes — calls `config.Load` directly; it returns a
+  `*config.Doc` beside the value. `runtime.LoadLayers` asks for neither: a runtime
+  is built from the value, so it loads with `config.WithoutProvenance()` and pays
+  about 8% less for a report nobody reads.
 
 ## Building
 
 ```go
 // Resolvers are a load option: they belong to reading the document.
-cfg, provenance, err := runtime.LoadLayers(ctx, layers,
-    runtime.WithResolver("secret", vault.Resolve),
+cfg, err := runtime.LoadLayers(ctx, layers,
+    config.WithResolver("secret", vault.Resolve),
 )
 
 rt, err := runtime.New(ctx, cfg,
