@@ -530,21 +530,21 @@ func (s *staticView) SearchWithLoad(context.Context, string, int) ([]SearchHit, 
 		"tool: dynamic injection is not enabled on this assembly")
 }
 
-// CatalogViewFrom returns the per-run view attached to ctx. The view
-// travels as a [tool.CallRecorder] — the contract seam middleware reads — so a
-// middleware never has to depend on this package.
+// CatalogViewFrom returns the per-run view carried by ctx's [tool.Scope]. The
+// view travels as the scope's [tool.CallRecorder] — the contract seam middleware
+// reads — so a middleware never has to depend on this package.
 func CatalogViewFrom(ctx context.Context) (CatalogView, bool) {
-	recorder, ok := tool.CallRecorderFrom(ctx)
-	if !ok {
+	scope, ok := tool.ScopeFrom(ctx)
+	if !ok || scope.Recorder == nil {
 		return nil, false
 	}
-	view, ok := recorder.(CatalogView)
+	view, ok := scope.Recorder.(CatalogView)
 	return view, ok
 }
 
 // WithCatalogView attaches the per-run session to ctx.
 func WithCatalogView(ctx context.Context, s CatalogView) context.Context {
-	return tool.WithCallRecorder(ctx, s)
+	return tool.WithScope(ctx, tool.Scope{Recorder: s})
 }
 
 var (

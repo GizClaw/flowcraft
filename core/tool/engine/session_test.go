@@ -2,12 +2,14 @@ package engine_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
+	"github.com/GizClaw/flowcraft/core/tool/middleware"
 )
 
 func dynamicAssembly(t *testing.T, names ...string) (*engine.Assembly, engine.Policy) {
@@ -168,6 +170,65 @@ func TestSessionContext(t *testing.T) {
 	}
 	if _, ok := engine.CatalogViewFrom(context.Background()); ok {
 		t.Fatal("CatalogViewFrom without session must be false")
+	}
+}
+
+// spyView counts the calls a run's projection reports: the recorder pointer is
+// the assertion that one view attached at run start served the whole batch.
+type spyView struct {
+	engine.CatalogView
+
+	mu    sync.Mutex
+	calls []message.ToolCall
+}
+
+func (v *spyView) RecordCall(call message.ToolCall) {
+	v.mu.Lock()
+	v.calls = append(v.calls, call)
+	v.mu.Unlock()
+}
+
+func TestRunScopeServesEveryDispatch(t *testing.T) {
+	assembly, err := engine.NewAssembly([]tool.Source{
+		source{tools: []tool.Tool{funcTool("a", "1")}},
+	})
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	view := &spyView{CatalogView: assembly.NewCatalogView()}
+	ctx := engine.WithCatalogView(context.Background(), view)
+	//nolint:staticcheck // the deprecated middleware is the reader the run scope has to reach
+	exec := tool.NewExecutor(assembly.Catalog(), middleware.RecordCalls())
+
+	for _, id := range []string{"c-1", "c-2"} {
+		res := exec.Execute(ctx, message.ToolCall{
+			ID: id, Name: "a", Arguments: message.NewArguments([]byte(`{}`)),
+		})
+		if res.IsError {
+			t.Fatalf("execute %s = %+v", id, res)
+		}
+	}
+	if len(view.calls) != 2 {
+		t.Fatalf("the attached recorder saw %d calls, want 2: the run's scope was not reused", len(view.calls))
+	}
+}
+
+// EnsureScope reuses the view a run already attached, while WithCatalogView is
+// the replacement an assembly uses when it deliberately selects a view.
+func TestEnsureScopeKeepsTheAttachedView(t *testing.T) {
+	assembly, _ := dynamicAssembly(t, "always")
+	view := assembly.NewCatalogView()
+	ctx := engine.WithCatalogView(context.Background(), view)
+
+	kept := tool.EnsureScope(ctx, assembly.NewCatalogView())
+	if got, ok := engine.CatalogViewFrom(kept); !ok || got != view {
+		t.Fatalf("EnsureScope shadowed the run's view: %v, %v", got, ok)
+	}
+
+	other := assembly.NewCatalogView()
+	replaced := engine.WithCatalogView(ctx, other)
+	if got, ok := engine.CatalogViewFrom(replaced); !ok || got != other {
+		t.Fatal("WithCatalogView did not replace the view")
 	}
 }
 

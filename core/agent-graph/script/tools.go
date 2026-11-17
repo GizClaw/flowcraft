@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
 )
@@ -104,7 +105,7 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 		view = h.rt.NewCatalogView()
 	}
 	started := time.Now()
-	result := h.rt.Assembly().Execute(engine.WithCatalogView(ctx, view), call)
+	result := h.rt.Assembly().Execute(tool.EnsureScope(ctx, view), call)
 	text := result.Content.Text()
 	h.recordAt(started, ToolRecord{
 		Name:          name,

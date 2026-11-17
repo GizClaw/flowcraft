@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
 )
@@ -287,7 +288,7 @@ func (s *toolStream) execute(index int, call message.ToolCall) {
 		}
 	}
 	started := time.Now()
-	result := s.rt.Assembly().Execute(engine.WithCatalogView(s.ctx, s.view), call)
+	result := s.rt.Assembly().Execute(tool.EnsureScope(s.ctx, s.view), call)
 	duration := time.Since(started)
 	body, err = json.Marshal(result)
 	if err != nil {

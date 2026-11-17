@@ -15,19 +15,26 @@ type CallRecorder interface {
 	RecordCall(call message.ToolCall)
 }
 
-type callRecorderKey struct{}
-
-// WithCallRecorder attaches a recorder to ctx. A nil recorder returns ctx
-// unchanged, so a caller that may not have one does not have to branch.
+// WithCallRecorder attaches a recorder to ctx unless the context already carries
+// the run's scope, so a recorder never shadows the one a run already attached. A
+// nil recorder returns ctx unchanged, so a caller that may not have one does not
+// have to branch.
+//
+// Deprecated: use [EnsureScope]; the recorder is the Recorder field of the run's
+// [Scope].
 func WithCallRecorder(ctx context.Context, recorder CallRecorder) context.Context {
-	if recorder == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, callRecorderKey{}, recorder)
+	return EnsureScope(ctx, recorder)
 }
 
-// CallRecorderFrom returns the recorder attached to ctx, if any.
+// CallRecorderFrom returns the recorder held by the scope attached to ctx, if
+// any.
+//
+// Deprecated: use [ScopeFrom]; the recorder is the Recorder field of the run's
+// [Scope].
 func CallRecorderFrom(ctx context.Context) (CallRecorder, bool) {
-	recorder, ok := ctx.Value(callRecorderKey{}).(CallRecorder)
-	return recorder, ok
+	scope, ok := ScopeFrom(ctx)
+	if !ok || scope.Recorder == nil {
+		return nil, false
+	}
+	return scope.Recorder, true
 }

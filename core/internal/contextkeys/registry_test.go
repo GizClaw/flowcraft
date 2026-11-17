@@ -24,8 +24,8 @@ var registered = []string{
 	"inference/request_metadata.go",
 	"inference/route/target.go",
 	"tool/call_context.go",
-	"tool/call_recorder.go",
 	"tool/failure_kind.go",
+	"tool/scope.go",
 }
 
 // TestEveryContextValueIsRegistered is the drift guard for the context registry.
