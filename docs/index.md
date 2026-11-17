@@ -61,6 +61,13 @@ retrieval, runtime orchestration, and voice. Source on
   to another — a policy over the session table, derived child sessions,
   sync / async execution, and the lineage a chain keeps.
 
+### Cross-cutting
+
+- [Context Registry](guides/context.md) — the values `core` carries on
+  `context.Context`: one row per value with its key file, its writer and
+  readers, lifetime and override rule, the rules the set holds to, and the gate
+  that keeps the table and the source in step.
+
 ## Migrations
 
 - [`core/v0.10.0`](migrations/core-v0.10.0.md) — panic recovery is on by

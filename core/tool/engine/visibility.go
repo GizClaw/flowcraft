@@ -1,7 +1,8 @@
 package engine
 
 import (
-	"sort"
+	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -14,16 +15,23 @@ type candidate struct {
 	exp  Exposure
 }
 
-// visibleCandidates applies the visibility algorithm and returns the
-// definitions that reach the model this round, sorted by name for
-// stable output. The computation is pure: it never mutates the view
-// or the policy.
-func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []candidate {
+// visibleOrder applies the visibility algorithm and returns the indexes into
+// cands that reach the model this round, sorted by name for stable output. It
+// is the one implementation: Definitions maps the indexes onto definitions and
+// Discover onto names, so the exposure report can never drift from the
+// definitions that are actually sent. The computation is pure: it never mutates
+// the candidates, the state or the policy.
+//
+// It returns indexes rather than candidates because the candidate slice is
+// cached per catalog epoch and the per-round result is the definitions to send:
+// copying every included candidate twice, once per round, was the bulk of the
+// round's allocation.
+func visibleOrder(cands []candidate, st stateSnapshot, policy Policy) []int32 {
 	budget := policy.Budget
-	visible := make([]candidate, 0, len(cands))
-	for _, c := range cands {
+	order := make([]int32, 0, len(cands))
+	for i, c := range cands {
 		if include(c, st, policy) {
-			visible = append(visible, c)
+			order = append(order, int32(i))
 		}
 	}
 
@@ -31,17 +39,26 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 	// discovery-pool recency, then name. Same-round pool entries share
 	// a lastUse, so they fall back to discovery order — the first
 	// (best-ranked) hit of a tool_search batch wins the cut.
-	sort.SliceStable(visible, func(i, j int) bool {
-		return lessPriority(visible[i], visible[j], st)
+	slices.SortStableFunc(order, func(a, b int32) int {
+		switch {
+		case lessPriority(cands[a], cands[b], st):
+			return -1
+		case lessPriority(cands[b], cands[a], st):
+			return 1
+		default:
+			return 0
+		}
 	})
-	if len(visible) > budget.MaxDefinitions {
-		visible = visible[:budget.MaxDefinitions]
+	if len(order) > budget.MaxDefinitions {
+		order = order[:budget.MaxDefinitions]
 	}
 
-	kept := make([]candidate, 0, len(visible))
+	// Filter in place: the index being read is at or after the one being
+	// written, so the byte-budget skip stays safe while compacting.
+	kept := 0
 	var total int64
-	for i, c := range visible {
-		size := definitionBytes(c.def)
+	for i, idx := range order {
+		size := definitionBytes(cands[idx].def)
 		if total+size > budget.MaxBytes && i > 0 {
 			// Skip the entry that does not fit instead of stopping:
 			// one oversized definition must not starve every
@@ -51,13 +68,36 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 			continue
 		}
 		total += size
-		kept = append(kept, c)
+		order[kept] = idx
+		kept++
 	}
+	order = order[:kept]
 
-	sort.Slice(kept, func(i, j int) bool {
-		return kept[i].name < kept[j].name
+	slices.SortFunc(order, func(a, b int32) int {
+		return strings.Compare(cands[a].name, cands[b].name)
 	})
-	return kept
+	return order
+}
+
+// visibleDefinitions maps the visible order onto the definitions to send.
+func visibleDefinitions(cands []candidate, st stateSnapshot, policy Policy) []message.ToolDefinition {
+	order := visibleOrder(cands, st, policy)
+	out := make([]message.ToolDefinition, 0, len(order))
+	for _, idx := range order {
+		out = append(out, cands[idx].def)
+	}
+	return out
+}
+
+// visibleCandidates maps the visible order onto the candidates. Callers that
+// only need definitions or names go through visibleOrder and skip the copy.
+func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []candidate {
+	order := visibleOrder(cands, st, policy)
+	out := make([]candidate, 0, len(order))
+	for _, idx := range order {
+		out = append(out, cands[idx])
+	}
+	return out
 }
 
 func include(c candidate, st stateSnapshot, policy Policy) bool {

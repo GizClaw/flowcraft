@@ -813,10 +813,14 @@ func (r *Run) invokeOnce(
 		if produced || attempt == attempts || !retryable(err) || ctx.Err() != nil {
 			return Result{}, err
 		}
+		// A timer rather than time.After: the cancel path stops it, so no timer
+		// outlives the iteration that armed it.
+		backoff := time.NewTimer(time.Duration(attempt) * time.Second / 10)
 		select {
 		case <-ctx.Done():
+			backoff.Stop()
 			return Result{}, err
-		case <-time.After(time.Duration(attempt) * time.Second / 10):
+		case <-backoff.C:
 		}
 	}
 	return Result{}, lastErr

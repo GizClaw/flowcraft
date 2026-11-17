@@ -3,6 +3,7 @@ package httpkit
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -437,8 +438,12 @@ func recordRetry(ctx context.Context, attempt int, response *http.Response) {
 // doing and never retries) or a throttling/server status.
 func retryable(response *http.Response, err error) bool {
 	if err != nil {
-		if strings.Contains(err.Error(), "context canceled") ||
-			strings.Contains(err.Error(), "context deadline exceeded") {
+		// Match the error chain, not its text: a transport wraps the
+		// cancellation in a message of its own (url.Error, a dialer),
+		// so string matching both misses real cancellations and retries
+		// work the caller already abandoned.
+		if errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
 			return false
 		}
 		return true
