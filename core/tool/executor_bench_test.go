@@ -10,73 +10,71 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/middleware"
 )
 
-// benchRecorder is a recorder that does nothing, so the benchmark measures the
-// dispatch path and not a growing slice.
-type benchRecorder struct{}
-
-func (benchRecorder) RecordCall(message.ToolCall) {}
+// benchTool is the one tool every sub-benchmark dispatches, built per chain so the
+// two chains cannot drift apart.
+func benchTool(b testing.TB) tool.Tool {
+	b.Helper()
+	return tool.TextTool(
+		message.ToolDefinition{Name: "echo", InputSchema: []byte(`{"type":"object"}`)},
+		func(context.Context, string) (string, error) { return "ok", nil })
+}
 
 // BenchmarkExecutorExecute is the control for the context domains: one dispatch
 // through the executor, which is the floor every host pays before its own
 // middleware. Each call installs tool.Call — the id and the classification box the
-// fold merged into one value — and the scope is read per call by the recorder
-// middleware. The numbers are a baseline to compare against, not a target: the
-// point is that a change to either domain shows up here.
+// fold merged into one context value.
+//
+// Read each number against its own baseline; do not subtract them. "bare" is the
+// chain with nothing on it, "instrumented" is the shape an assembly runs (telemetry
+// middleware plus the assembly's own scope recorder, over the run's catalog view),
+// and the two differ by a span option per call as much as by the context shape.
 func BenchmarkExecutorExecute(b *testing.B) {
-	registry, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
-		tool.TextTool(message.ToolDefinition{Name: "echo", InputSchema: []byte(`{"type":"object"}`)},
-			func(context.Context, string) (string, error) { return "ok", nil }),
-	}}})
-	if err != nil {
-		b.Fatalf("NewRegistry: %v", err)
-	}
 	call := message.ToolCall{ID: "call-1", Name: "echo",
 		Arguments: message.NewArguments([]byte(`{}`))}
 
+	registry, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{benchTool(b)}}})
+	if err != nil {
+		b.Fatalf("NewRegistry: %v", err)
+	}
 	bare := tool.NewExecutor(registry)
-	// The shape an assembly runs: the telemetry middleware reads the call's box,
-	// and the assembly's own recorder middleware reads the run's scope. The
-	// deprecated RecordCalls is not it — an assembly appends that middleware
-	// itself.
-	assembly, err := engine.NewAssembly([]tool.Source{source{tools: []tool.Tool{
-		tool.TextTool(message.ToolDefinition{Name: "echo", InputSchema: []byte(`{"type":"object"}`)},
-			func(context.Context, string) (string, error) { return "ok", nil }),
-	}}},
-		// The assembly appends its own scope recorder when dynamic injection is
-		// on; the telemetry entry is what a host usually adds on top.
+
+	assembly, err := engine.NewAssembly(
+		[]tool.Source{source{tools: []tool.Tool{benchTool(b)}}},
 		engine.WithMiddleware(middleware.Telemetry()),
-		engine.WithDynamic(engine.Policy{Default: engine.ExposureAlways}))
+		engine.WithDynamic(engine.Policy{Default: engine.ExposureAlways}),
+	)
 	if err != nil {
 		b.Fatalf("NewAssembly: %v", err)
 	}
-	instrumented := assembly.Dispatcher()
-	scoped := tool.WithScope(context.Background(),
-		tool.Scope{Recorder: benchRecorder{}})
+	b.Cleanup(func() { _ = assembly.Close() })
+	// The run's view, not a bare recorder: with a plain CallRecorder the engine
+	// cannot narrow it, so the recorder middleware records nothing and the chain
+	// stops being the one an assembly runs.
+	scoped := engine.WithCatalogView(context.Background(), assembly.NewCatalogView())
 
-	b.Run("bare", func(b *testing.B) {
+	run := func(b *testing.B, exec tool.Dispatcher, ctx context.Context) {
+		b.Helper()
 		b.ReportAllocs()
 		for b.Loop() {
-			if res := bare.Execute(context.Background(), call); res.IsError {
+			if res := exec.Execute(ctx, call); res.IsError {
 				b.Fatalf("result = %+v", res)
 			}
 		}
-	})
+	}
 
-	b.Run("instrumented", func(b *testing.B) {
-		b.ReportAllocs()
-		for b.Loop() {
-			if res := instrumented.Execute(scoped, call); res.IsError {
-				b.Fatalf("result = %+v", res)
-			}
-		}
-	})
+	b.Run("bare", func(b *testing.B) { run(b, bare, context.Background()) })
+	b.Run("instrumented", func(b *testing.B) { run(b, assembly.Dispatcher(), scoped) })
 
-	b.Run("instrumented/parallel", func(b *testing.B) {
+	b.Run("parallel", func(b *testing.B) {
 		b.ReportAllocs()
+		dispatcher := assembly.Dispatcher()
 		b.RunParallel(func(pb *testing.PB) {
 			for pb.Next() {
-				if res := instrumented.Execute(scoped, call); res.IsError {
-					b.Fatalf("result = %+v", res)
+				if res := dispatcher.Execute(scoped, call); res.IsError {
+					// FailNow is not allowed off the benchmark goroutine; report
+					// and stop this worker.
+					b.Errorf("result = %+v", res)
+					return
 				}
 			}
 		})

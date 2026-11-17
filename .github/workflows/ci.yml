@@ -521,11 +521,16 @@ jobs:
       # work — under the race detector, because this is the only lane
       # that executes the kqueue source and its leaf watches. sandbox-exec
       # ships with macOS, so nothing is installed.
+      #
+      # runtime/... is here for the seatbelt adapter: everywhere else it
+      # reaches the !darwin stub, which discards its options before they can
+      # be wrong. This is the one lane where the backend the composition
+      # root registers is the real one.
       - name: Test
         working-directory: core
         run: |
           go test -count=1 -race -timeout 300s \
-            ./sandbox/... ./sandbox-local/... ./sandbox-seatbelt/...
+            ./sandbox/... ./sandbox-local/... ./sandbox-seatbelt/... ./runtime/...
 
   ci-pass:
     name: CI

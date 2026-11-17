@@ -247,3 +247,37 @@ func TestExecutor_ExecuteInstallsAFailureBox(t *testing.T) {
 		t.Fatalf("FailureKindFrom = %q, %v; want not_found from the executor's box", kind, classified)
 	}
 }
+
+// TestExecuteAllocationBudget guards the dispatch path the context fold changed: one
+// tool.Call value per call — the id and the classification box, which used to be two
+// context values installed by two different layers. The budget is the measured floor
+// with one slot of slack, the way the registry's own budget is set: a regression that
+// installs a node twice shows up here, and a test-only reshuffle does not.
+func TestExecuteAllocationBudget(t *testing.T) {
+	registry, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
+		tool.TextTool(
+			message.ToolDefinition{Name: "echo", InputSchema: []byte(`{"type":"object"}`)},
+			func(context.Context, string) (string, error) { return "ok", nil },
+		),
+	}}})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	exec := tool.NewExecutor(registry)
+	call := message.ToolCall{ID: "call-1", Name: "echo",
+		Arguments: message.NewArguments([]byte(`{}`))}
+	// Warm the once-per-process paths the first dispatch pays for.
+	if res := exec.Execute(context.Background(), call); res.IsError {
+		t.Fatalf("warm-up result = %+v", res)
+	}
+	const budget = 7 // measured: six allocations per dispatch
+	got := testing.AllocsPerRun(200, func() {
+		if res := exec.Execute(context.Background(), call); res.IsError {
+			t.Fatalf("result = %+v", res)
+		}
+	})
+	if got > budget {
+		t.Fatalf("Execute allocates %.0f times per call, want <= %d: a context node or a "+
+			"classification box is being installed twice", got, budget)
+	}
+}

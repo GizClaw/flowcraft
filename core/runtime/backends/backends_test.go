@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	goruntime "runtime"
+
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -88,14 +90,21 @@ func TestEveryFactoryRuns(t *testing.T) {
 		if runner == nil {
 			t.Fatal("Local() returned no runner")
 		}
+		// New stores a journal failure rather than returning it, so the build
+		// having read the block is only visible here.
+		if journal.Available() && !runner.Capabilities().Journal.Enabled {
+			t.Error("the build asked for a journal and the runner attached none")
+		}
 		if err := runner.Close(); err != nil {
 			t.Errorf("close: %v", err)
 		}
 	})
 
+	// The two bwrap cases are only meaningful where the constructor is real: on
+	// another OS the package is a stub that refuses before reading the options, so
+	// accepting NotAvailable there would assert nothing about the adapter.
 	t.Run("bwrap rejects a policy flag", func(t *testing.T) {
-		// validateExtraFlags runs before the binary lookup, so this is the same
-		// assertion on a host without bubblewrap.
+		requireBwrap(t)
 		_, err := Bwrap()(ctx, runtime.SandboxBuild{
 			Dir: dir,
 			Config: runtime.SandboxConfig{Bwrap: &runtime.BwrapConfig{
@@ -105,15 +114,16 @@ func TestEveryFactoryRuns(t *testing.T) {
 		if err == nil {
 			t.Fatal("a flag that weakens enforcement was accepted")
 		}
-		// A host without the backend refuses the constructor itself (the platform
-		// check comes first), so the policy refusal is only observable where bwrap
-		// can run. Both are refusals; neither may be silent.
-		if !errdefs.IsNotAvailable(err) && !strings.Contains(err.Error(), "weaken sandbox enforcement") {
-			t.Errorf("error = %q, want the policy refusal or NotAvailable", err)
+		// validateExtraFlags runs before the binary lookup, so this holds whether
+		// or not bubblewrap is installed — and fails if ExtraFlags stops reaching
+		// the constructor.
+		if !strings.Contains(err.Error(), "weaken sandbox enforcement") {
+			t.Errorf("error = %q, want the policy refusal", err)
 		}
 	})
 
 	t.Run("bwrap reports a binary it cannot run", func(t *testing.T) {
+		requireBwrap(t)
 		_, err := Bwrap()(ctx, runtime.SandboxBuild{
 			Dir: dir,
 			Config: runtime.SandboxConfig{Bwrap: &runtime.BwrapConfig{
@@ -124,7 +134,31 @@ func TestEveryFactoryRuns(t *testing.T) {
 			t.Fatal("a binary that does not exist was accepted")
 		}
 		if !errdefs.IsNotAvailable(err) {
-			t.Errorf("error = %v, want NotAvailable", err)
+			t.Fatalf("error = %v, want NotAvailable", err)
+		}
+		// Naming the configured path is what separates "the adapter forwarded
+		// Binary" from "the adapter dropped it and the PATH lookup failed": both
+		// are NotAvailable, and only one of them is the bug this test is for.
+		if !strings.Contains(err.Error(), "/nonexistent/flowcraft-bwrap") {
+			t.Errorf("error = %q, want it to name the configured binary", err)
+		}
+	})
+
+	t.Run("seatbelt reports a binary it cannot run", func(t *testing.T) {
+		if goruntime.GOOS != "darwin" {
+			t.Skipf("seatbelt is a compile-time stub on %s", goruntime.GOOS)
+		}
+		_, err := Seatbelt()(ctx, runtime.SandboxBuild{
+			Dir: dir,
+			Config: runtime.SandboxConfig{Seatbelt: &runtime.SeatbeltConfig{
+				Binary: "/nonexistent/sandbox-exec",
+			}},
+		})
+		if err == nil {
+			t.Fatal("a binary that does not exist was accepted")
+		}
+		if !errdefs.IsNotAvailable(err) || !strings.Contains(err.Error(), "/nonexistent/sandbox-exec") {
+			t.Errorf("error = %v, want NotAvailable naming the configured binary", err)
 		}
 	})
 
@@ -164,5 +198,15 @@ func TestEveryFactoryRuns(t *testing.T) {
 				t.Errorf("close: %v", err)
 			}
 		})
+	}
+}
+
+// requireBwrap skips where the bwrap package is a stub: there the constructor
+// refuses before it reads a single option, so an assertion about options would be
+// vacuously true.
+func requireBwrap(t *testing.T) {
+	t.Helper()
+	if goruntime.GOOS != "linux" {
+		t.Skipf("bwrap is a compile-time stub on %s", goruntime.GOOS)
 	}
 }
