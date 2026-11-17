@@ -42,8 +42,10 @@ func WithCall(ctx context.Context, c Call) context.Context {
 	return context.WithValue(ctx, callKey{}, c)
 }
 
-// CallFrom returns the call attached to ctx. ok=false outside a tool call, and
-// also for a Call that carries neither an id nor a classification box.
+// CallFrom returns the call attached to ctx. ok means "a Call is attached"; it is
+// also true for the box-only Call that [WithFailureRecorder] installs on a bare
+// context, so a caller that needs the model-issued id checks [Call.ID] (which is
+// what delegation does). Absent is the zero value: no id, no box.
 func CallFrom(ctx context.Context) (Call, bool) {
 	if ctx == nil {
 		return Call{}, false

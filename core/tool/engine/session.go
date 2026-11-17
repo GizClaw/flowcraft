@@ -535,7 +535,7 @@ func (s *staticView) SearchWithLoad(context.Context, string, int) ([]SearchHit, 
 // reads — so a middleware never has to depend on this package.
 func CatalogViewFrom(ctx context.Context) (CatalogView, bool) {
 	scope, ok := tool.ScopeFrom(ctx)
-	if !ok || scope.Recorder == nil {
+	if !ok {
 		return nil, false
 	}
 	view, ok := scope.Recorder.(CatalogView)

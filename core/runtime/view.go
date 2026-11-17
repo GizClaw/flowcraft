@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 )
 
@@ -12,10 +11,16 @@ import (
 // The view remembers what the model discovered and how many rounds have passed,
 // so it belongs to one run: create it when the run starts and drop it when the
 // run ends. It must not live on a Runtime, because two conversations would then
-// share one discovery pool. A context that already carries the run's projection
-// keeps it: the assembly attaches the view once, when the run starts.
+// share one discovery pool.
+//
+// It replaces whatever projection the caller's context carried, on purpose: a run
+// can start on another run's context — a delegated child starts on the parent's
+// tool-call context — and inheriting the parent's view would mix two
+// conversations' discoveries and hand the child model a toolset its own registry
+// cannot dispatch. Only the dispatch sites ensure (tool.EnsureScope); a run start
+// always replaces.
 func (r *Runtime) NewRunContext(ctx context.Context) context.Context {
-	return tool.EnsureScope(ctx, r.NewCatalogView())
+	return engine.WithCatalogView(ctx, r.NewCatalogView())
 }
 
 // WithCatalogViewCtx attaches an existing view. A caller that keeps a view per

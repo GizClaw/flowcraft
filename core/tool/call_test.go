@@ -172,6 +172,49 @@ func TestExecutor_ExecuteAllStampsPerCallIDs(t *testing.T) {
 	}
 }
 
+// TestExecutor_SecondDispatchStartsWithAFreshBox pins the lifetime of the box: one
+// call, one box. A second dispatch on the same caller context must start
+// unclassified, or a failure would be reported against work that succeeded.
+func TestExecutor_SecondDispatchStartsWithAFreshBox(t *testing.T) {
+	reg, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
+		tool.TextTool(
+			message.ToolDefinition{Name: "peek", InputSchema: []byte(`{"type":"object"}`)},
+			func(context.Context, string) (string, error) { return "ok", nil },
+		),
+	}}})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	var kinds []tool.FailureKind
+	var classified []bool
+	observer := func(next tool.Dispatch) tool.Dispatch {
+		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+			res := next(ctx, call)
+			kind, ok := tool.FailureKindFrom(ctx)
+			kinds = append(kinds, kind)
+			classified = append(classified, ok)
+			return res
+		}
+	}
+	exec := tool.NewExecutor(reg, observer)
+	base := context.Background()
+	_ = exec.Execute(base, message.ToolCall{ID: "call-1", Name: "missing"})
+	res := exec.Execute(base, message.ToolCall{ID: "call-2", Name: "peek",
+		Arguments: message.NewArguments([]byte(`{}`))})
+	if res.IsError {
+		t.Fatalf("second result = %+v, want success", res)
+	}
+	if len(kinds) != 2 {
+		t.Fatalf("observed %d dispatches, want 2", len(kinds))
+	}
+	if !classified[0] || kinds[0] != tool.FailureNotFound {
+		t.Fatalf("first call classified = %q, %v; want not_found", kinds[0], classified[0])
+	}
+	if classified[1] || kinds[1] != "" {
+		t.Fatalf("second call inherited a classification: %q, %v", kinds[1], classified[1])
+	}
+}
+
 // TestExecutor_ExecuteInstallsAFailureBox pins the phase this domain enables: the
 // executor installs the box for every call, so middleware reads a classification
 // even when no instrumentation middleware is in the chain.

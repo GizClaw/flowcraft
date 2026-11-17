@@ -33,7 +33,7 @@ func WithCallRecorder(ctx context.Context, recorder CallRecorder) context.Contex
 // [Scope].
 func CallRecorderFrom(ctx context.Context) (CallRecorder, bool) {
 	scope, ok := ScopeFrom(ctx)
-	if !ok || scope.Recorder == nil {
+	if !ok {
 		return nil, false
 	}
 	return scope.Recorder, true

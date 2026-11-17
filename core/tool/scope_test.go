@@ -46,6 +46,13 @@ func TestScopeFrom_EmptyScopeIsAbsent(t *testing.T) {
 	if scope, ok := tool.ScopeFrom(tool.EnsureScope(empty, rec)); !ok || scope.Recorder != rec {
 		t.Fatalf("EnsureScope over an empty scope did not attach: %+v, %v", scope, ok)
 	}
+
+	// The writer agrees with the readers: an empty scope must not hide a live one
+	// the caller already carried, or one zero value would disable the projection.
+	parent := tool.WithScope(context.Background(), tool.Scope{Recorder: rec})
+	if scope, ok := tool.ScopeFrom(tool.WithScope(parent, tool.Scope{})); !ok || scope.Recorder != rec {
+		t.Fatalf("WithScope(empty) hid the enclosing projection: %+v, %v", scope, ok)
+	}
 }
 
 // EnsureScope never shadows the projection a run already attached: a caller that

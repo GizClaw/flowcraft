@@ -7,8 +7,12 @@ import "context"
 // [CallRecorder]. It belongs to the run, so a tool call reuses the scope it was
 // handed instead of attaching a projection of its own.
 type Scope struct {
-	// Recorder receives the calls the run dispatches. A catalog view implements
-	// it; a host that runs a bare [Executor] may attach its own.
+	// Recorder receives the calls the run dispatches. With dynamic injection it
+	// has to be the run's engine.CatalogView: that is what engine.CatalogViewFrom
+	// narrows, and what tool_search, the discovery pool and the model node's
+	// toolset read. A host may attach any other [CallRecorder] — the domain still
+	// works and calls are still recorded — but the view readers then find nothing,
+	// so a dynamic assembly needs the view.
 	Recorder CallRecorder
 }
 
@@ -17,8 +21,13 @@ type Scope struct {
 // own.
 type scopeKey struct{}
 
-// WithScope replaces the scope attached to ctx.
+// WithScope replaces the scope attached to ctx. An empty scope is ignored rather
+// than attached: it would hide a projection the caller already carried, and
+// "no recorder" already means absent to every reader (see [ScopeFrom]).
 func WithScope(ctx context.Context, s Scope) context.Context {
+	if s.Recorder == nil {
+		return ctx
+	}
 	return context.WithValue(ctx, scopeKey{}, s)
 }
 

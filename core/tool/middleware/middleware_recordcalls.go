@@ -15,7 +15,7 @@ import (
 // implements it, and this middleware never imports the engine.
 //
 // Deprecated: dynamic assemblies already append a built-in view
-// recorder when WithDynamic is enabled (see core/tool assembly.go), so
+// recorder when WithDynamic is enabled (see core/tool/engine/assembly.go), so
 // this middleware is redundant for hosts executing through an assembly.
 // Keep it only when constructing a raw tool.Executor without the
 // assembly's recorder.
@@ -23,7 +23,7 @@ func RecordCalls() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			res := next(ctx, call)
-			if scope, ok := tool.ScopeFrom(ctx); ok && scope.Recorder != nil {
+			if scope, ok := tool.ScopeFrom(ctx); ok {
 				scope.Recorder.RecordCall(call)
 			}
 			return res
