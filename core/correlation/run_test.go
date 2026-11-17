@@ -11,7 +11,7 @@ func TestRunRoundTrip(t *testing.T) {
 	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1", TenantID: "acme"})
 	run, ok := From(ctx)
 	if !ok {
-		t.Fatal("RunFrom reported nothing")
+		t.Fatal("From reported no run")
 	}
 	if run.RuntimeID != "rt-1" || run.TenantID != "acme" {
 		t.Errorf("run = %+v", run)
@@ -92,15 +92,20 @@ func TestAttrsAllocateNothingOnceAttached(t *testing.T) {
 }
 
 // The returned slice is shared, so a caller's append must copy rather than write
-// into the cache.
+// into the cache: without the three-index slice, the second caller's append would
+// land in the array the first caller is already holding.
 func TestAttrsSurviveCallerAppend(t *testing.T) {
 	ctx := WithRun(context.Background(), Run{RuntimeID: "rt-1"})
-	attrs := Attrs(ctx)
-	if got := len(append(attrs, attribute.String("extra", "x"))); got != 2 {
-		t.Fatalf("append = %d attributes, want 2", got)
+	first := append(Attrs(ctx), attribute.String("first", "1"))
+	second := append(Attrs(ctx), attribute.String("second", "2"))
+	if got := string(first[1].Key); got != "first" {
+		t.Fatalf("first caller's append became %q: the shared array was written through", got)
+	}
+	if got := string(second[1].Key); got != "second" {
+		t.Fatalf("second append = %q, want second", got)
 	}
 	if got := len(Attrs(ctx)); got != 1 {
-		t.Fatalf("Attrs after a caller append = %d attributes, want 1", got)
+		t.Fatalf("Attrs after caller appends = %d attributes, want 1", got)
 	}
 }
 

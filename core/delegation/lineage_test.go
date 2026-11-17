@@ -44,3 +44,28 @@ func TestCallIsAViewOverTheRunIdentity(t *testing.T) {
 		t.Fatalf("CallFrom(depth only) = %+v, %v", call, ok)
 	}
 }
+
+// The direction the fold depends on: a host stamps the session, tenant and
+// manifest on a context that already carries lineage (a delegated child is
+// opened by the deployment like any other session), and neither side may erase
+// the other.
+func TestIdentityStampKeepsTheInheritedLineage(t *testing.T) {
+	child := delegation.WithCall(context.Background(), delegation.Call{Depth: 2, ChainID: "chain-1"})
+	ctx := correlation.WithRun(child, correlation.Run{
+		SessionID: "s-child",
+		TenantID:  "acme",
+		AgentName: "worker",
+	})
+
+	run, ok := correlation.From(ctx)
+	if !ok || run.SessionID != "s-child" || run.TenantID != "acme" || run.AgentName != "worker" {
+		t.Fatalf("identity = %+v, ok = %v", run, ok)
+	}
+	if run.DelegationDepth != 2 || run.ChainID != "chain-1" {
+		t.Fatalf("lineage erased by the identity stamp: depth %d chain %q",
+			run.DelegationDepth, run.ChainID)
+	}
+	if call, ok := delegation.CallFrom(ctx); !ok || call.Depth != 2 || call.ChainID != "chain-1" {
+		t.Fatalf("CallFrom after the identity stamp = %+v, %v", call, ok)
+	}
+}
