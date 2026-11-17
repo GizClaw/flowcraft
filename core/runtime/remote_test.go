@@ -99,8 +99,14 @@ func TestRemoteBackendFailsWhenTheServerIsUnreachable(t *testing.T) {
 	cfg := remoteConfig(t, root, endpoint)
 	cfg.Sandbox.Remote.Token = "wrong-token"
 
-	if _, err := newRuntime(t, cfg); err == nil {
+	_, err := newRuntime(t, cfg)
+	if err == nil {
 		t.Fatal("New succeeded against a server that refuses the token")
+	}
+	// The seam wraps a factory failure with the name it was asked to build, which
+	// is how an operator tells a bad document from a broken backend.
+	if !strings.Contains(err.Error(), `sandbox.backend "remote"`) {
+		t.Errorf("error = %q, want it to name the backend", err)
 	}
 }
 

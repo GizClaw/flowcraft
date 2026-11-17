@@ -186,8 +186,9 @@ Errors are `errdefs.Validation` and name the path, e.g.
 
 ```go
 manager := host.New(kinds, host.Bindings{
-    Store:          sqliteStore,          // nil keeps sessions in memory only
-    RuntimeOptions: []runtime.Option{runtime.WithDrivers(driver)},
+    Store:           sqliteStore,         // nil keeps sessions in memory only
+    RuntimeOptions:  []runtime.Option{runtime.WithDrivers(driver)},
+    SandboxBackends: backends.All(),      // the sandbox implementations this process ships
     LoadOptions:    []config.Option{config.WithResolver("secret", vault.Resolve)},
     OnEvent:        func(agentName, sessionID string, event agent.Event) { ... },
     Trace:          telemetry.TraceRun,   // for agents whose document is silent

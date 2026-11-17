@@ -473,7 +473,6 @@ func (c RemoteConfig) validateTransport(transport string) error {
 	return nil
 }
 
-// timeout is the per-request timeout, zero meaning the client's default.
 // RemoteBackendParams is the parsed form of [RemoteConfig]: what a client needs
 // after the document's strings have become durations and a transport. Validate
 // checks the same values, so a block that passed validation cannot fail here.
@@ -515,6 +514,7 @@ func (c RemoteConfig) BackendParams() (RemoteBackendParams, error) {
 	}, nil
 }
 
+// timeout is the per-request timeout, zero meaning the client's default.
 func (c RemoteConfig) timeout() (time.Duration, error) {
 	return parseOptionalDuration("sandbox.remote.timeout", c.Timeout)
 }

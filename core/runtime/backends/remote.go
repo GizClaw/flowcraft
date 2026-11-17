@@ -21,10 +21,7 @@ func Remote() runtime.SandboxFactory {
 		if err != nil {
 			return nil, err
 		}
-		opts, err := remoteOptions(params)
-		if err != nil {
-			return nil, err
-		}
+		opts := remoteOptions(params)
 		if params.Unix {
 			if params.Token == "" && goruntime.GOOS == "windows" {
 				// os.Chmod is advisory on Windows and the directory ACL is the
@@ -47,7 +44,7 @@ func Remote() runtime.SandboxFactory {
 // remoteOptions renders the parsed block as client options. The parsing itself
 // lives in runtime.RemoteConfig.BackendParams, beside the validation that already
 // checks the same values.
-func remoteOptions(params runtime.RemoteBackendParams) ([]remote.Option, error) {
+func remoteOptions(params runtime.RemoteBackendParams) []remote.Option {
 	var opts []remote.Option
 	if params.Token != "" {
 		opts = append(opts, remote.WithToken(params.Token))
@@ -65,5 +62,5 @@ func remoteOptions(params runtime.RemoteBackendParams) ([]remote.Option, error) 
 	if params.PollHold > 0 {
 		opts = append(opts, remote.WithPollHold(params.PollHold))
 	}
-	return opts, nil
+	return opts
 }

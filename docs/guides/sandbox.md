@@ -331,6 +331,7 @@ confined chain itself, so the retry attaches to the runner the runtime composed
 
 ```go
 rt, err := runtime.New(ctx, cfg,
+    runtime.WithSandboxBackends(backends.All()), // the backends this process ships
     runtime.WithSandboxDecorator(func(sb runtime.Sandbox, confined sandbox.Runner) (sandbox.Runner, error) {
         return engine.NewEscalationRunner(&engine.Escalation{
             Confined: confined, // backend + approval + the document's defaults

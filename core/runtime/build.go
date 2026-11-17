@@ -547,9 +547,3 @@ func (c SandboxConfig) journalConfig(root string, extraRoots []string) (*journal
 // maxSkillDiagnosticsLogged bounds how many skipped skill files one runtime logs:
 // a broken tree should be visible, not a wall of warnings.
 const maxSkillDiagnosticsLogged = 5
-
-// remoteRunner connects to the remote boundary described by the document.
-//
-// The transport is the document's choice: an HTTP endpoint across hosts, or a unix
-// socket on this one. The client is identical either way — only where the bytes
-// travel differs — so this builds the options once and picks the constructor.

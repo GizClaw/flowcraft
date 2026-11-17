@@ -35,7 +35,9 @@ type SandboxBuild struct {
 }
 
 // WithSandboxBackends registers the backends this process may build, keyed by the
-// value a deployment writes in sandbox.backend.
+// value a deployment writes in sandbox.backend. A later call replaces the table
+// rather than merging it, which is what lets a host build the set once and a test
+// override it.
 //
 // There is no default table: a backend the host does not register is a validation
 // error naming what is registered. That is the rule drivers already follow — the

@@ -39,6 +39,10 @@ type Bindings struct {
 	// none, so a deployment that names a backend fails to build: the platform
 	// ships the seam, the host ships the set (core/runtime/backends is the
 	// opt-in convenience set).
+	//
+	// It is appended as WithSandboxBackends, so it replaces any table a
+	// RuntimeOptions entry already registered: name the set in one place, not
+	// both.
 	SandboxBackends map[string]runtime.SandboxFactory
 	// LoadOptions are handed to the layer loader: resolvers for placeholder
 	// schemes.

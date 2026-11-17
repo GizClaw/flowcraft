@@ -87,6 +87,20 @@ func TestUnknownSandboxBackendNamesTheRegisteredSet(t *testing.T) {
 	}
 }
 
+// TestNoRegisteredBackendSaysNone pins the message a host sees after this change
+// if it forgets the table: the one path the tests otherwise never take, because
+// newRuntime always registers one.
+func TestNoRegisteredBackendSaysNone(t *testing.T) {
+	_, err := New(t.Context(), localConfig(t))
+	if err == nil {
+		t.Fatal("a runtime with no registered backend accepted sandbox.backend: local")
+	}
+	if !strings.Contains(err.Error(), `unknown backend "local"`) ||
+		!strings.Contains(err.Error(), "registered: none") {
+		t.Errorf("error = %q, want it to name the backend and report none registered", err)
+	}
+}
+
 // TestSandboxBackendTableRejectsUnbuildableEntries covers the two shapes a map can
 // still get wrong.
 func TestSandboxBackendTableRejectsUnbuildableEntries(t *testing.T) {
