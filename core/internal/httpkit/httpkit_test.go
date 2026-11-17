@@ -1,8 +1,11 @@
 package httpkit
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -86,6 +89,82 @@ func TestProtocolSelection(t *testing.T) {
 			}
 		})
 	}
+}
+
+// hidingWrap unwraps to the wrapped error while reporting a message that
+// names nothing: errors.Is sees through it, string matching does not.
+type hidingWrap struct{ err error }
+
+func (w hidingWrap) Error() string { return "the connection ended before a response" }
+
+func (w hidingWrap) Unwrap() error { return w.err }
+
+// TestRetryableClassifiesWrappedCancellation is the regression test for a
+// classifier that matched the error text: a transport wraps the caller's
+// cancellation in a message of its own, so a wrapped cancel was retried and
+// the abandoned request replayed. The transient cases stay in the table —
+// classifying by the chain must not stop retrying genuine transport errors.
+func TestRetryableClassifiesWrappedCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{
+			name: "bare cancellation is not retried",
+			err:  context.Canceled,
+			want: 1,
+		},
+		{
+			name: "wrapped cancellation is not retried",
+			err:  fmt.Errorf("dial: %w", context.Canceled),
+			want: 1,
+		},
+		{
+			name: "wrapped deadline is not retried",
+			err:  fmt.Errorf("read: %w", context.DeadlineExceeded),
+			want: 1,
+		},
+		{
+			name: "deadline behind a message that hides it is not retried",
+			err:  hidingWrap{err: context.DeadlineExceeded},
+			want: 1,
+		},
+		{
+			name: "transient transport error is still retried",
+			err:  errors.New("connection reset by peer"),
+			want: 3,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts := &countingTransport{err: tc.err}
+			// Zero delays: the backoff curve is not what this test measures.
+			transport := newRetryTransport(attempts, RetryConfig{MaxAttempts: 3})
+			request, err := http.NewRequestWithContext(
+				context.Background(), http.MethodPost, "http://mcp.example.com", nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			if _, err := transport.RoundTrip(request); err == nil {
+				t.Fatal("RoundTrip returned no error, want the transport failure")
+			}
+			if attempts.calls != tc.want {
+				t.Fatalf("attempts = %d, want %d", attempts.calls, tc.want)
+			}
+		})
+	}
+}
+
+// countingTransport fails every attempt and counts them, so a test can tell
+// one wire attempt from the retry budget.
+type countingTransport struct {
+	calls int
+	err   error
+}
+
+func (t *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	t.calls++
+	return nil, t.err
 }
 
 // TestRetryBackoffClampsServerHint is the regression test for an
