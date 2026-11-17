@@ -9,12 +9,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // probeKind exists to prove the hook registered it: the test graph below names a
 // kind nothing else supplies.
-type probeKind struct{ seen *runtime.Runtime }
+type probeKind struct{ seen nodes.Runtime }
 
 func (*probeKind) Name() string { return "probe" }
 
@@ -43,10 +42,10 @@ edges:
 // table exists before any runtime does.
 func TestRuntimeKindsAreBuiltFromTheRuntime(t *testing.T) {
 	rt := testRuntime(t, &stubProvider{})
-	var seen *runtime.Runtime
+	var seen nodes.Runtime
 	kind := &probeKind{}
-	graph, err := nodes.Open(context.Background(), rt, writeProbeDocument(t),
-		nodes.WithRuntimeKinds(func(got *runtime.Runtime) ([]graph.NodeKind, error) {
+	built, err := nodes.Open(context.Background(), rt, writeProbeDocument(t),
+		nodes.WithRuntimeKinds(func(got nodes.Runtime) ([]graph.NodeKind, error) {
 			seen = got
 			kind.seen = got
 			return []graph.NodeKind{kind}, nil
@@ -57,15 +56,15 @@ func TestRuntimeKindsAreBuiltFromTheRuntime(t *testing.T) {
 	if seen != rt {
 		t.Fatalf("the hook saw %v, want the runtime the graph was opened for", seen)
 	}
-	if graph == nil || kind.seen != rt {
-		t.Fatal("the kind was not registered")
+	if built == nil {
+		t.Fatal("Open returned no graph")
 	}
 }
 
 func TestRuntimeKindsReportAFailure(t *testing.T) {
 	rt := testRuntime(t, &stubProvider{})
 	_, err := nodes.Open(context.Background(), rt, writeProbeDocument(t),
-		nodes.WithRuntimeKinds(func(*runtime.Runtime) ([]graph.NodeKind, error) {
+		nodes.WithRuntimeKinds(func(nodes.Runtime) ([]graph.NodeKind, error) {
 			return nil, errors.New("a kind that cannot be built")
 		}))
 	if err == nil {

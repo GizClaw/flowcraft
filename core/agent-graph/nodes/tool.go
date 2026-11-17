@@ -12,7 +12,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
 )
@@ -36,7 +35,7 @@ import (
 //
 // A tool cannot pause the run: the node has no translation from a tool result
 // to graph.Suspend.
-type toolKind struct{ rt *runtime.Runtime }
+type toolKind struct{ rt Runtime }
 
 type toolConfig struct {
 	Messages string `json:"messages"`
@@ -65,7 +64,7 @@ func decodeToolConfig(raw json.RawMessage) (toolConfig, error) {
 }
 
 // Tool builds the tool kind over a runtime.
-func Tool(rt *runtime.Runtime) graph.NodeKind { return &toolKind{rt: rt} }
+func Tool(rt Runtime) graph.NodeKind { return &toolKind{rt: rt} }
 
 func (*toolKind) Name() string { return "tool" }
 
@@ -102,7 +101,7 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 	// The run's projection goes on the context for the duration of the calls:
 	// tool_search resolves it from there and the assembly recorder feeds each
 	// executed call back into it.
-	view, ok := runtime.CatalogViewFrom(ctx)
+	view, ok := engine.CatalogViewFrom(ctx)
 	if !ok {
 		view = t.rt.NewCatalogView()
 	}
@@ -133,7 +132,7 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 // emitted first, then results as they complete. The transcript keeps input order
 // regardless of completion order.
 type toolStream struct {
-	rt          *runtime.Runtime
+	rt          Runtime
 	view        engine.CatalogView
 	calls       []message.ToolCall
 	startIndex  int

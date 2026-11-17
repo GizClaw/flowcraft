@@ -8,7 +8,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
 // Option configures a graph opened for a runtime.
@@ -16,7 +15,7 @@ type Option func(*options)
 
 type options struct {
 	kinds    []graph.NodeKind
-	builders []func(*runtime.Runtime) ([]graph.NodeKind, error)
+	builders []func(Runtime) ([]graph.NodeKind, error)
 	decoders map[string]inference.ExtensionDecoder
 	blobs    graph.BlobStore
 }
@@ -28,7 +27,13 @@ type options struct {
 // to the runtime's assembly - cannot be built by the host, because the host
 // registers its kind table before any runtime exists. This hook runs once per
 // graph, when the runtime is known, which is where such a kind belongs.
-func WithRuntimeKinds(build func(*runtime.Runtime) ([]graph.NodeKind, error)) Option {
+//
+// The hook receives [Runtime], not the assembly: the five methods a node kind
+// reads. A host kind that needs more of the substrate - the file tree, the
+// sandbox runner, the journal, the skill index - cannot get it here; such a kind
+// is an engine kind, where deploy.EngineDeps.Runtime hands it the whole
+// assembly.
+func WithRuntimeKinds(build func(Runtime) ([]graph.NodeKind, error)) Option {
 	return func(target *options) {
 		if build != nil {
 			target.builders = append(target.builders, build)
@@ -57,7 +62,7 @@ func WithBlobStore(store graph.BlobStore) Option {
 // The document is YAML; placeholders are expanded the same way a deployment
 // document's are. The registry is the built-in model, tool and condition kinds
 // plus whatever the options add.
-func Open(ctx context.Context, rt *runtime.Runtime, path string, opts ...Option) (*graph.Graph, error) {
+func Open(ctx context.Context, rt Runtime, path string, opts ...Option) (*graph.Graph, error) {
 	document, err := load(ctx, path)
 	if err != nil {
 		return nil, err
@@ -105,7 +110,7 @@ func load(ctx context.Context, path string) (graph.Document, error) {
 
 // registryKinds is the registry every graph starts with, plus the host's
 // additions.
-func registryKinds(rt *runtime.Runtime, settings options) ([]graph.NodeKind, error) {
+func registryKinds(rt Runtime, settings options) ([]graph.NodeKind, error) {
 	built := []graph.NodeKind{
 		Model(rt, WithExtensionDecoders(settings.decoders)),
 		Tool(rt),
