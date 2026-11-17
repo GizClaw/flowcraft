@@ -269,24 +269,8 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			return 0, 0, fmt.Errorf("checkpoint: next sequence: %w", err)
 		}
 		first, last = next, next+int64(len(events))-1
-		// One clock read per save: the events of a round share an instant unless
-		// the producer named a better one, and a per-event Now() would make one
-		// round's facts disagree by however long the loop took.
-		saved := time.Now()
-		for i, event := range events {
-			if event.Kind == "" {
-				return 0, 0, errdefs.Validationf("checkpoint: event %d has no kind", i)
-			}
-			at := event.At
-			if at.IsZero() {
-				at = saved
-			}
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO events (task_id, seq, kind, payload, created_at) VALUES (?, ?, ?, ?, ?)`,
-				checkpoint.Task.ID, next+int64(i), event.Kind, []byte(event.Payload), at.UnixNano(),
-			); err != nil {
-				return 0, 0, fmt.Errorf("checkpoint: append event: %w", err)
-			}
+		if err := appendEvents(ctx, tx, checkpoint.Task.ID, next, events); err != nil {
+			return 0, 0, err
 		}
 	}
 	if options.Truncate {
@@ -298,6 +282,52 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		return 0, 0, fmt.Errorf("checkpoint: commit: %w", err)
 	}
 	return first, last, nil
+}
+
+// eventInsertRows is how many events one INSERT statement carries. SQLite binds
+// at most 999 variables per statement on builds that predate the 32766 raise, and
+// each event binds five of them (task_id, seq, kind, payload, created_at), so the
+// ceiling is 999/5 = 199 rows. 80 is a round number well under it: 80*5 = 400
+// variables.
+const eventInsertRows = 80
+
+// appendEvents writes one round's events, starting at seq next, as multi-row
+// INSERT statements. Sequences are assigned here, from the caller's first seq and
+// the position in events, so a chunk boundary cannot renumber a row.
+func appendEvents(ctx context.Context, tx *sql.Tx, taskID string, next int64, events []agent.EventRecord) error {
+	// Validated up front: a rejected event must not depend on which chunk it
+	// fell into having been written first.
+	for i, event := range events {
+		if event.Kind == "" {
+			return errdefs.Validationf("checkpoint: event %d has no kind", i)
+		}
+	}
+	// One clock read per save: the events of a round share an instant unless the
+	// producer named a better one, and a per-event Now() would make one round's
+	// facts disagree by however long the loop took.
+	saved := time.Now()
+	for start := 0; start < len(events); start += eventInsertRows {
+		end := min(start+eventInsertRows, len(events))
+		chunk := events[start:end]
+		var query strings.Builder
+		query.WriteString(`INSERT INTO events (task_id, seq, kind, payload, created_at) VALUES `)
+		args := make([]any, 0, len(chunk)*5)
+		for i, event := range chunk {
+			if i > 0 {
+				query.WriteString(", ")
+			}
+			query.WriteString("(?, ?, ?, ?, ?)")
+			at := event.At
+			if at.IsZero() {
+				at = saved
+			}
+			args = append(args, taskID, next+int64(start+i), event.Kind, []byte(event.Payload), at.UnixNano())
+		}
+		if _, err := tx.ExecContext(ctx, query.String(), args...); err != nil {
+			return fmt.Errorf("checkpoint: append event: %w", err)
+		}
+	}
+	return nil
 }
 
 // Load reconstructs one task: the immutable seed plus the event log, which is the
