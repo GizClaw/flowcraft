@@ -174,6 +174,15 @@ type session struct {
 	// runner: an engine drives one goroutine, so Runner.Cancel must not run
 	// while Runner.Run does.
 	cancelRun context.CancelFunc
+	// cancelRequested latches a Cancel that landed while no run held the slot,
+	// because an engine with no run in flight has nothing of its own to stop and
+	// would drop the stop. The run that takes the slot next starts from an
+	// already-cancelled context: it has to observe the cancellation rather than
+	// be prevented from starting, since the graph loop checks ctx.Err() at the
+	// top of every iteration and exits cancelled, persisting the terminal state.
+	// It carries Cancel's reason rather than a flag, so a pending stop keeps what
+	// the caller said.
+	cancelRequested string
 	// done is closed when the current run ends, so a caller that arrived while
 	// the session was busy can wait for the bookkeeping instead of racing
 	// it.
@@ -524,7 +533,9 @@ func (a *Agent) Cancel(ctx context.Context, sessionID, reason string) error {
 			return err
 		}
 		if entry.runner == nil {
-			return nil
+			// The open failed, so this cancel had nothing to reach: reporting the
+			// failure beats claiming the stop landed.
+			return entry.openErr
 		}
 		return a.stopSession(ctx, entry, reason)
 	}
@@ -712,6 +723,13 @@ func (a *Agent) acquire(ctx context.Context, sessionID, taskID string) (*session
 			entry.done = make(chan struct{})
 			entry.cancelRun = cancel
 			entry.lastUsed = time.Now()
+			// A cancel that landed before this slot was taken is applied here, so
+			// the run unwinds as cancelled instead of doing work the caller
+			// stopped.
+			if entry.cancelRequested != "" {
+				entry.cancelRequested = ""
+				cancel()
+			}
 			shard.begin()
 			shard.mu.Unlock()
 			// Only the cap is enforced here: it is a memory bound, and a bound
@@ -773,18 +791,23 @@ func (a *Agent) build(shard *shard, placeholder *session, ctx context.Context, s
 		}
 		err = ErrClosed
 	}
-	if placeholder.opening != nil {
-		close(placeholder.opening)
-		placeholder.opening = nil
-	}
+	// Every field is published before the waiters are woken, and the channel is
+	// closed last, so both halves of the wake-up see a finished entry: a waiter
+	// that finds opening nil under the lock finds the fields already written, and
+	// one woken by the close is ordered after the writes by the close itself.
+	wait := placeholder.opening
+	placeholder.opening = nil
 	if err != nil {
 		placeholder.openErr = err
-		return
+	} else {
+		placeholder.taskID = opened.taskID
+		placeholder.runner = opened.runner
+		placeholder.storeState(opened.loadState())
+		placeholder.lastUsed = time.Now()
 	}
-	placeholder.taskID = opened.taskID
-	placeholder.runner = opened.runner
-	placeholder.storeState(opened.loadState())
-	placeholder.lastUsed = time.Now()
+	if wait != nil {
+		close(wait)
+	}
 }
 
 // openSession reads the store and builds the runner. It runs without any
@@ -879,6 +902,11 @@ func (a *Agent) stopSession(ctx context.Context, entry *session, reason string) 
 		}
 		return nil
 	}
+	// No run holds the slot. The engine's Cancel is still the way to reach a task
+	// it can act on (one paused by an earlier process, which this process never
+	// drove), but it is a no-op for a run that has not started, so the latch is
+	// what makes the stop stick for the run that takes the slot next.
+	entry.cancelRequested = reason
 	shard.mu.Unlock()
 	return entry.runner.Cancel(ctx, reason)
 }
@@ -907,6 +935,9 @@ func (a *Agent) release(entry *session) {
 	entry.storeState(state)
 	entry.running = false
 	entry.cancelRun = nil
+	// The finished run consumed any latch it started with; a cancel that arrives
+	// after this point belongs to the next run, which latches it again.
+	entry.cancelRequested = ""
 	entry.lastUsed = time.Now()
 	if entry.done != nil {
 		close(entry.done)
