@@ -11,10 +11,8 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		got, want string
 	}{
 		{AttrAgentID, "agent.id"},
-		{AttrTenantID, "tenant.id"},
 		{AttrRunID, "run.id"},
 		{AttrParentRunID, "parent.run.id"},
-		{AttrTaskID, "task.id"},
 		{AttrEngineKind, "engine.kind"},
 		{AttrRunStatus, "run.status"},
 		{AttrGraphName, "graph.name"},
@@ -53,8 +51,7 @@ func TestAttrConstants_StableNames(t *testing.T) {
 // would silently collide if the constants resolved to the same string.
 func TestAttrConstants_Unique(t *testing.T) {
 	all := []string{
-		AttrAgentID, AttrTenantID,
-		AttrRunID, AttrParentRunID, AttrTaskID, AttrEngineKind, AttrRunStatus,
+		AttrAgentID, AttrRunID, AttrParentRunID, AttrEngineKind, AttrRunStatus,
 		AttrGraphName, AttrGraphStep, AttrNodeID,
 		AttrToolName, AttrToolCallID,
 		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,

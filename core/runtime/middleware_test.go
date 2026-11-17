@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -44,7 +44,7 @@ func TestDefaultMiddlewareInstallsTelemetry(t *testing.T) {
 		t.Fatalf("execute = %q", res.Content.Text())
 	}
 	span := recorder.RequireNamed(t, "tool.execute")
-	telemetrytest.RequireAttrString(t, span, telemetry.AttrRuntimeID, rt.ID())
+	telemetrytest.RequireAttrString(t, span, correlation.AttrRuntimeID, rt.ID())
 }
 
 // A deployment that names its chain replaces the default one, including the

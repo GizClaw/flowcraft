@@ -92,16 +92,16 @@ historical reference and are not part of the current core migration path.
 The repository is organised as independently released Go modules, and `core` is
 layered: a package imports only from the layers below it.
 
-| Layer         | Packages                                                                                                       | Responsibility                                                                                       |
-| ------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| Contracts     | `core/message` (+`media`), `core/errdefs`, `core/permission`, `core/fsx`, `core/skill`                         | The vocabulary every other layer speaks: messages, error classes, permissions, file handles, skills. |
-| Inference     | `core/inference` (+`model`, `protocol`, `route`, `usage`), `core/inference-openai`, `core/inference-anthropic` | Model contracts, routing, and the two protocol families that ship with the platform.                 |
-| Tools         | `core/tool` (+`engine`, `middleware`), `core/tool-builtin/*`, `core/tool-mcp`                                  | The function-calling contract, the projection, and the built-in adapters.                            |
-| Sandbox       | `core/sandbox` (+`engine`, `journal`, `netpolicy`), `core/sandbox-*`                                           | The command boundary: contract, policy decorators, backends.                                         |
-| Execution     | `core/agent` (+`checkpoint`), `core/agent-graph`, `core/agent-a2a`, `core/delegation`                          | Runs: the engine contract, the graph engine, the A2A client, delegation.                             |
-| Assembly      | `core/runtime`                                                                                                 | One runtime per configuration document, owning what it built.                                        |
-| Deployment    | `core/deploy` (+`a2aprotocol`), `core/agent-host`                                                              | Documents and kind tables; host bindings, sessions, lifecycle.                                       |
-| Observability | `core/telemetry`                                                                                               | Tracing, run records, attributes.                                                                    |
+| Layer         | Packages                                                                                                       | Responsibility                                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Contracts     | `core/message` (+`media`), `core/errdefs`, `core/permission`, `core/fsx`, `core/skill`, `core/correlation`     | The vocabulary every other layer speaks: messages, error classes, permissions, file handles, skills, the run identity. |
+| Inference     | `core/inference` (+`model`, `protocol`, `route`, `usage`), `core/inference-openai`, `core/inference-anthropic` | Model contracts, routing, and the two protocol families that ship with the platform.                                   |
+| Tools         | `core/tool` (+`engine`, `middleware`), `core/tool-builtin/*`, `core/tool-mcp`                                  | The function-calling contract, the projection, and the built-in adapters.                                              |
+| Sandbox       | `core/sandbox` (+`engine`, `journal`, `netpolicy`), `core/sandbox-*`                                           | The command boundary: contract, policy decorators, backends.                                                           |
+| Execution     | `core/agent` (+`checkpoint`), `core/agent-graph`, `core/agent-a2a`, `core/delegation`                          | Runs: the engine contract, the graph engine, the A2A client, delegation.                                               |
+| Assembly      | `core/runtime`                                                                                                 | One runtime per configuration document, owning what it built.                                                          |
+| Deployment    | `core/deploy` (+`a2aprotocol`), `core/agent-host`                                                              | Documents and kind tables; host bindings, sessions, lifecycle.                                                         |
+| Observability | `core/telemetry`                                                                                               | Tracing, run records, attributes.                                                                                      |
 
 `core/internal/...` holds module-private helpers and is never importable outside
 `core`.

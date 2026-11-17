@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 )
 
 func (s *Service) startAsync(
-	ctx context.Context, req Request, run runctx.Run, callID string,
+	ctx context.Context, req Request, run correlation.Run, callID string,
 	call Call, childSession string,
 ) (Outcome, error) {
 	now := time.Now()
@@ -215,7 +215,7 @@ func (s *Service) Close() error {
 }
 
 func (s *Service) jobFor(ctx context.Context, id string) (Job, error) {
-	run, ok := runctx.From(ctx)
+	run, ok := correlation.From(ctx)
 	if !ok || run.SessionID == "" {
 		return Job{}, errdefs.Validationf("delegation: a parent session is required")
 	}

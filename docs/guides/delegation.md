@@ -62,7 +62,7 @@ generation sees that generation's targets.
 `Service.Delegate` is deliberately strict about its preconditions, because each
 one is a fact that would otherwise become a wrong answer somewhere else:
 
-1. **A parent session** — `runctx.From(ctx)` must carry one. A delegation outside
+1. **A parent session** — `correlation.From(ctx)` must carry one. A delegation outside
    a run has no place to return to.
 2. **A tool call id** — `tool.CallIDFromContext`. It is what makes the child
    session key deterministic.
@@ -133,10 +133,12 @@ next := delegation.WithCall(ctx, call.Child())
 depth := delegation.DepthFromContext(ctx)
 ```
 
-`Call` is a value, not a set of context keys, so a later field (a budget, an eval
-marker) does not invent another key. The service stamps it before running the
-child, and everything downstream — a hook, a child delegation — reads the same
-lineage.
+`Call` is a view over `correlation.Run`: the lineage travels inside the run
+identity (`DelegationDepth`, `ChainID`), so a later lineage field extends that
+value instead of inventing another context key. The service stamps it before
+running the child, and everything downstream — a hook, a child delegation — reads
+the same lineage. A zero field leaves the inherited value in place, so a stamp can
+raise or set the depth and the chain but never clear them.
 
 ## What the child inherits, and what it does not
 

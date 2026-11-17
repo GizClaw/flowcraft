@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -356,14 +356,14 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}
 		turn.TaskID = entry.taskID
-		runCtx = runctx.WithRun(runCtx, runctx.Run{
+		runCtx = correlation.WithRun(runCtx, correlation.Run{
 			TaskID: entry.taskID,
 			Turn:   int(entry.turn.Add(1)),
 		})
 		var span trace.Span
 		if a.opts.Trace.Allows(telemetry.TraceRun) {
 			runCtx, span = telemetry.TracerWithSuffix("agent").Start(runCtx, "agent.run",
-				trace.WithAttributes(runctx.Attrs(runCtx)...))
+				trace.WithAttributes(correlation.Attrs(runCtx)...))
 			defer span.End()
 		}
 		// The run record is only built for a host that asked for one: the
@@ -380,7 +380,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 					LatencyMs: time.Since(startedAt).Milliseconds(),
 					Usage:     runUsage,
 				}
-				if run, ok := runctx.From(runCtx); ok {
+				if run, ok := correlation.From(runCtx); ok {
 					record.TenantID = run.TenantID
 					record.Manifest = run.Manifest
 				}

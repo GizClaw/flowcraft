@@ -342,6 +342,42 @@ configuration that silently does nothing.
 | `Context(ctx)`                              | A context carrying the runtime's identity for tracing.       |
 | `Close()`                                   | Tears down, in reverse construction order.                   |
 
+## The run identity
+
+`Context(ctx)` attaches one value: a `correlation.Run`. It is the identity a
+span, a log record, a `RunRecord` and a checkpoint are correlated by — not
+conversation content, and not a dependency. Each layer adds the fields it is the
+first to know, and a later layer only overrides the fields it sets:
+
+| Field       | Written by   | Attribute key       |
+| ----------- | ------------ | ------------------- |
+| `RuntimeID` | `runtime`    | `agent.runtime.id`  |
+| `SessionID` | `agent-host` | `session.id`        |
+| `AgentName` | `agent-host` | `agent.name`        |
+| `TenantID`  | `agent-host` | `tenant.id`         |
+| `Manifest`  | `agent-host` | `agent.manifest.id` |
+| `TaskID`    | `agent`      | `task.id`           |
+| `Turn`      | `agent`      | `turn`              |
+
+`DelegationDepth` and `ChainID` are stamped by `delegation` and are deliberately
+not rendered as attributes: they say where the run sits in a delegation chain,
+not who it is, and the delegation layer already carries them on its own records
+(`Outcome`, `Job`).
+
+The package is `core/correlation` and it is a contracts-tier package on purpose:
+`tool`, `sandbox`, `inference`, `agent` and `delegation` all read the identity to
+start a span, and none of them may import the assembly that built the runtime.
+The attribute names above live in the same package (`core/correlation/attrs.go`),
+so "who the work belongs to" has exactly one home; `core/telemetry` keeps the keys
+that describe the work itself (`tool.*`, `llm.*`, `sandbox.*`, `error.*`, …).
+
+Callers read it in two ways, and both are allocation-free:
+
+```go
+run, ok := correlation.From(ctx)                  // the identity itself
+span.SetAttributes(correlation.Attrs(ctx)...)     // precomputed, cap-crippled
+```
+
 ## Ownership
 
 One rule: **a `Runtime` closes what it created.** A value handed in through an

@@ -11,8 +11,8 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -59,15 +59,15 @@ func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 func TestTelemetry_CarriesRuntimeIdentity(t *testing.T) {
 	rec := installTelemetryTestTracer(t)
 	exec := tool.NewExecutor(catalogWith(echoTool("echo")), Telemetry())
-	ctx := runctx.WithRun(context.Background(), runctx.Run{RuntimeID: "rt-7", TenantID: "acme"})
+	ctx := correlation.WithRun(context.Background(), correlation.Run{RuntimeID: "rt-7", TenantID: "acme"})
 
 	if res := exec.Execute(ctx, call("echo")); res.IsError {
 		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
 
 	span := rec.Ended()[0]
-	telemetrytest.RequireAttrString(t, span, telemetry.AttrRuntimeID, "rt-7")
-	telemetrytest.RequireAttrString(t, span, telemetry.AttrTenantID, "acme")
+	telemetrytest.RequireAttrString(t, span, correlation.AttrRuntimeID, "rt-7")
+	telemetrytest.RequireAttrString(t, span, correlation.AttrTenantID, "acme")
 }
 
 // TestTelemetry_RecordsFailureKind pins the classification channel: the stages

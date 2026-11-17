@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -46,7 +46,7 @@ func Exec(
 		))
 	// The runtime identity the host attached: a command belongs to the runtime
 	// whose policy confined it.
-	span.SetAttributes(runctx.Attrs(ctx)...)
+	span.SetAttributes(correlation.Attrs(ctx)...)
 	defer span.End()
 	if opts.Timeout > 0 {
 		span.SetAttributes(attribute.Int64(

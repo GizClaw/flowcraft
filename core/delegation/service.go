@@ -10,9 +10,9 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -95,7 +95,7 @@ func (s *Service) Policy() Policy { return s.policy }
 
 // Targets lists the deployed agents this caller may address.
 func (s *Service) Targets(ctx context.Context) ([]string, error) {
-	run, ok := runctx.From(ctx)
+	run, ok := correlation.From(ctx)
 	if !ok || run.AgentName == "" {
 		return nil, errdefs.Validationf("delegation: a parent agent is required")
 	}
@@ -136,7 +136,7 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 			"delegation: input is %d bytes, limit is %d", len(req.Input), s.policy.MaxInputBytes)
 	}
 
-	run, ok := runctx.From(ctx)
+	run, ok := correlation.From(ctx)
 	if !ok || run.SessionID == "" {
 		return Outcome{}, errdefs.Validationf("delegation: a parent session is required")
 	}
@@ -147,10 +147,8 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	if !s.allowedTarget(req.Target, run.AgentName, s.sessions.Names()) {
 		return Outcome{}, errdefs.Validationf("delegation: target %q is not allowed", req.Target)
 	}
-	call, ok := CallFrom(ctx)
-	if !ok {
-		call = Call{}
-	}
+	// Absent lineage is the root caller, which is the zero Call.
+	call, _ := CallFrom(ctx)
 	if call.ChainID == "" {
 		call.ChainID = chainID(run, callID)
 	}
@@ -221,7 +219,7 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	return outcome, nil
 }
 
-func chainID(run runctx.Run, callID string) string {
+func chainID(run correlation.Run, callID string) string {
 	sum := sha256.Sum256([]byte(run.SessionID + "\x00" + run.TaskID + "\x00" + callID))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }

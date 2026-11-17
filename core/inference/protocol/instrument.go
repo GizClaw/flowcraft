@@ -9,11 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/usage"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -190,7 +190,7 @@ func startCall[Req, Res any](
 		))
 	// The runtime identity the host attached. The span is opened here because
 	// this is the one place every driver passes through.
-	span.SetAttributes(runctx.Attrs(ctx)...)
+	span.SetAttributes(correlation.Attrs(ctx)...)
 	return ctx, &call[Res]{
 		ctx:       ctx,
 		span:      span,

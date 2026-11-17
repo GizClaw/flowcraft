@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -375,7 +375,7 @@ func (r *Run) startStepSpan(ctx context.Context) (context.Context, func(error)) 
 		return ctx, func(error) {}
 	}
 	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.step",
-		trace.WithAttributes(runctx.Attrs(ctx)...),
+		trace.WithAttributes(correlation.Attrs(ctx)...),
 		trace.WithAttributes(
 			attribute.Int(telemetry.AttrGraphStep, r.step+1),
 			attribute.Int(telemetry.AttrGraphFrontier, len(r.active)),
@@ -396,7 +396,7 @@ func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (cont
 		return ctx, func(error) {}
 	}
 	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.node",
-		trace.WithAttributes(runctx.Attrs(ctx)...),
+		trace.WithAttributes(correlation.Attrs(ctx)...),
 		trace.WithAttributes(
 			attribute.Int(telemetry.AttrGraphStep, r.step+1),
 			attribute.String(telemetry.AttrNodeID, id),

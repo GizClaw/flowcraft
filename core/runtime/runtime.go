@@ -7,12 +7,12 @@ import (
 	"io"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -129,9 +129,9 @@ func (r *Runtime) ID() string { return r.id }
 // Context attaches this runtime's identity to ctx, so every span and log record
 // created below it carries agent.runtime.id without the components knowing this
 // package exists. A tenant already present is preserved, and a host that knows
-// the tenant adds it with [runctx.WithRun] on the same context.
+// the tenant adds it with [correlation.WithRun] on the same context.
 func (r *Runtime) Context(ctx context.Context) context.Context {
-	return runctx.WithRun(ctx, runctx.Run{RuntimeID: r.id})
+	return correlation.WithRun(ctx, correlation.Run{RuntimeID: r.id})
 }
 
 // Config is the configuration this runtime was built from.
@@ -211,7 +211,7 @@ func (r *Runtime) Close() error {
 // nobody can see is a permission nobody reviews. The layer names ride in the
 // message when the host built this from layers.
 func (r *Runtime) logAssembled(ctx context.Context) {
-	attrs := append(runctx.Attrs(r.Context(ctx)),
+	attrs := append(correlation.Attrs(r.Context(ctx)),
 		attribute.String("sandbox.backend", r.cfg.Sandbox.Backend),
 		attribute.Bool("sandbox.decorated", r.sandboxDecorator != nil),
 		attribute.StringSlice("files.roots", r.cfg.Files.Roots),

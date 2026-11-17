@@ -9,6 +9,13 @@ package telemetry
 //   - consumers (dashboards, alerting, log queries) have one place to
 //     learn what to filter on.
 //
+// One family is deliberately not here: the identity a run carries
+// (agent.runtime.id, tenant.id, session.id, agent.name, turn,
+// agent.manifest.id, task.id) is declared in core/correlation, beside the carrier
+// that renders it. Those constants had to move because the carrier is a
+// contracts-tier package and could not depend on this one for seven strings —
+// every layer below the assembly reads the identity to start a span.
+//
 // The constants are deliberately *strings*, not typed wrappers around
 // attribute.Key / attribute.KeyValue. Producer call sites typically wrap
 // them inline (`attribute.String(telemetry.AttrRunID, id)`) — wrapping
@@ -39,35 +46,16 @@ package telemetry
 
 const (
 	// ----- Identity (who is doing the work) -----
+	//
+	// What a run carries lives in core/correlation: agent.runtime.id, tenant.id,
+	// session.id, agent.name, turn, agent.manifest.id and task.id are declared
+	// there, beside the carrier that renders them. What remains here is the one
+	// identity key no run carries.
 
 	// AttrAgentID identifies the agent (core/agent.Agent.ID) executing
-	// the operation. Stable across runs of the same logical agent.
+	// the operation. Stable across runs of the same logical agent. It has no
+	// producer today: a run carries agent.name.
 	AttrAgentID = "agent.id"
-
-	// AttrRuntimeID identifies one assembled agent runtime (core/runtime.Runtime.ID):
-	// the substrate a turn runs on, not a conversation. Two runtimes in one
-	// process have different ids, so this is what separates their spans. It is
-	// distinct from AttrAgentID, which names the logical agent that may outlive
-	// or share a runtime.
-	AttrRuntimeID = "agent.runtime.id"
-
-	// AttrTenantID identifies the tenant on whose behalf the
-	// operation is running. Producers should populate this when a
-	// tenant boundary is meaningful (multi-tenant SaaS deployments).
-	AttrTenantID = "tenant.id"
-
-	// AttrSessionID identifies the session an operation belongs to: the
-	// container of tasks, which outlives each of them.
-	AttrSessionID = "session.id"
-
-	// AttrAgentName names the deployed agent within a multi-agent host.
-	AttrAgentName = "agent.name"
-
-	// AttrTurn is the conversation turn a step belongs to.
-	AttrTurn = "turn"
-
-	// AttrManifestID identifies the deployment manifest a run executed under.
-	AttrManifestID = "agent.manifest.id"
 
 	// ----- Execution (what unit of work) -----
 
@@ -80,15 +68,6 @@ const (
 	// dispatches another (multi-agent call chain). Empty for
 	// top-level runs.
 	AttrParentRunID = "parent.run.id"
-
-	// AttrTaskID identifies the A2A-aligned task an operation
-	// belongs to (core/agent.Request.TaskID, mirrored into
-	// core/agent.Result.TaskID). Promoted by core/agent.Run into
-	// engine.Run.Attributes so engines / nodes / observers can
-	// recover it without reaching back through agent state.
-	// Optional: empty when the upstream Request did not carry a
-	// task identifier.
-	AttrTaskID = "task.id"
 
 	// AttrEngineKind identifies the concrete engine.Engine
 	// implementation (graph runner, future script engine, remote

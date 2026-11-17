@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -100,9 +101,13 @@ type Outcome struct {
 	ChainID      string
 }
 
-// Call is the delegation lineage a child run inherits. It is a value so a
-// later field (a budget, a root session id, an eval marker) can be added
-// without inventing another context key.
+// Call is the delegation lineage a child run inherits: how many edges above it
+// the chain started, and which root delegation it belongs to.
+//
+// It is a view over [correlation.Run.DelegationDepth] and
+// [correlation.Run.ChainID] rather than a second context value. The lineage
+// travels in the run identity because it is discovered at the same depth and read
+// by the same layers; two context keys for one fact was one too many.
 type Call struct {
 	// Depth is the number of delegation edges above this run. The root caller
 	// sees zero.
@@ -118,29 +123,41 @@ func (c Call) Child() Call {
 	return c
 }
 
-type callKey struct{}
-
 // WithCall stamps the delegation lineage on a context.
+//
+// It merges into the run identity the context already carries, so the session,
+// tenant and task settled by the deployment survive the stamp. The same rule
+// applies to the lineage itself: a zero field leaves the inherited value in
+// place, so a stamp can raise or set the depth and the chain but never clear
+// them.
 func WithCall(ctx context.Context, call Call) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, callKey{}, call)
+	return correlation.WithRun(ctx, correlation.Run{
+		DelegationDepth: call.Depth,
+		ChainID:         call.ChainID,
+	})
 }
 
 // CallFrom returns the delegation lineage; absent means the root caller.
 func CallFrom(ctx context.Context) (Call, bool) {
-	if ctx == nil {
+	run, ok := correlation.From(ctx)
+	if !ok || (run.DelegationDepth == 0 && run.ChainID == "") {
 		return Call{}, false
 	}
-	call, ok := ctx.Value(callKey{}).(Call)
-	return call, ok
+	return Call{Depth: run.DelegationDepth, ChainID: run.ChainID}, true
 }
 
-// DepthFromContext is the common read for tools and trace attributes.
+// DepthFromContext reports the delegation depth of ctx, zero for a run that was
+// never delegated.
+//
+// It is a convenience over From for callers that only need the depth: the
+// outcome a delegation returns (Outcome.Depth) is the number a report should
+// carry, and this is what a policy check reads off the context.
 func DepthFromContext(ctx context.Context) int {
-	call, _ := CallFrom(ctx)
-	return call.Depth
+	run, _ := correlation.From(ctx)
+	return run.DelegationDepth
 }
 
 func (s *Service) allowedTarget(target, caller string, names []string) bool {

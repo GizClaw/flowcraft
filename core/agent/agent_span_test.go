@@ -7,8 +7,8 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
@@ -22,7 +22,7 @@ func TestRunSpanCarriesTheRunIdentity(t *testing.T) {
 		NewRunner: factory,
 		Trace:     telemetry.TraceRun,
 		RunContext: func(ctx context.Context, sessionID string) context.Context {
-			return runctx.WithRun(ctx, runctx.Run{SessionID: sessionID, AgentName: "writer"})
+			return correlation.WithRun(ctx, correlation.Run{SessionID: sessionID, AgentName: "writer"})
 		},
 	})
 	if err != nil {
@@ -35,10 +35,10 @@ func TestRunSpanCarriesTheRunIdentity(t *testing.T) {
 	for _, kv := range span.Attributes() {
 		attrs[kv.Key] = kv.Value
 	}
-	if got := attrs[telemetry.AttrSessionID].AsString(); got != "c1" {
+	if got := attrs[correlation.AttrSessionID].AsString(); got != "c1" {
 		t.Errorf("session.id = %q, want c1", got)
 	}
-	if got := attrs[telemetry.AttrAgentName].AsString(); got != "writer" {
+	if got := attrs[correlation.AttrAgentName].AsString(); got != "writer" {
 		t.Errorf("agent.name = %q, want writer", got)
 	}
 }
