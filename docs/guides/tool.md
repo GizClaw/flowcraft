@@ -123,6 +123,9 @@ Before a server connects, only its `description` exists, which is all the search
 kernel has to rank on. `liveness` overrides the source-wide probe interval for one
 server. Servers on protocol `2026-07-28` or later are never pinged — those
 revisions removed the method — they reconnect when their connection closes.
+A `http_timeout` bounds each request but does not enable transport-level
+retries, because `tools/call` is not idempotent: a replayed timeout or 5xx would
+run the tool twice.
 
 For a runnable anonymous search and fetch example over the HTTP bridge, see
 [`examples/parallel`](https://github.com/GizClaw/flowcraft/tree/main/examples/parallel):

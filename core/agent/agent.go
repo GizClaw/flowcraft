@@ -445,9 +445,17 @@ func (a *Agent) afterTurn(ctx context.Context, entry *session, turn Turn) {
 	}
 }
 
-// State reports where the session's Task stands. A session that was
-// never opened is looked up in the store, so this is cheap enough to ask from a
-// protocol adapter on every request.
+// State reports where the session's Task stands.
+//
+// A session this process never opened costs one store lookup, not zero: with a
+// Store configured, State asks Store.LatestForSession for the session's newest
+// checkpoint. That is what the protocol's tasks/get needs — a process that never
+// saw the task still has to answer for it — and it is why a lookup here costs one
+// index query per request instead of a map read. A host that polls harder than
+// its store likes fronts State with a cache of its own; this layer keeps none,
+// and deliberately no negative cache for "this session has no task yet", because
+// a task another process wrote between two polls has to become visible without
+// the session being opened first.
 //
 // A session whose runner is still being built reports submitted: the Task
 // has not started, and blocking a lookup on a dial or a store read would make an
