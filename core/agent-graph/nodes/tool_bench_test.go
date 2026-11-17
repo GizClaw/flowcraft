@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
@@ -50,6 +51,7 @@ func benchToolRuntime(tb testing.TB, answer tool.Tool) *runtime.Runtime {
 		},
 	}
 	rt, err := runtime.New(context.Background(), config,
+		runtime.WithSandboxBackends(backends.All()),
 		runtime.WithToolSource(benchToolSource{answer: answer}),
 		runtime.WithDrivers(runtime.Driver{
 			Name: "stub",

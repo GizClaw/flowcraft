@@ -115,6 +115,11 @@ core -> driver
   contract carries no prefix: `correlation` is not `runtime/correlation` because
   every layer below the assembly reads the run identity, and none of them may
   import the assembly.
+- A unit's own implementation details may live in a subpackage of it: that is what
+  `core/runtime/backends` is, the opt-in table of the sandbox backends core ships.
+  It is nested because a backend implements `runtime.SandboxFactory` and must
+  therefore import `runtime`; the composition root itself must never import it
+  back, which `TestRuntimeDoesNotImportABackend` enforces.
 - `craft` — the planned application layer that assembles an application over
   `core` (a `craft.yaml` definition, the plugin host, host primitives and the
   process-level manager) — is not part of this workspace yet; the release gate

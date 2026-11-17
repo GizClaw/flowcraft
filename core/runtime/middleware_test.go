@@ -34,7 +34,7 @@ func TestDefaultMiddlewareInstallsTelemetry(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Tools.Enable = []string{ToolFiles}
 
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestMiddlewareChainIsConfigurable(t *testing.T) {
 	cfg.Tools.Enable = []string{ToolFiles}
 	cfg.Tools.Middleware = []MiddlewareConfig{{Name: MiddlewareRecover}}
 
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestUnknownMiddlewareIsRejected(t *testing.T) {
 	cfg.Tools.Enable = []string{ToolFiles}
 	cfg.Tools.Middleware = []MiddlewareConfig{{Name: "nope"}}
 
-	_, err := New(context.Background(), cfg)
+	_, err := newRuntime(t, cfg)
 	if err == nil {
 		t.Fatal("unknown middleware accepted")
 	}
@@ -92,7 +92,7 @@ func TestHostMiddlewareIsRegistered(t *testing.T) {
 		{Name: "refuse"},
 	}
 
-	rt, err := New(context.Background(), cfg, WithMiddleware(MiddlewareOption{
+	rt, err := newRuntime(t, cfg, WithMiddleware(MiddlewareOption{
 		Name: "refuse",
 		Build: func(json.RawMessage) (tool.Middleware, error) {
 			return func(tool.Dispatch) tool.Dispatch {
@@ -118,7 +118,7 @@ func TestMiddlewareSettingsAreTyped(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Tools.Enable = []string{ToolFiles}
 	cfg.Tools.Middleware = []MiddlewareConfig{{Name: MiddlewareResultLimit}}
-	if _, err := New(context.Background(), cfg); err == nil {
+	if _, err := newRuntime(t, cfg); err == nil {
 		t.Fatal("result_limit without settings accepted")
 	}
 
@@ -126,7 +126,7 @@ func TestMiddlewareSettingsAreTyped(t *testing.T) {
 		{Name: MiddlewareRecover},
 		{Name: MiddlewareResultLimit, Settings: settingsJSON(map[string]any{"max_bytes": 4096})},
 	}
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New with settings: %v", err)
 	}

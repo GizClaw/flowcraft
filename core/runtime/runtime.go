@@ -46,6 +46,7 @@ type Runtime struct {
 	sources  []tool.Source
 
 	sandboxDecorator func(Sandbox, sandbox.Runner) (sandbox.Runner, error)
+	sandboxBackends  map[string]SandboxFactory
 
 	closers []io.Closer
 	once    sync.Once
@@ -56,10 +57,11 @@ type Runtime struct {
 type Option func(*options)
 
 type options struct {
-	drivers    []Driver
-	selectors  []Selector
-	middleware []MiddlewareOption
-	sources    []tool.Source
+	drivers         []Driver
+	selectors       []Selector
+	middleware      []MiddlewareOption
+	sources         []tool.Source
+	sandboxBackends map[string]SandboxFactory
 
 	sandboxDecorator func(Sandbox, sandbox.Runner) (sandbox.Runner, error)
 }
@@ -99,6 +101,10 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Runtime, error) {
 	for _, opt := range opts {
 		opt(&settings)
 	}
+	sandboxBackends, err := sandboxBackendTable(settings.sandboxBackends)
+	if err != nil {
+		return nil, err
+	}
 	drivers, err := driverTable(settings.drivers)
 	if err != nil {
 		return nil, err
@@ -114,6 +120,7 @@ func New(ctx context.Context, cfg Config, opts ...Option) (*Runtime, error) {
 		middlewareOptions: settings.middleware,
 		sources:           settings.sources,
 		sandboxDecorator:  settings.sandboxDecorator,
+		sandboxBackends:   sandboxBackends,
 	}
 	if err := rt.build(ctx, drivers, selectors); err != nil {
 		_ = rt.Close()

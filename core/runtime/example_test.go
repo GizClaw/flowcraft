@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/goccy/go-json"
 )
@@ -53,13 +54,15 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	}
 
 	var settings json.RawMessage
-	rt, err := runtime.New(context.Background(), cfg, runtime.WithDrivers(runtime.Driver{
-		Name: "openai",
-		Build: func(s json.RawMessage) (inference.Provider, error) {
-			settings = s
-			return inference.Provider{Generator: stubGenerator{}}, nil
-		},
-	}))
+	rt, err := runtime.New(context.Background(), cfg,
+		runtime.WithSandboxBackends(backends.All()),
+		runtime.WithDrivers(runtime.Driver{
+			Name: "openai",
+			Build: func(s json.RawMessage) (inference.Provider, error) {
+				settings = s
+				return inference.Provider{Generator: stubGenerator{}}, nil
+			},
+		}))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

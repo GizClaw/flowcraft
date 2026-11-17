@@ -34,6 +34,16 @@ type Bindings struct {
 	// RuntimeOptions are the construction options: driver table, selectors,
 	// secret resolvers. They are per process, not per agent.
 	RuntimeOptions []runtime.Option
+	// SandboxBackends are the sandbox implementations this process may build,
+	// keyed by the value a deployment writes in sandbox.backend. Nil registers
+	// none, so a deployment that names a backend fails to build: the platform
+	// ships the seam, the host ships the set (core/runtime/backends is the
+	// opt-in convenience set).
+	//
+	// It is appended as WithSandboxBackends, so it replaces any table a
+	// RuntimeOptions entry already registered: name the set in one place, not
+	// both.
+	SandboxBackends map[string]runtime.SandboxFactory
 	// LoadOptions are handed to the layer loader: resolvers for placeholder
 	// schemes.
 	LoadOptions []config.Option
@@ -162,6 +172,10 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	}
 
 	runtimeOptions := append([]runtime.Option(nil), m.bindings.RuntimeOptions...)
+	if len(m.bindings.SandboxBackends) > 0 {
+		runtimeOptions = append(runtimeOptions,
+			runtime.WithSandboxBackends(m.bindings.SandboxBackends))
+	}
 	var delegationService *delegation.Service
 	if spec.Delegation != nil {
 		if spec.Runtime.Version == 0 {

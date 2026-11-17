@@ -473,6 +473,47 @@ func (c RemoteConfig) validateTransport(transport string) error {
 	return nil
 }
 
+// RemoteBackendParams is the parsed form of [RemoteConfig]: what a client needs
+// after the document's strings have become durations and a transport. Validate
+// checks the same values, so a block that passed validation cannot fail here.
+type RemoteBackendParams struct {
+	// Unix selects the socket transport instead of an http endpoint.
+	Unix               bool
+	Endpoint           string
+	Socket             string
+	Token              string
+	Timeout            time.Duration
+	PollHold           time.Duration
+	InsecureSkipVerify bool
+}
+
+// BackendParams returns the parsed view of the block for a registered sandbox
+// backend. The parsing and its errors stay here, beside Validate, so a backend
+// reads values instead of re-deriving them from the document.
+func (c RemoteConfig) BackendParams() (RemoteBackendParams, error) {
+	transport, err := c.transport()
+	if err != nil {
+		return RemoteBackendParams{}, err
+	}
+	timeout, err := c.timeout()
+	if err != nil {
+		return RemoteBackendParams{}, err
+	}
+	hold, err := c.pollHold()
+	if err != nil {
+		return RemoteBackendParams{}, err
+	}
+	return RemoteBackendParams{
+		Unix:               transport == remoteTransportUnix,
+		Endpoint:           c.Endpoint,
+		Socket:             c.Socket,
+		Token:              c.Token,
+		Timeout:            timeout,
+		PollHold:           hold,
+		InsecureSkipVerify: c.InsecureSkipVerify,
+	}, nil
+}
+
 // timeout is the per-request timeout, zero meaning the client's default.
 func (c RemoteConfig) timeout() (time.Duration, error) {
 	return parseOptionalDuration("sandbox.remote.timeout", c.Timeout)
