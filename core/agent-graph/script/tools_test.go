@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 	"github.com/goccy/go-json"
 )
@@ -28,14 +29,16 @@ func toolRuntime(t testing.TB) *runtime.Runtime {
 		Files:   runtime.FilesConfig{Roots: []string{root}},
 		Tools:   runtime.ToolsConfig{Enable: []string{"files"}},
 	}
-	rt, err := runtime.New(context.Background(), config, runtime.WithToolSource(tooltest.Source(
-		tooltest.FuncTool("echo", "echo the request", func(_ context.Context, arguments string) (string, error) {
-			return arguments, nil
-		}),
-		tooltest.FuncTool("boom", "always fails", func(context.Context, string) (string, error) {
-			return "", errors.New("the device is offline")
-		}),
-	)))
+	rt, err := runtime.New(context.Background(), config,
+		runtime.WithSandboxBackends(backends.All()),
+		runtime.WithToolSource(tooltest.Source(
+			tooltest.FuncTool("echo", "echo the request", func(_ context.Context, arguments string) (string, error) {
+				return arguments, nil
+			}),
+			tooltest.FuncTool("boom", "always fails", func(context.Context, string) (string, error) {
+				return "", errors.New("the device is offline")
+			}),
+		)))
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}

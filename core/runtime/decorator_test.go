@@ -93,7 +93,7 @@ func TestSandboxDecoratorResolvesTheDocument(t *testing.T) {
 		seen     Sandbox
 		composed sandbox.Runner
 	)
-	rt, err := New(t.Context(), cfg, WithSandboxDecorator(
+	rt, err := newRuntime(t, cfg, WithSandboxDecorator(
 		func(spec Sandbox, runner sandbox.Runner) (sandbox.Runner, error) {
 			seen, composed = spec, runner
 			return runner, nil
@@ -125,7 +125,7 @@ func TestSandboxDecoratorReceivesComposedRunner(t *testing.T) {
 	cfg.Sandbox.Timeout = "300ms"
 
 	var composed sandbox.Runner
-	rt, err := New(t.Context(), cfg, WithSandboxDecorator(
+	rt, err := newRuntime(t, cfg, WithSandboxDecorator(
 		func(_ Sandbox, runner sandbox.Runner) (sandbox.Runner, error) {
 			composed = runner
 			return runner, nil
@@ -162,7 +162,7 @@ func TestSandboxDecoratorSeesBothToolPaths(t *testing.T) {
 		recorder *recordingRunner
 		inner    *closeRecorder
 	)
-	rt, err := New(t.Context(), localConfig(t), recordingDecorator(t, &recorder, &inner))
+	rt, err := newRuntime(t, localConfig(t), recordingDecorator(t, &recorder, &inner))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestSandboxDecoratorIsClosedExactlyOnce(t *testing.T) {
 		recorder *recordingRunner
 		inner    *closeRecorder
 	)
-	rt, err := New(t.Context(), localConfig(t), recordingDecorator(t, &recorder, &inner))
+	rt, err := newRuntime(t, localConfig(t), recordingDecorator(t, &recorder, &inner))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestSandboxDecoratorIsClosedExactlyOnce(t *testing.T) {
 // missing boundary: New closes what it built and returns.
 func TestSandboxDecoratorFailsBuild(t *testing.T) {
 	t.Run("nil runner", func(t *testing.T) {
-		_, err := New(t.Context(), localConfig(t), WithSandboxDecorator(
+		_, err := newRuntime(t, localConfig(t), WithSandboxDecorator(
 			func(Sandbox, sandbox.Runner) (sandbox.Runner, error) { return nil, nil }))
 		if !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "nil runner") {
 			t.Fatalf("err = %v, want a validation error naming the nil runner", err)
@@ -245,7 +245,7 @@ func TestSandboxDecoratorFailsBuild(t *testing.T) {
 	})
 	t.Run("error", func(t *testing.T) {
 		boom := errors.New("boom")
-		_, err := New(t.Context(), localConfig(t), WithSandboxDecorator(
+		_, err := newRuntime(t, localConfig(t), WithSandboxDecorator(
 			func(Sandbox, sandbox.Runner) (sandbox.Runner, error) { return nil, boom }))
 		if !errors.Is(err, boom) {
 			t.Fatalf("err = %v, want %v", err, boom)
@@ -264,7 +264,7 @@ func TestSandboxDecoratorKeepsTheJournal(t *testing.T) {
 		recorder *recordingRunner
 		inner    *closeRecorder
 	)
-	rt, err := New(t.Context(), cfg, recordingDecorator(t, &recorder, &inner))
+	rt, err := newRuntime(t, cfg, recordingDecorator(t, &recorder, &inner))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSandboxDecoratorKeepsTheJournal(t *testing.T) {
 		cfg := localConfig(t)
 		cfg.Sandbox.Journal = &journal.Settings{}
 
-		_, err := New(t.Context(), cfg, WithSandboxDecorator(
+		_, err := newRuntime(t, cfg, WithSandboxDecorator(
 			func(_ Sandbox, runner sandbox.Runner) (sandbox.Runner, error) {
 				return &lossyRunner{runner}, nil
 			}))

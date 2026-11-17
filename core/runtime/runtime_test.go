@@ -28,7 +28,7 @@ func localConfig(t *testing.T) Config {
 
 func TestNewAssemblesAndCloses(t *testing.T) {
 	cfg := localConfig(t)
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestNewAssemblesAndCloses(t *testing.T) {
 func TestNewRespectsToolSelection(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Tools.Enable = []string{ToolFiles}
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestNewRespectsToolSelection(t *testing.T) {
 func TestNewRejectsUnknownDriverAndListsOffered(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("nope", "primary", "m", nil)
-	_, err := New(context.Background(), cfg,
+	_, err := newRuntime(t, cfg,
 		WithDrivers(Driver{Name: "alpha", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: stubGenerator{}}, nil
 		}}))
@@ -90,7 +90,7 @@ func TestNewRejectsUnknownDriverAndListsOffered(t *testing.T) {
 func TestNewRejectsUncallableProvider(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("empty", "primary", "m", nil)
-	_, err := New(context.Background(), cfg,
+	_, err := newRuntime(t, cfg,
 		WithDrivers(Driver{Name: "empty", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{}, nil
 		}}))
@@ -103,7 +103,7 @@ func TestNewBuildsDriverProvider(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Inference = inferenceConfig("stub", "primary", "gpt-6-luna", nil)
 	var settingsSeen json.RawMessage
-	rt, err := New(context.Background(), cfg,
+	rt, err := newRuntime(t, cfg,
 		WithDrivers(Driver{Name: "stub", Build: func(settings json.RawMessage) (inference.Provider, error) {
 			settingsSeen = settings
 			return inference.Provider{Generator: stubGenerator{}}, nil
@@ -130,7 +130,7 @@ func TestNewRejectsMissingRoot(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Files.Roots = []string{cfg.Files.Roots[0] + "/absent"}
 	cfg.Sandbox.Writes = cfg.Files.Roots
-	if _, err := New(context.Background(), cfg); err == nil {
+	if _, err := newRuntime(t, cfg); err == nil {
 		t.Fatal("missing root accepted")
 	}
 }
@@ -154,7 +154,7 @@ func TestDynamicDefersToolsButKeepsAlwaysVisible(t *testing.T) {
 		Default: "deferred",
 		Always:  []string{"read_file"},
 	}
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestDynamicDefersToolsButKeepsAlwaysVisible(t *testing.T) {
 func TestStaticExposesEveryTool(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Tools.Enable = []string{ToolFiles}
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestMCPDeferredByDefault(t *testing.T) {
 		Command:     "/nonexistent/definitely-not-a-binary",
 		Description: "GitHub issues and pull requests.",
 	}}}
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

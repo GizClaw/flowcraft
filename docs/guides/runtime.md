@@ -94,6 +94,14 @@ The process boundary. Nothing here is guessed:
 | `bwrap`, `seatbelt`, `windows` | The backend's own construction options. Setting one on a different backend is a validation error, not a comment.                               |
 | `remote`                       | Client configuration for `backend: remote`; must be absent otherwise.                                                                          |
 
+The value you write in `backend` is resolved from a table the **host** registers
+(`runtime.WithSandboxBackends`), not from a built-in list: the runtime imports none
+of the backends, so a process that ships only the local runner links nothing else.
+`core/runtime/backends` is the opt-in set of every backend core provides —
+`backends.All()` for all five, or one of `backends.Local()`, `Bwrap()`,
+`Seatbelt()`, `Windows()`, `Remote()`. A backend that is not registered is a
+validation error that names what is.
+
 ### `files`, `skills`, `tools`
 
 | Section              | Rule                                                                                                                                                                                                                                                                                                  |

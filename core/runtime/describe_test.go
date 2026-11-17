@@ -217,7 +217,7 @@ func TestDescriptionsReplaceParameterTextAndKeepTheSchema(t *testing.T) {
 func TestDescriptionsRejectUnknownTool(t *testing.T) {
 	cfg := validConfig(t.TempDir())
 	cfg.Tools.Descriptions = DescriptionsConfig{"reed_file": {Text: "typo"}}
-	_, err := New(context.Background(), cfg)
+	_, err := newRuntime(t, cfg)
 	if err == nil {
 		t.Fatal("unknown tool accepted")
 	}
@@ -232,7 +232,7 @@ func TestDescriptionsRejectUnknownParameter(t *testing.T) {
 		Text:   "Read a file.",
 		Params: map[string]string{"filepath": "typo"},
 	}}
-	_, err := New(context.Background(), cfg)
+	_, err := newRuntime(t, cfg)
 	if err == nil {
 		t.Fatal("unknown parameter accepted")
 	}
@@ -284,7 +284,7 @@ func TestDigestTracksDescriptions(t *testing.T) {
 
 func plainRuntime(t *testing.T) *Runtime {
 	t.Helper()
-	rt, err := New(context.Background(), localConfig(t))
+	rt, err := newRuntime(t, localConfig(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -296,7 +296,7 @@ func describedRuntime(t *testing.T, descriptions DescriptionsConfig) *Runtime {
 	t.Helper()
 	cfg := localConfig(t)
 	cfg.Tools.Descriptions = descriptions
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New with descriptions: %v", err)
 	}

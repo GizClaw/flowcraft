@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/goccy/go-json"
 )
 
@@ -72,12 +73,14 @@ func testRuntime(t *testing.T, provider inference.Generator) *runtime.Runtime {
 		},
 		Tools: runtime.ToolsConfig{Enable: []string{"files"}},
 	}
-	rt, err := runtime.New(context.Background(), config, runtime.WithDrivers(runtime.Driver{
-		Name: "stub",
-		Build: func(json.RawMessage) (inference.Provider, error) {
-			return inference.Provider{Generator: provider}, nil
-		},
-	}))
+	rt, err := runtime.New(context.Background(), config,
+		runtime.WithSandboxBackends(backends.All()),
+		runtime.WithDrivers(runtime.Driver{
+			Name: "stub",
+			Build: func(json.RawMessage) (inference.Provider, error) {
+				return inference.Provider{Generator: provider}, nil
+			},
+		}))
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}
@@ -398,12 +401,14 @@ func dynamicRuntime(t testing.TB, provider inference.Generator) *runtime.Runtime
 			Dynamic: &runtime.DynamicConfig{},
 		},
 	}
-	rt, err := runtime.New(context.Background(), config, runtime.WithDrivers(runtime.Driver{
-		Name: "stub",
-		Build: func(json.RawMessage) (inference.Provider, error) {
-			return inference.Provider{Generator: provider}, nil
-		},
-	}))
+	rt, err := runtime.New(context.Background(), config,
+		runtime.WithSandboxBackends(backends.All()),
+		runtime.WithDrivers(runtime.Driver{
+			Name: "stub",
+			Build: func(json.RawMessage) (inference.Provider, error) {
+				return inference.Provider{Generator: provider}, nil
+			},
+		}))
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}

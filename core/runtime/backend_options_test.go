@@ -98,7 +98,7 @@ func TestSandboxJournalBlockAttachesAJournal(t *testing.T) {
 	cfg := localConfig(t)
 	cfg.Sandbox.Journal = &journal.Settings{Exclude: []string{".git", "node_modules"}}
 
-	rt, err := New(t.Context(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -109,7 +109,7 @@ func TestSandboxJournalBlockAttachesAJournal(t *testing.T) {
 	}
 
 	// Absence stays the default: no block, no journal.
-	plain, err := New(t.Context(), localConfig(t))
+	plain, err := newRuntime(t, localConfig(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

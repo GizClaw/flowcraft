@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/goccy/go-json"
 )
 
@@ -277,7 +278,12 @@ func newManager(t *testing.T, kinds deploy.Kinds, bindings Bindings) *Manager {
 // testHost is the wiring every test needs: a scripted driver and nothing else.
 func testHost(t *testing.T) Bindings {
 	t.Helper()
-	return Bindings{RuntimeOptions: []runtime.Option{driver(&scripted{})}}
+	// The host owns the backend table: a Manager with none registered cannot
+	// build the deployments these tests describe.
+	return Bindings{
+		RuntimeOptions:  []runtime.Option{driver(&scripted{})},
+		SandboxBackends: backends.All(),
+	}
 }
 
 // testSpec is one agent on a fresh runtime: the shape every manager test needs.

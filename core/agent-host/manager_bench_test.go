@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 )
 
 // benchSpec is one agent with a runtime, the shape a real deployment has.
@@ -28,7 +29,10 @@ func benchSpec(b *testing.B, name, kind string) deploy.Spec {
 }
 
 func benchHost() Bindings {
-	return Bindings{RuntimeOptions: []runtime.Option{driver(&scripted{})}}
+	return Bindings{
+		RuntimeOptions:  []runtime.Option{driver(&scripted{})},
+		SandboxBackends: backends.All(),
+	}
 }
 
 // benchManager deploys one local agent with no runtime: the layer's own costs,

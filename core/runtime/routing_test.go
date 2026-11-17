@@ -46,7 +46,7 @@ func TestRoutingFiltersByDeclaredModel(t *testing.T) {
 		},
 	})
 	second := &recorder{}
-	rt, err := New(context.Background(), cfg, WithDrivers(
+	rt, err := newRuntime(t, cfg, WithDrivers(
 		Driver{Name: "first", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: first}, nil
 		}},
@@ -96,7 +96,7 @@ func TestSelectorRegistryReachesTheRouter(t *testing.T) {
 	})
 	cfg.Inference.Route.Selector = "reverse"
 	second := &recorder{}
-	rt, err := New(context.Background(), cfg,
+	rt, err := newRuntime(t, cfg,
 		WithDrivers(
 			Driver{Name: "first", Build: func(json.RawMessage) (inference.Provider, error) {
 				return inference.Provider{Generator: first}, nil
@@ -132,7 +132,7 @@ func TestSelectorRegistryReachesTheRouter(t *testing.T) {
 func TestUnknownSelectorIsRejected(t *testing.T) {
 	cfg, _ := routingConfig(t, inferenceConfig("stub", "alpha", "a", nil))
 	cfg.Inference.Route.Selector = "nope"
-	_, err := New(context.Background(), cfg,
+	_, err := newRuntime(t, cfg,
 		WithDrivers(Driver{Name: "stub", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: &recorder{}}, nil
 		}}),
@@ -173,7 +173,7 @@ func TestCatalogConflictFailsAssembly(t *testing.T) {
 	withCaps := inferenceConfig("stub", "primary", "m", nil)
 	withCaps.Models[0].Capabilities = &CapabilitiesConfig{Inputs: []string{"image"}}
 	cfg, _ := routingConfig(t, withCaps)
-	_, err := New(context.Background(), cfg, WithDrivers(
+	_, err := newRuntime(t, cfg, WithDrivers(
 		Driver{Name: "stub", Build: func(json.RawMessage) (inference.Provider, error) {
 			return inference.Provider{Generator: &recorder{}, Catalog: driverCatalog{}}, nil
 		}},

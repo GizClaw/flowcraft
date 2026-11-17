@@ -8,11 +8,13 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 )
 
 func testCatalogRuntime(t *testing.T) *runtime.Runtime {
 	t.Helper()
-	rt, err := runtime.New(context.Background(), newConfig(t), driver(&scripted{}))
+	rt, err := runtime.New(context.Background(), newConfig(t), driver(&scripted{}),
+		runtime.WithSandboxBackends(backends.All()))
 	if err != nil {
 		t.Fatalf("runtime.New: %v", err)
 	}

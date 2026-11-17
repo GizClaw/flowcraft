@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	goruntime "runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -15,11 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox-bwrap"
-	"github.com/GizClaw/flowcraft/core/sandbox-local"
-	"github.com/GizClaw/flowcraft/core/sandbox-remote"
-	"github.com/GizClaw/flowcraft/core/sandbox-seatbelt"
-	"github.com/GizClaw/flowcraft/core/sandbox-windows"
 	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	"github.com/GizClaw/flowcraft/core/skill"
@@ -76,63 +70,18 @@ func (r *Runtime) buildRunner(ctx context.Context) error {
 		return err
 	}
 
-	var runner sandbox.Runner
-	switch r.cfg.Sandbox.Backend {
-	case BackendLocal:
-		opts := make([]local.Option, 0, 2)
-		if limits.MaxOutputBytes > 0 {
-			opts = append(opts, local.WithMaxOutputBytes(limits.MaxOutputBytes))
-		}
-		if journalCfg != nil {
-			opts = append(opts, local.WithFileJournalConfig(*journalCfg))
-		}
-		runner = local.New(dir, opts...)
-	case BackendSeatbelt:
-		opts := []seatbelt.RunnerOption{seatbelt.WithWritablePaths(writes...)}
-		if c := r.cfg.Sandbox.Seatbelt; c != nil {
-			if c.Binary != "" {
-				opts = append(opts, seatbelt.WithBinary(c.Binary))
-			}
-			if c.ReadOnlyRoot {
-				opts = append(opts, seatbelt.WithReadOnlyRoot())
-			}
-		}
-		if journalCfg != nil {
-			opts = append(opts, seatbelt.WithFileJournalConfig(*journalCfg))
-		}
-		runner, err = seatbelt.New(dir, opts...)
-	case BackendBwrap:
-		opts := []bwrap.RunnerOption{bwrap.WithWritablePaths(writes...)}
-		if c := r.cfg.Sandbox.Bwrap; c != nil {
-			if c.Binary != "" {
-				opts = append(opts, bwrap.WithBinary(c.Binary))
-			}
-			if len(c.ExtraFlags) > 0 {
-				opts = append(opts, bwrap.WithExtraFlags(c.ExtraFlags...))
-			}
-			if c.ReadOnlyRoot {
-				opts = append(opts, bwrap.WithReadOnlyRoot())
-			}
-		}
-		if journalCfg != nil {
-			opts = append(opts, bwrap.WithFileJournalConfig(*journalCfg))
-		}
-		runner, err = bwrap.New(dir, opts...)
-	case BackendWindows:
-		opts := []windows.Option{windows.WithWritablePaths(writes...)}
-		if c := r.cfg.Sandbox.Windows; c != nil && c.WriteConfine {
-			opts = append(opts, windows.WithWriteConfinement())
-		}
-		if journalCfg != nil {
-			opts = append(opts, windows.WithFileJournalConfig(*journalCfg))
-		}
-		runner, err = windows.New(dir, opts...)
-	case BackendRemote:
-		runner, err = r.cfg.Sandbox.remoteRunner(ctx)
-	default:
-		// Validate rejects this earlier; the switch keeps the boundary explicit.
-		return errdefs.Validationf("sandbox.backend: unknown backend %q", r.cfg.Sandbox.Backend)
+	build, ok := r.sandboxBackends[r.cfg.Sandbox.Backend]
+	if !ok {
+		return errdefs.Validationf("sandbox.backend: unknown backend %q (registered: %s)",
+			r.cfg.Sandbox.Backend, offeredBackends(r.sandboxBackends))
 	}
+	runner, err := build(ctx, SandboxBuild{
+		Dir:     dir,
+		Writes:  writes,
+		Limits:  limits,
+		Journal: journalCfg,
+		Config:  r.cfg.Sandbox,
+	})
 	if err != nil {
 		return errdefs.Validationf("sandbox.backend %q: %w", r.cfg.Sandbox.Backend, err)
 	}
@@ -604,57 +553,3 @@ const maxSkillDiagnosticsLogged = 5
 // The transport is the document's choice: an HTTP endpoint across hosts, or a unix
 // socket on this one. The client is identical either way — only where the bytes
 // travel differs — so this builds the options once and picks the constructor.
-func (c SandboxConfig) remoteRunner(ctx context.Context) (sandbox.Runner, error) {
-	opts, err := c.remoteOptions()
-	if err != nil {
-		return nil, err
-	}
-	transport, err := c.Remote.transport()
-	if err != nil {
-		return nil, err
-	}
-	if transport == remoteTransportUnix {
-		if c.Remote.Token == "" && goruntime.GOOS == "windows" {
-			// os.Chmod is advisory on Windows and the directory ACL is the real
-			// boundary, so a socket there is not a credential by itself.
-			telemetry.Warn(ctx,
-				"sandbox.remote speaks over a unix socket without a token; on Windows "+
-					"the socket's permissions are advisory, so keep a token or protect the directory",
-				attribute.String(telemetry.AttrSandboxEndpoint, c.Remote.Socket))
-		}
-		runner, err := remote.NewUnix(ctx, c.Remote.Socket, opts...)
-		if err != nil {
-			return nil, errdefs.Validationf("sandbox.remote.socket: %w", err)
-		}
-		return runner, nil
-	}
-	return remote.New(ctx, c.Remote.Endpoint, opts...)
-}
-
-// remoteOptions translates the document's remote block into client options.
-func (c SandboxConfig) remoteOptions() ([]remote.Option, error) {
-	var opts []remote.Option
-	if c.Remote.Token != "" {
-		opts = append(opts, remote.WithToken(c.Remote.Token))
-	}
-	var httpOpts []remote.HTTPOption
-	if c.Remote.InsecureSkipVerify {
-		httpOpts = append(httpOpts, remote.WithHTTPInsecureTLS())
-	}
-	if timeout, err := c.Remote.timeout(); err != nil {
-		return nil, err
-	} else if timeout > 0 {
-		httpOpts = append(httpOpts, remote.WithHTTPTimeout(timeout))
-	}
-	hold, err := c.Remote.pollHold()
-	if err != nil {
-		return nil, err
-	}
-	if len(httpOpts) > 0 {
-		opts = append(opts, remote.WithHTTPOptions(httpOpts...))
-	}
-	if hold > 0 {
-		opts = append(opts, remote.WithPollHold(hold))
-	}
-	return opts, nil
-}

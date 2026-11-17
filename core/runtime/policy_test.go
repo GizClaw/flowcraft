@@ -228,7 +228,7 @@ func TestSandboxNetPolicyKeepsLocalCommandsRunning(t *testing.T) {
 	cfg := validConfig(t.TempDir())
 	cfg.Sandbox.Net = NetConfig{Mode: "none"}
 
-	rt, err := New(t.Context(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

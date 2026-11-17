@@ -48,7 +48,7 @@ func TestRemoteBackendRunsACommand(t *testing.T) {
 	endpoint := serveLocal(t, root)
 
 	cfg := remoteConfig(t, root, endpoint)
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRemoteBackendFailsWhenTheServerIsUnreachable(t *testing.T) {
 	cfg := remoteConfig(t, root, endpoint)
 	cfg.Sandbox.Remote.Token = "wrong-token"
 
-	if _, err := New(context.Background(), cfg); err == nil {
+	if _, err := newRuntime(t, cfg); err == nil {
 		t.Fatal("New succeeded against a server that refuses the token")
 	}
 }
@@ -210,7 +210,7 @@ func TestRemoteUnixBackendRunsACommand(t *testing.T) {
 	socket := serveLocalUnix(t, root)
 
 	cfg := remoteUnixConfig(t, root, socket)
-	rt, err := New(context.Background(), cfg)
+	rt, err := newRuntime(t, cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

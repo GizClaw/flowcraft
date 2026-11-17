@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/backends"
 	"github.com/goccy/go-json"
 )
 
@@ -148,7 +149,10 @@ func TestExposedAgentServesA2A(t *testing.T) {
 	peerServer := peer(t, "served")
 	manager := newManager(t,
 		deploy.BuiltinKinds(),
-		host.Bindings{RuntimeOptions: []runtime.Option{stubDriver()}})
+		host.Bindings{
+			RuntimeOptions:  []runtime.Option{stubDriver()},
+			SandboxBackends: backends.All(),
+		})
 	spec := deploy.Spec{
 		Name:   "backend",
 		Engine: deploy.EngineSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{"peer": peerServer.URL})},
@@ -226,8 +230,9 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 		WithProtocols(deploy.A2AProtocol())
 	spec := specFor(t, "artifacts", "artifact")
 	manager := newManager(t, kinds, host.Bindings{
-		RuntimeOptions: []runtime.Option{stubDriver()},
-		ArtifactURL:    func(ref string) string { return "https://files.test/" + ref },
+		RuntimeOptions:  []runtime.Option{stubDriver()},
+		SandboxBackends: backends.All(),
+		ArtifactURL:     func(ref string) string { return "https://files.test/" + ref },
 	})
 	spec.Protocol = &deploy.ProtocolSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{
 		"card": map[string]any{"version": "1.0.0", "url": "http://artifacts.invalid"},
@@ -270,7 +275,7 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 func TestA2AProtocolMustBeRegistered(t *testing.T) {
 	kinds := deploy.BuiltinKinds()
 	delete(kinds.Protocols, "a2a")
-	manager := newManager(t, kinds, host.Bindings{})
+	manager := newManager(t, kinds, host.Bindings{SandboxBackends: backends.All()})
 	err := manager.Add(context.Background(), deploy.Spec{
 		Name:     "backend",
 		Engine:   deploy.EngineSpec{Kind: "a2a", Settings: settingsJSON(map[string]any{"peer": "https://peer.example"})},
