@@ -116,29 +116,103 @@ type searchIndexCache struct {
 	epoch uint64
 	built *searchIndex
 	keyed bool
+	// flight is the build in progress, nil when the cache is settled. The
+	// build itself runs outside mu: tool_search is a per-session operation,
+	// and holding the cache across a rebuild stalled every other session's
+	// search in the process.
+	flight *searchBuildFlight
+}
+
+// searchBuildFlight is one index build in progress. Whoever misses the cache
+// first installs a flight and becomes its leader; everyone who misses while it
+// runs waits on done instead of starting a second build. index and err are
+// written once, before done closes, and read only after it does — the close is
+// what publishes them.
+type searchBuildFlight struct {
+	epoch uint64
+	done  chan struct{}
+	index *searchIndex
+	err   error
+	once  sync.Once
+}
+
+// publish records the flight's result and releases its waiters. It is called
+// from the leader's deferred settle, so an error or a panic in the build cannot
+// leave a waiter blocked forever; once keeps a second publish from closing done
+// twice.
+func (f *searchBuildFlight) publish(index *searchIndex, err error) {
+	f.once.Do(func() {
+		f.index, f.err = index, err
+		close(f.done)
+	})
+}
+
+// wait blocks until the leader publishes.
+func (f *searchBuildFlight) wait() (*searchIndex, error) {
+	<-f.done
+	return f.index, f.err
 }
 
 // get returns the cached index when it still describes catalog, and otherwise
-// builds one from build. build runs under the lock so concurrent searches share
-// one rebuild rather than racing to duplicate it.
+// builds one from build. A hit costs one short lock acquisition and never
+// touches a flight. A miss either becomes the flight's leader — building outside
+// the lock — or waits for the leader's result, so concurrent misses share one
+// build without stalling the hit path.
 func (c *searchIndexCache) get(catalog tool.Catalog, build func() []searchDoc) (*searchIndex, error) {
 	epoch, keyed := uint64(0), false
 	if aware, ok := catalog.(definitionEpoch); ok {
 		epoch, keyed = aware.DefinitionsEpoch(), true
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if keyed && c.keyed && c.built != nil && c.epoch == epoch {
-		return c.built, nil
+	for {
+		c.mu.Lock()
+		if c.hit(epoch, keyed) {
+			index := c.built
+			c.mu.Unlock()
+			return index, nil
+		}
+		flight, leader := c.flight, c.flight == nil
+		if leader {
+			flight = &searchBuildFlight{epoch: epoch, done: make(chan struct{})}
+			c.flight = flight
+		}
+		c.mu.Unlock()
+		if leader {
+			return c.lead(flight, epoch, keyed, build)
+		}
+		index, err := flight.wait()
+		// A flight for another epoch never answers this call: the catalog
+		// moved while that build ran. Fall through to the cache check
+		// above rather than hand back an index this caller can prove
+		// stale; the next pass runs a build of its own.
+		if err != nil || flight.epoch == epoch {
+			return index, err
+		}
 	}
-	index, err := buildSearchIndex(build())
-	if err != nil {
-		return nil, err
-	}
-	if keyed {
-		c.built, c.epoch, c.keyed = index, epoch, true
-	}
-	return index, nil
+}
+
+// hit reports whether the cache still describes the requested epoch. The caller
+// holds mu.
+func (c *searchIndexCache) hit(epoch uint64, keyed bool) bool {
+	return keyed && c.keyed && c.built != nil && c.epoch == epoch
+}
+
+// lead builds the index as the flight's leader and settles the flight on every
+// return path: it publishes, clears the flight, and only then releases the
+// waiters, who would otherwise wake to a cache that does not hold the result.
+// The epoch is the one read before the build, so an index built from a catalog
+// that moved underneath it is tagged stale rather than published as current: the
+// next call sees the mismatch and rebuilds.
+func (c *searchIndexCache) lead(flight *searchBuildFlight, epoch uint64, keyed bool, build func() []searchDoc) (index *searchIndex, err error) {
+	defer func() {
+		c.mu.Lock()
+		if err == nil && keyed {
+			c.built, c.epoch, c.keyed = index, epoch, true
+		}
+		c.flight = nil // only the leader clears it, and only here
+		flight.publish(index, err)
+		c.mu.Unlock()
+	}()
+	return buildSearchIndex(build())
 }
 
 // catalogTerms tokenizes value with the kernel's splitter and then drops
