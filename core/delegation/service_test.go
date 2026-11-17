@@ -306,11 +306,15 @@ func TestDelegateAsyncAnswerResumes(t *testing.T) {
 	child.result = agent.Result{State: agent.StateInputRequired, Question: &question}
 	var mu sync.Mutex
 	runs := 0
-	child.run = func(f *fakeSession, _ context.Context) iter.Seq2[agent.Event, error] {
+	// The async restore has to put the persisted lineage back on the run's
+	// context: the resumed child belongs to the same chain, at the same depth.
+	var depths []int
+	child.run = func(f *fakeSession, runCtx context.Context) iter.Seq2[agent.Event, error] {
 		return func(yield func(agent.Event, error) bool) {
 			mu.Lock()
 			runs++
 			run := runs
+			depths = append(depths, delegation.DepthFromContext(runCtx))
 			mu.Unlock()
 			if run == 1 {
 				f.setState(agent.StateInputRequired)
@@ -347,6 +351,12 @@ func TestDelegateAsyncAnswerResumes(t *testing.T) {
 	finished := waitStatus(t, service, ctx, outcome.ID, delegation.StatusCompleted)
 	if finished.Content.Text() != "done" {
 		t.Fatalf("content = %q", finished.Content.Text())
+	}
+	mu.Lock()
+	got := append([]int(nil), depths...)
+	mu.Unlock()
+	if len(got) != 2 || got[0] != 1 || got[1] != 1 {
+		t.Fatalf("delegation depths on the child's runs = %v, want the first child's depth twice", got)
 	}
 }
 
