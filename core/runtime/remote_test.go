@@ -284,3 +284,77 @@ func TestConfigValidatesTheRemoteTransport(t *testing.T) {
 		})
 	}
 }
+
+// TestRemoteBackendParamsRejectsWhatValidateWould covers the parsed view's own
+// error branches. Through New they are unreachable — Validate refuses the block
+// first — so a backend that is handed a block from somewhere else (a test fixture,
+// a host assembling its own document) is the only caller that can see them, and it
+// should see a named error rather than a zero value.
+func TestRemoteBackendParamsParsesAndRejects(t *testing.T) {
+	cases := map[string]struct {
+		cfg  RemoteConfig
+		want string
+	}{
+		"unknown transport":    {RemoteConfig{Transport: "pigeon"}, "sandbox.remote.transport"},
+		"unparsable timeout":   {RemoteConfig{Timeout: "soon"}, "sandbox.remote.timeout"},
+		"unparsable hold":      {RemoteConfig{PollHold: "later"}, "sandbox.remote.poll_hold"},
+		"non-positive timeout": {RemoteConfig{Timeout: "0s"}, "sandbox.remote.timeout"},
+		"negative hold":        {RemoteConfig{PollHold: "-1s"}, "sandbox.remote.poll_hold"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			params, err := tc.cfg.BackendParams()
+			if err == nil {
+				t.Fatalf("BackendParams() = %+v, want an error", params)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to name %q", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("parses a hand-built block", func(t *testing.T) {
+		params, err := RemoteConfig{
+			Transport: "unix",
+			Socket:    "/run/flowcraft/sandbox.sock",
+			Token:     "t",
+			Timeout:   "10s",
+			PollHold:  "2s",
+		}.BackendParams()
+		if err != nil {
+			t.Fatalf("BackendParams(): %v", err)
+		}
+		if !params.Unix || params.Socket != "/run/flowcraft/sandbox.sock" ||
+			params.Timeout != 10*time.Second || params.PollHold != 2*time.Second ||
+			params.Token != "t" {
+			t.Errorf("params = %+v", params)
+		}
+	})
+
+	// The direction the doc claims and nothing tested: a block Validate accepts
+	// parses without error, so a host that validated a document cannot be surprised
+	// by the parsed view later. InsecureSkipVerify belongs to an endpoint block — a
+	// socket one is rejected, which is the fixture's own assertion.
+	t.Run("a validated document parses", func(t *testing.T) {
+		cfg := localConfig(t)
+		cfg.Sandbox.Backend = BackendRemote
+		cfg.Sandbox.Remote = RemoteConfig{
+			Endpoint:           "https://sandbox.invalid:8443",
+			Token:              "t",
+			Timeout:            "10s",
+			PollHold:           "2s",
+			InsecureSkipVerify: true,
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate: %v", err)
+		}
+		params, err := cfg.Sandbox.Remote.BackendParams()
+		if err != nil {
+			t.Fatalf("BackendParams(): %v", err)
+		}
+		if params.Unix || params.Timeout != 10*time.Second ||
+			params.PollHold != 2*time.Second || !params.InsecureSkipVerify {
+			t.Errorf("params = %+v", params)
+		}
+	})
+}
