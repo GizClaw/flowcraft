@@ -33,6 +33,21 @@ func TestScopeFrom_AbsentAndAttached(t *testing.T) {
 	}
 }
 
+// An attached but empty scope is not a projection: ScopeFrom reports it absent so
+// a caller that still has to attach the run's recorder is not blocked by a zero
+// value. Without this, WithScope(ctx, Scope{}) would silently disable the domain.
+func TestScopeFrom_EmptyScopeIsAbsent(t *testing.T) {
+	empty := tool.WithScope(context.Background(), tool.Scope{})
+	if _, ok := tool.ScopeFrom(empty); ok {
+		t.Fatal("a scope with no recorder should report absent")
+	}
+
+	rec := &countingRecorder{}
+	if scope, ok := tool.ScopeFrom(tool.EnsureScope(empty, rec)); !ok || scope.Recorder != rec {
+		t.Fatalf("EnsureScope over an empty scope did not attach: %+v, %v", scope, ok)
+	}
+}
+
 // EnsureScope never shadows the projection a run already attached: a caller that
 // finds no recorder below it must not swap the run's view for a fresh one, which
 // would discard the run's discovery state.

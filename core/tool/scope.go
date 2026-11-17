@@ -22,18 +22,24 @@ func WithScope(ctx context.Context, s Scope) context.Context {
 	return context.WithValue(ctx, scopeKey{}, s)
 }
 
-// ScopeFrom returns the scope attached to ctx, if any.
+// ScopeFrom returns the scope attached to ctx, if any. A scope that carries no
+// recorder reports absent, so "attached but empty" cannot shadow the projection a
+// caller is about to attach: the zero Scope is what an absent domain looks like.
 func ScopeFrom(ctx context.Context) (Scope, bool) {
 	if ctx == nil {
 		return Scope{}, false
 	}
 	scope, ok := ctx.Value(scopeKey{}).(Scope)
-	return scope, ok
+	if !ok || scope.Recorder == nil {
+		return Scope{}, false
+	}
+	return scope, true
 }
 
-// EnsureScope attaches rec only when the context carries no scope yet, so a
-// caller that already has the run's projection reuses it instead of shadowing it.
-// A nil recorder returns ctx unchanged.
+// EnsureScope attaches rec only when the context carries no usable scope yet, so
+// a caller that already has the run's projection reuses it instead of shadowing
+// it. An empty Scope counts as no scope (see [ScopeFrom]), and a nil recorder
+// returns ctx unchanged.
 func EnsureScope(ctx context.Context, rec CallRecorder) context.Context {
 	if rec == nil {
 		return ctx
