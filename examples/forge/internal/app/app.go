@@ -498,7 +498,10 @@ func openStore(dir string) (*checkpoint.SQLite, error) {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		return nil, fmt.Errorf("create workspace state dir: %w", err)
 	}
-	store, err := checkpoint.Open(filepath.Join(path, "sessions.db"))
+	store, err := checkpoint.Open(filepath.Join(path, "sessions.db"),
+		// A Forge workspace is a local development store, not a durable host: a
+		// power loss can lose the last commits, which the event log replays.
+		checkpoint.WithSynchronous(checkpoint.SynchronousNormal))
 	if err != nil {
 		return nil, fmt.Errorf("open session store: %w", err)
 	}

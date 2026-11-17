@@ -214,6 +214,16 @@ side wins, per field.
 The file journal watches the **runner-level** boundary: a per-call permission
 does not re-register watches, it only narrows what the call may write.
 
+A path check is configuration hygiene, not confinement. `engine.Resolve` turns a
+relative backend setting path into one under the runner root and rejects relative
+traversal — through a symlink too — but an absolute path is only
+`filepath.Clean`ed and returned unchanged, with no containment against the root,
+because a deployment states `writes` absolutely. The symlinks are evaluated when
+`Resolve` runs, so a link swapped afterwards is a TOCTOU window it cannot close.
+What confines a command is the kernel policy the backend installs (the Seatbelt
+profile, the bwrap namespaces and binds); a string check that disagreed with it
+would only move the refusal earlier and make it less accurate.
+
 ## Safe read-only auto-approval
 
 `engine.ClassifySafeReadOnly` implements the codex-rs-style heuristic (base
