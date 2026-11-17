@@ -21,6 +21,7 @@ jobs:
       lint: ${{ steps.matrix.outputs.lint }}
       lint_enabled: ${{ steps.matrix.outputs.lint_enabled }}
       test: ${{ steps.matrix.outputs.test }}
+      test_enabled: ${{ steps.matrix.outputs.test_enabled }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,8 +61,15 @@ jobs:
                   text,
               ))
           dir_of = {path: d for d, path in path_of.items()}
+          # A consumer pins released module versions and is built outside this
+          # workspace (see `check-consumers`), so it is not a dependent of the
+          # working tree: a change to a module it requires at a tag cannot reach
+          # it. It joins the matrix only when its own files change.
+          consumers = {d for d in dirs if d.startswith("examples/")}
           reverse = {d: set() for d in dirs}
           for d, deps in deps_of.items():
+              if d in consumers:
+                  continue
               for dep in deps:
                   if dep in dir_of:
                       reverse[dir_of[dep]].add(d)
@@ -104,16 +112,30 @@ jobs:
               return out
 
           lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
-          # examples/forge pins released module versions and builds with
-          # GOWORK=off, so it always runs rather than joining the closure.
           test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
-          test = sorted(set(test) | {"examples/forge"})
+          # The workspace mode travels with the entry: a consumer is built the
+          # way a reader builds it, outside this workspace.
           json.dump(
-              {"lint": {"module": lint}, "test": {"module": test}},
+              {
+                  "lint": {"module": lint},
+                  "test": {
+                      "include": [
+                          {
+                              "module": d,
+                              "gowork": "off" if d in consumers else "auto",
+                          }
+                          for d in test
+                      ]
+                  },
+              },
               open("matrix.json", "w"),
           )
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"lint_enabled={'true' if lint else 'false'}\n")
+              # `include: []` is a matrix with no entries, which the runner
+              # refuses rather than treating as "nothing to do": a docs-only
+              # change selects no module, and that job must be skipped.
+              output.write(f"test_enabled={'true' if test else 'false'}\n")
           PY
           echo "lint=$(jq -c .lint matrix.json)" >> "$GITHUB_OUTPUT"
           echo "test=$(jq -c .test matrix.json)" >> "$GITHUB_OUTPUT"
@@ -323,6 +345,7 @@ jobs:
   test:
     name: Test (${{ matrix.module }})
     needs: compute-matrix
+    if: needs.compute-matrix.outputs.test_enabled == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.compute-matrix.outputs.test) }}
@@ -344,6 +367,11 @@ jobs:
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
+        env:
+          # From the matrix: a consumer pins released versions and is compiled
+          # outside this workspace, the way a reader compiles it. Inside it,
+          # every core change would redden a module that never sees it.
+          GOWORK: ${{ matrix.gowork }}
       # The driver module is consumed outside this workspace — by deployments,
       # by the examples — where its own go.mod and go.sum are the whole story.
       # The release workflow gates the planned modules with
@@ -363,6 +391,11 @@ jobs:
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}
+        env:
+          # The scan loads the module's packages, so it has to resolve them the
+          # way the tests did: a consumer outside this workspace, everything
+          # else inside it.
+          GOWORK: ${{ matrix.gowork }}
 
   test-sandbox-bwrap:
     name: Integration core/sandbox-bwrap
