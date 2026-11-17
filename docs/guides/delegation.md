@@ -133,10 +133,12 @@ next := delegation.WithCall(ctx, call.Child())
 depth := delegation.DepthFromContext(ctx)
 ```
 
-`Call` is a value, not a set of context keys, so a later field (a budget, an eval
-marker) does not invent another key. The service stamps it before running the
-child, and everything downstream — a hook, a child delegation — reads the same
-lineage.
+`Call` is a view over `correlation.Run`: the lineage travels inside the run
+identity (`DelegationDepth`, `ChainID`), so a later lineage field extends that
+value instead of inventing another context key. The service stamps it before
+running the child, and everything downstream — a hook, a child delegation — reads
+the same lineage. A zero field leaves the inherited value in place, so a stamp can
+raise or set the depth and the chain but never clear them.
 
 ## What the child inherits, and what it does not
 

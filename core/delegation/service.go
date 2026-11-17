@@ -147,10 +147,8 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	if !s.allowedTarget(req.Target, run.AgentName, s.sessions.Names()) {
 		return Outcome{}, errdefs.Validationf("delegation: target %q is not allowed", req.Target)
 	}
-	call, ok := CallFrom(ctx)
-	if !ok {
-		call = Call{}
-	}
+	// Absent lineage is the root caller, which is the zero Call.
+	call, _ := CallFrom(ctx)
 	if call.ChainID == "" {
 		call.ChainID = chainID(run, callID)
 	}

@@ -359,6 +359,11 @@ first to know, and a later layer only overrides the fields it sets:
 | `TaskID`    | `agent`      | `task.id`           |
 | `Turn`      | `agent`      | `turn`              |
 
+`DelegationDepth` and `ChainID` are stamped by `delegation` and are deliberately
+not rendered as attributes: they say where the run sits in a delegation chain,
+not who it is, and the delegation layer already carries them on its own records
+(`Outcome`, `Job`).
+
 The package is `core/correlation` and it is a contracts-tier package on purpose:
 `tool`, `sandbox`, `inference`, `agent` and `delegation` all read the identity to
 start a span, and none of them may import the assembly that built the runtime.

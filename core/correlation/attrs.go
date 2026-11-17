@@ -15,7 +15,7 @@ package correlation
 // the work rather than its identity.
 //
 // Renaming any of these is a breaking change for every dashboard, alert and log
-// query that filters on the key; [TestAttrNamesAreStable] pins them.
+// query that filters on the key; TestAttrNamesAreStable pins them.
 const (
 	// AttrRuntimeID identifies one assembled agent runtime (core/runtime.Runtime.ID):
 	// the substrate a turn runs on, not a conversation. Two runtimes in one
@@ -36,7 +36,9 @@ const (
 	// AttrAgentName names the deployed agent within a multi-agent host.
 	AttrAgentName = "agent.name"
 
-	// AttrTurn is the conversation turn a step belongs to.
+	// AttrTurn is the 1-based ordinal of the Run call within the session in this
+	// process. It is correlation, not identity: it is not persisted and starts
+	// over after a restart or eviction.
 	AttrTurn = "turn"
 
 	// AttrManifestID identifies the deployment manifest a run executed under.

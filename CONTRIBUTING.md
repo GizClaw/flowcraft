@@ -107,6 +107,14 @@ core -> driver
   (`core/sandbox-{local,bwrap,seatbelt,windows,remote}`): they need the shared
   session and journal kit, and `core/sandbox/internal/...` is unreachable from
   another directory tree.
+- The top level is flat: one package per unit. A contract (`message`, `errdefs`,
+  `permission`, `fsx`, `skill`, `config`, `correlation`), a composition root
+  (`runtime`, `deploy`, `agent-host`), a backend and a protocol family each own a
+  top-level package rather than a directory under a family. An implementation's
+  prefix names what it implements (`sandbox-*` implements `sandbox`), and a
+  contract carries no prefix: `correlation` is not `runtime/correlation` because
+  every layer below the assembly reads the run identity, and none of them may
+  import the assembly.
 - `craft` — the planned application layer that assembles an application over
   `core` (a `craft.yaml` definition, the plugin host, host primitives and the
   process-level manager) — is not part of this workspace yet; the release gate

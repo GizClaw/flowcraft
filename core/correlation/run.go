@@ -20,8 +20,9 @@ import (
 // carrier cannot live inside core/runtime. The attribute names it renders live
 // beside it (attrs.go), so "who the work belongs to" has exactly one home.
 //
-// The runtime fills RuntimeID; deploy fills TenantID/SessionID/AgentName/
-// Manifest; the agent fills TaskID/Turn. Nothing here is conversation
+// The runtime and the host fill RuntimeID, TenantID, SessionID, AgentName and
+// Manifest (agent-host restates the runtime id on every turn); the agent fills
+// TaskID and Turn; delegation fills the lineage. Nothing here is conversation
 // *content*: the fields are the identity a span or log record is correlated
 // by. A graph step is execution detail and is a span attribute, not a field
 // here.
@@ -130,7 +131,7 @@ func stored(ctx context.Context) Run {
 // them on its own records (Outcome, Job). Rendering them here would put a
 // delegation fact on every span of a nested run.
 func buildAttrs(run Run) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 6)
+	attrs := make([]attribute.KeyValue, 0, 7)
 	if run.RuntimeID != "" {
 		attrs = append(attrs, attribute.String(AttrRuntimeID, run.RuntimeID))
 	}

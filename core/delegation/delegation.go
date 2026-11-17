@@ -126,7 +126,10 @@ func (c Call) Child() Call {
 // WithCall stamps the delegation lineage on a context.
 //
 // It merges into the run identity the context already carries, so the session,
-// tenant and task settled by the deployment survive the stamp.
+// tenant and task settled by the deployment survive the stamp. The same rule
+// applies to the lineage itself: a zero field leaves the inherited value in
+// place, so a stamp can raise or set the depth and the chain but never clear
+// them.
 func WithCall(ctx context.Context, call Call) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -146,7 +149,12 @@ func CallFrom(ctx context.Context) (Call, bool) {
 	return Call{Depth: run.DelegationDepth, ChainID: run.ChainID}, true
 }
 
-// DepthFromContext is the common read for tools and trace attributes.
+// DepthFromContext reports the delegation depth of ctx, zero for a run that was
+// never delegated.
+//
+// It is a convenience over From for callers that only need the depth: the
+// outcome a delegation returns (Outcome.Depth) is the number a report should
+// carry, and this is what a policy check reads off the context.
 func DepthFromContext(ctx context.Context) int {
 	run, _ := correlation.From(ctx)
 	return run.DelegationDepth

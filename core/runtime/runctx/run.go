@@ -1,13 +1,13 @@
 // Package runctx is the deprecated home of the run identity.
 //
+// This shim keeps an outside consumer compiling for one minor release. It
+// forwards every symbol and adds nothing.
+//
 // Deprecated: use [github.com/GizClaw/flowcraft/core/correlation]. The carrier
 // moved to the contracts tier because tool, sandbox, inference and agent read
 // the identity without importing the assembly: a package under core/runtime made
 // every one of those layers depend on the assembly for a context value. The
 // attribute names moved with it, so "who the work belongs to" has one home.
-//
-// This shim keeps an outside consumer compiling for one minor release. It
-// forwards every symbol and adds nothing.
 package runctx
 
 import (
