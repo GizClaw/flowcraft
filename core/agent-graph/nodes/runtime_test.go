@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
+	"github.com/GizClaw/flowcraft/core/agent-graph/script"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
@@ -14,6 +15,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
 )
+
+// A host hands the value its WithRuntimeKinds hook receives to the script node,
+// so the narrowing has to be a compile-time fact and not a claim in a guide: a
+// nodes.Runtime carries every method script.Runtime reads.
+var _ script.Runtime = (nodes.Runtime)(nil)
 
 // stubRuntime is a substrate a test writes in one screen: the five methods a node
 // kind reads, over an assembly built from a source the test names. No sandbox, no

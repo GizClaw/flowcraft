@@ -27,6 +27,12 @@ type options struct {
 // to the runtime's assembly - cannot be built by the host, because the host
 // registers its kind table before any runtime exists. This hook runs once per
 // graph, when the runtime is known, which is where such a kind belongs.
+//
+// The hook receives [Runtime], not the assembly: the five methods a node kind
+// reads. A host kind that needs more of the substrate - the file tree, the
+// sandbox runner, the journal, the skill index - cannot get it here; such a kind
+// is an engine kind, where deploy.EngineDeps.Runtime hands it the whole
+// assembly.
 func WithRuntimeKinds(build func(Runtime) ([]graph.NodeKind, error)) Option {
 	return func(target *options) {
 		if build != nil {

@@ -44,6 +44,10 @@ func WithSource(source Source) Option {
 // WithRuntime gives the kind the substrate a tool call needs. A script without an
 // allow list never touches it; one that declares a tool and has no runtime fails
 // at Build, because a capability the host cannot serve is a configuration error.
+//
+// Pass no runtime rather than a nil one: an interface holding a nil pointer is
+// not the zero value, so the Build check above would pass and the first script
+// tool call would fault inside it.
 func WithRuntime(rt Runtime) Option {
 	return func(k *Kind) { k.rt = rt }
 }

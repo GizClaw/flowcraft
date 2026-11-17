@@ -14,6 +14,13 @@ import (
 // names it instead of the assembly that happens to satisfy it: *runtime.Runtime
 // does, and so does a stub of these five methods, which is what lets a kind be
 // built and tested without assembling a runtime.
+//
+// Two things follow, and both are deliberate. The set is a compatibility surface:
+// it is the union of what the model and the tool kinds read — a stub for one kind
+// implements a method it never calls, and NewCatalogView is derivable from
+// Assembly — and adding a sixth method later is a breaking change for every host
+// that stubs it. A kind that needs more states its own smaller interface beside
+// this one, the way script.Runtime does, rather than widening this one.
 type Runtime interface {
 	NewCatalogView() engine.CatalogView
 	Assembly() *engine.Assembly
