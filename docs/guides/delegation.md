@@ -64,7 +64,7 @@ one is a fact that would otherwise become a wrong answer somewhere else:
 
 1. **A parent session** — `correlation.From(ctx)` must carry one. A delegation outside
    a run has no place to return to.
-2. **A tool call id** — `tool.CallIDFromContext`. It is what makes the child
+2. **A tool call id** — `tool.CallFrom(ctx)`. It is what makes the child
    session key deterministic.
 3. **The mode is allowed** by the policy, and the target is in `targets` (or
    `targets` is empty and the target is not the caller).

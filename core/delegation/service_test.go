@@ -100,7 +100,7 @@ func parentCtx(callID string) context.Context {
 	if callID == "" {
 		return ctx
 	}
-	return tool.WithCallID(ctx, callID)
+	return tool.WithCall(ctx, tool.Call{ID: callID})
 }
 
 func newFake() (*fakeSessions, *fakeSession) {

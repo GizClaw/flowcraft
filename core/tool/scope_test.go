@@ -20,6 +20,7 @@ func TestScopeFrom_AbsentAndAttached(t *testing.T) {
 	if _, ok := tool.ScopeFrom(context.Background()); ok {
 		t.Fatal("ScopeFrom outside a run should report absent")
 	}
+	//nolint:staticcheck // deliberate: the accessor documents that it accepts a nil context
 	if _, ok := tool.ScopeFrom(nil); ok {
 		t.Fatal("ScopeFrom on a nil context should report absent")
 	}

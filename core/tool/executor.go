@@ -65,7 +65,7 @@ func NewExecutor(catalog Catalog, mws ...Middleware) *Executor {
 // IsError=true, never as a Go error and never as a panic, because the
 // caller may be a fan-out goroutine with nowhere to recover.
 func (e *Executor) Execute(ctx context.Context, call message.ToolCall) (res message.ToolResult) {
-	ctx = WithCallID(ctx, call.ID)
+	ctx = WithCall(ctx, Call{ID: call.ID})
 	defer func() {
 		rv := recover()
 		if rv == nil {

@@ -35,15 +35,14 @@ const (
 // Telemetry wraps dispatch with the standard observability stack: one span per
 // call, execution/duration/error metrics, and a warning log for failures.
 //
-// Failure is read off Result.IsError, and the classification comes from the
-// recorder the middleware installs before calling inward: the stages that
-// short-circuit a call (approval, timeout, the catalog lookup, panic recovery)
-// tag *why* through tool.RecordFailure, so the span never has to parse an error
-// message to name a cause.
+// Failure is read off Result.IsError, and the classification comes from the box
+// the executor installs for every call: the stages that short-circuit a call
+// (approval, timeout, the catalog lookup, panic recovery) tag *why* through
+// tool.RecordFailure, so the span never has to parse an error message to name a
+// cause.
 func Telemetry() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			ctx = tool.WithFailureRecorder(ctx)
 			ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, spanToolExecute,
 				trace.WithAttributes(
 					attribute.String(telemetry.AttrToolName, call.Name),

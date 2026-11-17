@@ -23,8 +23,7 @@ var registered = []string{
 	"correlation/run.go",
 	"inference/request_metadata.go",
 	"inference/route/target.go",
-	"tool/call_context.go",
-	"tool/failure_kind.go",
+	"tool/call.go",
 	"tool/scope.go",
 }
 
