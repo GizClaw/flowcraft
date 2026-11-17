@@ -15,12 +15,12 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/config"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	toolengine "github.com/GizClaw/flowcraft/core/tool/engine"
 )
@@ -474,7 +474,7 @@ type deployment struct {
 // runContext gives one run its execution context: the tool projection the
 // catalog scope names. The session table calls it per run.
 func (d *deployment) runContext(ctx context.Context, sessionID string) context.Context {
-	run := runctx.Run{
+	run := correlation.Run{
 		SessionID: sessionID,
 		AgentName: d.name,
 		TenantID:  d.tenant,
@@ -486,7 +486,7 @@ func (d *deployment) runContext(ctx context.Context, sessionID string) context.C
 	if d.rt != nil {
 		run.RuntimeID = d.rt.ID()
 	}
-	ctx = runctx.WithRun(ctx, run)
+	ctx = correlation.WithRun(ctx, run)
 	if d.rt == nil {
 		return ctx
 	}

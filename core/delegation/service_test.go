@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -92,7 +92,7 @@ func (f *fakeSessions) Session(name, sessionID string) (delegation.Session, bool
 func (f *fakeSessions) Names() []string { return f.names }
 
 func parentCtx(callID string) context.Context {
-	ctx := runctx.WithRun(context.Background(), runctx.Run{
+	ctx := correlation.WithRun(context.Background(), correlation.Run{
 		SessionID: "s1",
 		AgentName: "planner",
 		TaskID:    "t1",

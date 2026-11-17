@@ -6,14 +6,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 )
 
 // captureRunner records the run identity every Run receives.
 type captureRunner struct {
 	mu     sync.Mutex
-	seen   []runctx.Run
+	seen   []correlation.Run
 	state  TaskState
 	pauses int
 }
@@ -26,7 +26,7 @@ func (r *captureRunner) State() TaskState {
 
 func (r *captureRunner) Run(ctx context.Context, _ message.Message) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
-		run, _ := runctx.From(ctx)
+		run, _ := correlation.From(ctx)
 		r.mu.Lock()
 		r.seen = append(r.seen, run)
 		pause := r.pauses > 0
@@ -45,7 +45,7 @@ func (r *captureRunner) Run(ctx context.Context, _ message.Message) iter.Seq2[Ev
 func (r *captureRunner) Cancel(context.Context, string) error { return nil }
 func (r *captureRunner) Close() error                         { return nil }
 
-func runIdentity(t *testing.T, pauses int) []runctx.Run {
+func runIdentity(t *testing.T, pauses int) []correlation.Run {
 	t.Helper()
 	runner := &captureRunner{state: StateSubmitted, pauses: pauses}
 	agent, err := NewAgent(AgentOptions{
@@ -53,7 +53,7 @@ func runIdentity(t *testing.T, pauses int) []runctx.Run {
 			return runner, nil
 		},
 		RunContext: func(ctx context.Context, sessionID string) context.Context {
-			return runctx.WithRun(ctx, runctx.Run{
+			return correlation.WithRun(ctx, correlation.Run{
 				SessionID: sessionID,
 				AgentName: "writer",
 			})
@@ -78,7 +78,7 @@ func runIdentity(t *testing.T, pauses int) []runctx.Run {
 
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	return append([]runctx.Run(nil), runner.seen...)
+	return append([]correlation.Run(nil), runner.seen...)
 }
 
 func TestRunAttachesTaskIDAndTurn(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/config"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/runtime"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/goccy/go-json"
 )
@@ -99,7 +99,7 @@ func TestExampleYAMLBuildsARuntime(t *testing.T) {
 	}
 	// The runtime id reaches any context derived from it.
 	ctx := rt.Context(context.Background())
-	run, ok := runctx.From(ctx)
+	run, ok := correlation.From(ctx)
 	if !ok || run.RuntimeID != rt.ID() {
 		t.Errorf("run context = %+v, %v; want the runtime id", run, ok)
 	}

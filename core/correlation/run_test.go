@@ -1,12 +1,10 @@
-package runctx
+package correlation
 
 import (
 	"context"
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
-
-	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 func TestRunRoundTrip(t *testing.T) {
@@ -37,16 +35,16 @@ func TestAttrsOmitsEmptyFields(t *testing.T) {
 	if len(attrs) != 1 {
 		t.Fatalf("attrs = %v, want only the runtime id", attrs)
 	}
-	if string(attrs[0].Key) != telemetry.AttrRuntimeID || attrs[0].Value.AsString() != "rt-1" {
-		t.Errorf("attr = %v, want %s=rt-1", attrs[0], telemetry.AttrRuntimeID)
+	if string(attrs[0].Key) != AttrRuntimeID || attrs[0].Value.AsString() != "rt-1" {
+		t.Errorf("attr = %v, want %s=rt-1", attrs[0], AttrRuntimeID)
 	}
 
 	both := Attrs(WithRun(context.Background(), Run{RuntimeID: "rt-1", TenantID: "acme"}))
 	if len(both) != 2 {
 		t.Fatalf("attrs = %v, want two", both)
 	}
-	if string(both[1].Key) != telemetry.AttrTenantID {
-		t.Errorf("second attr = %s, want %s", both[1].Key, telemetry.AttrTenantID)
+	if string(both[1].Key) != AttrTenantID {
+		t.Errorf("second attr = %s, want %s", both[1].Key, AttrTenantID)
 	}
 }
 
@@ -129,10 +127,10 @@ func TestAttrsCarrySessionIdentity(t *testing.T) {
 	for _, kv := range Attrs(ctx) {
 		attrs[string(kv.Key)] = kv.Value.AsInterface()
 	}
-	if attrs[telemetry.AttrSessionID] != "s1" || attrs[telemetry.AttrAgentName] != "writer" {
+	if attrs[AttrSessionID] != "s1" || attrs[AttrAgentName] != "writer" {
 		t.Errorf("identity attrs = %v", attrs)
 	}
-	if attrs[telemetry.AttrTurn] != int64(3) || attrs[telemetry.AttrManifestID] != "sha256:m" {
+	if attrs[AttrTurn] != int64(3) || attrs[AttrManifestID] != "sha256:m" {
 		t.Errorf("turn/manifest attrs = %v", attrs)
 	}
 }
@@ -163,10 +161,36 @@ func TestRunCarriesTaskAndTurn(t *testing.T) {
 	for _, attr := range Attrs(ctx) {
 		attrs[string(attr.Key)] = attr.Value.String()
 	}
-	if attrs[telemetry.AttrTaskID] != "t-1" {
+	if attrs[AttrTaskID] != "t-1" {
 		t.Errorf("task attr = %v", attrs)
 	}
-	if attrs[telemetry.AttrTurn] != "3" {
+	if attrs[AttrTurn] != "3" {
 		t.Errorf("turn attr = %v", attrs)
+	}
+}
+
+// The delegation lineage travels in the same value: a layer that stamps only the
+// depth keeps the chain it inherited, and a run that was never delegated carries
+// neither. Lineage is not rendered as an attribute — it is not the identity a
+// span is correlated by, and the delegation layer owns those records.
+func TestRunCarriesDelegationLineage(t *testing.T) {
+	ctx := WithRun(context.Background(), Run{
+		SessionID:       "s1",
+		ChainID:         "chain-1",
+		DelegationDepth: 1,
+	})
+	ctx = WithRun(ctx, Run{DelegationDepth: 2})
+
+	run, ok := From(ctx)
+	if !ok || run.SessionID != "s1" || run.ChainID != "chain-1" || run.DelegationDepth != 2 {
+		t.Fatalf("run = %+v, ok = %v", run, ok)
+	}
+	if attrs := Attrs(ctx); len(attrs) != 1 {
+		t.Fatalf("attrs = %v, want only session.id: lineage is not identity", attrs)
+	}
+
+	plain, _ := From(WithRun(context.Background(), Run{SessionID: "s2"}))
+	if plain.DelegationDepth != 0 || plain.ChainID != "" {
+		t.Fatalf("undelegated run carries lineage: %+v", plain)
 	}
 }

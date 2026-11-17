@@ -62,7 +62,7 @@ generation sees that generation's targets.
 `Service.Delegate` is deliberately strict about its preconditions, because each
 one is a fact that would otherwise become a wrong answer somewhere else:
 
-1. **A parent session** — `runctx.From(ctx)` must carry one. A delegation outside
+1. **A parent session** — `correlation.From(ctx)` must carry one. A delegation outside
    a run has no place to return to.
 2. **A tool call id** — `tool.CallIDFromContext`. It is what makes the child
    session key deterministic.

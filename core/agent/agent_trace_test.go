@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
@@ -21,7 +21,7 @@ func TestOnRunReportsTheRun(t *testing.T) {
 		NewRunner: factory,
 		Trace:     telemetry.TraceRun,
 		RunContext: func(ctx context.Context, sessionID string) context.Context {
-			return runctx.WithRun(ctx, runctx.Run{SessionID: sessionID, TenantID: "acme", Manifest: "sha256:m"})
+			return correlation.WithRun(ctx, correlation.Run{SessionID: sessionID, TenantID: "acme", Manifest: "sha256:m"})
 		},
 		OnRun: func(record agent.RunRecord) { records = append(records, record) },
 	})

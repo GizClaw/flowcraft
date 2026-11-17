@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/runtime/runctx"
+	"github.com/GizClaw/flowcraft/core/correlation"
 )
 
 // The deployment knows the tenant and the manifest; the run context is where
@@ -21,7 +21,7 @@ func TestRunContextCarriesTenantAndManifest(t *testing.T) {
 		manifest:   manifest,
 		manifestID: manifest.ID(),
 	}
-	run, ok := runctx.From(d.runContext(context.Background(), "conv-1"))
+	run, ok := correlation.From(d.runContext(context.Background(), "conv-1"))
 	if !ok {
 		t.Fatal("run identity missing")
 	}
