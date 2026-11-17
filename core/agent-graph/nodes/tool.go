@@ -149,7 +149,6 @@ type toolStream struct {
 	effects     string
 	checkpoint  func([]graph.Record) error
 	parallelism int
-	slots       chan struct{}
 	result      graph.Result
 	done        bool
 }
@@ -201,36 +200,65 @@ func (s *toolStream) Next(ctx context.Context) (agent.Event, error) {
 	}
 }
 
-// launch starts one goroutine per call. Every call runs at once; the results
-// are collected in input order.
+// launch starts a bounded worker pool: len(calls) workers, lowered to the
+// parallelism cap when one is set. A batch of two hundred calls therefore parks
+// at most "parallelism" goroutines instead of one per call. The results are
+// collected in input order whatever order they complete in.
 func (s *toolStream) launch(ctx context.Context) {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.completions = make(chan toolCompletion, len(s.calls))
 	s.pending = len(s.calls)
 	s.results = make([]message.ToolResult, len(s.calls))
 	s.records = make([][]graph.Record, len(s.calls))
-	if s.parallelism > 0 {
-		s.slots = make(chan struct{}, s.parallelism)
+	workers := len(s.calls)
+	if s.parallelism > 0 && s.parallelism < workers {
+		workers = s.parallelism
 	}
-	for i, call := range s.calls {
-		go s.execute(i, call)
+	queue := make(chan int)
+	for range workers {
+		go s.work(queue)
 	}
+	// One dispatcher, not one sender per call: it leaves the queue instead of
+	// parking on a consumer that a cancel has already retired.
+	go func() {
+		defer close(queue)
+		for index := range s.calls {
+			select {
+			case queue <- index:
+			case <-s.ctx.Done():
+				return
+			}
+		}
+	}()
 	s.launched = true
 }
 
-// execute runs one call and reports it. It is the only goroutine touching its
-// index's slots; the records it returns are concatenated in input order.
-func (s *toolStream) execute(index int, call message.ToolCall) {
-	if s.slots != nil {
+// work pulls call indices until the queue is drained or the batch is canceled,
+// running one call at a time: the number of calls in flight is the number of
+// workers.
+func (s *toolStream) work(queue <-chan int) {
+	for {
 		select {
-		case s.slots <- struct{}{}:
-			defer func() { <-s.slots }()
 		case <-s.ctx.Done():
-			s.completions <- toolCompletion{index: index,
-				result: message.NewErrorToolResult(call.ID, s.ctx.Err().Error()), errorKind: "canceled"}
 			return
+		case index, ok := <-queue:
+			if !ok {
+				return
+			}
+			// The receive can win the race against a done context; a call started
+			// after the cancel is work the caller no longer wants.
+			if s.ctx.Err() != nil {
+				return
+			}
+			s.execute(index, s.calls[index])
 		}
 	}
+}
+
+// execute runs one call and reports it. Only a worker of this batch touches the
+// index's result slot, so the slots are safe to fill out of order; the records
+// it returns are concatenated in input order.
+func (s *toolStream) execute(index int, call message.ToolCall) {
 	body, err := json.Marshal(call)
 	if err != nil {
 		s.completions <- toolCompletion{index: index,
