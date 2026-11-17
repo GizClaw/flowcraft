@@ -23,9 +23,8 @@ var registered = []string{
 	"correlation/run.go",
 	"inference/request_metadata.go",
 	"inference/route/target.go",
-	"tool/call_context.go",
-	"tool/call_recorder.go",
-	"tool/failure_kind.go",
+	"tool/call.go",
+	"tool/scope.go",
 }
 
 // TestEveryContextValueIsRegistered is the drift guard for the context registry.
@@ -104,15 +103,22 @@ func TestEveryContextValueIsRegistered(t *testing.T) {
 	}
 
 	// 2. No row can outlive its value: an allowlist entry with nothing behind it
-	// is a guide row that describes how the code used to work.
+	// is a guide row that describes how the code used to work. The file is the
+	// unit, so a second key in a registered file is a second domain smuggled into
+	// an already-blessed one — "one key per domain" is the rule the guide states.
 	for _, file := range registered {
 		if _, ok := walked[file]; !ok {
 			t.Errorf("core/%s is registered but does not exist: remove its row from docs/guides/context.md and its entry here", file)
 			continue
 		}
-		if len(declared[file]) == 0 {
+		switch len(declared[file]) {
+		case 0:
 			t.Errorf("core/%s is registered but no longer calls context.WithValue: "+
 				"remove its row from docs/guides/context.md and its entry here", file)
+		case 1:
+		default:
+			t.Errorf("core/%s declares %d context values: one key per domain, "+
+				"give the new one its own file and row", file, len(declared[file]))
 		}
 	}
 

@@ -140,10 +140,11 @@ func (s *Service) Delegate(ctx context.Context, req Request) (Outcome, error) {
 	if !ok || run.SessionID == "" {
 		return Outcome{}, errdefs.Validationf("delegation: a parent session is required")
 	}
-	callID, ok := tool.CallIDFromContext(ctx)
-	if !ok {
+	active, ok := tool.CallFrom(ctx)
+	if !ok || active.ID == "" {
 		return Outcome{}, errdefs.Validationf("delegation: a tool call id is required")
 	}
+	callID := active.ID
 	if !s.allowedTarget(req.Target, run.AgentName, s.sessions.Names()) {
 		return Outcome{}, errdefs.Validationf("delegation: target %q is not allowed", req.Target)
 	}

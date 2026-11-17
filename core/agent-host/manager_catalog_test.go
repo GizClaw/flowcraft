@@ -39,6 +39,27 @@ func TestRunScopedCatalogView(t *testing.T) {
 	}
 }
 
+// A run started on a context that already carries another run's projection -- a
+// delegated child starts on the parent's tool-call context -- still gets its own.
+// Sharing one view would mix two conversations' discoveries, and hand the child
+// model the parent's toolset.
+func TestRunScopedCatalogViewStartsFreshOnALineageContext(t *testing.T) {
+	d := &deployment{rt: testCatalogRuntime(t)}
+	parentCtx := d.runContext(context.Background(), "conv-1")
+	parent, ok := runtime.CatalogViewFrom(parentCtx)
+	if !ok {
+		t.Fatal("the parent run context carries no view")
+	}
+	child, ok := runtime.CatalogViewFrom(d.runContext(parentCtx, "conv-1"))
+	if !ok {
+		t.Fatal("the child run context carries no view")
+	}
+	if child == parent {
+		t.Fatal("a run started on another run's context reused its projection; " +
+			"two conversations would share one discovery pool")
+	}
+}
+
 // A session-scoped catalog keeps one view per session.
 func TestSessionScopedCatalogView(t *testing.T) {
 	d := &deployment{
