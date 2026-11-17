@@ -172,16 +172,39 @@ func (v Value) decodeText(want Kind) (string, error) {
 	return v.text, nil
 }
 
+// messagesChunkSize is how many messages a chunk holds. Chunks are the unit
+// Slice copies and the point where the tail is folded into the chain: a small
+// chunk keeps the fold rare, a large one keeps the walk short.
+const messagesChunkSize = 64
+
+// messageChunk is an immutable run of messages. Every chunk in the chain
+// holds exactly messagesChunkSize messages, and parent points at the older one.
+type messageChunk struct {
+	parent   *messageChunk
+	messages [messagesChunkSize]message.Message
+}
+
+// messageTail is the newest, still short end of a session: a linked list of at
+// most messagesChunkSize-1 messages, newest first, waiting to be folded into a
+// chunk. n is the length of the list that starts here.
+type messageTail struct {
+	parent *messageTail
+	msg    message.Message
+	n      int
+}
+
 // Messages is an immutable session with O(1) append.
 //
 // A message list is the value a fan-out would otherwise copy once per branch:
 // a thousand messages is forty kilobytes of headers before any part is touched.
-// As a persistent sequence, Append allocates one node and shares the parent, so
-// two branches append independently without copying the shared prefix and
-// without a lock.
+// As a persistent sequence, Append allocates one tail node and shares every
+// chunk and node before it, so two branches append independently without
+// copying the shared prefix and without a lock. Each messagesChunkSize appends
+// the tail is folded into one immutable chunk, which is what makes Slice a
+// per-chunk copy instead of a walk over every message.
 type Messages struct {
-	parent *Messages
-	msg    message.Message
+	chunks *messageChunk
+	tail   *messageTail
 	n      int
 }
 
@@ -193,40 +216,83 @@ func EmptyMessages() Messages { return Messages{} }
 // themselves are shared, which is safe because a message does not change after it
 // is built.
 //
-// The chain is built in one allocation: Append allocates a node per message,
-// which for a restored transcript is one allocation per turn.
+// A restored transcript is built with one allocation for its chunks and one for
+// its tail, rather than one node per message.
 func MessagesFromSlice(msgs []message.Message) Messages {
-	if len(msgs) == 0 {
+	n := len(msgs)
+	if n == 0 {
 		return Messages{}
 	}
-	nodes := make([]Messages, len(msgs))
-	for i, msg := range msgs {
-		var parent *Messages
-		if i > 0 {
-			parent = &nodes[i-1]
+	full := n / messagesChunkSize
+	tailLen := n % messagesChunkSize
+
+	var chunks *messageChunk
+	if full > 0 {
+		nodes := make([]messageChunk, full)
+		for i := range nodes {
+			copy(nodes[i].messages[:], msgs[i*messagesChunkSize:(i+1)*messagesChunkSize])
+			if i > 0 {
+				nodes[i].parent = &nodes[i-1]
+			}
 		}
-		nodes[i] = Messages{parent: parent, msg: msg, n: i + 1}
+		chunks = &nodes[full-1]
 	}
-	return nodes[len(nodes)-1]
+
+	var tail *messageTail
+	if tailLen > 0 {
+		nodes := make([]messageTail, tailLen)
+		start := full * messagesChunkSize
+		for i := range nodes {
+			nodes[i].n = i + 1
+			nodes[i].msg = msgs[start+i]
+			if i > 0 {
+				nodes[i].parent = &nodes[i-1]
+			}
+		}
+		tail = &nodes[tailLen-1]
+	}
+	return Messages{chunks: chunks, tail: tail, n: n}
 }
 
 // Append returns a new session with msg at the end. The receiver is
 // unchanged, and the two share every message before msg.
 func (m Messages) Append(msg message.Message) Messages {
-	return Messages{parent: &m, msg: msg, n: m.n + 1}
+	tail := &messageTail{parent: m.tail, msg: msg, n: 1}
+	if m.tail != nil {
+		tail.n = m.tail.n + 1
+	}
+	if tail.n < messagesChunkSize {
+		return Messages{chunks: m.chunks, tail: tail, n: m.n + 1}
+	}
+	return m.fold(tail)
+}
+
+// fold moves a full tail into the chunk chain and returns the session that
+// starts a fresh tail. The tail's messages are copied once, in chunk order.
+func (m Messages) fold(tail *messageTail) Messages {
+	chunk := &messageChunk{parent: m.chunks}
+	for node, i := tail, messagesChunkSize-1; node != nil; node, i = node.parent, i-1 {
+		chunk.messages[i] = node.msg
+	}
+	return Messages{chunks: chunk, n: m.n + 1}
 }
 
 // Len reports how many messages the session holds.
 func (m Messages) Len() int { return m.n }
 
 // Slice materializes the session. It is the one O(n) operation, paid only
-// where a node actually needs the list (a model request, for example).
+// where a node actually needs the list (a model request, for example): one
+// allocation, one copy per chunk and one step per tail message.
 func (m Messages) Slice() []message.Message {
 	out := make([]message.Message, m.n)
-	cur := &m
-	for i := m.n - 1; i >= 0; i-- {
-		out[i] = cur.msg
-		cur = cur.parent
+	at := m.n
+	for node := m.tail; node != nil; node = node.parent {
+		at--
+		out[at] = node.msg
+	}
+	for chunk := m.chunks; chunk != nil; chunk = chunk.parent {
+		at -= messagesChunkSize
+		copy(out[at:], chunk.messages[:])
 	}
 	return out
 }
@@ -247,11 +313,16 @@ func (m Messages) Concat(other Messages) Messages {
 // collect and reverse what it keeps, which is cheaper than materializing a
 // slice of every message.
 func (m Messages) Each(fn func(message.Message) bool) {
-	cur := &m
-	for cur != nil && cur.n > 0 {
-		if !fn(cur.msg) {
+	for node := m.tail; node != nil; node = node.parent {
+		if !fn(node.msg) {
 			return
 		}
-		cur = cur.parent
+	}
+	for chunk := m.chunks; chunk != nil; chunk = chunk.parent {
+		for i := messagesChunkSize - 1; i >= 0; i-- {
+			if !fn(chunk.messages[i]) {
+				return
+			}
+		}
 	}
 }
