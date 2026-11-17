@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
 )
@@ -26,7 +25,7 @@ import (
 type scriptHost struct {
 	node  string
 	log   io.Writer
-	rt    *runtime.Runtime
+	rt    Runtime
 	allow map[string]struct{}
 	// replay answers a tool call from the task's records instead of dispatching.
 	replay bool
@@ -100,7 +99,7 @@ func (h *scriptHost) Tool(ctx context.Context, name string, args map[string]any)
 		Name:      name,
 		Arguments: message.NewArguments(raw),
 	}
-	view, ok := runtime.CatalogViewFrom(ctx)
+	view, ok := engine.CatalogViewFrom(ctx)
 	if !ok {
 		view = h.rt.NewCatalogView()
 	}
@@ -195,7 +194,7 @@ func hashArguments(raw []byte) string {
 }
 
 // hostFor builds the invocation's host.
-func hostFor(in graph.Invoke, log io.Writer, rt *runtime.Runtime, allow map[string]struct{}) *scriptHost {
+func hostFor(in graph.Invoke, log io.Writer, rt Runtime, allow map[string]struct{}) *scriptHost {
 	return &scriptHost{
 		node:     in.Node,
 		log:      log,

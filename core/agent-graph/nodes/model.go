@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
 	"github.com/goccy/go-json"
@@ -43,7 +42,7 @@ import (
 // events while the call runs, and the assembled assistant turn is written to the
 // transcript when it ends.
 type modelKind struct {
-	rt       *runtime.Runtime
+	rt       Runtime
 	decoders map[string]inference.ExtensionDecoder
 }
 
@@ -85,7 +84,7 @@ func WithExtensionDecoders(decoders map[string]inference.ExtensionDecoder) Model
 }
 
 // Model builds the model kind over a runtime.
-func Model(rt *runtime.Runtime, opts ...ModelOption) graph.NodeKind {
+func Model(rt Runtime, opts ...ModelOption) graph.NodeKind {
 	m := &modelKind{rt: rt}
 	for _, opt := range opts {
 		if opt != nil {
@@ -379,7 +378,7 @@ func (m *modelKind) toolset(view engine.CatalogView, transcript graph.Messages, 
 // still offers every visible tool; it just cannot remember discoveries between
 // steps.
 func (m *modelKind) view(ctx context.Context) (engine.CatalogView, error) {
-	if view, ok := runtime.CatalogViewFrom(ctx); ok {
+	if view, ok := engine.CatalogViewFrom(ctx); ok {
 		return view, nil
 	}
 	return m.rt.NewCatalogView(), nil

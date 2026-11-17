@@ -262,7 +262,7 @@ Register kinds where the graph is opened:
 ```go
 built, err := nodes.Open(ctx, rt, "graphs/react.yaml",
     nodes.WithKinds(myKind()),                  // static kinds
-    nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
+    nodes.WithRuntimeKinds(func(rt nodes.Runtime) ([]graph.NodeKind, error) {
         return script.New(script.WithRuntime(rt))
     }),
     nodes.WithModelDecoders(decoders),          // request.extensions

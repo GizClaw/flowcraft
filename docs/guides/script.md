@@ -15,7 +15,7 @@ host registers it where it opens the graph:
 
 ```go
 built, err := nodes.Open(ctx, rt, "graphs/game.yaml",
-    nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
+    nodes.WithRuntimeKinds(func(rt nodes.Runtime) ([]graph.NodeKind, error) {
         kind, err := script.New(
             script.WithRuntime(rt),                 // what a tool call dispatches through
             script.WithBackends(starlark.New()),    // config.backend resolves here
