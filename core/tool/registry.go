@@ -474,6 +474,14 @@ func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
 }
 
 // recordLoadMetrics emits the deferred-load series.
+//
+// Instruments are resolved per call rather than once at package init, for the
+// same reason as the execution funnel: the global meter provider is swapped at
+// runtime — a test installs one, a host may wire telemetry after its tools are
+// registered — and an instrument created earlier keeps delegating to the
+// provider that existed then. The SDK caches meters by scope and instruments by
+// identity, so this is map lookups, not an allocation, on a path that runs once
+// per lazy load.
 func recordLoadMetrics(ctx context.Context, name, status string, duration time.Duration) {
 	meter := telemetry.MeterWithSuffix("tool")
 	nameAttr := metric.WithAttributes(attribute.String(telemetry.AttrToolName, name))
