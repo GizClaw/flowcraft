@@ -1,5 +1,11 @@
-// Package sandbox resolves backend setting paths relative to a workspace
-// root, rejecting traversal outside it (including through symlinks).
+// Package engine is the policy layer between the sandbox contract and a backend:
+// the one-shot Exec, the decorators, and the shared validation.
+//
+// The path helpers in this file (Resolve, ResolveMany) decide where a backend
+// setting path lands relative to a workspace root. They constrain relative paths
+// only, and they run at configuration time: the boundary a command actually runs
+// under is the backend's kernel policy, not a string check. Resolve documents
+// both limits.
 package engine
 
 import (
@@ -29,9 +35,22 @@ func ResolveMany(root string, paths []string) ([]string, error) {
 	return resolved, nil
 }
 
-// Resolve makes a relative setting path relative to root and rejects
-// relative traversal outside it. Absolute paths are cleaned and
-// returned unchanged.
+// Resolve makes a relative setting path relative to root, returns it in its
+// resolved form, and rejects relative traversal outside root.
+//
+// Two limits are deliberate, and neither is a bug:
+//
+//   - An absolute path is cleaned and returned unchanged. It is not checked
+//     against root: a deployment states its writable paths absolutely, and
+//     containment here is a relative-path check and nothing more.
+//   - Symlinks are evaluated when Resolve runs, so a link swapped afterwards is
+//     a TOCTOU window this helper cannot close. The check describes the tree as
+//     it was, not as the command will find it.
+//
+// So this is configuration hygiene, not confinement: a relative setting that
+// plainly escapes is a validation error at load instead of a command that fails
+// later. The boundary a command runs under is the kernel policy its backend
+// installs (the Seatbelt profile, the bwrap namespaces and binds).
 func Resolve(root, p string) (string, error) {
 	if filepath.IsAbs(p) {
 		return filepath.Clean(p), nil
