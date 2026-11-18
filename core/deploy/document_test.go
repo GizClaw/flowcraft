@@ -12,7 +12,7 @@ import (
 func testLoader(t *testing.T) Loader {
 	t.Helper()
 	return Loader{
-		Kinds: BuiltinKinds().
+		Kinds: builtinKinds().
 			WithEngines(EngineKind{Name: "local", Local: true}).
 			WithProtocols(a2aKind()),
 	}
@@ -94,12 +94,6 @@ agents:
   - name: x
     engine: {kind: local}
 `,
-		"an engine without a peer": `
-version: 1
-agents:
-  - name: x
-    engine: {kind: a2a}
-`,
 	}
 	for name, body := range cases {
 		if _, err := testLoader(t).Load(context.Background(), []byte(body)); err == nil {
@@ -120,22 +114,6 @@ agents:
 	}
 	if !strings.Contains(err.Error(), "a2a") {
 		t.Errorf("error %q does not list the registered engines", err)
-	}
-}
-
-// Settings are decoded strictly: a typo must fail the load, not be silently
-// dropped on the way to the peer.
-func TestLoadRejectsUnknownEngineSettings(t *testing.T) {
-	_, err := testLoader(t).Load(context.Background(), []byte(`
-version: 1
-agents:
-  - name: x
-    engine:
-      kind: a2a
-      settings: {peer: https://peer.example, bogus: 1}
-`))
-	if err == nil || !strings.Contains(err.Error(), "bogus") {
-		t.Fatalf("Load = %v, want a complaint about the unknown setting", err)
 	}
 }
 

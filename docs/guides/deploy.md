@@ -105,25 +105,49 @@ should not need the manager.
 ### What ships
 
 ```go
-deploy.BuiltinKinds()
-// Engines:   a2a  (core/agent-a2a, remote client), graph (core/agent-graph)
-// Protocols: a2a  (core/deploy/a2aprotocol, server)
+deploy/builtin — Kinds()
+// Engines:   a2a (deploy/engines/a2a, core/agent-a2a client), graph (deploy/engines/graph, core/agent-graph)
+// Protocols: a2a (deploy/protocols/a2a, which holds the server and the kind)
 // Hooks:     none — a host's policy is the host's
 ```
 
-Registration lives here, not in the subpackages, and that is forced by the
-import graph: `deploy/a2aprotocol` imports `deploy` for `ProtocolDeps`, so a
-registration written there could never be part of `BuiltinKinds`. The rule is
-one-directional — implementation in the subpackage, registration in `deploy`.
+Each registration ships beside the package that implements it, and `deploy`
+itself imports none of them: a host that runs one engine should not link the
+other, which a hardcoded table in `deploy` would make impossible. The directory
+tree mirrors `deploy.Kinds` — `deploy/engines/<kind>` and
+`deploy/protocols/<kind>` — and the asymmetry between them is content, not shape.
+An engine kind is a registration only, because its implementation is a lower
+layer (`core/agent-graph`, `core/agent-a2a`) that must not import `deploy`. The
+A2A protocol kind has no such lower home: it is driven by a deployment, so the
+server travels with its registration. The payoff is an import closure a host
+chooses:
+
+```go
+import (
+    "github.com/GizClaw/flowcraft/core/deploy"
+    enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
+)
+
+kinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+```
+
+`deploy/builtin` is the convenience trade for a host that wants every kind in one
+line: it imports all three registrations, so the binary carries the graph runtime
+and the A2A client and server. `deploy` alone is the document format and nothing
+else.
 
 Extend with copies, never by mutating the shared tables:
 
 ```go
-kinds := deploy.BuiltinKinds().
+kinds := builtin.Kinds().
     WithEngines(myEngine()).
     WithHooks(myHook()).
     WithProtocols(myProtocol())
 ```
+
+A manager handed a zero `deploy.Kinds` registers nothing and deploys nothing — a
+document then fails to load with the offered names in the error. Pass
+`builtin.Kinds()` to start from the shipped set.
 
 ## Placeholders
 
@@ -214,15 +238,15 @@ non-blocking: a slow `OnEvent` stalls the run and its protocol stream.
 
 ## Where each piece lives
 
-| Package                   | Role                                                                                            |
-| ------------------------- | ----------------------------------------------------------------------------------------------- |
-| `core/deploy`             | Documents, specs, kinds, loading, placeholders.                                                 |
-| `core/deploy/a2aprotocol` | The A2A server (protocol implementation).                                                       |
-| `core/agent-a2a`          | The A2A client, as a remote engine kind.                                                        |
-| `core/agent-host`         | Manager, bindings, session table, deployment lifecycle.                                         |
-| `core/runtime`            | The substrate one agent runs on; see [runtime.md](runtime.md).                                  |
-| `core/agent-graph`        | The `graph` engine kind. See [graph.md](graph.md).                                              |
-| `core/delegation`         | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
+| Package                     | Role                                                                                            |
+| --------------------------- | ----------------------------------------------------------------------------------------------- |
+| `core/deploy`               | Documents, specs, kinds, loading, placeholders.                                                 |
+| `core/deploy/protocols/a2a` | The A2A protocol kind: server, executor and task store.                                         |
+| `core/agent-a2a`            | The A2A client, as a remote engine kind.                                                        |
+| `core/agent-host`           | Manager, bindings, session table, deployment lifecycle.                                         |
+| `core/runtime`              | The substrate one agent runs on; see [runtime.md](runtime.md).                                  |
+| `core/agent-graph`          | The `graph` engine kind. See [graph.md](graph.md).                                              |
+| `core/delegation`           | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
 
 ## What was removed, and why
 

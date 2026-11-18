@@ -1,4 +1,4 @@
-package a2aprotocol_test
+package a2a_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/deploy/a2aprotocol"
+	"github.com/GizClaw/flowcraft/core/deploy/protocols/a2a"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
@@ -32,7 +32,7 @@ func TestInboundTraceparentBecomesTheParent(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	t.Cleanup(func() { _ = table.Close() })
-	server, err := a2aprotocol.New(a2aprotocol.Config{
+	server, err := a2a.New(a2a.Config{
 		Name: "backend",
 		Settings: settingsJSON(map[string]any{"card": map[string]any{
 			"version": "1.0.0", "url": "https://backend.test",
@@ -40,7 +40,7 @@ func TestInboundTraceparentBecomesTheParent(t *testing.T) {
 		Agent: table,
 	})
 	if err != nil {
-		t.Fatalf("a2aprotocol.New: %v", err)
+		t.Fatalf("a2a.New: %v", err)
 	}
 	peer := httptest.NewServer(server)
 	t.Cleanup(peer.Close)
@@ -89,7 +89,7 @@ func TestInboundWithoutATraceparentStartsARoot(t *testing.T) {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	t.Cleanup(func() { _ = table.Close() })
-	server, err := a2aprotocol.New(a2aprotocol.Config{
+	server, err := a2a.New(a2a.Config{
 		Name: "backend",
 		Settings: settingsJSON(map[string]any{"card": map[string]any{
 			"version": "1.0.0", "url": "https://backend.test",
@@ -97,7 +97,7 @@ func TestInboundWithoutATraceparentStartsARoot(t *testing.T) {
 		Agent: table,
 	})
 	if err != nil {
-		t.Fatalf("a2aprotocol.New: %v", err)
+		t.Fatalf("a2a.New: %v", err)
 	}
 	peer := httptest.NewServer(server)
 	t.Cleanup(peer.Close)

@@ -10,6 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
+	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -47,7 +49,7 @@ output: {key: text}
 // The graph engine is a real deployment: a document on disk, compiled per
 // deployment, driven through the same session a local engine uses.
 func TestGraphEngineRunsADocument(t *testing.T) {
-	kinds := deploy.BuiltinKinds().WithEngines(deploy.GraphEngine(nodes.WithKinds(fixedKind{text: "hello"})))
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"})))
 	manager := newManager(t, kinds, testHost(t))
 	spec := testSpec(t, "g", "graph")
 	spec.Engine.Settings = rawSettings(map[string]any{
@@ -77,7 +79,7 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 
 // A malformed document fails at load, before any resource is built.
 func TestGraphEngineValidatesTheDocumentAtLoad(t *testing.T) {
-	kinds := deploy.BuiltinKinds().WithEngines(deploy.GraphEngine(nodes.WithKinds(fixedKind{text: "x"})))
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "x"})))
 	path := writeGraphDocument(t, `version: 1
 entry: a
 nodes:

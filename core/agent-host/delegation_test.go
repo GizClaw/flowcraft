@@ -6,10 +6,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 )
 
 func TestManagerInjectsDelegationTools(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := newManager(t, builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hello"}
 	})), testHost(t))
 	spec := testSpec(t, "a", "echo")
@@ -48,7 +49,7 @@ func TestManagerRejectsDelegationOnARemoteAgent(t *testing.T) {
 			}, nil
 		},
 	}
-	manager := newManager(t, deploy.BuiltinKinds().WithEngines(remote), testHost(t))
+	manager := newManager(t, builtin.Kinds().WithEngines(remote), testHost(t))
 	spec := deploy.Spec{
 		Name:       "peer",
 		Engine:     deploy.EngineSpec{Kind: "remote"},

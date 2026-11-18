@@ -7,7 +7,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
-	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
+	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -16,7 +17,7 @@ import (
 // trace can be attributed without joining configuration stores.
 func TestDeploymentRecordsAManifest(t *testing.T) {
 	store := agenttest.NewMemStore()
-	kinds := deploy.BuiltinKinds().WithEngines(deploy.GraphEngine(nodes.WithKinds(fixedKind{text: "hi"})))
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hi"})))
 	host := testHost(t)
 	host.Store = store
 	host.Harness = "test-harness"

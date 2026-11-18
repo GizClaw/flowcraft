@@ -1,4 +1,4 @@
-package a2aprotocol
+package a2a
 
 import (
 	"github.com/GizClaw/flowcraft/core/agent"

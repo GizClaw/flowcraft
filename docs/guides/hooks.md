@@ -90,7 +90,7 @@ agents:
 ```
 
 ```go
-kinds := deploy.BuiltinKinds().WithHooks(deploy.HookKind{
+kinds := builtin.Kinds().WithHooks(deploy.HookKind{
     Name: "audit",
     Decode: func(settings json.RawMessage) (any, error) {
         var cfg auditConfig
@@ -117,7 +117,7 @@ kinds use. See [deploy.md](deploy.md).
 
 Several hooks on one agent are chained **in declaration order**. The host's own
 `Bindings.Hooks` runs before them, so a host can always observe or adjust what a
-deployment configured. `BuiltinKinds()` registers no hook kinds: a host's policy
+deployment configured. `builtin.Kinds()` registers no hook kinds: a host's policy
 is the host's.
 
 ## Cost and blocking

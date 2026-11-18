@@ -127,25 +127,20 @@ type HookKind struct {
 
 // Kinds is the registered engine and protocol kinds. One value is shared by the
 // loader and the manager, so a kind cannot be loadable and yet not deployable.
+//
+// This package registers nothing: a registration belongs to the package that
+// knows the implementation (deploy/engines/graph, deploy/engines/a2a,
+// deploy/protocols/a2a), so a host that runs one engine links one engine. Start
+// from the zero value and add what the deployment names:
+//
+// \tkinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+//
+// deploy/builtin carries the whole set in one call, for a host that wants every
+// kind core ships.
 type Kinds struct {
 	Engines   map[string]EngineKind
 	Protocols map[string]ProtocolKind
 	Hooks     map[string]HookKind
-}
-
-// BuiltinKinds returns the kinds every deployment starts with.
-func BuiltinKinds() Kinds {
-	return Kinds{
-		Engines: map[string]EngineKind{
-			"a2a":   A2AEngine(),
-			"graph": GraphEngine(),
-		},
-		Protocols: map[string]ProtocolKind{
-			"a2a": A2AProtocol(),
-		},
-		// Hooks are the host's own policy, so the built-ins register none.
-		Hooks: map[string]HookKind{},
-	}
 }
 
 // WithEngines returns a copy with these engines registered.

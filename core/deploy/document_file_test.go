@@ -31,7 +31,7 @@ func writeDocument(t *testing.T) string {
 
 func TestLoadFileReadsADocument(t *testing.T) {
 	t.Setenv("PEER_URL", "https://peer.example")
-	specs, err := Loader{Kinds: BuiltinKinds().WithProtocols(a2aKind())}.LoadFile(context.Background(), writeDocument(t))
+	specs, err := Loader{Kinds: builtinKinds().WithProtocols(a2aKind())}.LoadFile(context.Background(), writeDocument(t))
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestLoadFileReadsADocument(t *testing.T) {
 
 func TestLoadFileReportsAnUnreadableFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	_, err := Loader{Kinds: BuiltinKinds()}.LoadFile(context.Background(), missing)
+	_, err := Loader{Kinds: builtinKinds()}.LoadFile(context.Background(), missing)
 	if err == nil || !strings.Contains(err.Error(), "absent.yaml") {
 		t.Fatalf("err = %v, want the path named", err)
 	}
@@ -51,7 +51,7 @@ func TestLoadFileReportsAnUnreadableFile(t *testing.T) {
 // A host prints its startup checklist before loading: RequiredPlaceholders reports every
 // reference in one pass instead of failing at the first one.
 func TestRequiredPlaceholdersNamesEveryVariable(t *testing.T) {
-	loader := Loader{Kinds: BuiltinKinds()}
+	loader := Loader{Kinds: builtinKinds()}
 	requirement, err := loader.RequiredPlaceholders([]byte(envDocument))
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
@@ -62,7 +62,7 @@ func TestRequiredPlaceholdersNamesEveryVariable(t *testing.T) {
 }
 
 func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
-	loader := Loader{Kinds: BuiltinKinds()}
+	loader := Loader{Kinds: builtinKinds()}
 	requirement, err := loader.RequiredPlaceholdersFile(writeDocument(t))
 	if err != nil {
 		t.Fatalf("RequiredPlaceholdersFile: %v", err)
@@ -74,7 +74,7 @@ func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
 
 func TestRequiredPlaceholdersFileReportsAnUnreadableFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	_, err := Loader{Kinds: BuiltinKinds()}.RequiredPlaceholdersFile(missing)
+	_, err := Loader{Kinds: builtinKinds()}.RequiredPlaceholdersFile(missing)
 	if err == nil || !strings.Contains(err.Error(), "absent.yaml") {
 		t.Fatalf("err = %v, want the path named", err)
 	}

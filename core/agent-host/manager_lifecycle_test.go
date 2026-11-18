@@ -6,28 +6,31 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // The loader a manager hands out is wired to the same kinds it deploys, so a
 // kind cannot be loadable and not deployable.
 func TestManagerLoaderSharesTheKinds(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds(), testHost(t))
+	manager := newManager(t, builtin.Kinds(), testHost(t))
 	if _, ok := manager.Loader().Kinds.Engines["a2a"]; !ok {
 		t.Error("the loader does not know the manager's engines")
 	}
 }
 
-// A zero deploy.Kinds means "the built-ins": New makes that choice once, not per call.
-func TestZeroValueKindsFallsBackToBuiltins(t *testing.T) {
+// A zero deploy.Kinds registers nothing, and New does not invent a table to
+// replace it: a manager handed no kinds offers no kinds, which is what makes the
+// registration an import the host makes rather than a default it inherits.
+func TestZeroValueKindsRegistersNothing(t *testing.T) {
 	manager := newManager(t, deploy.Kinds{}, testHost(t))
-	if names := manager.EngineNames(); len(names) != 2 || names[0] != "a2a" || names[1] != "graph" {
-		t.Errorf("engines = %v, want the built-ins", names)
+	if names := manager.EngineNames(); len(names) != 0 {
+		t.Errorf("engines = %v, want none", names)
 	}
 }
 
 func TestReplaceOnAnUnknownAgentIsRefused(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds(), testHost(t))
+	manager := newManager(t, builtin.Kinds(), testHost(t))
 	if err := manager.Replace(context.Background(), testSpec(t, "absent", "a2a")); err == nil {
 		t.Fatal("Replace created an agent that was never deployed")
 	}
@@ -36,7 +39,7 @@ func TestReplaceOnAnUnknownAgentIsRefused(t *testing.T) {
 // Replace builds the new deployment before touching the old one, so a spec that
 // cannot be built leaves the running agent exactly as it was.
 func TestReplaceKeepsTheOldAgentWhenTheNewSpecIsBad(t *testing.T) {
-	kinds := deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	kinds := builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "still here"}
 	}))
 	manager := newManager(t, kinds, testHost(t))
@@ -64,7 +67,7 @@ func TestReplaceKeepsTheOldAgentWhenTheNewSpecIsBad(t *testing.T) {
 // An agent with no protocol is deployed but not exposed: the handler is nil,
 // and the bool says the agent exists.
 func TestHandlerIsNilForAnUnexposedAgent(t *testing.T) {
-	kinds := deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	kinds := builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	}))
 	manager := newManager(t, kinds, testHost(t))
@@ -91,7 +94,7 @@ func TestHostOnRunNamesTheAgent(t *testing.T) {
 	host.OnRun = func(name string, record agent.RunRecord) {
 		names = append(names, name)
 	}
-	kinds := deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	kinds := builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	}))
 	manager := newManager(t, kinds, host)

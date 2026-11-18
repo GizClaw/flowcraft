@@ -88,12 +88,14 @@ type Manager struct {
 	bindings Bindings
 }
 
-// New returns a manager over the given kinds and host bindings. Pass
-// BuiltinKinds() to start from the defaults, or a zero deploy.Kinds for none.
+// New returns a manager over the given kinds and host bindings.
+//
+// A zero deploy.Kinds registers nothing, and a manager that registers nothing
+// deploys nothing: a document naming an engine this process did not register
+// fails to load, with the offered names in the error. That is deliberate — the
+// alternative is a default table the caller never chose and cannot see. Pass
+// deploy/builtin's Kinds() for every kind core ships.
 func New(kinds deploy.Kinds, bindings Bindings) *Manager {
-	if kinds.Engines == nil && kinds.Protocols == nil {
-		kinds = deploy.BuiltinKinds()
-	}
 	return &Manager{
 		agents:   make(map[string]*deployment),
 		kinds:    kinds,
