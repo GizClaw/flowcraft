@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/config"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/goccy/go-json"
 )
@@ -53,10 +54,13 @@ func fileSource() SourceKind {
 	return SourceKind{
 		Name: "file",
 		Open: func(_ context.Context, settings json.RawMessage) (Source, error) {
-			var decoded struct {
+			// Strict, like core/deploy/sources.File: a hand copy that accepted
+			// unknown keys would keep these tests green while the real
+			// registration refused the same document.
+			decoded, err := decode.Decode[struct {
 				Path string `json:"path"`
-			}
-			if err := json.Unmarshal(settings, &decoded); err != nil {
+			}](settings)
+			if err != nil {
 				return Source{}, err
 			}
 			if decoded.Path == "" {

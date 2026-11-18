@@ -48,11 +48,14 @@ func sortedKeys[V any](values map[string]V) []string {
 	return keys
 }
 
-// offered names a kind table's entries for an "is not registered" error, or says
+// Offered names a kind table's entries for an "is not registered" error, or says
 // why the list is empty: a reader who named an unregistered kind has to learn what
 // to register, and a blank list after "offered:" is not an answer. whenEmpty is
 // the table's own sentence about who would supply one.
-func offered[V any](table map[string]V, whenEmpty string) string {
+//
+// It is exported because the manager builds the same message for the tables a host
+// handed it; one field has one shape of error, wherever it is reported.
+func Offered[V any](table map[string]V, whenEmpty string) string {
 	if len(table) == 0 {
 		return "none (" + whenEmpty + ")"
 	}

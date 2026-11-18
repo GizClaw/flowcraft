@@ -71,6 +71,12 @@ func fileLayer(path string) string {
 	return "- priority: 0\n  source: {kind: file, settings: {path: " + string(quoted) + "}}\n"
 }
 
+// localKinds is the table these tests load against: one engine that runs here and
+// whichever sources a case needs.
+func localKinds(kinds ...deploy.SourceKind) deploy.Kinds {
+	return deploy.Kinds{}.WithEngines(localEngine()).WithSources(kinds...)
+}
+
 // memoryKind is the layer source a host writes when its layers are not files: it
 // keeps them in a map and hands each back as config.Bytes.
 func memoryKind(layers map[string]string) deploy.SourceKind {
@@ -113,9 +119,7 @@ func TestFileSourceReadsALayerFromDisk(t *testing.T) {
 // A layer that never touches the filesystem: the bytes are the host's, and the
 // document only names which one.
 func TestHostSourceServesALayerFromMemory(t *testing.T) {
-	kinds := deploy.Kinds{}.
-		WithEngines(localEngine()).
-		WithSources(memoryKind(map[string]string{"base": layerConfig("from-memory")}))
+	kinds := localKinds(memoryKind(map[string]string{"base": layerConfig("from-memory")}))
 	specs, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  source: {kind: memory, settings: {name: base}}\n"))
 	if err != nil {
@@ -144,7 +148,7 @@ func TestHostSourceServesALayerFromAnEmbeddedTree(t *testing.T) {
 			return deploy.Source{Name: decoded.Name, Body: config.FS(tree, decoded.Name)}, nil
 		},
 	}
-	specs, err := deploy.Loader{Kinds: deploy.Kinds{}.WithEngines(localEngine()).WithSources(assets)}.
+	specs, err := deploy.Loader{Kinds: localKinds(assets)}.
 		Load(context.Background(),
 			layerDocument("- priority: 0\n  source: {kind: assets, settings: {name: runtime/base.yaml}}\n"))
 	if err != nil {
@@ -162,12 +166,10 @@ func TestSourcesMergeInPriorityOrder(t *testing.T) {
 	if err := os.WriteFile(path, []byte(layerConfig("from-file")), 0o600); err != nil {
 		t.Fatalf("write layer: %v", err)
 	}
-	kinds := deploy.Kinds{}.
-		WithEngines(localEngine()).
-		WithSources(
-			sources.File(),
-			memoryKind(map[string]string{"override": layerConfig("from-memory")}),
-		)
+	kinds := localKinds(
+		sources.File(),
+		memoryKind(map[string]string{"override": layerConfig("from-memory")}),
+	)
 	document := layerDocument(fileLayer(path) +
 		"- priority: 10\n  source: {kind: memory, settings: {name: override}}\n")
 	specs, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), document)
@@ -182,9 +184,7 @@ func TestSourcesMergeInPriorityOrder(t *testing.T) {
 // An unregistered source is a document error naming what is registered, the same
 // rule engines, protocols and hooks follow.
 func TestLoadRejectsAnUnregisteredLayerSource(t *testing.T) {
-	kinds := deploy.Kinds{}.
-		WithEngines(localEngine()).
-		WithSources(memoryKind(nil))
+	kinds := localKinds(memoryKind(nil))
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  source: {kind: assets}\n"))
 	if err == nil {
@@ -200,7 +200,7 @@ func TestLoadRejectsAnUnregisteredLayerSource(t *testing.T) {
 // A host that built its kind table by hand reads this line first, so an empty
 // table says what to register rather than listing nothing.
 func TestLoadExplainsAnEmptySourceTable(t *testing.T) {
-	kinds := deploy.Kinds{}.WithEngines(localEngine())
+	kinds := localKinds()
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  source: {kind: file, settings: {path: ./r.yaml}}\n"))
 	if err == nil {
@@ -214,7 +214,7 @@ func TestLoadExplainsAnEmptySourceTable(t *testing.T) {
 // The document may not leave the source out: defaulting to a file would be a
 // choice the deployment made by accident.
 func TestLoadRejectsALayerWithoutSource(t *testing.T) {
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	kinds := localKinds(sources.File())
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n"))
 	if err == nil || !strings.Contains(err.Error(), "source is required") {
@@ -231,7 +231,7 @@ func TestLoadNamesTheLayerThatFailed(t *testing.T) {
 			return deploy.Source{Name: "broken:missing", Body: failingSource{}}, nil
 		},
 	}
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(broken)
+	kinds := localKinds(broken)
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  source: {kind: broken}\n"))
 	if err == nil {
@@ -260,7 +260,7 @@ func TestLoadRejectsABrokenRegistration(t *testing.T) {
 		}},
 	}
 	for name, kind := range cases {
-		kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(kind)
+		kinds := localKinds(kind)
 		_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 			layerDocument("- priority: 0\n  source: {kind: broken}\n"))
 		if err == nil {
@@ -297,7 +297,7 @@ agents:
 // document lives: a host that registered nothing is told what to register
 // instead of getting a bare filesystem error.
 func TestLoadFileNeedsTheFileSource(t *testing.T) {
-	_, err := deploy.Loader{Kinds: deploy.Kinds{}.WithEngines(localEngine())}.
+	_, err := deploy.Loader{Kinds: localKinds()}.
 		LoadFile(context.Background(), "deploy.yaml")
 	if err == nil || !strings.Contains(err.Error(), "deploy/builtin registers file") {
 		t.Fatalf("err = %v, want the missing file source named", err)
@@ -307,7 +307,7 @@ func TestLoadFileNeedsTheFileSource(t *testing.T) {
 // The removed field is refused with the replacement, not as an unknown field:
 // this is the message every existing deployment reads once.
 func TestLoadRejectsTheRemovedPathField(t *testing.T) {
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	kinds := localKinds(sources.File())
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  path: ./runtime.yaml\n"))
 	if err == nil {
@@ -323,7 +323,7 @@ func TestLoadRejectsTheRemovedPathField(t *testing.T) {
 // Layer names are how a merge failure points at its layer, so two sources that
 // report one name are refused where they are declared.
 func TestLoadRejectsTwoLayersWithOneName(t *testing.T) {
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.Inline())
+	kinds := localKinds(sources.Inline())
 	stack := "- priority: 0\n" +
 		"  source: {kind: inline, settings: {body: \"version: 1\\n\"}}\n" +
 		"- priority: 10\n" +
@@ -356,7 +356,7 @@ func TestInlineLayerLoadsThroughTheDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal document: %v", err)
 	}
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.Inline())
+	kinds := localKinds(sources.Inline())
 	specs, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), document)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -370,7 +370,7 @@ func TestInlineLayerLoadsThroughTheDocument(t *testing.T) {
 // one file twice stays legal: it is redundant, not ambiguous.
 func TestLoadAllowsARepeatedFilePath(t *testing.T) {
 	path := writeLayerFile(t)
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	kinds := localKinds(sources.File())
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), layerDocument(
 		"- priority: 0\n  source: {kind: file, settings: {path: "+path+"}}\n"+
 			"- priority: 10\n  source: {kind: file, settings: {path: "+path+"}}\n"))
@@ -383,7 +383,7 @@ func TestLoadAllowsARepeatedFilePath(t *testing.T) {
 // source's settings - is the most likely wrong rewrite, so it is refused with the
 // replacement rather than as an unknown field.
 func TestLoadRejectsAPathInsideTheSource(t *testing.T) {
-	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	kinds := localKinds(sources.File())
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
 		layerDocument("- priority: 0\n  source: {path: ./runtime.yaml}\n"))
 	if err == nil {

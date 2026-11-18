@@ -31,9 +31,15 @@ func (k fixedKind) Invoke(context.Context, graph.Invoke) (graph.NodeStream, erro
 
 func writeGraphDocument(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "graph.yaml")
+	return writeTempYAML(t, "graph.yaml", body)
+}
+
+// writeTempYAML is one document on disk, in its own directory.
+func writeTempYAML(t *testing.T, name, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		t.Fatalf("write graph: %v", err)
+		t.Fatalf("write %s: %v", name, err)
 	}
 	return path
 }
@@ -198,11 +204,7 @@ func runtimeLayerBody(t *testing.T) string {
 // writeRuntimeLayer is runtimeLayerBody on disk.
 func writeRuntimeLayer(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "runtime.yaml")
-	if err := os.WriteFile(path, []byte(runtimeLayerBody(t)), 0o600); err != nil {
-		t.Fatalf("write runtime layer: %v", err)
-	}
-	return path
+	return writeTempYAML(t, "runtime.yaml", runtimeLayerBody(t))
 }
 
 // A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.

@@ -262,7 +262,7 @@ func (k Kinds) openSource(ctx context.Context, document *SourceDocument) (Source
 	if !found {
 		return Source{}, errdefs.Validationf(
 			"source: kind %q is not registered; offered: %s",
-			document.Kind, offered(k.Sources, "deploy/builtin registers file and inline"))
+			document.Kind, Offered(k.Sources, "deploy/builtin registers file and inline"))
 	}
 	if kind.Open == nil {
 		return Source{}, errdefs.Validationf(

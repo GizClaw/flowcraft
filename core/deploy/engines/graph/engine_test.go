@@ -52,13 +52,6 @@ func fileSource(path string) map[string]any {
 	return map[string]any{"kind": "file", "settings": map[string]any{"path": path}}
 }
 
-// table is the source table these tests resolve through: the file registration
-// deploy/builtin ships, plus whatever a case adds.
-func table(t *testing.T) deploy.Kinds {
-	t.Helper()
-	return builtin.Kinds()
-}
-
 func opener(t *testing.T, kinds deploy.Kinds) deploy.SourceOpener {
 	t.Helper()
 	return func(ctx context.Context, document *deploy.SourceDocument) (deploy.Source, error) {
@@ -87,14 +80,15 @@ func TestDecodeRequiresASource(t *testing.T) {
 		raw  json.RawMessage
 		want string
 	}{
-		"absent":  {nil, "settings.source is required"},
-		"null":    {json.RawMessage(`null`), "settings.source is required"},
-		"empty":   {json.RawMessage(`{}`), "settings.source is required"},
-		"no kind": {settings(t, map[string]any{"source": map[string]any{}}), "source.kind is required"},
+		"absent":     {nil, "settings.source is required"},
+		"null":       {json.RawMessage(`null`), "settings.source is required"},
+		"empty":      {json.RawMessage(`{}`), "settings.source is required"},
+		"no kind":    {settings(t, map[string]any{"source": map[string]any{}}), "source.kind is required"},
+		"blank kind": {settings(t, map[string]any{"source": map[string]any{"kind": "  "}}), "source.kind is required"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := decode(t, table(t), tc.raw); err == nil ||
+			if _, err := decode(t, builtin.Kinds(), tc.raw); err == nil ||
 				!strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Decode = %v, want %q", err, tc.want)
 			}
@@ -106,7 +100,7 @@ func TestDecodeRequiresASource(t *testing.T) {
 // existing deployment reads once, and "unknown field path" names neither the
 // location nor what to write instead.
 func TestDecodeRejectsTheRemovedPathSetting(t *testing.T) {
-	_, err := decode(t, table(t), settings(t, map[string]any{"path": write(t, doc)}))
+	_, err := decode(t, builtin.Kinds(), settings(t, map[string]any{"path": write(t, doc)}))
 	if err == nil {
 		t.Fatal("the removed settings.path was accepted")
 	}
@@ -121,7 +115,7 @@ func TestDecodeRejectsTheRemovedPathSetting(t *testing.T) {
 // kind instead of into the source's settings - is the most likely wrong rewrite,
 // so it is refused with the replacement rather than as an unknown field.
 func TestDecodeRejectsAPathInsideTheSource(t *testing.T) {
-	_, err := decode(t, table(t), settings(t, map[string]any{
+	_, err := decode(t, builtin.Kinds(), settings(t, map[string]any{
 		"source": map[string]any{"path": write(t, doc)},
 	}))
 	if err == nil {
@@ -145,7 +139,7 @@ func TestDecodeRejectsANilSourceTable(t *testing.T) {
 // same rule a runtime layer follows.
 func TestDecodeRejectsAnUnregisteredSource(t *testing.T) {
 	raw := settings(t, map[string]any{"source": map[string]any{"kind": "vault"}})
-	_, err := decode(t, table(t), raw)
+	_, err := decode(t, builtin.Kinds(), raw)
 	if err == nil {
 		t.Fatal("an unregistered source was accepted")
 	}
@@ -166,7 +160,7 @@ func TestDecodeRejectsAnUnregisteredSource(t *testing.T) {
 // the most common wiring mistake and it costs one read.
 func TestDecodeRejectsADocumentThatDoesNotParse(t *testing.T) {
 	raw := settings(t, map[string]any{"source": fileSource(write(t, "not: a graph\n"))})
-	if _, err := decode(t, table(t), raw); err == nil {
+	if _, err := decode(t, builtin.Kinds(), raw); err == nil {
 		t.Fatal("an unparsable graph document was accepted")
 	}
 }
@@ -183,7 +177,7 @@ func TestDecodeRejectsUnknownSettings(t *testing.T) {
 		}},
 	}
 	for name, value := range cases {
-		_, err := decode(t, table(t), settings(t, value))
+		_, err := decode(t, builtin.Kinds(), settings(t, value))
 		if err == nil || !strings.Contains(err.Error(), "bogus") {
 			t.Errorf("%s: Decode = %v, want a complaint about the unknown setting", name, err)
 		}
@@ -217,7 +211,7 @@ func TestDocumentComesFromTheSourceTable(t *testing.T) {
 // The fingerprint is the document's identity: editing the file must invalidate
 // the checkpoints taken under the old graph.
 func TestFingerprintTracksTheDocumentBytes(t *testing.T) {
-	kinds := table(t)
+	kinds := builtin.Kinds()
 	kind := graph.Engine()
 	path := write(t, doc)
 	raw := settings(t, map[string]any{"source": fileSource(path)})
@@ -237,7 +231,7 @@ func TestFingerprintTracksTheDocumentBytes(t *testing.T) {
 // Two documents with the same bytes under different names are different
 // deployments: the name is part of the identity the checkpoint records.
 func TestFingerprintTracksTheSourceName(t *testing.T) {
-	kinds := table(t)
+	kinds := builtin.Kinds()
 	kind := graph.Engine()
 	one := kind.Fingerprint(context.Background(),
 		settings(t, map[string]any{"source": fileSource(write(t, doc))}), opener(t, kinds))
@@ -274,7 +268,7 @@ func TestFingerprintOfAnUnreadableSourceIsDistinct(t *testing.T) {
 func TestFingerprintPreimageIsPinned(t *testing.T) {
 	path := write(t, doc)
 	raw := settings(t, map[string]any{"source": fileSource(path)})
-	got := graph.Engine().Fingerprint(context.Background(), raw, opener(t, table(t)))
+	got := graph.Engine().Fingerprint(context.Background(), raw, opener(t, builtin.Kinds()))
 	sum := sha256.Sum256([]byte(path + "\x00" + doc))
 	if want := "sha256:" + hex.EncodeToString(sum[:]); got != want {
 		t.Fatalf("fingerprint = %q, want %q (the pre-change preimage)", got, want)

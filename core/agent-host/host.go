@@ -149,18 +149,18 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	if spec.Protocol != nil {
 		protocolKind, protocolFound = kinds.Protocols[spec.Protocol.Kind]
 	}
-	engineNames := sortedKeys(kinds.Engines)
-	protocolNames := sortedKeys(kinds.Protocols)
 	m.mu.Unlock()
 	if !engineFound {
 		return nil, errdefs.Validationf(
 			"manage: agent %q: engine %q is not registered; offered: %s",
-			spec.Name, spec.Engine.Kind, strings.Join(engineNames, ", "))
+			spec.Name, spec.Engine.Kind,
+			deploy.Offered(kinds.Engines, "deploy/builtin registers graph and a2a"))
 	}
 	if spec.Protocol != nil && !protocolFound {
 		return nil, errdefs.Validationf(
 			"manage: agent %q: protocol %q is not registered; offered: %s",
-			spec.Name, spec.Protocol.Kind, strings.Join(protocolNames, ", "))
+			spec.Name, spec.Protocol.Kind,
+			deploy.Offered(kinds.Protocols, "deploy/builtin registers a2a"))
 	}
 	if err := deploy.ValidateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
 		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)

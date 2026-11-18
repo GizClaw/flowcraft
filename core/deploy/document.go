@@ -274,7 +274,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		return Spec{}, errdefs.Validationf(
 			"%s: kind %q is not registered; offered: %s",
 			where("engine"), agent.Engine.Kind,
-			offered(l.Kinds.Engines, "deploy/builtin registers graph and a2a"))
+			Offered(l.Kinds.Engines, "deploy/builtin registers graph and a2a"))
 	}
 
 	// The kind says whether it runs here and speaks for its own fields; the
@@ -307,7 +307,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 			return Spec{}, errdefs.Validationf(
 				"%s: kind %q is not registered; offered: %s",
 				where("protocol"), agent.Protocol.Kind,
-				offered(l.Kinds.Protocols, "deploy/builtin registers a2a"))
+				Offered(l.Kinds.Protocols, "deploy/builtin registers a2a"))
 		}
 		settings := agent.Protocol.Settings
 		if len(strings.TrimSpace(string(settings))) == 0 {
@@ -499,7 +499,7 @@ func (l Loader) hookSpecs(agent string, documents []HookDocument, where func(str
 		if !found {
 			return nil, errdefs.Validationf("%s: kind %q is not registered; offered: %s",
 				at, document.Kind,
-				offered(l.Kinds.Hooks, "core ships none: a hook is the host's own policy"))
+				Offered(l.Kinds.Hooks, "core ships none: a hook is the host's own policy"))
 		}
 		settings := document.Settings
 		if len(strings.TrimSpace(string(settings))) == 0 {
