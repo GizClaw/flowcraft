@@ -11,8 +11,8 @@ package a2a_test
 //	        -> the runner below
 //
 // Everything the two halves share — message parts, task states, artifacts — comes
-// from core/internal/a2awire, so a mapping that is right on one side and wrong on
-// the other shows up here and nowhere else.
+// from one wire-mapping package that both adapters import, so a mapping that is
+// right on one side and wrong on the other shows up here and nowhere else.
 
 import (
 	"context"
@@ -35,13 +35,22 @@ import (
 
 // scripted yields a fixed event sequence and finishes. It stands in for the
 // model loop at the far end of the chain.
-type scripted struct{ events []agent.Event }
+type scripted struct {
+	events []agent.Event
+	state  agent.TaskState
+}
 
-func (r scripted) State() agent.TaskState { return agent.StateSubmitted }
+// State mirrors the last state the run announced: the table records it after
+// every turn, so a fixture that always answers "submitted" would make a later
+// resume or tasks/get assertion read a lie.
+func (r *scripted) State() agent.TaskState { return r.state }
 
-func (r scripted) Run(context.Context, message.Message) iter.Seq2[agent.Event, error] {
+func (r *scripted) Run(context.Context, message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
 		for _, event := range r.events {
+			if status, ok := event.(agent.Status); ok {
+				r.state = status.State
+			}
 			if !yield(event, nil) {
 				return
 			}
@@ -49,8 +58,8 @@ func (r scripted) Run(context.Context, message.Message) iter.Seq2[agent.Event, e
 	}
 }
 
-func (r scripted) Cancel(context.Context, string) error { return nil }
-func (r scripted) Close() error                         { return nil }
+func (r *scripted) Cancel(context.Context, string) error { return nil }
+func (r *scripted) Close() error                         { return nil }
 
 // servedPeer exposes one runner over A2A and returns the listening server.
 func servedPeer(t testing.TB, runner agent.Runner) *httptest.Server {
@@ -163,7 +172,7 @@ func TestRoundTripCarriesAnArtifact(t *testing.T) {
 		MediaType: "text/markdown",
 		Blob:      "blob-ref-1",
 	}
-	client := roundTrip(t, scripted{events: []agent.Event{
+	client := roundTrip(t, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.Text{Text: "done"},
 		agent.ArtifactWritten{Artifact: produced},
@@ -187,7 +196,7 @@ func TestRoundTripCarriesAnArtifact(t *testing.T) {
 // A paused task keeps its question: the reason travels as the status message, so
 // a caller can answer instead of waiting for an answer that will not come.
 func TestRoundTripCarriesTheQuestion(t *testing.T) {
-	client := roundTrip(t, scripted{events: []agent.Event{
+	client := roundTrip(t, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.Status{State: agent.StateInputRequired, Reason: "which seat?"},
 	}})
@@ -207,7 +216,7 @@ func TestRoundTripCarriesTheQuestion(t *testing.T) {
 // usage and reasoning stay with the peer. What must not happen is the answer
 // disappearing with them.
 func TestRoundTripDropsWhatTheWireCannotCarry(t *testing.T) {
-	client := roundTrip(t, scripted{events: []agent.Event{
+	client := roundTrip(t, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.ToolCallStart{Call: message.ToolCall{ID: "call-1", Name: "read_file"}},
 		agent.ToolResult{Result: message.ToolResult{CallID: "call-1"}},
@@ -223,9 +232,15 @@ func TestRoundTripDropsWhatTheWireCannotCarry(t *testing.T) {
 	if got.text != "the answer" {
 		t.Errorf("text = %q, want the answer that followed the dropped events", got.text)
 	}
-	for _, kind := range []agent.EventKind{agent.KindToolCall, agent.KindToolResult, agent.KindUsage, agent.KindReasoning} {
-		if got.kinds[kind] != 0 {
-			t.Errorf("%s crossed the wire %d times, want none", kind, got.kinds[kind])
+	// The client maps four wire shapes onto four event kinds, so a leaked tool
+	// call cannot arrive as one — it would arrive as text and break the
+	// assertion above. Pin the observed set anyway: a new mapping on either side
+	// that starts surfacing these kinds is a protocol change, not a detail.
+	for kind := range got.kinds {
+		switch kind {
+		case agent.KindStreamStart, agent.KindText, agent.KindStatus, agent.KindArtifact:
+		default:
+			t.Errorf("%s reached the caller, want only the four mapped kinds", kind)
 		}
 	}
 }
@@ -234,7 +249,7 @@ func TestRoundTripDropsWhatTheWireCannotCarry(t *testing.T) {
 // between. The difference against BenchmarkRoundTripTurn is what the second
 // adapter costs — the same turn translated twice.
 func BenchmarkSingleHopTurn(b *testing.B) {
-	served := servedPeer(b, scripted{events: []agent.Event{
+	served := servedPeer(b, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.Text{Text: "answer"},
 		agent.Status{State: agent.StateCompleted},
@@ -255,8 +270,13 @@ func BenchmarkSingleHopTurn(b *testing.B) {
 // The first turn on a session costs a card fetch; later turns do not. The unit
 // measured here is the cold one: a fresh session, its card fetch, one message and
 // the stream back, through two HTTP hops and two protocol adapters.
+//
+// A client per iteration is what the protocol allows — a message to a completed
+// task is refused — so each iteration keeps a transport of its own (~4 fds) until
+// its idle timeout. `-benchtime` past a few thousand iterations needs a higher
+// `ulimit -n`; the CI bench lane runs one iteration per benchmark and is fine.
 func BenchmarkRoundTripTurn(b *testing.B) {
-	served := roundTripServer(b, scripted{events: []agent.Event{
+	served := roundTripServer(b, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.Text{Text: "answer"},
 		agent.Status{State: agent.StateCompleted},
@@ -277,7 +297,7 @@ func BenchmarkRoundTripTurn(b *testing.B) {
 // The same turn with an artifact produced: this is where the wire mapping does
 // real work, because the artifact crosses both adapters as a data part.
 func BenchmarkRoundTripArtifactTurn(b *testing.B) {
-	served := roundTripServer(b, scripted{events: []agent.Event{
+	served := roundTripServer(b, &scripted{events: []agent.Event{
 		agent.Status{State: agent.StateWorking},
 		agent.Text{Text: "answer"},
 		agent.ArtifactWritten{Artifact: agent.Artifact{

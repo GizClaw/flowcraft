@@ -84,6 +84,40 @@ func TestAPauseFlushesTheBufferedText(t *testing.T) {
 	}
 }
 
+// The other half of the round rule: a working status does not end the round, so
+// an engine that reports one between two deltas keeps writing to one artifact. If
+// the condition were "close on any status", the answer would arrive as two.
+func TestAWorkingStatusKeepsTheRoundOpen(t *testing.T) {
+	stream := newTextStream(testInfo(), nil)
+	var events []a2a.Event
+	for _, event := range []agent.Event{
+		agent.Text{Text: "a"},
+		agent.Status{State: agent.StateWorking},
+		agent.Text{Text: "b"},
+		agent.Status{State: agent.StateCompleted},
+	} {
+		events = append(events, stream.events(event)...)
+	}
+	events = append(events, stream.close()...)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want the working status, two chunks and the completed status", len(events))
+	}
+	first, ok := events[1].(*a2a.TaskArtifactUpdateEvent)
+	if !ok || first.Append || first.LastChunk {
+		t.Fatalf("event 1 = %T, want the opening chunk", events[1])
+	}
+	second := events[2].(*a2a.TaskArtifactUpdateEvent)
+	if !second.Append || !second.LastChunk {
+		t.Errorf("event 2 append=%v last=%v, want the closing append", second.Append, second.LastChunk)
+	}
+	if first.Artifact.ID != second.Artifact.ID {
+		t.Errorf("the working status split the answer into two artifacts")
+	}
+	if text := first.Artifact.Parts[0].Text() + second.Artifact.Parts[0].Text(); text != "ab" {
+		t.Errorf("answer = %q, want ab", text)
+	}
+}
+
 // Each model round is its own artifact: a tool round that follows must not
 // append to the answer that already finished.
 func TestANewRoundClosesThePreviousArtifact(t *testing.T) {
