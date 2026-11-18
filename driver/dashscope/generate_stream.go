@@ -6,8 +6,8 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/goccy/go-json"
 )
 
@@ -28,7 +28,7 @@ type generateStreamRaw struct {
 	toolName string
 	toolArgs string
 	finish   inference.FinishReason
-	usage    *usage.Usage
+	usage    *outcome.Usage
 }
 
 type generateStreamFrame struct {

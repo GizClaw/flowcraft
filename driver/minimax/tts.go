@@ -10,8 +10,8 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -345,17 +345,17 @@ func decodeTTS(
 		return inference.GenerateResponse{}, fmt.Errorf("minimax: audio payload: %w", err)
 	}
 	part := message.AudioPart{Source: source, Format: raw.format}
-	accounting := usage.Usage{
-		Work: map[usage.WorkKind]int64{usage.WorkInputCharacters: raw.characters},
+	accounting := outcome.Usage{
+		Work: map[outcome.WorkKind]int64{outcome.WorkInputCharacters: raw.characters},
 	}
 	// The platform's own length is exact; the frame-count estimate is the
 	// fallback for a response that carries no accounting.
 	if raw.durationMillis > 0 {
 		part.DurationMillis = raw.durationMillis
-		accounting.Work[usage.WorkAudioDurationMillis] = raw.durationMillis
+		accounting.Work[outcome.WorkAudioDurationMillis] = raw.durationMillis
 	} else if millis, ok := media.AudioDurationMillis(raw.data, raw.format); ok {
 		part.DurationMillis = millis
-		accounting.Work[usage.WorkAudioDurationMillis] = millis
+		accounting.Work[outcome.WorkAudioDurationMillis] = millis
 	}
 	return inference.GenerateResponse{
 		Message: message.Message{
@@ -364,7 +364,7 @@ func decodeTTS(
 		},
 		FinishReason: inference.FinishStop,
 		Usage:        accounting,
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model: request.Model.ID, RequestID: raw.requestID,
 		},
 	}, nil
@@ -616,7 +616,7 @@ func newTTSStreamDecoder(
 			// The trace id is only known once the first event arrives, which is
 			// why metadata is built here rather than at decoder construction: the
 			// assembler takes it from StreamStart alone.
-			metadata := inference.Metadata{
+			metadata := outcome.Metadata{
 				Model: request.Model.ID, RequestID: raw.requestID,
 			}
 			events = append(events, inference.StreamEvent{
@@ -627,15 +627,15 @@ func newTTSStreamDecoder(
 			// Report the accounting before closing: the unary path reports the same
 			// facts, and a metering caller must not get different numbers depending
 			// on which shape it chose.
-			work := map[usage.WorkKind]int64{}
+			work := map[outcome.WorkKind]int64{}
 			if raw.characters > 0 {
-				work[usage.WorkInputCharacters] = raw.characters
+				work[outcome.WorkInputCharacters] = raw.characters
 			}
 			if raw.durationMillis > 0 {
-				work[usage.WorkAudioDurationMillis] = raw.durationMillis
+				work[outcome.WorkAudioDurationMillis] = raw.durationMillis
 			}
 			if len(work) > 0 {
-				accounting := usage.Usage{Work: work}
+				accounting := outcome.Usage{Work: work}
 				events = append(events, inference.StreamEvent{
 					Kind: inference.StreamUsage, Usage: &accounting,
 				})

@@ -183,10 +183,10 @@ type Probability struct {
 // DecisionResponse is one batch of judgments.
 type DecisionResponse struct {
 	// Answers are in request order.
-	Answers  []Answer      `json:"answers"`
-	Usage    outcome.Usage `json:"usage,omitzero"`
-	Metadata Metadata      `json:"metadata,omitzero"`
-	Warnings []Warning     `json:"warnings,omitempty"`
+	Answers  []Answer         `json:"answers"`
+	Usage    outcome.Usage    `json:"usage,omitzero"`
+	Metadata outcome.Metadata `json:"metadata,omitzero"`
+	Warnings []Warning        `json:"warnings,omitempty"`
 }
 
 // ValidateFor reports whether the answer can be the answer to request.

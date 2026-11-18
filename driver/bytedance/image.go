@@ -11,8 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/driver/internal/httpx"
@@ -347,11 +347,11 @@ func decodeImage(
 			Role: message.RoleAssistant, Content: message.Content{Parts: parts},
 		},
 		FinishReason: inference.FinishStop,
-		Usage: usage.Usage{
+		Usage: outcome.Usage{
 			InputTokens: raw.inputTokens, OutputTokens: raw.outputTokens,
-			Work: map[usage.WorkKind]int64{usage.WorkImagesGenerated: generated},
+			Work: map[outcome.WorkKind]int64{outcome.WorkImagesGenerated: generated},
 		},
-		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
+		Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
 	}, nil
 }
 

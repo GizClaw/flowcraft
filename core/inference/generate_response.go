@@ -62,7 +62,7 @@ type GenerateResponse struct {
 	// Usage is the token and cost accounting the provider reported.
 	Usage outcome.Usage `json:"usage,omitzero"`
 	// Metadata identifies what answered.
-	Metadata Metadata `json:"metadata,omitzero"`
+	Metadata outcome.Metadata `json:"metadata,omitzero"`
 	// Warnings lists fields the driver could not honor in full.
 	Warnings []Warning `json:"warnings,omitempty"`
 }

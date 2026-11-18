@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -102,7 +102,7 @@ func TestVideoCreatesPollsAndReturnsTheArtifact(t *testing.T) {
 	if response.Usage.OutputTokens != 7 {
 		t.Fatalf("output tokens = %d", response.Usage.OutputTokens)
 	}
-	if got := response.Usage.Work[usage.WorkVideosGenerated]; got != 1 {
+	if got := response.Usage.Work[outcome.WorkVideosGenerated]; got != 1 {
 		t.Fatalf("videos generated = %d", got)
 	}
 	part, ok := response.Message.Content.Parts[0].(message.VideoPart)

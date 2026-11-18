@@ -75,7 +75,7 @@ type EmbedResponse struct {
 	// Usage reports what the call consumed.
 	Usage outcome.Usage `json:"usage,omitzero"`
 	// Metadata identifies the call that produced this answer.
-	Metadata Metadata `json:"metadata,omitzero"`
+	Metadata outcome.Metadata `json:"metadata,omitzero"`
 	// Warnings reports requested options honoured only in part.
 	Warnings []Warning `json:"warnings,omitempty"`
 }

@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -208,8 +208,8 @@ func decodeImage(_ context.Context, request inference.GenerateRequest, raw image
 		parts = append(parts, message.ImagePart{Source: source})
 	}
 	return inference.GenerateResponse{Message: message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: parts}}, FinishReason: inference.FinishStop,
-		Usage:    usage.Usage{Work: map[usage.WorkKind]int64{usage.WorkImagesGenerated: raw.count}},
-		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
+		Usage:    outcome.Usage{Work: map[outcome.WorkKind]int64{outcome.WorkImagesGenerated: raw.count}},
+		Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
 }
 
 func (d *driver) compileImage(ctx context.Context, request inference.GenerateRequest, shape protocol.Shape) (protocol.Compiled[imageWire], error) {

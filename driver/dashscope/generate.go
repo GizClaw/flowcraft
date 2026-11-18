@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -150,8 +150,8 @@ type generateUsage struct {
 	} `json:"prompt_tokens_details"`
 }
 
-func (u generateUsage) canonical() usage.Usage {
-	out := usage.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
+func (u generateUsage) canonical() outcome.Usage {
+	out := outcome.Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens}
 	if read := min(max(u.PromptTokensDetails.CachedTokens, 0), u.InputTokens); read > 0 {
 		out.Input.CacheReadTokens = &read
 		uncached := u.InputTokens - read
@@ -159,7 +159,7 @@ func (u generateUsage) canonical() usage.Usage {
 	}
 	if reasoning := u.OutputTokensDetails.ReasoningTokens; reasoning > 0 {
 		out.Details.Output.ReasoningTokens = &reasoning
-		out.Details.Output.ReasoningAccounting = usage.ReasoningIncludedInOutput
+		out.Details.Output.ReasoningAccounting = outcome.ReasoningIncludedInOutput
 	}
 	return out
 }
@@ -598,7 +598,7 @@ func decodeGenerate(_ context.Context, request inference.GenerateRequest, raw ge
 		Message:      message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: parts}},
 		FinishReason: generateFinish(choice.FinishReason, len(choice.Message.ToolCalls) > 0),
 		Usage:        raw.body.Usage.canonical(),
-		Metadata:     inference.Metadata{Model: request.Model.ID, RequestID: raw.body.RequestID},
+		Metadata:     outcome.Metadata{Model: request.Model.ID, RequestID: raw.body.RequestID},
 	}, nil
 }
 

@@ -13,8 +13,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -113,7 +113,7 @@ func TestSpeechUnaryDecodesHexAudio(t *testing.T) {
 	if part.DurationMillis != 100 {
 		t.Fatalf("pcm duration = %d, want 100ms", part.DurationMillis)
 	}
-	if got := response.Usage.Work[usage.WorkInputCharacters]; got != int64(len("hello")) {
+	if got := response.Usage.Work[outcome.WorkInputCharacters]; got != int64(len("hello")) {
 		t.Fatalf("input characters = %d", got)
 	}
 }
@@ -629,10 +629,10 @@ func TestSpeechUnaryUsesPlatformAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	if got := response.Usage.Work[usage.WorkInputCharacters]; got != 22 {
+	if got := response.Usage.Work[outcome.WorkInputCharacters]; got != 22 {
 		t.Fatalf("characters = %d, want the platform's 22", got)
 	}
-	if got := response.Usage.Work[usage.WorkAudioDurationMillis]; got != 2736 {
+	if got := response.Usage.Work[outcome.WorkAudioDurationMillis]; got != 2736 {
 		t.Fatalf("duration = %d, want the platform's 2736", got)
 	}
 	part, ok := response.Message.Content.Parts[0].(message.AudioPart)
@@ -675,10 +675,10 @@ func TestSpeechStreamReportsTraceAndUsage(t *testing.T) {
 	if result.Metadata.RequestID != "tr-usage" {
 		t.Fatalf("request id = %q, want the streamed trace", result.Metadata.RequestID)
 	}
-	if got := result.Usage.Work[usage.WorkInputCharacters]; got != 7 {
+	if got := result.Usage.Work[outcome.WorkInputCharacters]; got != 7 {
 		t.Fatalf("characters = %d, want the platform's 7", got)
 	}
-	if got := result.Usage.Work[usage.WorkAudioDurationMillis]; got != 1439 {
+	if got := result.Usage.Work[outcome.WorkAudioDurationMillis]; got != 1439 {
 		t.Fatalf("duration = %d, want the platform's 1439", got)
 	}
 }

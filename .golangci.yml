@@ -92,7 +92,7 @@ linters:
           deny:
             # The trailing $ makes the match exact: without it depguard treats
             # the value as a prefix and also denies the sibling leaves
-            # (core/inference/usage, core/inference/model) that depend on it.
+            # (core/inference/outcome, core/inference/model) that depend on it.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/model must not import the contract"
         # inference/outcome is what one call returned — its identity and its
@@ -111,15 +111,6 @@ linters:
           deny:
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/outcome must not import the contract"
-        # inference/usage forwards to outcome for one release cycle, because
-        # the driver module is built against two core versions at once. It is
-        # still a leaf, and still not allowed to reach for the contract.
-        usage-is-a-leaf:
-          files:
-            - "**/core/inference/usage/**"
-          deny:
-            - pkg: "github.com/GizClaw/flowcraft/core/inference$"
-              desc: "core/inference/usage must not import the contract"
         # Tier 1 — contracts. Vocabulary and nothing else: message, errdefs,
         # permission, fsx, skill, config, correlation. A contract that reached
         # for any tier above it could not be imported by the package it

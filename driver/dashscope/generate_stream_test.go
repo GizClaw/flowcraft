@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 )
 
 // streamFrame renders one wire frame as the gateway sends it: the answer nested
@@ -59,7 +59,7 @@ func TestGenerateStreamDecoder(t *testing.T) {
 		t.Fatalf("tool fragment = %+v", events)
 	}
 
-	accounting := usage.Usage{InputTokens: 5, OutputTokens: 7}
+	accounting := outcome.Usage{InputTokens: 5, OutputTokens: 7}
 	events, err = decode(ctx, generateStreamRaw{
 		kind: generateStreamFinish, finish: inference.FinishToolCalls, usage: &accounting,
 	})

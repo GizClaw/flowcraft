@@ -7,8 +7,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -198,8 +198,8 @@ func decodeEmbed(_ context.Context, request inference.EmbedRequest, raw embedRaw
 	}
 	return inference.EmbedResponse{
 		Vectors:  raw.vectors,
-		Usage:    usage.Usage{InputTokens: raw.inputTokens},
-		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
+		Usage:    outcome.Usage{InputTokens: raw.inputTokens},
+		Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
 	}, nil
 }
 
