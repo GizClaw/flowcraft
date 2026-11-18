@@ -390,14 +390,16 @@ func TestExecBudgetExceededMemory(t *testing.T) {
 	r := mustNewRunner(t)
 	start := time.Now()
 	_, err := engine.Exec(context.Background(), r, "powershell",
-		[]string{"-NoProfile", "-Command", "$a = New-Object byte[] 400MB"},
+		// The child must not be able to end itself: it catches the refused
+		// allocation and tries again, so nothing but the cap can end this session
+		// inside the bound below. That is the case the cap used to lose — the
+		// process neither exited nor was killed, and the deadline won.
+		[]string{"-NoProfile", "-Command",
+			"while ($true) { try { $a = New-Object byte[] 400MB } catch { Start-Sleep -Milliseconds 20 } }"},
 		sandbox.ExecOptions{
 			// The cap has to end the session, not the deadline: a 30s Timeout
 			// leaves a slow runner room to start PowerShell, so the elapsed bound
-			// below can tell "the cap ended it" from "the wall clock ended it".
-			// This case used to fail exactly that way — the allocation was
-			// refused, the child thrashed instead of exiting, and the run was
-			// classified as TimedOut with the budget already exceeded.
+			// can tell "the cap ended it" from "the wall clock ended it".
 			Timeout: 30 * time.Second,
 			Resources: sandbox.ResourceLimits{
 				MemoryBytes: 32 << 20,
@@ -413,6 +415,30 @@ func TestExecBudgetExceededMemory(t *testing.T) {
 	if elapsed > 20*time.Second {
 		t.Fatalf("the memory cap took %s to end the session; it must not wait out the 30s Timeout",
 			elapsed.Round(time.Millisecond))
+	}
+}
+
+// A generous cap must not turn a slow child into a budget breach. The fix is
+// about what classifies a session, so the negative case belongs next to the
+// positive one: the same paths, opposite verdict.
+func TestExecTimeoutWithAGenerousCapIsNotABudgetBreach(t *testing.T) {
+	r := mustNewRunner(t)
+	_, err := engine.Exec(context.Background(), r, "powershell",
+		[]string{"-NoProfile", "-Command", "Start-Sleep -Seconds 30"},
+		sandbox.ExecOptions{
+			Timeout: 2 * time.Second,
+			Resources: sandbox.ResourceLimits{
+				MemoryBytes: 1 << 30,
+			},
+		})
+	if err == nil {
+		t.Fatal("Exec succeeded, want DeadlineExceeded")
+	}
+	if errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("err = %v, want DeadlineExceeded: the session never approached its cap", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want DeadlineExceeded", err)
 	}
 }
 

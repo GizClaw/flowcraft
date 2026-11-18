@@ -3,6 +3,7 @@
 package sessionkit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -18,16 +20,27 @@ import (
 // group: processes assigned to it are managed as a unit, so
 // terminating the job kills every descendant (not just the leader)
 // and job limits apply across the whole tree.
+//
+// The job owns the cap verdict as well as the handle: both the kernel's
+// completion-port report and the memory sampler record it here, and a cap is
+// always recorded before anything is killed, so a classification that runs while
+// the kill is in flight cannot miss it.
 type job struct {
 	h      xwin.Handle
-	notify *jobNotifier           // nil when no resource caps are configured
-	limits sandbox.ResourceLimits // what the caller asked for; diagnostics only
+	notify *jobNotifier           // nil unless a cpu budget was configured
+	limits sandbox.ResourceLimits // what the caller asked for
+
+	mu           sync.Mutex
+	closed       bool   // the handle has been (or is being) released
+	cap          string // "memory" or "cpu"; first cap wins
+	sampleWarned bool   // the sampler is unreadable; warn once, not every tick
+	capped       chan struct{}
+	once         sync.Once
 }
 
 // Job completion-port message codes (winnt.h). The numbers are not adjacent —
-// 5 is unused and the two memory codes come after the process ones — so they
-// are spelled out rather than inferred, and the job-time code is the only one a
-// limit this file sets can produce.
+// 5 is unused and the two memory codes come after the process ones — so they are
+// spelled out rather than inferred.
 const (
 	jobObjectMsgEndOfJobTime     = 1  // JOB_OBJECT_MSG_END_OF_JOB_TIME
 	jobObjectMsgEndOfProcessTime = 2  // JOB_OBJECT_MSG_END_OF_PROCESS_TIME
@@ -47,39 +60,19 @@ type associateCompletionPort struct {
 	CompletionPort xwin.Handle
 }
 
-// jobNotifier drains a job object's completion port and records which
-// resource cap the kernel enforced, so a cap kill can be classified as
-// SessionBudgetExceeded instead of a plain exit.
+// jobNotifier drains a job object's completion port and reports which cap the
+// kernel enforced, so a cpu-budget kill can be classified as
+// SessionBudgetExceeded instead of a plain exit. Memory travels the sampler's
+// path instead — see enforceCaps — but a memory report is still honoured if the
+// kernel ever produces one.
 type jobNotifier struct {
-	port xwin.Handle
-	done chan struct{}
-	// hit is closed on the first cap the kernel reports. A memory cap refuses
-	// allocations instead of ending the process, so without something acting on
-	// this the child is left to decide when it is over budget — see
-	// awaitCapKill.
-	hit     chan struct{}
-	hitOnce sync.Once
-	mu      sync.Mutex
-	budget  string // "memory" or "cpu"; first cap wins
+	port  xwin.Handle
+	done  chan struct{}
+	onCap func(string)
 }
 
-func (n *jobNotifier) setBudget(cap string) {
-	n.mu.Lock()
-	if n.budget == "" {
-		n.budget = cap
-	}
-	n.mu.Unlock()
-	n.hitOnce.Do(func() { close(n.hit) })
-}
-
-func (n *jobNotifier) budgetCap() string {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.budget
-}
-
-// run drains completion messages until stop posts the sentinel or the
-// port is closed.
+// run drains completion messages until stop posts the sentinel or the port is
+// closed.
 func (n *jobNotifier) run() {
 	defer close(n.done)
 	for {
@@ -92,13 +85,24 @@ func (n *jobNotifier) run() {
 		if key == notifierStop {
 			return
 		}
-		switch qty {
-		case jobObjectMsgJobMemoryLimit:
-			n.setBudget("memory")
-		case jobObjectMsgEndOfJobTime, jobObjectMsgEndOfProcessTime:
-			n.setBudget("cpu")
+		switch cap := capForMessage(qty); cap {
+		case "":
+		default:
+			n.onCap(cap)
 		}
 	}
+}
+
+// capForMessage maps a job completion message to the cap it reports, or "" when
+// the message is not one this package acts on.
+func capForMessage(qty uint32) string {
+	switch qty {
+	case jobObjectMsgJobMemoryLimit:
+		return "memory"
+	case jobObjectMsgEndOfJobTime, jobObjectMsgEndOfProcessTime:
+		return "cpu"
+	}
+	return ""
 }
 
 // stop posts the sentinel, waits for the drain goroutine (bounded),
@@ -118,15 +122,15 @@ func (n *jobNotifier) stop() {
 // newJobNotifier creates a completion port, associates it with the job
 // so limit-violation messages are delivered, and starts the drain
 // goroutine.
-func newJobNotifier(jobHandle xwin.Handle) (*jobNotifier, error) {
+func newJobNotifier(jobHandle xwin.Handle, onCap func(string)) (*jobNotifier, error) {
 	port, err := xwin.CreateIoCompletionPort(xwin.InvalidHandle, 0, 0, 1)
 	if err != nil {
 		return nil, errdefs.Internal(fmt.Errorf("windows: create job completion port: %w", err))
 	}
 	n := &jobNotifier{
-		port: port,
-		done: make(chan struct{}),
-		hit:  make(chan struct{}),
+		port:  port,
+		done:  make(chan struct{}),
+		onCap: onCap,
 	}
 	assoc := associateCompletionPort{CompletionKey: notifierKey, CompletionPort: port}
 	if _, err := xwin.SetInformationJobObject(jobHandle,
@@ -149,7 +153,7 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 	if err != nil {
 		return nil, errdefs.Internal(fmt.Errorf("windows: create job object: %w", err))
 	}
-	j := &job{h: h, limits: limits}
+	j := &job{h: h, limits: limits, capped: make(chan struct{})}
 	info := jobLimits(limits, timeout)
 	if _, err := xwin.SetInformationJobObject(
 		h, xwin.JobObjectExtendedLimitInformation,
@@ -158,8 +162,10 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 		_ = j.close()
 		return nil, errdefs.Internal(fmt.Errorf("windows: set job limits: %w", err))
 	}
-	if limits.MemoryBytes > 0 || limits.CPUMillicores > 0 {
-		notify, err := newJobNotifier(h)
+	// Only a cpu budget is a kernel limit that ends the job, so only it needs the
+	// completion port. Memory is sampled, and the sampler records the cap itself.
+	if limits.CPUMillicores > 0 {
+		notify, err := newJobNotifier(h, j.markCap)
 		if err != nil {
 			_ = j.close()
 			return nil, err
@@ -169,48 +175,118 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 	return j, nil
 }
 
-// budgetCap reports which resource cap the kernel enforced, if any.
-func (j *job) budgetCap() string {
-	if j.notify == nil {
-		return ""
+// markCap records the first cap that fired and releases whoever waits on it. It
+// is always called before the kill, so a classification racing the kill still
+// sees the cap.
+func (j *job) markCap(cap string) {
+	j.mu.Lock()
+	if j.cap == "" {
+		j.cap = cap
 	}
-	return j.notify.budgetCap()
+	j.mu.Unlock()
+	j.once.Do(func() { close(j.capped) })
 }
 
-// awaitCapKill ends the job as soon as the kernel reports a cap, matching the
-// unix watcher's "exceeding a cap ends the session" semantics.
+// budgetCap reports which resource cap was enforced, if any.
+func (j *job) budgetCap() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.cap
+}
+
+// enforceCaps ends the job when a cap is exceeded, and is what makes "exceeded"
+// an event instead of something a later classification reconstructs. It is the
+// Windows form of what the unix watcher does by sampling its process group.
 //
-// Windows makes this necessary rather than tidy: a memory cap refuses the
-// allocation and leaves the process running, so a child that retries instead of
-// exiting (PowerShell under a commit cap thrashes in its allocator) reaches the
-// wall-clock Timeout first and is classified as TimedOut even though the memory
-// budget was what stopped it. The kill is best-effort: a job whose processes are
-// already gone reports ERROR_ACCESS_DENIED, which terminate treats as a no-op.
-func (j *job) awaitCapKill(done <-chan struct{}) {
-	if j.notify == nil {
+// The cpu budget needs no help: JOB_OBJECT_LIMIT_JOB_TIME makes the kernel
+// terminate the tree, and the report it posts is what markCap records.
+//
+// Memory is the one that does, and deliberately not through a kernel limit.
+// JOB_OBJECT_LIMIT_JOB_MEMORY refuses the allocation that would go over, so the
+// job's accounting never crosses the budget and the kernel has no breach to
+// report: the child is left running with its allocation refused, and a child
+// that retries instead of exiting (PowerShell thrashes in its allocator) reaches
+// the wall-clock Timeout. Sampling the job's own peak is the only reading of
+// "the budget was exceeded" that does not depend on the child's behaviour. The
+// cost is the same one the unix watcher pays: a session may run past its budget
+// until the next sample.
+func (j *job) enforceCaps(done <-chan struct{}) {
+	if j.notify == nil && j.limits.MemoryBytes <= 0 {
 		return
 	}
+	var ticks <-chan time.Time
+	var ticker *time.Ticker
+	if j.limits.MemoryBytes > 0 {
+		ticker = time.NewTicker(jobMemorySampleInterval)
+		ticks = ticker.C
+	}
 	go func() {
-		select {
-		case <-j.notify.hit:
-			terminateJob(j)
-		case <-done:
+		if ticker != nil {
+			defer ticker.Stop()
+		}
+		for {
+			select {
+			case <-j.capped:
+				terminateJob(j)
+				return
+			case <-ticks:
+				if j.overMemory() {
+					j.markCap("memory")
+					terminateJob(j)
+					return
+				}
+			case <-done:
+				return
+			}
 		}
 	}()
 }
 
-// peakMemory reports the job's peak committed memory and its configured cap. A
-// timed-out session is diagnosed with it: a cap the kernel enforced without
-// terminating anything looks exactly like a slow child from the outside, and the
-// difference is only visible in these two numbers.
-func (j *job) peakMemory() (peak, limit uintptr, err error) {
+// jobMemorySampleInterval is how often a configured memory budget is sampled.
+// It is tighter than the unix watcher's 250ms because a job handle answers the
+// same question with one kernel call instead of walking a process tree: the
+// interval is what bounds how far past its budget a session can run before it is
+// killed.
+const jobMemorySampleInterval = 25 * time.Millisecond
+
+// overMemory reports whether the job's peak commit has passed the budget.
+func (j *job) overMemory() bool {
+	// The sampler can tick between release (which marks the handle released) and
+	// the session's done channel closing. Query through the released handle would
+	// log a spurious warning on every teardown.
+	j.mu.Lock()
+	closed := j.closed
+	j.mu.Unlock()
+	if closed {
+		return false
+	}
+	peak, err := j.peakMemory()
+	if err != nil {
+		// A sample that cannot be read is not a breach. Warn once: a silent
+		// sampler is the failure mode this whole path exists to avoid.
+		j.mu.Lock()
+		warned := j.sampleWarned
+		j.sampleWarned = true
+		j.mu.Unlock()
+		if !warned {
+			telemetry.WarnErr(context.Background(), "windows: sample job memory", err)
+		}
+		return false
+	}
+	return peak > uintptr(j.limits.MemoryBytes)
+}
+
+// peakMemory reports the job's peak committed memory. A timed-out session is
+// diagnosed with it: an exceeded budget the kernel never acted on looks exactly
+// like a slow child from the outside.
+func (j *job) peakMemory() (uintptr, error) {
 	var info xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	if err := xwin.QueryInformationJobObject(j.h,
 		xwin.JobObjectExtendedLimitInformation,
 		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	return info.PeakJobMemoryUsed, info.JobMemoryLimit, nil
+	return info.PeakJobMemoryUsed, nil
 }
 
 // jobLimits maps sandbox.ResourceLimits onto the Windows extended
@@ -223,10 +299,11 @@ func (j *job) peakMemory() (peak, limit uintptr, err error) {
 func jobLimits(limits sandbox.ResourceLimits, timeout time.Duration) xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
 	var info xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-	if limits.MemoryBytes > 0 {
-		info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_JOB_MEMORY
-		info.JobMemoryLimit = uintptr(limits.MemoryBytes)
-	}
+	// Memory is deliberately not a kernel limit. JOB_OBJECT_LIMIT_JOB_MEMORY
+	// refuses the allocation that would exceed it, so the job's accounting never
+	// crosses the budget: there is nothing for the kernel to report, the process
+	// is not ended, and a child that retries its allocation runs to the wall-clock
+	// Timeout. The budget is sampled instead — see enforceCaps.
 	if limits.CPUMillicores > 0 {
 		info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_JOB_TIME
 		info.BasicLimitInformation.PerJobUserTimeLimit = cpuBudget100ns(limits, timeout)
@@ -266,6 +343,17 @@ func (j *job) assign(pid int) error {
 // already has no processes reports ERROR_ACCESS_DENIED, which is a
 // successful no-op.
 func (j *job) terminate() error {
+	// Held across the syscall: close marks the handle released under the same
+	// mutex, so a cap goroutine that wakes up as the session ends either kills a
+	// live job or returns here — it can never terminate through a handle that has
+	// been closed, and a recycled handle value cannot become another session's
+	// job. terminate is also the path Close and Terminate use, which is why the
+	// guard belongs here rather than in the caller.
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return nil
+	}
 	if err := xwin.TerminateJobObject(j.h, 1); err != nil {
 		if errors.Is(err, xwin.ERROR_ACCESS_DENIED) {
 			return nil
@@ -278,6 +366,12 @@ func (j *job) terminate() error {
 // close releases the job handle. With KILL_ON_JOB_CLOSE set, closing
 // the last handle terminates all remaining processes.
 func (j *job) close() error {
+	// Mark released before the handle goes: enforceCaps' goroutine is woken by the
+	// same events that end a session, so it can be a scheduler tick behind the
+	// release. See terminate.
+	j.mu.Lock()
+	j.closed = true
+	j.mu.Unlock()
 	if j.notify != nil {
 		j.notify.stop()
 	}

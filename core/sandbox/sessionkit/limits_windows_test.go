@@ -21,17 +21,22 @@ func TestJobLimitsNone(t *testing.T) {
 	}
 }
 
-func TestJobLimitsMemory(t *testing.T) {
+// Memory is sampled, never a kernel limit. JOB_OBJECT_LIMIT_JOB_MEMORY refuses
+// the allocation instead of ending the process, so the job's accounting stops at
+// the limit: the kernel has no breach to report and the sampler has nothing to
+// see, which is exactly the state that made a thrashed session look like a
+// timeout.
+func TestJobLimitsMemoryIsNotAKernelLimit(t *testing.T) {
 	info := jobLimits(sandbox.ResourceLimits{MemoryBytes: 64 << 20}, 0)
 	flags := info.BasicLimitInformation.LimitFlags
-	if flags&xwin.JOB_OBJECT_LIMIT_JOB_MEMORY == 0 {
-		t.Fatalf("LimitFlags = %#x, want JOB_OBJECT_LIMIT_JOB_MEMORY set", flags)
+	if flags&xwin.JOB_OBJECT_LIMIT_JOB_MEMORY != 0 {
+		t.Fatalf("LimitFlags = %#x, want JOB_OBJECT_LIMIT_JOB_MEMORY clear", flags)
 	}
-	if info.JobMemoryLimit != 64<<20 {
-		t.Fatalf("JobMemoryLimit = %d, want %d", info.JobMemoryLimit, 64<<20)
+	if info.JobMemoryLimit != 0 {
+		t.Fatalf("JobMemoryLimit = %d, want 0", info.JobMemoryLimit)
 	}
-	if info.BasicLimitInformation.PerProcessUserTimeLimit != 0 {
-		t.Fatalf("PerProcessUserTimeLimit = %d, want 0", info.BasicLimitInformation.PerProcessUserTimeLimit)
+	if info.BasicLimitInformation.PerJobUserTimeLimit != 0 {
+		t.Fatalf("PerJobUserTimeLimit = %d, want 0", info.BasicLimitInformation.PerJobUserTimeLimit)
 	}
 }
 
@@ -54,13 +59,12 @@ func TestJobLimitsBoth(t *testing.T) {
 	info := jobLimits(sandbox.ResourceLimits{MemoryBytes: 1 << 20, CPUMillicores: 1000}, time.Second)
 	flags := info.BasicLimitInformation.LimitFlags
 	want := uint32(xwin.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) |
-		xwin.JOB_OBJECT_LIMIT_JOB_MEMORY |
 		xwin.JOB_OBJECT_LIMIT_JOB_TIME
 	if flags != want {
 		t.Fatalf("LimitFlags = %#x, want %#x", flags, want)
 	}
-	if info.JobMemoryLimit != 1<<20 {
-		t.Fatalf("JobMemoryLimit = %d, want %d", info.JobMemoryLimit, 1<<20)
+	if info.JobMemoryLimit != 0 {
+		t.Fatalf("JobMemoryLimit = %d, want 0 (memory is sampled, not a kernel limit)", info.JobMemoryLimit)
 	}
 	if got := info.BasicLimitInformation.PerJobUserTimeLimit; got != 10_000_000 {
 		t.Fatalf("PerJobUserTimeLimit = %d, want %d", got, 10_000_000)

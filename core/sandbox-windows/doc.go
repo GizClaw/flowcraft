@@ -73,14 +73,18 @@
 //	                              paths are writable. Without the
 //	                              option the call fails with
 //	                              errdefs.NotAvailable.
-//	Resources.MemoryBytes         enforced as a job-wide memory limit
-//	                              (JOB_OBJECT_LIMIT_JOB_MEMORY). The
-//	                              kernel refuses the allocation
-//	                              rather than ending the process, so
-//	                              the job's completion-port report
-//	                              terminates the tree: the session
-//	                              ends when the budget is exceeded,
-//	                              not when the child gives up.
+//	Resources.MemoryBytes         enforced by sampling the job's peak
+//	                              committed memory every 25ms, and
+//	                              terminating the tree when it passes
+//	                              the budget — the same shape as the
+//	                              unix watcher, so a session may run
+//	                              past its budget until the next
+//	                              sample. Deliberately *not* a
+//	                              kernel limit: JOB_OBJECT_LIMIT_JOB_
+//	                              MEMORY refuses the allocation
+//	                              instead of ending the process, so
+//	                              the job never crosses the budget
+//	                              and nothing can report the breach.
 //	Resources.CPUMillicores       enforced as a job-wide user-time
 //	                              budget (JOB_OBJECT_LIMIT_JOB_TIME)
 //	                              derived from Timeout x millicores /
@@ -104,17 +108,18 @@
 //	                              NotAvailable until the
 //	                              restricted-token ConPTY spawn path is
 //	                              verified against a real console.
-//	Exit classification           a process killed by a job memory or
-//	                              cpu-time cap is reported as
-//	                              SessionBudgetExceeded via the job
-//	                              object's completion-port messages.
-//	                              A session that reaches its Timeout
-//	                              with a memory cap configured
-//	                              records the job's peak and limit
-//	                              as telemetry, because a
-//	                              kernel-refused allocation and a
-//	                              slow child are otherwise
-//	                              indistinguishable at that point.
+//	Exit classification           exceeding a budget ends the session
+//	                              as SessionBudgetExceeded: a cpu
+//	                              budget through the kernel's
+//	                              JOB_OBJECT_MSG_END_OF_JOB_TIME,
+//	                              a memory budget through the
+//	                              sampler. A session that reaches
+//	                              its Timeout with a memory budget
+//	                              configured records the job's peak
+//	                              as telemetry, because an exceeded
+//	                              budget that was never sampled and a
+//	                              slow child look the same at that
+//	                              point.
 //
 // # File journal
 //

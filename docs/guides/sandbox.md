@@ -177,7 +177,12 @@ sandbox:
 ```
 
 Every child runs in its own Job Object: timeout, cancel and close terminate the
-whole process tree, and memory / cpu limits are enforced by the kernel. Without
+whole process tree. A cpu budget is a job-wide user-time limit the kernel
+enforces by ending the job; a memory budget is sampled from the job's peak
+commit every 25 ms and terminates the tree on a breach, the same shape as the
+unix watcher, so a session may briefly run past its budget. Memory is
+deliberately not a kernel commit limit there: refusing the allocation leaves the
+process running with nothing to report. Without
 `write_confine` the runner is lifecycle-only and a call that asks for write
 confinement is rejected with `NotAvailable`. Network policy runs the child in an
 AppContainer with no network capabilities, plus WFP bind-layer filters for

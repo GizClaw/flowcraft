@@ -50,12 +50,12 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     supported. Non-elevated hosts fail closed with NotAvailable.
 //   - Permission != nil without WithWriteConfinement: errdefs.NotAvailable
 //     (no OS boundary to confine a caller-supplied file boundary).
-//   - Resources.MemoryBytes: enforced as a job-wide memory limit
-//     (JOB_OBJECT_LIMIT_JOB_MEMORY); the kernel refuses the allocation,
-//     and the job's completion-port report terminates the tree, so the
-//     session ends when the budget is exceeded rather than when the
-//     child gives up.
-//   - Resources.CPUMillicores: enforced as a per-process user-time
+//   - Resources.MemoryBytes: enforced by sampling the job's peak committed
+//     memory (25ms) and terminating the tree on a breach, matching the unix
+//     watcher — so a session may run past its budget until the next sample.
+//     JOB_OBJECT_LIMIT_JOB_MEMORY is deliberately not set: it refuses the
+//     allocation instead of ending the process, leaving nothing to report.
+//   - Resources.CPUMillicores: enforced as a job-wide user-time
 //     limit = Timeout x millicores/1000; requires Timeout > 0,
 //     otherwise errdefs.NotAvailable.
 //   - Resources.DiskBytes != 0: errdefs.NotAvailable (no quota

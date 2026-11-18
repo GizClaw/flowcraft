@@ -211,10 +211,10 @@ func StartSessionWithPolicy(
 		release: release,
 	}
 
-	// A cap the kernel reports ends the job here instead of waiting for the child
+	// A cap that is exceeded ends the job here instead of waiting for the child
 	// to give up, which is what the unix watcher does by sampling. See
-	// job.awaitCapKill for why Windows needs it.
-	j.awaitCapKill(s.done)
+	// job.enforceCaps.
+	j.enforceCaps(s.done)
 
 	if spec.Opts.Timeout > 0 {
 		timer := time.AfterFunc(spec.Opts.Timeout, s.timeoutKill)
@@ -268,9 +268,9 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 	timedOut := s.timedOut
 	terminated := s.terminated
 	s.mu.Unlock()
-	// A cap-kill completion message can land a moment after the process exits;
-	// give the notifier a short grace window so a kernel-enforced limit is
-	// classified as BudgetExceeded rather than a plain exit.
+	// A cap-kill report can land a moment after the process exits; give the
+	// notifier a short grace window so a kernel-enforced limit is classified as
+	// BudgetExceeded rather than a plain exit.
 	if j.notify != nil {
 		deadline := time.Now().Add(100 * time.Millisecond)
 		for j.budgetCap() == "" && time.Now().Before(deadline) {
@@ -283,15 +283,19 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 		}
 	}
 	if timedOut {
-		// A memory cap that the kernel enforced without terminating anything looks
-		// exactly like a slow child from here: the allocation is refused, the child
-		// retries, the deadline arrives. Record what the job actually used, so the
-		// next one of these is a diagnosable number rather than a timeout with no
-		// story.
-		if j.limits.MemoryBytes > 0 {
-			if peak, limit, err := j.peakMemory(); err == nil {
+		// An exceeded memory budget looks exactly like a slow child from here — the
+		// session ran to its deadline and the cap was never recorded. Record what the
+		// job actually used, so the next one of these is a diagnosable number rather
+		// than a timeout with no story.
+		if limit := j.limits.MemoryBytes; limit > 0 {
+			peak, err := j.peakMemory()
+			if err != nil {
+				telemetry.WarnErr(context.Background(), "windows: read job memory on timeout", err,
+					attribute.String("sandbox.session_id", s.id))
+			} else {
 				telemetry.Warn(context.Background(),
 					"windows: session exceeded its Timeout with a memory cap set",
+					attribute.String("sandbox.session_id", s.id),
 					attribute.Int64("sandbox.memory_limit_bytes", int64(limit)),
 					attribute.Int64("sandbox.peak_memory_bytes", int64(peak)))
 			}
