@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/goccy/go-json"
 )
 
 // fixedKind writes one text value, so a test graph needs no model.
@@ -89,17 +90,27 @@ func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
 	layer := writeRuntimeLayer(t)
 	graphDocument := writeGraphDocument(t, fixedGraph)
 	document := filepath.Join(t.TempDir(), "deploy.yaml")
+	// Paths are quoted by encoding/json: a Windows temporary directory can hold a
+	// space, and a YAML double-quoted scalar would corrupt its backslashes.
+	layerPath, err := json.Marshal(layer)
+	if err != nil {
+		t.Fatalf("marshal layer path: %v", err)
+	}
+	graphPath, err := json.Marshal(graphDocument)
+	if err != nil {
+		t.Fatalf("marshal graph path: %v", err)
+	}
 	body := "version: 1\n" +
 		"agents:\n" +
 		"  - name: g\n" +
 		"    engine:\n" +
 		"      kind: graph\n" +
 		"      settings:\n" +
-		"        source: {kind: file, settings: {path: " + graphDocument + "}}\n" +
+		"        source: {kind: file, settings: {path: " + string(graphPath) + "}}\n" +
 		"    runtime:\n" +
 		"      layers:\n" +
 		"        - priority: 0\n" +
-		"          source: {kind: file, settings: {path: " + layer + "}}\n"
+		"          source: {kind: file, settings: {path: " + string(layerPath) + "}}\n"
 	if err := os.WriteFile(document, []byte(body), 0o600); err != nil {
 		t.Fatalf("write document: %v", err)
 	}

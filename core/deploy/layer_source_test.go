@@ -49,9 +49,15 @@ func layerConfig(name string) string {
 		"files: {roots: [" + root + "]}\n"
 }
 
-// fileLayer is the file source's written form.
+// fileLayer is the file source's written form. The path is rendered by
+// encoding/json rather than by hand: YAML's double-quoted scalars treat a
+// backslash as an escape, so a Windows path pasted in raw would be corrupted.
 func fileLayer(path string) string {
-	return "- priority: 0\n  source: {kind: file, settings: {path: \"" + path + "\"}}\n"
+	quoted, err := json.Marshal(path)
+	if err != nil {
+		panic(err)
+	}
+	return "- priority: 0\n  source: {kind: file, settings: {path: " + string(quoted) + "}}\n"
 }
 
 // memoryKind is the layer source a host writes when its layers are not files: it

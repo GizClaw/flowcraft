@@ -28,8 +28,10 @@ agents:
       settings: { ... } # decoded by the kind
     runtime:
       layers:
-        - { priority: 0, source: { kind: file, settings: { path: base.yaml } } }
-        - { priority: 10, source: { kind: file, settings: { path: local.yaml } } }
+        - priority: 0
+          source: { kind: file, settings: { path: base.yaml } }
+        - priority: 10
+          source: { kind: file, settings: { path: local.yaml } }
     catalog:
       scope: run
     protocol:
@@ -115,12 +117,12 @@ A runtime layer names the kind its bytes come from instead of a path the documen
 interprets:
 
 ```yaml
-    runtime:
-      layers:
-        - priority: 0
-          source: { kind: file, settings: { path: ./runtime.yaml } }
-        - priority: 10
-          source: { kind: assets, settings: { name: runtime/prod.yaml } }
+runtime:
+  layers:
+    - priority: 0
+      source: { kind: file, settings: { path: ./runtime.yaml } }
+    - priority: 10
+      source: { kind: assets, settings: { name: runtime/prod.yaml } }
 ```
 
 ```go
@@ -155,12 +157,12 @@ kinds := builtin.Kinds().WithSources(sources.FS("assets", assets))
 
 `deploy/sources` is the whole family, one factory per `config.Source`:
 
-| Source | Settings | Comes from |
-| ------ | -------- | ---------- |
-| `file` | `{path}` | `config.File` — a registration |
-| `inline` | `{name?, body}` | `config.Bytes` — a registration, for generated deployments and tests |
-| a host name, e.g. `assets` | `{name}` | `config.FS` — `sources.FS(name, fsys)` |
-| a host name, e.g. `vault` | `{name}` | `config.Func` — `sources.Func(name, load)` |
+| Source                     | Settings        | Comes from                                                           |
+| -------------------------- | --------------- | -------------------------------------------------------------------- |
+| `file`                     | `{path}`        | `config.File` — a registration                                       |
+| `inline`                   | `{name?, body}` | `config.Bytes` — a registration, for generated deployments and tests |
+| a host name, e.g. `assets` | `{name}`        | `config.FS` — `sources.FS(name, fsys)`                               |
+| a host name, e.g. `vault`  | `{name}`        | `config.Func` — `sources.Func(name, load)`                           |
 
 There is no HTTP, vault or database source in the platform, and that is the
 point: each of those is a policy — TLS, retries, a size limit, credentials — and
@@ -181,10 +183,10 @@ An engine can name a document the same way. The graph engine's settings are a
 source reference and nothing else:
 
 ```yaml
-    engine:
-      kind: graph
-      settings:
-        source: { kind: assets, settings: { name: graphs/react.yaml } }
+engine:
+  kind: graph
+  settings:
+    source: { kind: assets, settings: { name: graphs/react.yaml } }
 ```
 
 It goes through the same `Kinds.Sources` table, which is the point: a host

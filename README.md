@@ -60,7 +60,8 @@ agents:
         source: { kind: file, settings: { path: ./graphs/assistant.yaml } }
     runtime:
       layers:
-        - { priority: 0, source: { kind: file, settings: { path: ./runtime.yaml } } }
+        - priority: 0
+          source: { kind: file, settings: { path: ./runtime.yaml } }
     protocol:
       kind: a2a
       settings: { peer: { url: https://client.example } }

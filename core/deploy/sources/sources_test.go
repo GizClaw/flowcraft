@@ -37,7 +37,11 @@ func TestFileReadsAPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte("version: 1\n"), 0o600); err != nil {
 		t.Fatalf("write layer: %v", err)
 	}
-	layer, body, err := read(t, sources.File(), `{"path":"`+path+`"}`)
+	quoted, err := json.Marshal(path)
+	if err != nil {
+		t.Fatalf("marshal path: %v", err)
+	}
+	layer, body, err := read(t, sources.File(), `{"path":`+string(quoted)+`}`)
 	if err != nil {
 		t.Fatalf("File: %v", err)
 	}
