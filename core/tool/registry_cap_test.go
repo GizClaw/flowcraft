@@ -87,3 +87,20 @@ func TestDefinitionsLeaveAShortDescriptionAlone(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistryRejectsAnOversizedName: a description is shortened, a name is
+// identity — it cannot be trimmed to fit, so a name that long is refused instead of
+// inflating every answer that repeats it.
+func TestRegistryRejectsAnOversizedName(t *testing.T) {
+	name := strings.Repeat("n", tool.MaxToolNameBytes+1)
+	_, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
+		tool.TextTool(message.ToolDefinition{Name: name, InputSchema: []byte(`{"type":"object"}`)},
+			func(context.Context, string) (string, error) { return "", nil }),
+	}}})
+	if err == nil {
+		t.Fatal("a name longer than tool.MaxToolNameBytes was accepted")
+	}
+	if !strings.Contains(err.Error(), "want <= ") {
+		t.Errorf("error = %v, want it to name the cap", err)
+	}
+}

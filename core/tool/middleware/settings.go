@@ -92,6 +92,9 @@ type ResultLimitSettings struct {
 	// PartBudgetBytes is the byte budget shared by the non-text parts of
 	// one result. Absent means DefaultResultPartBudget; 0 lifts the cap.
 	PartBudgetBytes *int `json:"part_budget_bytes,omitempty"`
+	// StructuredBudgetBytes bounds structured-data parts (JSON) on their own,
+	// where PartBudgetBytes bounds every non-text part. Zero lifts it.
+	StructuredBudgetBytes *int `json:"structured_budget_bytes,omitempty"`
 }
 
 // FromSettings builds the middleware chain declared by s, outermost
@@ -113,6 +116,9 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		}
 		if budget := s.ResultLimit.PartBudgetBytes; budget != nil {
 			opts = append(opts, WithResultPartBudget(*budget))
+		}
+		if budget := s.ResultLimit.StructuredBudgetBytes; budget != nil {
+			opts = append(opts, WithResultStructuredBudget(*budget))
 		}
 		limiter, err := ResultLimiter(s.ResultLimit.Max, opts...)
 		if err != nil {

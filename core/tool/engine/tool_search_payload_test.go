@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -65,8 +66,7 @@ func runSearch(t *testing.T, assembly *engine.Assembly, limit int) string {
 // descriptions are.
 func TestToolSearchPayloadFitsTheRoundBudget(t *testing.T) {
 	const tools, descriptionBytes = 24, 8 << 10
-	assembly := deferredTools(t, tools, descriptionBytes)
-	payload := runSearch(t, assembly, tools)
+	payload := runSearch(t, deferredTools(t, tools, descriptionBytes), tools)
 
 	if int64(len(payload)) > engine.DefaultBudget.MaxBytes {
 		t.Fatalf("payload = %d bytes, want <= %d", len(payload), engine.DefaultBudget.MaxBytes)
@@ -78,8 +78,17 @@ func TestToolSearchPayloadFitsTheRoundBudget(t *testing.T) {
 			t.Fatalf("hit %q missing from the answer (%d bytes)", name, len(payload))
 		}
 	}
-	if strings.Contains(payload, strings.Repeat("d", descriptionBytes)) {
-		t.Fatal("a description came back whole; the payload is not bounded")
+	// The registry already caps a description at 4 KiB, so "shorter than the
+	// original" proves nothing. A hit that still carries a preview *and* is short
+	// of that cap is the search budget's own work.
+	trimmed := 0
+	for _, hit := range hitsOf(t, payload) {
+		if hit.Description != "" && len(hit.Description) < tool.MaxDescriptionBytes {
+			trimmed++
+		}
+	}
+	if trimmed == 0 {
+		t.Fatal("no hit kept a shortened preview; the search budget did not trim")
 	}
 }
 
@@ -88,9 +97,8 @@ func TestToolSearchPayloadFitsTheRoundBudget(t *testing.T) {
 // is on the encoded bytes.
 func TestToolSearchPayloadMeasuresEscaping(t *testing.T) {
 	const tools, descriptionBytes = 24, 4 << 10
-	assembly := deferredTools(t, tools, descriptionBytes)
-	// Rewrite the placeholders to the worst case for a byte count: every byte is
-	// escaped on the way out.
+	// The placeholders are the worst case for a byte count: every byte is escaped
+	// on the way out.
 	lazy := make([]tool.LazyTool, 0, tools)
 	for i := range tools {
 		name := fmt.Sprintf("tool-%02d", i)
@@ -114,11 +122,25 @@ func TestToolSearchPayloadMeasuresEscaping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
-	_ = assembly
 	payload := runSearch(t, escaped, tools)
 	if int64(len(payload)) > engine.DefaultBudget.MaxBytes {
 		t.Fatalf("payload = %d bytes, want <= %d even with every byte escaped",
 			len(payload), engine.DefaultBudget.MaxBytes)
+	}
+	// Size alone is not the point: the belt loop can always shrink the answer by
+	// emptying descriptions. What the encoder-measured share buys is that most
+	// hits keep one. A raw-length comparison over-trims by ~2x here and empties
+	// more than half.
+	hits := hitsOf(t, payload)
+	withPreview := 0
+	for _, hit := range hits {
+		if hit.Description != "" {
+			withPreview++
+		}
+	}
+	if withPreview < len(hits)-1 {
+		t.Fatalf("%d of %d hits kept a description; the budget is not per encoded byte",
+			withPreview, len(hits))
 	}
 }
 
@@ -184,4 +206,17 @@ func TestToolSearchPayloadLeavesShortDescriptionsAlone(t *testing.T) {
 	if strings.Contains(payload, tool.DescriptionEllipsis) {
 		t.Fatalf("a short description was marked as trimmed: %s", payload)
 	}
+}
+
+// hitsOf decodes the hits of one answer, so a test can assert on what the model
+// actually reads rather than on the serialized string.
+func hitsOf(t *testing.T, payload string) []engine.SearchHit {
+	t.Helper()
+	var answer struct {
+		Hits []engine.SearchHit `json:"hits"`
+	}
+	if err := json.Unmarshal([]byte(payload), &answer); err != nil {
+		t.Fatalf("decode answer: %v (%s)", err, payload)
+	}
+	return answer.Hits
 }

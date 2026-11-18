@@ -209,18 +209,19 @@ func TestMustResultLimiter_InvalidMaxPanics(t *testing.T) {
 // result whose non-text parts were dropped still carries at most max runes of
 // text, because the marker's runes are reserved rather than added on top.
 func TestResultLimiter_PartsCutKeepsTextBudget(t *testing.T) {
-	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
+	// A media part on purpose: a structured part that does not fit becomes a note
+	// (its own branch), while media is dropped and needs the marker.
+	src, err := media.NewImageBytes(make([]byte, 4096), "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
 	caption := strings.Repeat("c", 30)
 	exec := tool.NewExecutor(catalogWith(tool.FuncTool(
 		message.ToolDefinition{Name: "cap"},
 		func(_ context.Context, _ string) (message.Content, error) {
-			data, err := message.NewJSONContent([]byte(payload))
-			if err != nil {
-				return message.Content{}, err
-			}
 			return message.Content{Parts: []message.Part{
 				message.TextPart{Text: caption},
-				data.Parts[0],
+				message.ImagePart{Source: src},
 			}}, nil
 		},
 	)), MustResultLimiter(30, WithResultPartBudget(256)))
@@ -234,8 +235,8 @@ func TestResultLimiter_PartsCutKeepsTextBudget(t *testing.T) {
 		t.Fatalf("content = %q, want the truncation marker", text)
 	}
 	for _, part := range res.Content.Parts {
-		if _, ok := part.(message.DataPart); ok {
-			t.Fatal("the oversized data part survived the byte budget")
+		if _, ok := part.(message.ImagePart); ok {
+			t.Fatal("the oversized media part survived the byte budget")
 		}
 	}
 }
@@ -244,17 +245,16 @@ func TestResultLimiter_PartsCutKeepsTextBudget(t *testing.T) {
 // are both over budget: the result stays within max runes and carries one
 // marker, not one marker per budget.
 func TestResultLimiter_BothCutsKeepOneMarker(t *testing.T) {
-	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
+	src, err := media.NewImageBytes(make([]byte, 4096), "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
 	exec := tool.NewExecutor(catalogWith(tool.FuncTool(
 		message.ToolDefinition{Name: "both"},
 		func(_ context.Context, _ string) (message.Content, error) {
-			data, err := message.NewJSONContent([]byte(payload))
-			if err != nil {
-				return message.Content{}, err
-			}
 			return message.Content{Parts: []message.Part{
 				message.TextPart{Text: strings.Repeat("c", 100)},
-				data.Parts[0],
+				message.ImagePart{Source: src},
 			}}, nil
 		},
 	)), MustResultLimiter(20, WithResultPartBudget(256)))
@@ -464,6 +464,36 @@ func TestResultLimiter_PartBudgetLifted(t *testing.T) {
 	}
 	if _, ok := res.Content.Parts[0].(message.DataPart); !ok {
 		t.Fatalf("part = %T, want the untouched data part", res.Content.Parts[0])
+	}
+}
+
+// TestResultLimiter_LiftedMediaCapKeepsMedia pins the two caps as independent:
+// WithResultPartBudget(0) lifts the media budget, and a structured budget set
+// beside it must not turn that into "drop every media part".
+func TestResultLimiter_LiftedMediaCapKeepsMedia(t *testing.T) {
+	src, err := media.NewImageBytes([]byte{1, 2, 3}, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	exec := tool.NewExecutor(catalogWith(tool.FuncTool(
+		message.ToolDefinition{Name: "shot"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: strings.Repeat("c", 100)},
+				message.ImagePart{Source: src},
+			}}, nil
+		},
+	)), MustResultLimiter(1000, WithResultPartBudget(0), WithResultStructuredBudget(4096)))
+
+	res := exec.Execute(context.Background(), call("shot"))
+	if len(res.Content.Parts) != 2 {
+		t.Fatalf("parts = %d, want the text and the image: a lifted media cap drops nothing", len(res.Content.Parts))
+	}
+	if _, ok := res.Content.Parts[1].(message.ImagePart); !ok {
+		t.Fatalf("part 1 = %T, want the untouched image", res.Content.Parts[1])
+	}
+	if got := res.Content.Text(); strings.Contains(got, DefaultResultMarker) {
+		t.Fatalf("content = %q, want no marker: nothing was cut", got)
 	}
 }
 

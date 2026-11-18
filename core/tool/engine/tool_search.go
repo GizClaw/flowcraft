@@ -65,8 +65,10 @@ type searchFailure struct {
 const minHitDescriptionBytes = 96
 
 // hitOverheadBytes is what one hit costs besides its name and description: the
-// field names, the score and the punctuation around them.
-const hitOverheadBytes = 32
+// field names, the punctuation and a float64 score (~18 bytes marshalled). The
+// real floor is ~51; the constant is generous because over-reserving costs a few
+// description bytes and under-reserving costs the belt loop a re-marshal.
+const hitOverheadBytes = 64
 
 // searchPayloadBudget is the byte budget one tool_search answer may spend.
 //
@@ -204,7 +206,9 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (message.Conten
 			exposed = append(exposed, result.Name)
 			continue
 		}
-		if result.Reason != "" && result.Reason != "unknown" {
+		if result.Reason != "" {
+			// "unknown" included: a catalog that changed under the search is
+			// exactly the case where the model must see the name it cannot get.
 			failed = append(failed, searchFailure{Name: result.Name, Reason: result.Reason})
 		}
 	}

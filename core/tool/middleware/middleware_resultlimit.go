@@ -328,6 +328,8 @@ func limitPartBytes(content message.Content, budget, structuredBudget int) (mess
 	if budget <= 0 && structuredBudget <= 0 {
 		return content, false
 	}
+	mediaLifted := budget <= 0
+	structuredLifted := structuredBudget <= 0
 	parts := make([]message.Part, 0, len(content.Parts))
 	remaining := budget
 	// cut is "a part was dropped and the model needs the marker"; changed is
@@ -348,10 +350,16 @@ func limitPartBytes(content message.Content, budget, structuredBudget int) (mess
 			continue
 		}
 		if normalized.Kind() == message.PartData {
+			// Structured data has its own budget — lifted or not — and never
+			// spends the media one.
+			if structuredLifted {
+				parts = append(parts, normalized)
+				continue
+			}
 			// A document cannot be shortened without breaking its shape, but it
 			// can be accounted for: the note names the loss, where dropping the
 			// part said only "something was cut".
-			if structuredBudget > 0 && size > structuredBudget {
+			if size > structuredBudget {
 				parts = append(parts, message.TextPart{
 					Text: omittedStructuredNote(size, structuredBudget),
 				})
@@ -362,7 +370,7 @@ func limitPartBytes(content message.Content, budget, structuredBudget int) (mess
 			parts = append(parts, normalized)
 			continue
 		}
-		if size > remaining {
+		if !mediaLifted && size > remaining {
 			cut, changed = true, true
 			continue
 		}
@@ -431,19 +439,29 @@ func truncateRunes(s string, n int) string {
 // exceeds [DefaultResultStructuredBudget], and it stays usable rather than
 // degenerate for a very small text budget.
 func derivedStructuredBudget(max int) int {
+	// Clamp before multiplying: 4*max wraps negative for a rune budget near
+	// MaxInt, and the floor below would then return the smallest budget for the
+	// largest one.
+	if max > DefaultResultStructuredBudget/4 {
+		return DefaultResultStructuredBudget
+	}
 	derived := 4 * max
 	if derived < 1<<10 {
 		derived = 1 << 10
 	}
-	return min(derived, DefaultResultStructuredBudget)
+	return derived
 }
 
 // omittedStructuredNote names a structured part the budget could not keep, so the
-// model knows a result existed and how big it was. Runes put a floor under it: the
-// note cannot be larger than this call's text budget allows.
+// model knows a result existed and how big it was.
+//
+// It is kept to one short line on purpose: the note is text, so it spends the rune
+// budget, and a text budget small enough to cut it is one that could not carry a
+// tool result at all. The sizes stay in it because they are what tells the model
+// whether to retry smaller.
 func omittedStructuredNote(size, budget int) string {
 	return "\n…[structured result omitted: " + humanBytes(size) +
-		" does not fit the " + humanBytes(budget) + " budget]"
+		" > " + humanBytes(budget) + "]"
 }
 
 // humanBytes renders a byte count for a message a model reads.

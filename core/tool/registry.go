@@ -90,6 +90,15 @@ const MaxDescriptionBytes = 4 << 10
 // payload, and a second marker for the same fact would be one too many.
 const DescriptionEllipsis = "…"
 
+// MaxToolNameBytes caps a tool name at registration.
+//
+// A description is shortened, but a name is identity: the model calls the tool by
+// it and the registry keys its catalog by it, so it cannot be trimmed to fit. It is
+// refused instead, because an unbounded name is unbounded tool text too — the
+// tool_search answer repeats every hit's name, twice (in `hits` and in `exposed`).
+// 128 bytes is far above a qualified MCP name.
+const MaxToolNameBytes = 128
+
 // capDescription shortens a description to [MaxDescriptionBytes], cutting on a
 // rune boundary, and reports whether it did.
 func capDescription(description string) (string, bool) {
@@ -223,6 +232,9 @@ func (r *Registry) Remove(name string) {
 		}
 	}
 	r.mu.Unlock()
+	// A catalog that churns names (an MCP server republishing per session) must
+	// not accumulate one warning record per name for the life of the process.
+	r.warned.Delete(name)
 	if c, ok := t.(io.Closer); ok {
 		if err := c.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "tool registry: close removed tool failed", err,
@@ -242,11 +254,17 @@ func (r *Registry) add(t Tool) error {
 }
 
 func (r *Registry) addLocked(t Tool) error {
-	r.invalidateDefinitions()
 	def := t.Definition()
 	if strings.TrimSpace(def.Name) == "" {
 		return errdefs.Validationf("tool: tool definition name is required")
 	}
+	if len(def.Name) > MaxToolNameBytes {
+		// Checked before the definition cache is invalidated: a refused tool
+		// should not move the epoch.
+		return errdefs.Validationf("tool: name is %d bytes, want <= %d",
+			len(def.Name), MaxToolNameBytes)
+	}
+	r.invalidateDefinitions()
 	if _, exists := r.tools[def.Name]; exists {
 		if r.conflict == ConflictError {
 			return errdefs.Conflictf(
