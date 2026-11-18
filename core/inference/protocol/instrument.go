@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -59,8 +59,8 @@ type observation[Req, Res any] struct {
 	// model is the requested model, for gen_ai.request.model.
 	model func(Req) model.ModelRef
 	// usageOf, metadataOf and finishOf read the response envelope.
-	usageOf  func(Res) usage.Usage
-	metaOf   func(Res) inference.Metadata
+	usageOf  func(Res) outcome.Usage
+	metaOf   func(Res) outcome.Metadata
 	finishOf func(Res) []string
 }
 
@@ -85,10 +85,10 @@ func generateObservation() observation[inference.GenerateRequest, inference.Gene
 		model: func(request inference.GenerateRequest) model.ModelRef {
 			return request.Model
 		},
-		usageOf: func(response inference.GenerateResponse) usage.Usage {
+		usageOf: func(response inference.GenerateResponse) outcome.Usage {
 			return response.Usage
 		},
-		metaOf: func(response inference.GenerateResponse) inference.Metadata {
+		metaOf: func(response inference.GenerateResponse) outcome.Metadata {
 			return response.Metadata
 		},
 		finishOf: func(response inference.GenerateResponse) []string {
@@ -110,10 +110,10 @@ func embedObservation() observation[inference.EmbedRequest, inference.EmbedRespo
 		model: func(request inference.EmbedRequest) model.ModelRef {
 			return request.Model
 		},
-		usageOf: func(response inference.EmbedResponse) usage.Usage {
+		usageOf: func(response inference.EmbedResponse) outcome.Usage {
 			return response.Usage
 		},
-		metaOf: func(response inference.EmbedResponse) inference.Metadata {
+		metaOf: func(response inference.EmbedResponse) outcome.Metadata {
 			return response.Metadata
 		},
 		finishOf: func(inference.EmbedResponse) []string {
@@ -132,10 +132,10 @@ func decideObservation() observation[inference.DecisionRequest, inference.Decisi
 		model: func(request inference.DecisionRequest) model.ModelRef {
 			return request.Model
 		},
-		usageOf: func(response inference.DecisionResponse) usage.Usage {
+		usageOf: func(response inference.DecisionResponse) outcome.Usage {
 			return response.Usage
 		},
-		metaOf: func(response inference.DecisionResponse) inference.Metadata {
+		metaOf: func(response inference.DecisionResponse) outcome.Metadata {
 			return response.Metadata
 		},
 		finishOf: func(inference.DecisionResponse) []string {
@@ -155,8 +155,8 @@ type call[Res any] struct {
 	stream    bool
 	attempted bool
 
-	usageOf  func(Res) usage.Usage
-	metaOf   func(Res) inference.Metadata
+	usageOf  func(Res) outcome.Usage
+	metaOf   func(Res) outcome.Metadata
 	finishOf func(Res) []string
 
 	ttft time.Duration
@@ -269,7 +269,7 @@ func (c *call[Res]) finish(response Res, err error) {
 	c.logOutcome(response, err)
 	duration := time.Since(c.start)
 
-	var tokens usage.Usage
+	var tokens outcome.Usage
 	status, kind := statusSuccess, ""
 	if err != nil {
 		status = statusError
@@ -284,7 +284,7 @@ func (c *call[Res]) finish(response Res, err error) {
 
 // recordResponse mirrors the provider identifiers and the usage envelope onto the
 // span, and returns the usage for the metric side.
-func (c *call[Res]) recordResponse(response Res) usage.Usage {
+func (c *call[Res]) recordResponse(response Res) outcome.Usage {
 	metadata := c.metaOf(response)
 	tokens := c.usageOf(response)
 
@@ -346,7 +346,7 @@ func (c *call[Res]) recordMetrics(
 	duration time.Duration,
 	status string,
 	kind string,
-	tokens usage.Usage,
+	tokens outcome.Usage,
 ) {
 	meter := telemetry.MeterWithSuffix("inference")
 
@@ -390,9 +390,9 @@ func (c *call[Res]) metricAttrs(extra ...attribute.KeyValue) metric.MeasurementO
 
 // usageAttrs converts a usage envelope into span attributes. Zero values are
 // omitted, so "the provider reported zero" and "the provider reported nothing"
-// stay distinguishable in the same way usage.Usage's pointer fields keep them
+// stay distinguishable in the same way outcome.Usage's pointer fields keep them
 // distinguishable in the API.
-func usageAttrs(tokens usage.Usage) []attribute.KeyValue {
+func usageAttrs(tokens outcome.Usage) []attribute.KeyValue {
 	attrs := make([]attribute.KeyValue, 0, 5)
 	if tokens.InputTokens > 0 {
 		attrs = append(attrs,
@@ -421,7 +421,7 @@ func recordTokens(
 	ctx context.Context,
 	meter metric.Meter,
 	opts metric.MeasurementOption,
-	tokens usage.Usage,
+	tokens outcome.Usage,
 ) {
 	if tokens.InputTokens > 0 {
 		if counter, err := meter.Int64Counter("tokens.input",
@@ -467,7 +467,7 @@ func classifyFailure(err error) (kind, detail string, retryAfter time.Duration, 
 // representation the llm.cost.micros attribute uses. It reports ok=false when the
 // conversion would overflow or when a sub-micro remainder floors to zero, so a
 // span never claims a cost of zero for a call that did cost something.
-func costMicros(money usage.Money) (int64, bool) {
+func costMicros(money outcome.Money) (int64, bool) {
 	if money.Scale > 18 {
 		return 0, false
 	}

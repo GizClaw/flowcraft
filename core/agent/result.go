@@ -5,7 +5,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -29,7 +29,7 @@ type Result struct {
 	// Question is the child's request when State is StateInputRequired.
 	Question *message.Content
 	// Usage is optional: nil means the engine could not report it.
-	Usage *usage.Usage
+	Usage *outcome.Usage
 }
 
 // ResultReader is an optional engine capability: a Runner that can report the

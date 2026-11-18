@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -150,10 +150,10 @@ func TestAssemblyKeepsReasoningSignature(t *testing.T) {
 // TestAssemblySumsUsage covers providers that report accounting in more than one
 // event.
 func TestAssemblySumsUsage(t *testing.T) {
-	first := usage.Usage{InputTokens: 3}
-	second := usage.Usage{
+	first := outcome.Usage{InputTokens: 3}
+	second := outcome.Usage{
 		OutputTokens: 4,
-		Work:         map[usage.WorkKind]int64{usage.WorkImagesGenerated: 1},
+		Work:         map[outcome.WorkKind]int64{outcome.WorkImagesGenerated: 1},
 	}
 	response := assemble(t,
 		inference.StreamEvent{Kind: inference.StreamUsage, Usage: &first},
@@ -164,7 +164,7 @@ func TestAssemblySumsUsage(t *testing.T) {
 		response.Usage.TotalTokens() != 7 {
 		t.Fatalf("usage = %+v", response.Usage)
 	}
-	if got := response.Usage.WorkValue(usage.WorkImagesGenerated); got != 1 {
+	if got := response.Usage.WorkValue(outcome.WorkImagesGenerated); got != 1 {
 		t.Fatalf("generated images = %d, want 1", got)
 	}
 }
@@ -172,7 +172,7 @@ func TestAssemblySumsUsage(t *testing.T) {
 // TestAssemblyKeepsProviderIdentity pins that the response identity from the start
 // event reaches the assembled response.
 func TestAssemblyKeepsProviderIdentity(t *testing.T) {
-	metadata := inference.Metadata{RequestID: "req-1", ResponseID: "resp-1"}
+	metadata := outcome.Metadata{RequestID: "req-1", ResponseID: "resp-1"}
 	response := assemble(t,
 		inference.StreamEvent{Kind: inference.StreamStart, Metadata: &metadata},
 		inference.StreamEvent{Kind: inference.StreamText, Index: 0, Text: "hi"},

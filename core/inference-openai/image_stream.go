@@ -7,8 +7,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 )
 
 // imageStream adapts the SDK's image event stream to the protocol's wire stream.
@@ -30,7 +30,7 @@ func (d *driver) imageOpen(
 func imageStreamDecoder(request inference.GenerateRequest) protocol.StreamDecoder[openai.ImageGenStreamEventUnion] {
 	options, _ := imageOptions(request.Extensions)
 	mediaType := imageMediaType(options)
-	metadata := inference.Metadata{
+	metadata := outcome.Metadata{
 		Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 	}
 	started := false
@@ -77,13 +77,13 @@ func imageStreamDecoder(request inference.GenerateRequest) protocol.StreamDecode
 const imagePartIndex = 0
 
 // imageStreamUsage reports one generated image plus the token accounting.
-func imageStreamUsage(input, output int64) usage.Usage {
+func imageStreamUsage(input, output int64) outcome.Usage {
 	count := int64(1)
-	return usage.Usage{
+	return outcome.Usage{
 		InputTokens:  input,
 		OutputTokens: output,
-		Work: map[usage.WorkKind]int64{
-			usage.WorkImagesGenerated: count,
+		Work: map[outcome.WorkKind]int64{
+			outcome.WorkImagesGenerated: count,
 		},
 	}
 }

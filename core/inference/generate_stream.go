@@ -3,7 +3,7 @@ package inference
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -106,7 +106,7 @@ type StreamEvent struct {
 	// Part is the content part for StreamPart.
 	Part message.Part `json:"part,omitempty"`
 	// Usage is the accounting for StreamUsage.
-	Usage *usage.Usage `json:"usage,omitempty"`
+	Usage *outcome.Usage `json:"usage,omitempty"`
 	// Metadata is the response identity for StreamStart.
 	Metadata *Metadata `json:"metadata,omitempty"`
 	// Finish is the reason for StreamEnd.

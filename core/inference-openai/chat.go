@@ -9,8 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -309,7 +309,7 @@ func (d *driver) chatDecode(
 		},
 		FinishReason: finish,
 		Usage:        chatUsage(raw),
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(raw.Model)},
 			ResponseID: raw.ID,
 		},
@@ -338,8 +338,8 @@ func chatFinishReason(reason string, toolCalls int) (inference.FinishReason, err
 	}
 }
 
-func chatUsage(raw *openai.ChatCompletion) usage.Usage {
-	out := usage.Usage{
+func chatUsage(raw *openai.ChatCompletion) outcome.Usage {
+	out := outcome.Usage{
 		InputTokens:  raw.Usage.PromptTokens,
 		OutputTokens: raw.Usage.CompletionTokens,
 	}

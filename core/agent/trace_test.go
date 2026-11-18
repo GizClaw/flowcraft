@@ -5,20 +5,20 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 )
 
 func TestAddUsageSumsTokensCacheAndCost(t *testing.T) {
 	cache := int64(2)
-	cost := usage.Money{Currency: "USD", Units: 10, Scale: 4}
-	total := usage.Usage{}
-	addUsage(&total, usage.Usage{
+	cost := outcome.Money{Currency: "USD", Units: 10, Scale: 4}
+	total := outcome.Usage{}
+	addUsage(&total, outcome.Usage{
 		InputTokens: 5, OutputTokens: 7,
-		Input: usage.InputTokenUsage{CacheReadTokens: &cache},
+		Input: outcome.InputTokenUsage{CacheReadTokens: &cache},
 	})
-	addUsage(&total, usage.Usage{
+	addUsage(&total, outcome.Usage{
 		InputTokens: 1, OutputTokens: 2,
-		Billing: &usage.Billing{Cost: &cost},
+		Billing: &outcome.Billing{Cost: &cost},
 	})
 	if total.InputTokens != 6 || total.OutputTokens != 9 || total.TotalTokens() != 15 {
 		t.Errorf("tokens = %+v, want 6/9/15", total)

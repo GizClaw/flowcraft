@@ -3,7 +3,7 @@ package inference
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -60,7 +60,7 @@ type GenerateResponse struct {
 	// FinishReason is why generation stopped.
 	FinishReason FinishReason `json:"finish_reason"`
 	// Usage is the token and cost accounting the provider reported.
-	Usage usage.Usage `json:"usage,omitzero"`
+	Usage outcome.Usage `json:"usage,omitzero"`
 	// Metadata identifies what answered.
 	Metadata Metadata `json:"metadata,omitzero"`
 	// Warnings lists fields the driver could not honor in full.

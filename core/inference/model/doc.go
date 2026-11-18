@@ -43,11 +43,11 @@
 //
 // Out of scope, and deliberately left in core/inference:
 //
-//   - Metadata (execution result envelope). It carries []Decision, so moving
-//     it here would make this package depend on the field ledger, while the
-//     ledger needs Operation from here — a cycle. Metadata belongs with the
-//     ledger/execution contract, not with model declarations.
+//   - The outcome of a call (core/inference/outcome): Metadata, which identifies
+//     what answered, and Usage, which says what it cost. They are facts about an
+//     execution, not declarations about a model, and layers below the contract
+//     must be able to name them — a record, an event — so they are their own leaf.
 //   - Request/response types (GenerateRequest, EmbedRequest, ...), the field
-//     ledger (FieldID/Decision/CompileReport), errors, usage, the provider
-//     SPI, and the Assembly.
+//     ledger (FieldID/Decision/CompileReport), errors, the provider SPI, and the
+//     Assembly.
 package model

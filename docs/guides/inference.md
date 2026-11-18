@@ -5,10 +5,13 @@ title: Inference Runtime
 
 # Inference Runtime Guide
 
-`core/inference` is the contract for model calls, and three packages around it are
-the runtime: `core/inference/model` (identity, capabilities, limits, usage
-vocabulary), `core/inference/route` (selection, retry, fallback), and `core/runtime`
-(assembly from a deployment document). `core/inference-openai` and
+`core/inference` is the contract for model calls, and four packages around it are
+the runtime: `core/inference/model` (what a model is), `core/inference/outcome`
+(what one call returned: its identity and its accounting),
+`core/inference/route` (selection, retry, fallback), and `core/runtime`
+(assembly from a deployment document). `core/inference/usage` forwards to
+`outcome` for one release cycle, so a consumer pinned to an older core keeps
+building. `core/inference-openai` and
 `core/inference-anthropic` are the two protocol families that ship with the
 platform; every other vendor is a `driver/` module.
 

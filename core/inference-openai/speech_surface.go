@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -261,12 +261,12 @@ func (d *driver) speechDecode(
 			Content: message.Content{Parts: []message.Part{part}},
 		},
 		FinishReason: inference.FinishStop,
-		Usage: usage.Usage{
-			Work: map[usage.WorkKind]int64{
-				usage.WorkInputCharacters: characters,
+		Usage: outcome.Usage{
+			Work: map[outcome.WorkKind]int64{
+				outcome.WorkInputCharacters: characters,
 			},
 		},
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},
 	}, nil

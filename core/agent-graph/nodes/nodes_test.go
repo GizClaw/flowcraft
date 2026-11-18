@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/backends"
@@ -296,7 +296,7 @@ func TestModelMapsTheRequestAndWrites(t *testing.T) {
 			Role:    message.RoleAssistant,
 			Content: message.NewTextContent("the answer"),
 		},
-		Usage: usage.Usage{InputTokens: 3, OutputTokens: 4},
+		Usage: outcome.Usage{InputTokens: 3, OutputTokens: 4},
 	}}
 	rt := testRuntime(t, provider)
 	snapshot := map[string]graph.Value{

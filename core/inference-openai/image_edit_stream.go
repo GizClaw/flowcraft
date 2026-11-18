@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 )
 
@@ -29,7 +30,7 @@ func (d *driver) imageEditOpen(
 func imageEditStreamDecoder(request inference.GenerateRequest) protocol.StreamDecoder[openai.ImageEditStreamEventUnion] {
 	options, _ := imageOptions(request.Extensions)
 	mediaType := imageMediaType(options)
-	metadata := inference.Metadata{
+	metadata := outcome.Metadata{
 		Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 	}
 	started := false

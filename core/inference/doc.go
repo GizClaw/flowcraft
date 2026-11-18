@@ -59,9 +59,9 @@ package inference
 // # Transitional state
 //
 // This package currently holds both the generation seam and the vocabulary every
-// seam shares (Error, Warning, Field, Extensions, Metadata). Embedder and a
-// future decision seam need the vocabulary, not the generation payload, which is
-// why they can look like they belong here.
+// seam shares (Error, Warning, Field, Extensions). Embedder and a future decision
+// seam need the vocabulary, not the generation payload, which is why they can look
+// like they belong here.
 //
 // The intended end state splits them: an inference/call package for the shared
 // vocabulary, and generation, embedding and decision as peer packages that
@@ -71,6 +71,13 @@ package inference
 //   - a package needs the vocabulary without Provider (it wants to translate an
 //     Error without importing the seam);
 //   - a fourth seam lands.
+//
+// One type has already made that move on its own: [Metadata] — the outcome of one
+// call rather than part of the generation payload — now lives in
+// core/inference/outcome beside the accounting, because core/agent has to name it
+// in a durable record without depending on the provider SPI. That is the second
+// condition, applied to one type. The alias here keeps the old spelling compiling
+// for one release cycle while the driver module moves.
 //
 // Until then each seam keeps its files self-contained — no private helpers
 // shared between seams — so the split stays a directory move.

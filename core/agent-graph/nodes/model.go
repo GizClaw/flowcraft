@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
@@ -427,7 +428,7 @@ type modelStream struct {
 	// own request and response ids. It arrives on the stream's start event when
 	// the provider announces one and on the response otherwise, so the last value
 	// wins.
-	metadata inference.Metadata
+	metadata outcome.Metadata
 	// announced says the round's opening has been forwarded. It is emitted once
 	// per call, before any delta, which is what a live consumer resets on.
 	announced bool

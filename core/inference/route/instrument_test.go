@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
@@ -146,7 +146,7 @@ func TestRouteSpanDoesNotRecordUsage(t *testing.T) {
 
 	answering := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
 		response := okResponse("ok")
-		response.Usage = usage.Usage{InputTokens: 3, OutputTokens: 2}
+		response.Usage = outcome.Usage{InputTokens: 3, OutputTokens: 2}
 		return response, nil
 	}}
 	router, err := New([]Target{generateTarget("a", answering)}, Policy{})

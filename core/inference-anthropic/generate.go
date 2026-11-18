@@ -12,8 +12,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -162,7 +162,7 @@ func (d *driver) decode(
 		},
 		FinishReason: finish,
 		Usage:        usageOf(raw.Usage),
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model:      request.Model.ID,
 			ResponseID: raw.ID,
 		},
@@ -524,12 +524,12 @@ func finishReason(reason anthropicgo.StopReason, hasToolCalls bool) (inference.F
 	}
 }
 
-func usageOf(raw anthropicgo.Usage) usage.Usage {
+func usageOf(raw anthropicgo.Usage) outcome.Usage {
 	uncached := max(raw.InputTokens, 0)
 	read := max(raw.CacheReadInputTokens, 0)
 	write := max(raw.CacheCreationInputTokens, 0)
 	inputTotal := uncached + read + write
-	out := usage.Usage{InputTokens: inputTotal, OutputTokens: raw.OutputTokens}
+	out := outcome.Usage{InputTokens: inputTotal, OutputTokens: raw.OutputTokens}
 	if inputTotal > 0 {
 		out.Input.UncachedTokens = &uncached
 	}
@@ -539,12 +539,12 @@ func usageOf(raw anthropicgo.Usage) usage.Usage {
 	if write > 0 {
 		out.Input.CacheWriteTokens = &write
 	}
-	writes := map[usage.CacheTTL]int64{}
+	writes := map[outcome.CacheTTL]int64{}
 	if raw.CacheCreation.Ephemeral5mInputTokens > 0 {
-		writes[usage.CacheTTL5Minutes] = raw.CacheCreation.Ephemeral5mInputTokens
+		writes[outcome.CacheTTL5Minutes] = raw.CacheCreation.Ephemeral5mInputTokens
 	}
 	if raw.CacheCreation.Ephemeral1hInputTokens > 0 {
-		writes[usage.CacheTTL1Hour] = raw.CacheCreation.Ephemeral1hInputTokens
+		writes[outcome.CacheTTL1Hour] = raw.CacheCreation.Ephemeral1hInputTokens
 	}
 	if len(writes) > 0 {
 		out.Details.CacheWrites = writes
@@ -552,18 +552,18 @@ func usageOf(raw anthropicgo.Usage) usage.Usage {
 	if raw.OutputTokensDetails.ThinkingTokens > 0 {
 		thinking := raw.OutputTokensDetails.ThinkingTokens
 		out.Details.Output.ReasoningTokens = &thinking
-		out.Details.Output.ReasoningAccounting = usage.ReasoningIncludedInOutput
+		out.Details.Output.ReasoningAccounting = outcome.ReasoningIncludedInOutput
 	}
 	if raw.ServerToolUse.WebSearchRequests > 0 {
-		out.Details.Tools = map[usage.ToolUsageKind]int64{
-			usage.ToolUsageWebSearch: raw.ServerToolUse.WebSearchRequests,
+		out.Details.Tools = map[outcome.ToolUsageKind]int64{
+			outcome.ToolUsageWebSearch: raw.ServerToolUse.WebSearchRequests,
 		}
 	}
 	if raw.ServerToolUse.WebFetchRequests > 0 {
 		if out.Details.Tools == nil {
-			out.Details.Tools = map[usage.ToolUsageKind]int64{}
+			out.Details.Tools = map[outcome.ToolUsageKind]int64{}
 		}
-		out.Details.Tools[usage.ToolUsageWebFetch] = raw.ServerToolUse.WebFetchRequests
+		out.Details.Tools[outcome.ToolUsageWebFetch] = raw.ServerToolUse.WebFetchRequests
 	}
 	return out
 }

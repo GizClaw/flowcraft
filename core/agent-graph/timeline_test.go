@@ -10,9 +10,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
-	"github.com/GizClaw/flowcraft/core/inference"
+
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
@@ -85,12 +85,12 @@ func timeline(t *testing.T) *fixture {
 			Payload: mustMarshal(t, agent.LLMCallRecord{
 				RequestHash: "sha256:request",
 				Model:       model.ModelRef{ID: model.ModelID{Provider: "stub", Name: "alias"}},
-				Metadata: inference.Metadata{
+				Metadata: outcome.Metadata{
 					Model:      model.ModelID{Provider: "stub", Name: "resolved"},
 					RequestID:  "req-1",
 					ResponseID: "resp-1",
 				},
-				Usage:     usage.Usage{InputTokens: 10, OutputTokens: 5},
+				Usage:     outcome.Usage{InputTokens: 10, OutputTokens: 5},
 				LatencyMs: 320,
 			}),
 		},

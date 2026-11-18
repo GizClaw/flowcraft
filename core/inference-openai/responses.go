@@ -11,8 +11,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -303,7 +303,7 @@ func (d *driver) responsesDecode(
 		},
 		FinishReason: finish,
 		Usage:        responsesUsage(raw),
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(raw.Model)},
 			ResponseID: raw.ID,
 		},
@@ -330,8 +330,8 @@ func responsesFinishReason(status string, toolCalls int) (inference.FinishReason
 	}
 }
 
-func responsesUsage(raw *responses.Response) usage.Usage {
-	out := usage.Usage{
+func responsesUsage(raw *responses.Response) outcome.Usage {
+	out := outcome.Usage{
 		InputTokens:  raw.Usage.InputTokens,
 		OutputTokens: raw.Usage.OutputTokens,
 	}

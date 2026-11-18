@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -26,8 +26,8 @@ type accumulator struct {
 	delivered map[int]message.Part
 	chunks    map[int]*chunkBuild
 
-	usage    usage.Usage
-	metadata inference.Metadata
+	usage    outcome.Usage
+	metadata outcome.Metadata
 	finish   inference.FinishReason
 	done     bool
 }
