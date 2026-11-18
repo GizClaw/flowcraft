@@ -59,6 +59,113 @@ type searchFailure struct {
 	Reason string `json:"reason"`
 }
 
+// minHitDescriptionBytes is the smallest excerpt worth returning: below it the
+// model learns nothing from the text, and a bare ellipsis is worse than no
+// description at all.
+const minHitDescriptionBytes = 96
+
+// hitOverheadBytes is what one hit costs besides its name and description: the
+// field names, the score and the punctuation around them.
+const hitOverheadBytes = 32
+
+// searchPayloadBudget is the byte budget one tool_search answer may spend.
+//
+// It is the same Budget.MaxBytes that bounds a round's definitions, so a host
+// tunes one number for how much tool text may reach the model per round. A view
+// that does not declare one gets the default.
+func searchPayloadBudget(view CatalogView) int64 {
+	if budgeted, ok := view.(interface{ searchBudgetBytes() int64 }); ok {
+		if budget := budgeted.searchBudgetBytes(); budget > 0 {
+			return budget
+		}
+	}
+	return DefaultBudget.MaxBytes
+}
+
+// fitSearchAnswer trims hit descriptions until the marshalled answer fits budget.
+//
+// Names, scores and every trimmed description are measured through the encoder
+// that will build the answer, not estimated: a description full of quotes and
+// backslashes costs more inside JSON than as a Go string, which is exactly the
+// case a len() comparison gets wrong. The loop at the end is the belt for an
+// answer whose names alone do not fit — it strips the lowest-scoring descriptions
+// first, and only then drops hits from the tail, because a hit the model cannot see
+// is worse than one whose text was shortened.
+func fitSearchAnswer(res searchResult, budget int64) searchResult {
+	if len(res.Hits) == 0 || budget <= 0 {
+		return res
+	}
+	envelope := res
+	envelope.Hits = nil
+	reserved := int64(marshalledLen(envelope))
+	for _, hit := range res.Hits {
+		reserved += int64(marshalledLen(hit.Name)) + hitOverheadBytes
+	}
+	share := (budget - reserved) / int64(len(res.Hits))
+	for i := range res.Hits {
+		if share < minHitDescriptionBytes {
+			// Nothing useful fits one hit; the answer keeps the names, which are
+			// what the model acts on, and drops the text.
+			res.Hits[i].Description = ""
+			continue
+		}
+		res.Hits[i].Description = fitDescription(res.Hits[i].Description, share)
+	}
+	for int64(marshalledLen(res)) > budget {
+		trimmed := false
+		for i := len(res.Hits) - 1; i >= 0; i-- {
+			if res.Hits[i].Description != "" {
+				res.Hits[i].Description = ""
+				trimmed = true
+				break
+			}
+		}
+		if trimmed {
+			continue
+		}
+		// Nothing left to trim: the names alone do not fit the budget. Drop the
+		// lowest-scoring hit — `exposed` still names what the pool takes, so the
+		// model loses a preview, not the capability.
+		if len(res.Hits) == 0 {
+			break
+		}
+		res.Hits = res.Hits[:len(res.Hits)-1]
+	}
+	return res
+}
+
+// fitDescription returns at most budget encoded bytes of one description, ending
+// with [tool.DescriptionEllipsis] when it had to cut, or "" when the ellipsis
+// alone does not fit.
+func fitDescription(description string, budget int64) string {
+	if description == "" || int64(marshalledLen(description)) <= budget {
+		return description
+	}
+	runes := []rune(description)
+	suffix := tool.DescriptionEllipsis
+	best := ""
+	for lo, hi := 0, len(runes)-1; lo <= hi; {
+		mid := (lo + hi) / 2
+		if candidate := string(runes[:mid]) + suffix; int64(marshalledLen(candidate)) <= budget {
+			best = candidate
+			lo = mid + 1
+			continue
+		}
+		hi = mid - 1
+	}
+	return best
+}
+
+// marshalledLen is the encoded size of one value, as the encoder that builds the
+// answer produces it.
+func marshalledLen(v any) int {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return 0
+	}
+	return len(data)
+}
+
 // Execute parses the query, ranks hits, and exposes the top results for
 // the following rounds through the view discovery pool.
 func (SearchTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
@@ -101,13 +208,17 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (message.Conten
 			failed = append(failed, searchFailure{Name: result.Name, Reason: result.Reason})
 		}
 	}
-	encoded, err := compactJSON(searchResult{
+	answer := searchResult{
 		Query:   args.Query,
 		Hits:    hits,
 		Exposed: exposed,
 		Failed:  failed,
 		Evicted: outcome.Evicted,
-	})
+	}
+	// The hits are the only unbounded part of the answer: descriptions are
+	// third-party text and the caller controls how many come back.
+	answer = fitSearchAnswer(answer, searchPayloadBudget(view))
+	encoded, err := compactJSON(answer)
 	if err != nil {
 		return message.Content{}, err
 	}

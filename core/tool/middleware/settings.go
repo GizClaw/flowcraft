@@ -123,7 +123,11 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		// Text is unbounded unless the deployment asks for a rune budget, but
 		// media is bounded by default so a tool cannot hand the model an
 		// unbounded context item by returning one.
-		limiter, err := ResultPartLimiter(budget)
+		// Structured data gets its own, smaller ceiling: a JSON result is what
+		// the model reads, not an image payload, and the media budget is sized
+		// for the latter.
+		limiter, err := ResultPartLimiter(budget,
+			WithResultStructuredBudget(min(budget, DefaultResultStructuredBudget)))
 		if err != nil {
 			return nil, err
 		}

@@ -29,7 +29,7 @@ func TestFromSettings_ResultLimitTruncatesText(t *testing.T) {
 	}
 }
 
-func TestFromSettings_ResultLimitMarkerAndPartBudget(t *testing.T) {
+func TestFromSettings_ResultLimitPartBudget(t *testing.T) {
 	budget := 128
 	mws, err := FromSettings(Settings{ResultLimit: &ResultLimitSettings{
 		Max:             1000,
@@ -43,10 +43,12 @@ func TestFromSettings_ResultLimitMarkerAndPartBudget(t *testing.T) {
 	exec := tool.NewExecutor(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 2048)+`"}`)), mws...)
 	res := exec.Execute(context.Background(), call("data"))
 	if len(res.Content.Parts) != 1 {
-		t.Fatalf("parts = %d, want the marker alone", len(res.Content.Parts))
+		t.Fatalf("parts = %d, want the note alone", len(res.Content.Parts))
 	}
-	if got := res.Content.Text(); got != "[cut]" {
-		t.Fatalf("content = %q, want the settings marker", got)
+	// The settings budget reached the structured domain; the note explains the
+	// loss where the marker alone would not.
+	if got := res.Content.Text(); !strings.Contains(got, "structured result omitted") {
+		t.Fatalf("content = %q, want the note naming the omitted result", got)
 	}
 }
 
@@ -88,14 +90,14 @@ func TestFromSettings_NonTextPartsBoundedByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	oversized := `{"blob":"` + strings.Repeat("x", DefaultResultPartBudget+1) + `"}`
+	oversized := `{"blob":"` + strings.Repeat("x", DefaultResultStructuredBudget+1) + `"}`
 	exec := tool.NewExecutor(catalogWith(dataTool("data", oversized)), mws...)
 	res := exec.Execute(context.Background(), call("data"))
 	if len(res.Content.Parts) != 1 {
-		t.Fatalf("parts = %d, want the marker alone", len(res.Content.Parts))
+		t.Fatalf("parts = %d, want the note alone", len(res.Content.Parts))
 	}
-	if got := res.Content.Text(); got != DefaultResultMarker {
-		t.Fatalf("content = %q, want the default marker", got)
+	if got := res.Content.Text(); !strings.Contains(got, "structured result omitted") {
+		t.Fatalf("content = %q, want the note naming the omitted result", got)
 	}
 
 	// Text is still unbounded by default: a large text result passes intact.

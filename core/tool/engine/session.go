@@ -499,6 +499,18 @@ type staticView struct {
 // Epoch implements CatalogView: a static view never changes.
 func (s *staticView) Epoch() uint64 { return 0 }
 
+// searchBudgetBytes is the byte budget one tool_search answer may spend: the same
+// Budget.MaxBytes that bounds this round's definitions.
+func (s *dynamicView) searchBudgetBytes() int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.policy.Budget.MaxBytes
+}
+
+// searchBudgetBytes on a static view reports the default: it shows every tool and
+// never reaches tool_search, so there is no policy to read.
+func (s *staticView) searchBudgetBytes() int64 { return DefaultBudget.MaxBytes }
+
 func (s *staticView) Get(name string) (tool.Tool, bool) {
 	return s.catalog.Get(name)
 }

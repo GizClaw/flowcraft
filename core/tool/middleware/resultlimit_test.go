@@ -275,7 +275,7 @@ func TestResultLimiter_BothCutsKeepOneMarker(t *testing.T) {
 // TestResultPartLimiter_BoundsMediaOnly pins the media-only limiter: text
 // passes through untouched, oversized non-text parts are dropped with the
 // marker, and a result within budget is returned as is.
-func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
+func TestResultPartLimiter_BoundsNonTextOnly(t *testing.T) {
 	mediaTool := tool.FuncTool(message.ToolDefinition{Name: "shot"},
 		func(_ context.Context, _ string) (message.Content, error) {
 			data, err := message.NewJSONContent(
@@ -302,8 +302,9 @@ func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
 	if len([]rune(text.Text)) != 4096 {
 		t.Fatalf("text was shortened to %d runes, want it untouched", len([]rune(text.Text)))
 	}
-	if marker, ok := res.Content.Parts[1].(message.TextPart); !ok || marker.Text != DefaultResultMarker {
-		t.Fatalf("part 1 = %#v, want the truncation marker", res.Content.Parts[1])
+	if note, ok := res.Content.Parts[1].(message.TextPart); !ok ||
+		!strings.Contains(note.Text, "structured result omitted") {
+		t.Fatalf("part 1 = %#v, want the note naming the omitted structured result", res.Content.Parts[1])
 	}
 
 	within := tool.NewExecutor(catalogWith(dataTool("data", `{"answer":42}`)), MustResultPartLimiter(256))
@@ -346,7 +347,7 @@ func dataTool(name, payload string) tool.Tool {
 		})
 }
 
-func TestResultLimiter_DropsPartOverByteBudget(t *testing.T) {
+func TestResultLimiter_ReplacesOversizedStructuredPart(t *testing.T) {
 	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
 	exec := tool.NewExecutor(catalogWith(dataTool("data", payload)),
 		MustResultLimiter(1000, WithResultPartBudget(256)))
@@ -356,10 +357,16 @@ func TestResultLimiter_DropsPartOverByteBudget(t *testing.T) {
 		t.Fatalf("unexpected error result: %s", res.Content.Text())
 	}
 	if len(res.Content.Parts) != 1 {
-		t.Fatalf("parts = %d, want the marker alone", len(res.Content.Parts))
+		t.Fatalf("parts = %d, want the note alone", len(res.Content.Parts))
 	}
-	if got := res.Content.Text(); !strings.HasSuffix(got, DefaultResultMarker) {
-		t.Fatalf("content = %q, want the truncation marker", got)
+	// Not silent: the note says a structured result existed and how big it was,
+	// where dropping the part said only "something was cut".
+	got := res.Content.Text()
+	if !strings.Contains(got, "structured result omitted") || !strings.Contains(got, "KiB") {
+		t.Fatalf("content = %q, want a note naming the omitted result and its size", got)
+	}
+	if strings.Contains(got, DefaultResultMarker) {
+		t.Fatalf("content = %q, want no second marker: the note is the explanation", got)
 	}
 	if err := res.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
@@ -394,18 +401,55 @@ func TestResultLimiter_SpendsPartBudgetAcrossParts(t *testing.T) {
 			return message.Content{Parts: []message.Part{one.Parts[0], one.Parts[0]}}, nil
 		})
 
-	// The budget covers exactly one part, so the second is dropped.
+	// The budget covers exactly one part, so the second is replaced by a note.
 	exec := tool.NewExecutor(catalogWith(two),
 		MustResultLimiter(1000, WithResultPartBudget(len(encoded)+8)))
 	res := exec.Execute(context.Background(), call("two"))
 	if len(res.Content.Parts) != 2 {
-		t.Fatalf("parts = %d, want one data part plus the marker", len(res.Content.Parts))
+		t.Fatalf("parts = %d, want one data part plus the note", len(res.Content.Parts))
 	}
 	if _, ok := res.Content.Parts[0].(message.DataPart); !ok {
 		t.Fatalf("part 0 = %T, want the surviving data part", res.Content.Parts[0])
 	}
-	if text, ok := res.Content.Parts[1].(message.TextPart); !ok || !strings.Contains(text.Text, "truncated") {
-		t.Fatalf("part 1 = %#v, want the truncation marker", res.Content.Parts[1])
+	if text, ok := res.Content.Parts[1].(message.TextPart); !ok ||
+		!strings.Contains(text.Text, "structured result omitted") {
+		t.Fatalf("part 1 = %#v, want the note naming the second part", res.Content.Parts[1])
+	}
+}
+
+// TestResultLimiter_StructuredBudgetFollowsTheTextBudget: a host that allows a
+// small text budget is not asking for a megabyte of JSON, so the structured budget
+// scales with it (four bytes per rune) instead of staying at the media default.
+func TestResultLimiter_StructuredBudgetFollowsTheTextBudget(t *testing.T) {
+	big := `{"blob":"` + strings.Repeat("b", 4096) + `"}`
+	exec := tool.NewExecutor(catalogWith(dataTool("data", big)), MustResultLimiter(512))
+
+	res := exec.Execute(context.Background(), call("data"))
+	if got := res.Content.Text(); !strings.Contains(got, "structured result omitted") {
+		t.Fatalf("content = %q, want the derived budget to refuse the result", got)
+	}
+
+	small := `{"blob":"` + strings.Repeat("s", 512) + `"}`
+	within := tool.NewExecutor(catalogWith(dataTool("small", small)), MustResultLimiter(512))
+	parts := within.Execute(context.Background(), call("small")).Content.Parts
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want the data part kept under the derived budget", len(parts))
+	}
+}
+
+// TestResultLimiter_StructuredBudgetLifted: the escape hatch for a host that
+// bounds JSON elsewhere.
+func TestResultLimiter_StructuredBudgetLifted(t *testing.T) {
+	big := `{"blob":"` + strings.Repeat("b", 4096) + `"}`
+	exec := tool.NewExecutor(catalogWith(dataTool("data", big)),
+		MustResultLimiter(512, WithResultStructuredBudget(0)))
+
+	parts := exec.Execute(context.Background(), call("data")).Content.Parts
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want the data part kept", len(parts))
+	}
+	if _, ok := parts[0].(message.DataPart); !ok {
+		t.Fatalf("part = %T, want the untouched data part", parts[0])
 	}
 }
 

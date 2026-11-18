@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -72,6 +73,36 @@ func WithDefinitionDecorator(fn DefinitionDecorator) Option {
 	return func(o *options) { o.decorate = fn }
 }
 
+// MaxDescriptionBytes caps one tool's model-facing description.
+//
+// A description is third-party text: an MCP server writes its own, and nothing
+// bounds it before it reaches the catalog. Every consumer of
+// [Registry.Definitions] pays for that text — the per-round definition budget,
+// the tool_search answer, and the one oversized definition that budget keeps
+// anyway — so the cap belongs where those readers meet, not in each of them.
+// 4 KiB is far above a hand-written description and a quarter of the default
+// round budget.
+const MaxDescriptionBytes = 4 << 10
+
+// DescriptionEllipsis marks a description this registry shortened.
+//
+// It is exported because tool_search trims the same text again to fit its own
+// payload, and a second marker for the same fact would be one too many.
+const DescriptionEllipsis = "…"
+
+// capDescription shortens a description to [MaxDescriptionBytes], cutting on a
+// rune boundary, and reports whether it did.
+func capDescription(description string) (string, bool) {
+	if len(description) <= MaxDescriptionBytes {
+		return description, false
+	}
+	limit := MaxDescriptionBytes - len(DescriptionEllipsis)
+	for limit > 0 && !utf8.RuneStart(description[limit]) {
+		limit--
+	}
+	return description[:limit] + DescriptionEllipsis, true
+}
+
 // Registry aggregates tools from many [Source] values. It implements
 // [Catalog]; the underlying execution surface for an Executor is the
 // same value. The tool set is fixed at construction — sources are a
@@ -98,6 +129,9 @@ type Registry struct {
 	// that caches something derived from it (a search index) can tell whether
 	// its copy is still the current one.
 	defsEpoch atomic.Uint64
+	// warned records the tools whose description was shortened, so a catalog
+	// rebuild does not repeat the same warning for the same third-party text.
+	warned sync.Map
 }
 
 // NewRegistry builds a registry from sources in order. With the
@@ -268,13 +302,31 @@ func (r *Registry) Definitions() []message.ToolDefinition {
 	r.mu.RUnlock()
 	defs := make([]message.ToolDefinition, 0, len(tools))
 	for _, t := range tools {
-		defs = append(defs, r.decorateDefinition(t.Definition()))
+		defs = append(defs, r.cappedDefinition(r.decorateDefinition(t.Definition())))
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].Name < defs[j].Name })
 	if r.defsEpoch.Load() == epoch {
 		r.defs.Store(&defs)
 	}
 	return cloneDefinitions(defs)
+}
+
+// cappedDefinition applies [MaxDescriptionBytes] to a model-facing definition and
+// says so once per tool. Definitions are rebuilt whenever the catalog changes, so
+// the warning is keyed by name: a rebuild is not a second discovery.
+func (r *Registry) cappedDefinition(def message.ToolDefinition) message.ToolDefinition {
+	capped, cut := capDescription(def.Description)
+	if !cut {
+		return def
+	}
+	if _, seen := r.warned.LoadOrStore(def.Name, struct{}{}); !seen {
+		telemetry.Warn(context.Background(), "tool registry: description truncated",
+			attribute.String(telemetry.AttrToolName, def.Name),
+			attribute.Int("original_bytes", len(def.Description)),
+			attribute.Int("cap_bytes", MaxDescriptionBytes))
+	}
+	def.Description = capped
+	return def
 }
 
 // decorateDefinition applies the configured decorator, if any.

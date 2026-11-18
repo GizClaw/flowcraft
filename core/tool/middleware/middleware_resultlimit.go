@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -24,6 +25,15 @@ const DefaultResultMarker = "\n…[result truncated]"
 // dropped. Text has its own rune budget; media and structured data have
 // no natural rune count, so they are bounded in bytes instead.
 const DefaultResultPartBudget = 1 << 20 // 1 MiB
+
+// DefaultResultStructuredBudget bounds the structured-data parts of one result:
+// the JSON a tool hands back, as opposed to media, whose size is what it is.
+//
+// Structured data had neither a natural rune count (it is a document, not prose)
+// nor a budget that scaled with the text budget: the media budget simply applied,
+// at a megabyte, and a part that did not fit was dropped whole. This is the
+// smaller default the JSON a model reads deserves.
+const DefaultResultStructuredBudget = 64 << 10 // 64 KiB
 
 // ResultLimiter caps how large a tool result may be. Text beyond the
 // limit is dropped and DefaultResultMarker (or a custom marker) is
@@ -72,10 +82,17 @@ func ResultLimiter(max int, opts ...ResultLimitOption) (tool.Middleware, error) 
 	if cfg.marker == "" {
 		cfg.marker = DefaultResultMarker
 	}
+	if !cfg.structuredSet {
+		if cfg.partSet {
+			cfg.structuredBudget = cfg.partBudget
+		} else {
+			cfg.structuredBudget = derivedStructuredBudget(max)
+		}
+	}
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			res := next(ctx, call)
-			limited := limitResult(res, max, cfg.marker, cfg.partBudget)
+			limited := limitResult(res, max, cfg.marker, cfg.partBudget, cfg.structuredBudget)
 			// A shortened result is a context-budget outcome the model has to
 			// live with; recording it on the span is what makes a bad answer
 			// traceable to this middleware rather than to the model.
@@ -108,6 +125,11 @@ type ResultLimitOption func(*resultLimitConfig)
 type resultLimitConfig struct {
 	marker     string
 	partBudget int
+	partSet    bool
+	// structuredBudget bounds structured-data parts. Zero lifts the cap, which is
+	// why partSet/structuredSet exist: "unset" and "lifted" are different answers.
+	structuredBudget int
+	structuredSet    bool
 }
 
 // WithResultMarker replaces the truncation marker appended to limited
@@ -119,8 +141,26 @@ func WithResultMarker(marker string) ResultLimitOption {
 // WithResultPartBudget replaces the byte budget for the non-text parts
 // of one result. A non-positive budget lifts the cap, for hosts that
 // bound tool results elsewhere.
+//
+// It governs media and, unless [WithResultStructuredBudget] says otherwise,
+// structured data too, which is what it always did.
 func WithResultPartBudget(budget int) ResultLimitOption {
-	return func(c *resultLimitConfig) { c.partBudget = budget }
+	return func(c *resultLimitConfig) {
+		c.partBudget, c.partSet = budget, true
+	}
+}
+
+// WithResultStructuredBudget replaces the byte budget for the structured-data
+// parts (JSON) of one result, independently of the media budget. A non-positive
+// budget lifts that cap.
+//
+// Unset, structured data uses the media budget when the host set one, and
+// otherwise a budget derived from the rune limit ([ResultLimiter]) — a host that
+// allows 20 000 runes of text is not asking for a megabyte of JSON.
+func WithResultStructuredBudget(budget int) ResultLimitOption {
+	return func(c *resultLimitConfig) {
+		c.structuredBudget, c.structuredSet = budget, true
+	}
 }
 
 // ResultPartLimiter bounds the non-text parts of one result without touching
@@ -146,10 +186,19 @@ func ResultPartLimiter(budget int, opts ...ResultLimitOption) (tool.Middleware, 
 	if cfg.marker == "" {
 		cfg.marker = DefaultResultMarker
 	}
+	if !cfg.structuredSet {
+		// No rune limit to scale from: one budget for every non-text part, which
+		// is what this limiter always meant.
+		cfg.structuredBudget = budget
+	}
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 			res := next(ctx, call)
-			limited, cut := limitPartBytes(res.Content, budget)
+			limited, cut := limitPartBytes(res.Content, budget, cfg.structuredBudget)
+			// The rebuilt content reaches the caller even when no marker is due: a
+			// structured part replaced by a note explains itself, and dropping the
+			// rebuild here would silently keep the original.
+			res.Content = limited
 			if !cut {
 				return res
 			}
@@ -173,14 +222,14 @@ func MustResultPartLimiter(budget int, opts ...ResultLimitOption) tool.Middlewar
 	return limiter
 }
 
-func limitResult(res message.ToolResult, max int, marker string, partBudget int) message.ToolResult {
+func limitResult(res message.ToolResult, max int, marker string, partBudget, structuredBudget int) message.ToolResult {
 	// runeCountAtMost stops at the first rune past the limit, so an
 	// oversized result is never converted to a full []rune just to be
 	// measured. Non-text parts are metered first because they never carry
 	// the marker: cutting them reserves the marker's runes up front, which
 	// is what keeps the text budget true when media and text are both over.
 	content := res.Content
-	content, partsCut := limitPartBytes(content, partBudget)
+	content, partsCut := limitPartBytes(content, partBudget, structuredBudget)
 	markerRunes := []rune(marker)
 	if len(markerRunes) > max {
 		markerRunes = markerRunes[:max]
@@ -275,16 +324,22 @@ func truncateContent(content message.Content, keep int, marker string) message.C
 // carry their own rune budget. Content is returned unchanged when nothing was
 // cut; the caller appends the truncation marker, because only it knows how
 // much text budget the marker still has to fit into.
-func limitPartBytes(content message.Content, budget int) (message.Content, bool) {
-	if budget <= 0 {
+func limitPartBytes(content message.Content, budget, structuredBudget int) (message.Content, bool) {
+	if budget <= 0 && structuredBudget <= 0 {
 		return content, false
 	}
 	parts := make([]message.Part, 0, len(content.Parts))
 	remaining := budget
+	// cut is "a part was dropped and the model needs the marker"; changed is
+	// "the rebuilt list differs at all". They are not the same: a structured part
+	// replaced by a note explains itself, so it must not double up with a marker —
+	// but the rebuilt list still has to reach the caller.
 	cut := false
+	changed := false
 	for _, part := range content.Parts {
 		normalized, err := message.NormalizePart(part)
 		if err != nil {
+			changed = true
 			continue
 		}
 		size, metered := nonTextBytes(normalized)
@@ -292,17 +347,32 @@ func limitPartBytes(content message.Content, budget int) (message.Content, bool)
 			parts = append(parts, normalized)
 			continue
 		}
+		if normalized.Kind() == message.PartData {
+			// A document cannot be shortened without breaking its shape, but it
+			// can be accounted for: the note names the loss, where dropping the
+			// part said only "something was cut".
+			if structuredBudget > 0 && size > structuredBudget {
+				parts = append(parts, message.TextPart{
+					Text: omittedStructuredNote(size, structuredBudget),
+				})
+				changed = true
+				continue
+			}
+			structuredBudget -= size
+			parts = append(parts, normalized)
+			continue
+		}
 		if size > remaining {
-			cut = true
+			cut, changed = true, true
 			continue
 		}
 		remaining -= size
 		parts = append(parts, normalized)
 	}
-	if !cut {
+	if !changed {
 		return content, false
 	}
-	return message.Content{Parts: parts}, true
+	return message.Content{Parts: parts}, cut
 }
 
 // nonTextBytes reports how many encoded bytes a part spends against the
@@ -354,4 +424,36 @@ func truncateRunes(s string, n int) string {
 		remaining--
 	}
 	return b.String()
+}
+
+// derivedStructuredBudget scales the structured-data budget to the rune budget: a
+// host that allows max runes of text is not asking for a megabyte of JSON. It never
+// exceeds [DefaultResultStructuredBudget], and it stays usable rather than
+// degenerate for a very small text budget.
+func derivedStructuredBudget(max int) int {
+	derived := 4 * max
+	if derived < 1<<10 {
+		derived = 1 << 10
+	}
+	return min(derived, DefaultResultStructuredBudget)
+}
+
+// omittedStructuredNote names a structured part the budget could not keep, so the
+// model knows a result existed and how big it was. Runes put a floor under it: the
+// note cannot be larger than this call's text budget allows.
+func omittedStructuredNote(size, budget int) string {
+	return "\n…[structured result omitted: " + humanBytes(size) +
+		" does not fit the " + humanBytes(budget) + " budget]"
+}
+
+// humanBytes renders a byte count for a message a model reads.
+func humanBytes(n int) string {
+	switch {
+	case n >= 1<<20:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.1f KiB", float64(n)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
