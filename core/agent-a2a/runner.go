@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -171,7 +171,7 @@ func (r *Runner) setState(state agent.TaskState) {
 // state of input-required is carried in the task id, not in a separate call.
 func (r *Runner) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		request, err := wire.Message(msg)
+		request, err := a2awire.Message(msg)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -235,7 +235,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		if typed.ContextID != "" {
 			r.remoteContext = typed.ContextID
 		}
-		state := wire.FromState(typed.Status.State)
+		state := a2awire.FromState(typed.Status.State)
 		r.mu.Unlock()
 		r.setState(state)
 		if !yield(agent.Status{State: state}, nil) {
@@ -252,9 +252,9 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 			r.remoteContext = typed.ContextID
 		}
 		r.mu.Unlock()
-		state := wire.FromState(typed.Status.State)
+		state := a2awire.FromState(typed.Status.State)
 		r.setState(state)
-		if text := wire.Text(typed.Status.Message); text != "" {
+		if text := a2awire.Text(typed.Status.Message); text != "" {
 			if !yield(agent.Text{Text: text}, nil) {
 				return true, nil
 			}
@@ -278,7 +278,7 @@ func (r *Runner) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 		}
 		return false, r.handleArtifact(typed.Artifact, yield)
 	case *a2a.Message:
-		if text := wire.Text(typed); text != "" {
+		if text := a2awire.Text(typed); text != "" {
 			if !yield(agent.Text{Text: text}, nil) {
 				return true, nil
 			}

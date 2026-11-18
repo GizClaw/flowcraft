@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -158,7 +158,7 @@ func (s *taskStore) Update(ctx context.Context, update *taskstore.UpdateRequest)
 	if terminal {
 		// A cancel or a failure is decided by the server, not by the loop, so the
 		// projection has to take it from here.
-		current.Task.State = wire.FromState(update.Task.Status.State)
+		current.Task.State = a2awire.FromState(update.Task.Status.State)
 	}
 	if _, _, err := s.store.Save(ctx, current, events); err != nil {
 		return 0, err
@@ -222,7 +222,7 @@ func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 		if filter.ContextID != "" && summary.SessionID != filter.ContextID {
 			continue
 		}
-		if filter.Status != "" && wire.State(summary.State) != filter.Status {
+		if filter.Status != "" && a2awire.State(summary.State) != filter.Status {
 			continue
 		}
 		matching = append(matching, summary)
@@ -240,7 +240,7 @@ func (s *taskStore) List(ctx context.Context, req *a2a.ListTasksRequest) (*a2a.L
 		task := &a2a.Task{
 			ID:        a2a.TaskID(summary.ID),
 			ContextID: summary.SessionID,
-			Status:    a2a.TaskStatus{State: wire.State(summary.State)},
+			Status:    a2a.TaskStatus{State: a2awire.State(summary.State)},
 		}
 		if filter.HistoryLength != nil && *filter.HistoryLength > 0 {
 			events, err := s.store.Events(ctx, summary.ID)
@@ -322,7 +322,7 @@ func eventsOf(event a2a.Event) ([]agent.EventRecord, error) {
 	if !ok || msg == nil {
 		return nil, nil
 	}
-	core, err := wire.FromMessage(msg)
+	core, err := a2awire.FromMessage(msg)
 	if err != nil {
 		return nil, err
 	}
@@ -350,7 +350,7 @@ func messageEvents(messages []message.Message) ([]agent.EventRecord, error) {
 func fromA2ATask(task *a2a.Task) (agent.Task, error) {
 	history := make([]message.Message, 0, len(task.History))
 	for _, msg := range task.History {
-		converted, err := wire.FromMessage(msg)
+		converted, err := a2awire.FromMessage(msg)
 		if err != nil {
 			return agent.Task{}, err
 		}
@@ -359,7 +359,7 @@ func fromA2ATask(task *a2a.Task) (agent.Task, error) {
 	return agent.Task{
 		ID:        string(task.ID),
 		SessionID: task.ContextID,
-		State:     wire.FromState(task.Status.State),
+		State:     a2awire.FromState(task.Status.State),
 		History:   history,
 	}, nil
 }
@@ -373,7 +373,7 @@ func toA2ATask(checkpoint agent.Checkpoint, events []agent.EventRecord) (*a2a.Ta
 	return &a2a.Task{
 		ID:        a2a.TaskID(checkpoint.Task.ID),
 		ContextID: checkpoint.Task.SessionID,
-		Status:    a2a.TaskStatus{State: wire.State(checkpoint.Task.State)},
+		Status:    a2a.TaskStatus{State: a2awire.State(checkpoint.Task.State)},
 		History:   history,
 	}, nil
 }
@@ -390,7 +390,7 @@ func historyOf(events []agent.EventRecord, limit int) ([]*a2a.Message, error) {
 		if err := json.Unmarshal(event.Payload, &core); err != nil {
 			return nil, errdefs.Validationf("a2a: decode message event: %w", err)
 		}
-		converted, err := wire.Message(core)
+		converted, err := a2awire.Message(core)
 		if err != nil {
 			// The loop persists its own working (tool calls, results, reasoning)
 			// in the same log; those parts have no wire form. Skipping them keeps
