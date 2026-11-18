@@ -133,7 +133,7 @@ type HookKind struct {
 // deploy/protocols/a2a), so a host that runs one engine links one engine. Start
 // from the zero value and add what the deployment names:
 //
-// \tkinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+//	kinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
 //
 // deploy/builtin carries the whole set in one call, for a host that wants every
 // kind core ships.

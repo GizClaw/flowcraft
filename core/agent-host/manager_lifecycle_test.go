@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -26,6 +27,13 @@ func TestZeroValueKindsRegistersNothing(t *testing.T) {
 	manager := newManager(t, deploy.Kinds{}, testHost(t))
 	if names := manager.EngineNames(); len(names) != 0 {
 		t.Errorf("engines = %v, want none", names)
+	}
+	// The other half of the same contract: a document naming a kind this
+	// process never registered fails to deploy, and the error says what was
+	// offered. Only the import can widen the table, which is the point.
+	err := manager.Add(context.Background(), testSpec(t, "graphless", "graph"))
+	if err == nil || !strings.Contains(err.Error(), "is not registered") {
+		t.Errorf("Add = %v, want an unregistered-kind complaint", err)
 	}
 }
 

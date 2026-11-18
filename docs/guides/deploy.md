@@ -240,12 +240,14 @@ non-blocking: a slow `OnEvent` stalls the run and its protocol stream.
 
 | Package                     | Role                                                                                            |
 | --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `core/deploy`               | Documents, specs, kinds, loading, placeholders.                                                 |
-| `core/deploy/protocols/a2a` | The A2A protocol kind: server, executor and task store.                                         |
-| `core/agent-a2a`            | The A2A client, as a remote engine kind.                                                        |
+| `core/deploy`               | Documents, specs, the kind tables, loading, placeholders. `deploy/builtin` is the whole set.    |
+| `core/deploy/engines/graph` | Registration of the `graph` engine.                                                             |
+| `core/deploy/engines/a2a`   | Registration of the `a2a` engine (a peer driven as an engine).                                  |
+| `core/deploy/protocols/a2a` | The `a2a` protocol kind: registration, server, executor and task store.                         |
+| `core/agent-graph`          | The graph engine's implementation; see [graph.md](graph.md).                                    |
+| `core/agent-a2a`            | The A2A client, which the `a2a` engine wraps.                                                   |
 | `core/agent-host`           | Manager, bindings, session table, deployment lifecycle.                                         |
 | `core/runtime`              | The substrate one agent runs on; see [runtime.md](runtime.md).                                  |
-| `core/agent-graph`          | The `graph` engine kind. See [graph.md](graph.md).                                              |
 | `core/delegation`           | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
 
 ## What was removed, and why

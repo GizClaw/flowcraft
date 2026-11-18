@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
-// testLoader registers one local fake kind beside the built-in a2a engine.
+// testLoader registers one local fake kind beside the stubbed a2a and graph kinds.
 func testLoader(t *testing.T) Loader {
 	t.Helper()
 	return Loader{

@@ -7,6 +7,7 @@
 // protocol has no vocabulary for (tool calls, usage) never leaves the peer.
 //
 // The server side — advertising a card and executing tasks — lives in
-// core/deploy/a2aprotocol, which takes a session table, store and identity, and is
-// registered as the built-in "a2a" protocol by core/deploy.
+// core/deploy/protocols/a2a, which takes a session table, store and identity, and
+// registers itself as the "a2a" protocol kind. This package registers nothing
+// itself: deploy/engines/a2a is the registration that mounts a peer as an engine.
 package a2a
