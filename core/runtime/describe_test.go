@@ -59,6 +59,24 @@ func TestDescriptionsRequireTextOrParams(t *testing.T) {
 	}
 }
 
+// An override is model-facing text, so it obeys the same cap the projection
+// enforces: rejected here, where its author reads the error, instead of shortened at
+// runtime with only a log line.
+func TestDescriptionsRejectAnOverrideTheProjectionWouldShorten(t *testing.T) {
+	cfg := validConfig(t.TempDir())
+	cfg.Tools.Descriptions = DescriptionsConfig{
+		"bash": {Text: strings.Repeat("x", tool.MaxDescriptionBytes+1)},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("an override longer than tool.MaxDescriptionBytes was accepted")
+	}
+	if !strings.Contains(err.Error(), "tools.descriptions.bash") ||
+		!strings.Contains(err.Error(), "MaxDescriptionBytes") {
+		t.Errorf("error %q does not name the entry and the cap", err)
+	}
+}
+
 // A parameter-only entry is the common edit when the tool's own description is
 // fine and one argument's is not: restating the description to change it would be
 // the drift this feature exists to remove.

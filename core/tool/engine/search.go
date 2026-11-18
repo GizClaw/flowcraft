@@ -13,8 +13,11 @@ import (
 
 // SearchHit is one tool_search result.
 type SearchHit struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
+	Name string `json:"name"`
+	// Description is the hit's text, shortened to the answer's budget. Omitted
+	// rather than empty when nothing useful fit: an absent field is the honest
+	// shape of "no preview", and it costs the payload nothing.
+	Description string  `json:"description,omitempty"`
 	Score       float64 `json:"score"`
 }
 

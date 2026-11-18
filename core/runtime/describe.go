@@ -82,6 +82,14 @@ func (c DescriptionsConfig) validate() error {
 			return errdefs.Validationf(
 				"tools.descriptions.%s: text or params is required", name)
 		}
+		// The projection shortens what reaches the model at
+		// tool.MaxDescriptionBytes; an override longer than that would be cut at
+		// runtime with only a log line, so it is refused where its author is.
+		if len(override.Text) > tool.MaxDescriptionBytes {
+			return errdefs.Validationf(
+				"tools.descriptions.%s: text is %d bytes, want <= %d (tool.MaxDescriptionBytes)",
+				name, len(override.Text), tool.MaxDescriptionBytes)
+		}
 		for _, param := range sortedKeys(override.Params) {
 			if strings.TrimSpace(override.Params[param]) == "" {
 				return errdefs.Validationf(

@@ -92,6 +92,9 @@ type ResultLimitSettings struct {
 	// PartBudgetBytes is the byte budget shared by the non-text parts of
 	// one result. Absent means DefaultResultPartBudget; 0 lifts the cap.
 	PartBudgetBytes *int `json:"part_budget_bytes,omitempty"`
+	// StructuredBudgetBytes bounds structured-data parts (JSON) on their own,
+	// where PartBudgetBytes bounds every non-text part. Zero lifts it.
+	StructuredBudgetBytes *int `json:"structured_budget_bytes,omitempty"`
 }
 
 // FromSettings builds the middleware chain declared by s, outermost
@@ -114,6 +117,9 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		if budget := s.ResultLimit.PartBudgetBytes; budget != nil {
 			opts = append(opts, WithResultPartBudget(*budget))
 		}
+		if budget := s.ResultLimit.StructuredBudgetBytes; budget != nil {
+			opts = append(opts, WithResultStructuredBudget(*budget))
+		}
 		limiter, err := ResultLimiter(s.ResultLimit.Max, opts...)
 		if err != nil {
 			return nil, errdefs.Validationf("tool middleware: result_limit.max: %w", err)
@@ -123,7 +129,11 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		// Text is unbounded unless the deployment asks for a rune budget, but
 		// media is bounded by default so a tool cannot hand the model an
 		// unbounded context item by returning one.
-		limiter, err := ResultPartLimiter(budget)
+		// Structured data gets its own, smaller ceiling: a JSON result is what
+		// the model reads, not an image payload, and the media budget is sized
+		// for the latter.
+		limiter, err := ResultPartLimiter(budget,
+			WithResultStructuredBudget(min(budget, DefaultResultStructuredBudget)))
 		if err != nil {
 			return nil, err
 		}
