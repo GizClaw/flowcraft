@@ -10,4 +10,10 @@
 // core/deploy/protocols/a2a, which takes a session table, store and identity, and
 // registers itself as the "a2a" protocol kind. This package registers nothing
 // itself: deploy/engines/a2a is the registration that mounts a peer as an engine.
+//
+// What the two halves share is the wire mapping — a core message to A2A parts and
+// back, a task state to an A2A state — and it lives in core/internal/a2awire
+// rather than here. Neither half owns it: a mapping decision made twice would
+// diverge, and making the server import the client's subtree would say the
+// server depends on the client, which it does not.
 package a2a

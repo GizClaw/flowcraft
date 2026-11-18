@@ -1,9 +1,9 @@
-package wire_test
+package a2awire_test
 
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
@@ -23,11 +23,11 @@ func FuzzFromMessage(f *testing.F) {
 		if metadata != "" {
 			msg.Metadata = map[string]any{"note": metadata}
 		}
-		core, err := wire.FromMessage(msg)
+		core, err := a2awire.FromMessage(msg)
 		if err != nil {
 			return
 		}
-		if _, err := wire.Message(core); err != nil {
+		if _, err := a2awire.Message(core); err != nil {
 			t.Fatalf("Message(FromMessage(...)) = %v", err)
 		}
 	})

@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	sdk "github.com/a2aproject/a2a-go/v2/a2a"
@@ -37,10 +37,10 @@ func resultOf(task *sdk.Task) agent.Result {
 	if task == nil {
 		return agent.Result{}
 	}
-	result := agent.Result{State: wire.FromState(task.Status.State)}
+	result := agent.Result{State: a2awire.FromState(task.Status.State)}
 
 	for i := len(task.History) - 1; i >= 0; i-- {
-		msg, err := wire.FromMessage(task.History[i])
+		msg, err := a2awire.FromMessage(task.History[i])
 		if err != nil {
 			continue
 		}
@@ -84,7 +84,7 @@ func resultOf(task *sdk.Task) agent.Result {
 	}
 
 	if result.State == agent.StateInputRequired {
-		if question := wire.Text(task.Status.Message); question != "" {
+		if question := a2awire.Text(task.Status.Message); question != "" {
 			content := message.NewTextContent(question)
 			result.Question = &content
 		}

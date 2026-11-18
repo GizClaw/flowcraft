@@ -1,10 +1,10 @@
-// Package wire converts between the core message model and the A2A wire types.
+// Package a2awire converts between the core message model and the A2A wire types.
 //
 // It exists because both halves of the protocol need both directions: the client
 // renders a message for the peer and reads the peer's messages back, and the
 // server does the same the other way round. One implementation keeps a mapping
 // decision (a media part, a metadata key) from being made twice and diverging.
-package wire
+package a2awire
 
 import (
 	"encoding/gob"

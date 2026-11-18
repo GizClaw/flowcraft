@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -78,7 +78,7 @@ func (e *executor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext) it
 			yield(nil, errdefs.Validationf("a2a: execution has no message"))
 			return
 		}
-		turn, err := wire.FromMessage(exec.Message)
+		turn, err := a2awire.FromMessage(exec.Message)
 		if err != nil {
 			yield(nil, err)
 			return

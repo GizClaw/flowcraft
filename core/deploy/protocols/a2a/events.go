@@ -2,7 +2,7 @@ package a2a
 
 import (
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 )
@@ -53,7 +53,7 @@ func (s *textStream) events(event agent.Event) []a2a.Event {
 		if typed.State.Terminal() {
 			out = s.close()
 		}
-		return append(out, a2a.NewStatusUpdateEvent(s.info, wire.State(typed.State), reasonMessage(typed.Reason)))
+		return append(out, a2a.NewStatusUpdateEvent(s.info, a2awire.State(typed.State), reasonMessage(typed.Reason)))
 	default:
 		// Tool calls, tool results, usage and reasoning are the agent's working;
 		// the protocol has no vocabulary for them.

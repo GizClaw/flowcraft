@@ -15,8 +15,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-a2a"
-	"github.com/GizClaw/flowcraft/core/agent-a2a/wire"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/GizClaw/flowcraft/core/internal/a2awire"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	sdk "github.com/a2aproject/a2a-go/v2/a2a"
@@ -99,7 +99,7 @@ func (e *peerExecutor) Execute(ctx context.Context, exec *a2asrv.ExecutorContext
 				return
 			}
 		}
-		turn, err := wire.FromMessage(exec.Message)
+		turn, err := a2awire.FromMessage(exec.Message)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -139,7 +139,7 @@ func peerEvents(info sdk.TaskInfo, event agent.Event) []sdk.Event {
 				Parts: sdk.ContentParts{sdk.NewTextPart(typed.Reason)},
 			}
 		}
-		return []sdk.Event{sdk.NewStatusUpdateEvent(info, wire.State(typed.State), msg)}
+		return []sdk.Event{sdk.NewStatusUpdateEvent(info, a2awire.State(typed.State), msg)}
 	case agent.Text:
 		if typed.Text == "" {
 			return nil

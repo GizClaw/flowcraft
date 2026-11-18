@@ -31,4 +31,11 @@
 // The package owns the A2A translation — text as one artifact per model round,
 // status as the task's state, produced artifacts as fetchable parts — and the
 // durable task store that keeps tasks/get answering after a restart.
+//
+// Half of that translation is not here: the message and part mapping, and the
+// task-state mapping, are shared with the client (core/agent-a2a) and live in
+// core/internal/a2awire. Neither half owns them — a mapping made twice diverges —
+// so the server imports a module-private package instead of the client's subtree.
+// What stays here is the direction only a server has: an agent event projected
+// onto A2A status and artifact updates.
 package a2a
