@@ -116,16 +116,19 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 	return r, nil
 }
 
-// Capabilities declares the honest surface: env allow-lists and
-// job-object resource caps are always enforced; filesystem write
-// bounds are enforced when the runner was constructed with
-// WithWriteConfinement. TTY sessions are supported through ConPTY;
+// Capabilities declares the honest surface: env allow-lists and resource
+// caps are always enforced (a cpu budget as a job-object limit, a memory
+// budget by sampling the job's commit); filesystem write bounds are
+// enforced when the runner was constructed with WithWriteConfinement. TTY sessions are supported through ConPTY;
 // signal and event features are not. A journal is reported when the
 // runner was constructed with one.
 func (r *Runner) Capabilities() sandbox.Capabilities {
-	// MemoryCap / CPUCap are unconditional here: job objects enforce them in
-	// the kernel, so the answer does not depend on the unix group sampler that
-	// sessionkit.Enforcement gates on.
+	// MemoryCap / CPUCap are unconditional here: the answer is about what the
+	// backend can enforce, not about the unix group sampler that sessionkit's
+	// Enforcement gates on. A cpu budget is a job-object user-time limit; a memory
+	// budget is sampled from the job's own commit every 25ms. Both end the session
+	// when they trip, and a cap that stops being measurable ends it as
+	// SessionUnenforceable rather than leaving the child unguarded.
 	policy := sandbox.Enforcement{
 		EnvAllowList: true,
 		MemoryCap:    true,

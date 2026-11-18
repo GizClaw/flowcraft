@@ -227,6 +227,11 @@ func StartSessionWithPolicy(
 	return s, nil
 }
 
+// terminateJobFn is the kill a cap verdict performs. It is a variable so the
+// Windows lane can assert the kill happened rather than only that a verdict was
+// recorded — the unix watcher's killGroupFn pattern.
+var terminateJobFn = terminateJob
+
 // terminateJob kills the whole tree. Failures are best-effort: the processes may
 // already be gone.
 func terminateJob(j *job) {
@@ -278,6 +283,14 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	// Order matters, and matches unix: a watcher that gave up killed the session
+	// itself, so nothing downstream may relabel that kill as a deadline or a plain
+	// exit. It is not a budget verdict — nothing was measured.
+	if sampleErr := j.unenforceable(); sampleErr != nil {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+			errdefs.NotAvailablef(
+				"windows: resource caps became unenforceable while running process: %w", sampleErr)
+	}
 	if cap := j.budgetCap(); cap != "" {
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 			errdefs.BudgetExceededf(
@@ -304,6 +317,28 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTimedOut},
 			errdefs.FromContext(fmt.Errorf(
 				"windows: process exceeded its Timeout: %w", context.DeadlineExceeded))
+	}
+	// A cpu budget is attributed from the job's own accounting, not from the
+	// completion-port report: the kernel ends the job when the user-time limit is
+	// reached and the accounting survives that, so a missing report does not lose
+	// the verdict. It runs before the clean-exit return because a leader can exit 0
+	// while the job it leads exhausted the budget, as unix's reap-time verdict does.
+	//
+	// A caller's own stop is excluded, and that is where this deliberately differs
+	// from the sampler's verdict above: an unenforceable *sampler* is the kit
+	// telling the caller it killed the tree for a broken guarantee, while an
+	// unreadable cpu attribution is only a refusal to explain an exit the caller
+	// already caused on purpose.
+	if !terminated {
+		if breached, err := j.cpuBreach(); err != nil {
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+				errdefs.NotAvailablef(
+					"windows: cpu budget verdict unavailable while running process: %w", err)
+		} else if breached {
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+				errdefs.BudgetExceededf(
+					"windows: cpu resource cap exceeded while running process")
+		}
 	}
 	if waitErr == nil {
 		return sandbox.SessionExit{Code: 0, Reason: sandbox.SessionExited}, nil

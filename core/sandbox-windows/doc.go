@@ -113,7 +113,22 @@
 //	                              budget through the kernel's
 //	                              JOB_OBJECT_MSG_END_OF_JOB_TIME,
 //	                              a memory budget through the
-//	                              sampler. A session that reaches
+//	                              sampler. A cap that stops being
+//	                              measurable ends the session as
+//	                              SessionUnenforceable with an
+//	                              errdefs NotAvailable error once
+//	                              three consecutive samples fail,
+//	                              — running a child unguarded under
+//	                              a capability that still claims the
+//	                              cap is the failure the contract
+//	                              exists to prevent. A cpu breach is
+//	                              attributed from the job's own
+//	                              accounting, so a lost completion
+//	                              port does not lose the verdict; the
+//	                              exit is reported as
+//	                              SessionUnenforceable only when
+//	                              neither the accounting nor the
+//	                              report can attribute it. A session that reaches
 //	                              its Timeout with a memory budget
 //	                              configured records the job's peak
 //	                              as telemetry, because an exceeded

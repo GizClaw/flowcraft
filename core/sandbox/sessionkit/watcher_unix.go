@@ -71,13 +71,6 @@ func watchIntervalFor(idleTicks int) time.Duration {
 	return groupWatchInterval
 }
 
-// maxSampleFailures is how many consecutive sampling errors the watcher
-// tolerates before declaring the caps unenforceable. One flaky ps run
-// (a transient fork failure under load) must not kill an innocent
-// group, but blindness must not be unbounded either: at the interval
-// above, three strikes bound it to roughly 750ms.
-const maxSampleFailures = 3
-
 // sampleGroupFn indirects the sampler so tests can simulate one that
 // stops working mid-run.
 var sampleHostFn = sampleHost
@@ -166,7 +159,7 @@ func (w *GroupCapsWatcher) observe(usage groupUsage, sampleErr error) bool {
 		// the watcher pretends to guard it, so fail closed once the failure
 		// looks persistent.
 		w.failures++
-		if w.failures < maxSampleFailures {
+		if w.failures < maxCapSampleFailures {
 			return false
 		}
 		wrapped := fmt.Errorf("group sampling failed %d times in a row: %w", w.failures, sampleErr)
