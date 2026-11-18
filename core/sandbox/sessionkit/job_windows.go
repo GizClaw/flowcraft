@@ -50,6 +50,12 @@ type job struct {
 	// does.
 	sample     func() (uintptr, error)
 	accounting func() (int64, error)
+	// kill ends the job when a cap verdict is reached. It is a field for the same
+	// reason: the Windows lane asserts that the kill happened, not only that a
+	// verdict was recorded — the unix watcher's killGroupFn pattern. A field and
+	// not a package variable, so a test installs it before the sampler goroutine
+	// starts and there is nothing to race on.
+	kill func()
 }
 
 // Job completion-port message codes (winnt.h). The numbers are not adjacent —
@@ -200,6 +206,7 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 	j := &job{h: h, limits: limits, capped: make(chan struct{})}
 	j.sample = j.peakMemory
 	j.accounting = j.userTime
+	j.kill = func() { terminateJob(j) }
 	if limits.CPUMillicores > 0 {
 		j.cpuLimit = cpuBudget100ns(limits, timeout)
 	}
@@ -317,7 +324,7 @@ func (j *job) enforceCaps(done <-chan struct{}) {
 					j.markUnenforceable(wrapped)
 					// Kill first: this path exists to bound an unguarded window, and
 					// an exporter is not allowed to widen it.
-					terminateJobFn(j)
+					j.kill()
 					telemetry.Warn(context.Background(),
 						"windows: resource caps became unenforceable, killing the job",
 						attribute.String("sandbox.kill_reason", "sample_failure"),

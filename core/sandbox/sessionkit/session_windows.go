@@ -227,11 +227,6 @@ func StartSessionWithPolicy(
 	return s, nil
 }
 
-// terminateJobFn is the kill a cap verdict performs. It is a variable so the
-// Windows lane can assert the kill happened rather than only that a verdict was
-// recorded — the unix watcher's killGroupFn pattern.
-var terminateJobFn = terminateJob
-
 // terminateJob kills the whole tree. Failures are best-effort: the processes may
 // already be gone.
 func terminateJob(j *job) {
