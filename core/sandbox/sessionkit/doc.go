@@ -24,7 +24,11 @@
 //     [GroupCapsAvailable] reports whether that sampler works on this host. A
 //     backend must gate its Enforcement.MemoryCap / Enforcement.CPUCap on that
 //     answer instead of hardcoding true, otherwise it advertises a cap that
-//     silently never fires.
+//     silently never fires. The same rule holds while a session runs: a cap that
+//     stops being measurable ends the session as
+//     sandbox.SessionUnenforceable with an errdefs NotAvailable error, because a
+//     child left running unguarded under a capability that still claims the cap
+//     is the failure this kit exists to prevent.
 //
 // # What it does not decide
 //

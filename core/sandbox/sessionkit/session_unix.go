@@ -350,10 +350,13 @@ func readVerdict(sampler *GroupCapsWatcher) capsVerdict {
 
 func classifyExit(s *session, sampled capsVerdict, waitErr error) (sandbox.SessionExit, error) {
 	if sampled.unenforceable != nil || sampled.exceeded != "" {
-		// Order matters: a watcher that gave up on sampling killed the process,
-		// so its own verdict is what the caller has to see.
+		// Order matters: a watcher that gave up on sampling killed the process, so
+		// its own verdict is what the caller has to see — and it is not a budget
+		// verdict. Nothing was measured, so the reason names what happened: a host
+		// that retries a breach differently from a broken guarantee reads it, and
+		// the error type says the same thing to a caller that only inspects errors.
 		if sampleErr := sampled.unenforceable; sampleErr != nil {
-			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
 				errdefs.NotAvailablef(
 					"sandbox: resource caps became unenforceable while running process: %w", sampleErr)
 		}

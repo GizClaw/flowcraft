@@ -164,3 +164,25 @@ func TestTTYSessionStillWritable(t *testing.T) {
 		t.Fatalf("CloseInput error = %v, want NotAvailable", err)
 	}
 }
+
+// The reason strings are what a host logs and routes on, and SessionUnenforceable
+// exists precisely because two verdicts a host must treat differently would
+// otherwise share one word.
+func TestSessionExitReasonStrings(t *testing.T) {
+	for _, tc := range []struct {
+		reason sandbox.SessionExitReason
+		want   string
+	}{
+		{sandbox.SessionExited, "exited"},
+		{sandbox.SessionSignaled, "signaled"},
+		{sandbox.SessionTerminated, "terminated"},
+		{sandbox.SessionTimedOut, "timed_out"},
+		{sandbox.SessionBudgetExceeded, "budget_exceeded"},
+		{sandbox.SessionUnenforceable, "unenforceable"},
+		{sandbox.SessionExitReason(99), "unknown"},
+	} {
+		if got := tc.reason.String(); got != tc.want {
+			t.Errorf("%d.String() = %q, want %q", int(tc.reason), got, tc.want)
+		}
+	}
+}

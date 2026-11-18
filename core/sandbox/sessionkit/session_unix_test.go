@@ -383,3 +383,48 @@ func TestStartSessionWatchReplayThenLive(t *testing.T) {
 		t.Fatalf("streamed output = %q, want the replay plus the live line", got)
 	}
 }
+
+// A cap that stopped being measurable is not a budget breach: nothing was
+// measured. The reason is the axis a host uses to tell "retry differently" from
+// "the guarantee broke", so it must not be shared with the budget path.
+func TestClassifyUnenforceableIsNotABudgetBreach(t *testing.T) {
+	exit, err := classifyExit(&session{}, capsVerdict{unenforceable: errors.New("ps: exit status 1")}, nil)
+	if exit.Reason != sandbox.SessionUnenforceable {
+		t.Errorf("Reason = %v, want unenforceable", exit.Reason)
+	}
+	if exit.Code != -1 {
+		t.Errorf("Code = %d, want -1", exit.Code)
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Errorf("err = %v, want NotAvailable", err)
+	}
+	if errdefs.IsBudgetExceeded(err) {
+		t.Errorf("err = %v, want no BudgetExceeded: nothing was measured", err)
+	}
+}
+
+// The watcher's own verdict killed the group, so a deadline that was about to
+// fire must not relabel what happened.
+func TestClassifyUnenforceableOutranksATimeout(t *testing.T) {
+	exit, err := classifyExit(&session{timedOut: true}, capsVerdict{unenforceable: errors.New("gone")}, nil)
+	if exit.Reason != sandbox.SessionUnenforceable {
+		t.Errorf("Reason = %v, want unenforceable over a timeout", exit.Reason)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("err = %v, must not surface as a deadline", err)
+	}
+}
+
+// The budget path keeps its own reason and its own error class.
+func TestClassifyBudgetExceededKeepsItsReason(t *testing.T) {
+	exit, err := classifyExit(&session{}, capsVerdict{exceeded: "memory"}, nil)
+	if exit.Reason != sandbox.SessionBudgetExceeded {
+		t.Errorf("Reason = %v, want budget exceeded", exit.Reason)
+	}
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Errorf("err = %v, want BudgetExceeded", err)
+	}
+	if errdefs.IsNotAvailable(err) {
+		t.Errorf("err = %v, want no NotAvailable", err)
+	}
+}
