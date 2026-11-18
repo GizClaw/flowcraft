@@ -100,12 +100,17 @@ type LayerDocument struct {
 	// Source is how this layer's bytes are obtained. It is required: a layer
 	// whose bytes come from nowhere cannot be merged, and defaulting to a file
 	// would be a choice the document made by accident.
-	Source *LayerSourceDocument `json:"source"`
+	Source *SourceDocument `json:"source"`
+	// Path is the field Source replaced. It is decoded only so an old document is
+	// told what to write instead of failing as an unknown field, which names
+	// neither the location nor the replacement.
+	Path string `json:"path"`
 }
 
-// LayerSourceDocument selects one registered layer source and carries its
-// settings.
-type LayerSourceDocument struct {
+// SourceDocument selects one registered source and carries its settings. It is
+// the same block wherever a document names bytes: a runtime layer, an engine's
+// own document, or the deployment document itself.
+type SourceDocument struct {
 	// Kind is required. An unregistered kind is a document error naming what is
 	// registered, the same rule engines, protocols and hooks follow.
 	Kind string `json:"kind"`
@@ -143,15 +148,15 @@ type Loader struct {
 // block a deployment writes in runtime.layers[].source. It exists so that
 // [Loader.LoadFile] is sugar over [Loader.LoadSource] rather than a second rule
 // about where a document may live.
-func FileSourceDocument(path string) *LayerSourceDocument {
+func FileSourceDocument(path string) *SourceDocument {
 	settings, err := json.Marshal(map[string]string{"path": path})
 	if err != nil {
 		// A map of strings cannot fail to marshal. If it ever does, an empty
 		// settings block is refused by the file source instead of being guessed
 		// at here.
-		return &LayerSourceDocument{Kind: "file"}
+		return &SourceDocument{Kind: "file"}
 	}
-	return &LayerSourceDocument{Kind: "file", Settings: settings}
+	return &SourceDocument{Kind: "file", Settings: settings}
 }
 
 // LoadSource reads a deployment document through a source kind: the same table a
@@ -161,7 +166,7 @@ func FileSourceDocument(path string) *LayerSourceDocument {
 // names the source once instead of holding the bytes itself. [Loader.Load] is the
 // entry for a body that is already in memory, and [Loader.LoadFile] is this with
 // the file source.
-func (l Loader) LoadSource(ctx context.Context, source *LayerSourceDocument) ([]Spec, error) {
+func (l Loader) LoadSource(ctx context.Context, source *SourceDocument) ([]Spec, error) {
 	body, err := l.documentBody(ctx, source)
 	if err != nil {
 		return nil, err
@@ -169,14 +174,15 @@ func (l Loader) LoadSource(ctx context.Context, source *LayerSourceDocument) ([]
 	return l.Load(ctx, body)
 }
 
-// LoadFile reads a document from disk.
+// LoadFile reads a document from disk: [Loader.LoadSource] with the file source,
+// so the kind table must register it (deploy/builtin does).
 func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
 	return l.LoadSource(ctx, FileSourceDocument(path))
 }
 
 // documentBody opens the deployment document itself. The location is not a field
 // path: this is the root, and every error below it names the agent it belongs to.
-func (l Loader) documentBody(ctx context.Context, source *LayerSourceDocument) ([]byte, error) {
+func (l Loader) documentBody(ctx context.Context, source *SourceDocument) ([]byte, error) {
 	const at = "manage: deployment document"
 	opened, err := l.Kinds.OpenSource(ctx, at, source)
 	if err != nil {
@@ -199,7 +205,7 @@ func (l Loader) RequiredPlaceholders(body []byte) (config.Requirement, error) {
 
 // RequiredPlaceholdersSource does the same for a document read through a source
 // kind.
-func (l Loader) RequiredPlaceholdersSource(ctx context.Context, source *LayerSourceDocument) (config.Requirement, error) {
+func (l Loader) RequiredPlaceholdersSource(ctx context.Context, source *SourceDocument) (config.Requirement, error) {
 	body, err := l.documentBody(ctx, source)
 	if err != nil {
 		return config.Requirement{}, err
@@ -207,7 +213,8 @@ func (l Loader) RequiredPlaceholdersSource(ctx context.Context, source *LayerSou
 	return l.RequiredPlaceholders(body)
 }
 
-// RequiredPlaceholdersFile reads a document and reports its environment requirements.
+// RequiredPlaceholdersFile reads a document from disk and reports its environment
+// requirements. Like [Loader.LoadFile], it needs the file source registered.
 func (l Loader) RequiredPlaceholdersFile(ctx context.Context, path string) (config.Requirement, error) {
 	return l.RequiredPlaceholdersSource(ctx, FileSourceDocument(path))
 }
@@ -274,8 +281,12 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	}
 	engineSpec := EngineSpec{Kind: agent.Engine.Kind, Settings: settings}
 	if kind.Decode != nil {
-		if _, err := kind.Decode(ctx, settings, l.opener(where("engine")+".settings")); err != nil {
-			return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
+		// The opener carries no location: a kind names what its settings are
+		// about, a source names what it could not open, and the agent is named
+		// here — once, rather than as a prefix over a message that already
+		// names the same field.
+		if _, err := kind.Decode(ctx, settings, l.opener()); err != nil {
+			return Spec{}, errdefs.Validationf("%s: %w", where("engine"), err)
 		}
 	}
 	if err := ValidateEngineSpec(kind, engineSpec, agent.Runtime != nil); err != nil {
@@ -361,12 +372,25 @@ func (l Loader) layers(ctx context.Context, agent string, runtimeDocument *Runti
 			"manage: agents[%s].runtime: at least one layer is required", agent)
 	}
 	layers := make([]config.Layer, 0, len(runtimeDocument.Layers))
+	seen := make(map[string]struct{}, len(runtimeDocument.Layers))
 	for i, layer := range runtimeDocument.Layers {
 		at := "manage: agents[" + agent + "].runtime.layers[" + strconv.Itoa(i) + "]"
+		if strings.TrimSpace(layer.Path) != "" {
+			return nil, errdefs.Validationf(
+				"%s: path was replaced by source; write source: {kind: file, settings: {path: %q}}",
+				at, layer.Path)
+		}
 		source, err := l.Kinds.OpenSource(ctx, at, layer.Source)
 		if err != nil {
 			return nil, err
 		}
+		// Layer names are how a merge failure points at its layer, so two
+		// anonymous inline layers in one stack would be indistinguishable.
+		if _, duplicate := seen[source.Name]; duplicate {
+			return nil, errdefs.Validationf(
+				"%s: source %q is declared twice; name one of them", at, source.Name)
+		}
+		seen[source.Name] = struct{}{}
 		layers = append(layers, config.Layer{
 			Priority: layer.Priority,
 			// The source names the layer: it is the only part that knows whether
@@ -378,12 +402,11 @@ func (l Loader) layers(ctx context.Context, agent string, runtimeDocument *Runti
 	return layers, nil
 }
 
-// layerSource opens one layer through the kind it names.
-// opener binds [Kinds.OpenSource] to the location a kind's settings occupy, so a
-// document the kind reads is reported the way the deployment declared it.
-func (l Loader) opener(at string) SourceOpener {
-	return func(ctx context.Context, document *LayerSourceDocument) (LayerSource, error) {
-		return l.Kinds.OpenSource(ctx, at, document)
+// opener hands a kind the deployment's source table without a location: the
+// loader names the agent around whatever the kind or its source reports.
+func (l Loader) opener() SourceOpener {
+	return func(ctx context.Context, document *SourceDocument) (Source, error) {
+		return l.Kinds.openSource(ctx, document)
 	}
 }
 

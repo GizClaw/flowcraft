@@ -124,12 +124,12 @@ interprets:
 ```
 
 ```go
-type LayerSourceKind struct {
+type SourceKind struct {
     Name string
-    Open func(ctx context.Context, settings json.RawMessage) (LayerSource, error)
+    Open func(ctx context.Context, settings json.RawMessage) (Source, error)
 }
 
-type LayerSource struct {
+type Source struct {
     Name string        // what errors and provenance report
     Body config.Source // config.File, config.Bytes, config.FS or config.Func
 }
@@ -150,7 +150,7 @@ instead of a registration:
 var assets embed.FS
 
 // {"kind": "assets", "settings": {"name": "runtime/base.yaml"}}
-kinds := builtin.Kinds().WithLayerSources(sources.FS("assets", assets))
+kinds := builtin.Kinds().WithSources(sources.FS("assets", assets))
 ```
 
 `deploy/sources` is the whole family, one factory per `config.Source`:
@@ -174,7 +174,7 @@ the reference already is a location.
 
 `Body` is the same `config.Source` a layer stack has always used, so nothing below
 this seam changes: merge, placeholder expansion, provenance and `runtime.Digest`
-read bytes. `LayerSource.Name` is what errors and provenance report, which is why
+read bytes. `Source.Name` is what errors and provenance report, which is why
 it exists at all — a layer read from an embedded tree has no path to print.
 
 An engine can name a document the same way. The graph engine's settings are a
@@ -187,7 +187,7 @@ source reference and nothing else:
         source: { kind: assets, settings: { name: graphs/react.yaml } }
 ```
 
-It goes through the same `Kinds.LayerSources` table, which is the point: a host
+It goes through the same `Kinds.Sources` table, which is the point: a host
 registers `assets` once and both its runtime layers and its graph documents come
 from the embedded tree. The engine opens the source at load (to validate the
 document), for the fingerprint (the bytes are part of the deployment's identity)
@@ -205,7 +205,7 @@ holds.
 deploy/builtin — Kinds()
 // Engines:      a2a (deploy/engines/a2a, core/agent-a2a client), graph (deploy/engines/graph, core/agent-graph)
 // Protocols:    a2a (deploy/protocols/a2a, which holds the server and the kind)
-// LayerSources: file and inline (deploy/sources); the FS and Func factories are the host's to register
+// Sources: file and inline (deploy/sources); the FS and Func factories are the host's to register
 // Hooks:        none — a host's policy is the host's
 ```
 
@@ -238,7 +238,12 @@ import (
     enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 )
 
-kinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+// A document is read through the source table, so a host that builds its own
+// table names at least one source: the deployment document itself comes through
+// it too.
+kinds := deploy.Kinds{}.
+    WithEngines(enginesgraph.Engine()).
+    WithSources(sources.File())
 ```
 
 `deploy/builtin` is the convenience trade for a host that wants every kind in one
@@ -295,7 +300,7 @@ loader := deploy.Loader{
 }
 
 // The document itself is read through the same source table as everything else.
-specs, err := loader.LoadSource(ctx, &deploy.LayerSourceDocument{
+specs, err := loader.LoadSource(ctx, &deploy.SourceDocument{
     Kind:     "assets",
     Settings: json.RawMessage(`{"name":"deploy.yaml"}`),
 })
@@ -374,6 +379,6 @@ non-blocking: a slow `OnEvent` stalls the run and its protocol stream.
 The previous assembly model — `resources: {kind, impl, deps}`, a dependency DAG
 and a `Build` phase over it — is gone. It made every policy a resource and every
 resource a factory, which meant a deployment could not be read without running
-its dependency graph in your head. The current model has three kinds, each of
+its dependency graph in your head. The current model has four kinds, each of
 which is a thing a document can name, and one `Loader` that validates them
 without building anything.

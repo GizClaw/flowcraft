@@ -80,6 +80,72 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 	}
 }
 
+// The whole path in one run: a deployment document on disk names a file source for
+// its runtime layer and another for the graph, the loader resolves both, and the
+// manager runs a turn. This is the only test that crosses document → source →
+// manager → graph, as opposed to proving the halves separately.
+func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"})))
+	layer := writeRuntimeLayer(t)
+	graphDocument := writeGraphDocument(t, fixedGraph)
+	document := filepath.Join(t.TempDir(), "deploy.yaml")
+	body := "version: 1\n" +
+		"agents:\n" +
+		"  - name: g\n" +
+		"    engine:\n" +
+		"      kind: graph\n" +
+		"      settings:\n" +
+		"        source: {kind: file, settings: {path: " + graphDocument + "}}\n" +
+		"    runtime:\n" +
+		"      layers:\n" +
+		"        - priority: 0\n" +
+		"          source: {kind: file, settings: {path: " + layer + "}}\n"
+	if err := os.WriteFile(document, []byte(body), 0o600); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	specs, err := deploy.Loader{Kinds: kinds}.LoadFile(context.Background(), document)
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	manager := newManager(t, kinds, testHost(t))
+	if _, err := manager.Deploy(context.Background(), specs...); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	session, ok := manager.Session("g", "conv-1")
+	if !ok {
+		t.Fatal("no session for the deployed agent")
+	}
+	var text string
+	for event, err := range session.Run(context.Background(),
+		message.NewTextMessage(message.RoleUser, "hi")) {
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+		if typed, ok := event.(agent.Text); ok {
+			text += typed.Text
+		}
+	}
+	if text != "hello" {
+		t.Errorf("text = %q, want the graph's output", text)
+	}
+}
+
+// writeRuntimeLayer is the substrate a document has to point at: a local boundary
+// and one writable root, rooted at the test's temporary directory.
+func writeRuntimeLayer(t *testing.T) string {
+	t.Helper()
+	root := filepath.ToSlash(t.TempDir())
+	body := "version: 1\n" +
+		"name: doc-layer\n" +
+		"sandbox: {backend: local, writes: [\"" + root + "\"]}\n" +
+		"files: {roots: [\"" + root + "\"]}\n"
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write runtime layer: %v", err)
+	}
+	return path
+}
+
 // A malformed document fails at load, before any resource is built.
 func TestGraphEngineValidatesTheDocumentAtLoad(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "x"})))

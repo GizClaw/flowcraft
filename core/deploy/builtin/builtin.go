@@ -41,5 +41,5 @@ func Kinds() deploy.Kinds {
 	return deploy.Kinds{}.
 		WithEngines(enginesgraph.Engine(), enginesa2a.Engine()).
 		WithProtocols(protocolsa2a.Protocol()).
-		WithLayerSources(sources.File(), sources.Inline())
+		WithSources(sources.File(), sources.Inline())
 }

@@ -43,26 +43,26 @@ func builtinKinds() Kinds {
 			EngineKind{Name: "graph", Local: true},
 		).
 		WithProtocols(a2aKind()).
-		WithLayerSources(fileSource())
+		WithSources(fileSource())
 }
 
 // fileSource is the file layer source as the document sees it: settings.path,
 // named after the path it reads. The registration these tests exercise end to end
 // is deploy/builtin's, and it is tested from the external test package.
-func fileSource() LayerSourceKind {
-	return LayerSourceKind{
+func fileSource() SourceKind {
+	return SourceKind{
 		Name: "file",
-		Open: func(_ context.Context, settings json.RawMessage) (LayerSource, error) {
+		Open: func(_ context.Context, settings json.RawMessage) (Source, error) {
 			var decoded struct {
 				Path string `json:"path"`
 			}
 			if err := json.Unmarshal(settings, &decoded); err != nil {
-				return LayerSource{}, err
+				return Source{}, err
 			}
 			if decoded.Path == "" {
-				return LayerSource{}, errors.New("file: settings.path is required")
+				return Source{}, errors.New("file: settings.path is required")
 			}
-			return LayerSource{Name: decoded.Path, Body: config.File(decoded.Path)}, nil
+			return Source{Name: decoded.Path, Body: config.File(decoded.Path)}, nil
 		},
 	}
 }

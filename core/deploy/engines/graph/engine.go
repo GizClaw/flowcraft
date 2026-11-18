@@ -36,7 +36,7 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 		Name:  "graph",
 		Local: true,
 		Decode: func(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) (any, error) {
-			decoded, _, err := openSettings(ctx, settings, sources)
+			decoded, _, err := openSettings(ctx, settings, sources, true)
 			if err != nil {
 				return nil, err
 			}
@@ -44,7 +44,10 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 		},
 		Fingerprint: fingerprint,
 		Build: func(ctx context.Context, deps deploy.EngineDeps) (agent.RunnerFactory, error) {
-			_, document, err := openSettings(ctx, deps.Spec.Settings, deps.Sources)
+			// The document was validated at load; the build parses it again on
+			// the way in, so reading it here would only cost a host source another
+			// load.
+			_, document, err := openSettings(ctx, deps.Spec.Settings, deps.Sources, false)
 			if err != nil {
 				return nil, err
 			}
@@ -75,34 +78,45 @@ type graphSettings struct {
 	// settings. It is read at load time for validation, again for the
 	// fingerprint, and once more when the graph is compiled — the same three
 	// reads a path used to cost.
-	Source *deploy.LayerSourceDocument `json:"source"`
+	Source *deploy.SourceDocument `json:"source"`
+	// Path is the setting Source replaced. It is decoded only so an old document
+	// is told what to write instead of failing as an unknown field, which names
+	// neither the location nor the replacement.
+	Path string `json:"path"`
 }
 
 // openSettings decodes the settings and opens the document they name, validating
 // it on the way: a wiring mistake fails at load, not when the first task starts.
 // Node kinds are still checked at build, when the registry is known.
-func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) (graphSettings, deploy.LayerSource, error) {
+func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener, validate bool) (graphSettings, deploy.Source, error) {
 	const missing = "graph: settings.source is required"
 	if len(settings) == 0 || string(settings) == "null" {
-		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(missing)
+		return graphSettings{}, deploy.Source{}, errdefs.Validationf(missing)
 	}
 	decoded, err := decode.Decode[graphSettings](settings)
 	if err != nil {
-		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf("graph: settings: %v", err)
+		return graphSettings{}, deploy.Source{}, errdefs.Validationf("graph: settings: %v", err)
+	}
+	if decoded.Path != "" {
+		return graphSettings{}, deploy.Source{}, errdefs.Validationf(
+			"graph: settings.path was replaced by source; write settings: {source: {kind: file, settings: {path: %q}}}",
+			decoded.Path)
 	}
 	if decoded.Source == nil {
-		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(missing)
+		return graphSettings{}, deploy.Source{}, errdefs.Validationf(missing)
 	}
 	if sources == nil {
-		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(
+		return graphSettings{}, deploy.Source{}, errdefs.Validationf(
 			"graph: settings.source: this host registered no source table")
 	}
 	document, err := sources(ctx, decoded.Source)
 	if err != nil {
-		return graphSettings{}, deploy.LayerSource{}, err
+		return graphSettings{}, deploy.Source{}, err
 	}
-	if err := nodes.Validate(ctx, document.Name, document.Body); err != nil {
-		return graphSettings{}, deploy.LayerSource{}, err
+	if validate {
+		if err := nodes.Validate(ctx, document.Name, document.Body); err != nil {
+			return graphSettings{}, deploy.Source{}, err
+		}
 	}
 	return decoded, document, nil
 }
@@ -113,23 +127,30 @@ func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.
 func fingerprint(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) string {
 	var decoded graphSettings
 	if err := json.Unmarshal(settings, &decoded); err != nil || decoded.Source == nil || sources == nil {
-		// Decode refuses a settings blob that does not parse, so this is
-		// unreachable through the loader. If it is reached anyway, the identity
-		// must differ from every real document's rather than silently match the
-		// hash of an empty one.
-		return "invalid"
+		return invalidIdentity(settings)
 	}
 	document, err := sources(ctx, decoded.Source)
 	if err != nil {
 		// Decode opened the same source successfully, so a failure here is a
 		// source that disappeared between the two calls: the identity has to
 		// differ from the old one, which is what an unreadable document means.
-		return "invalid"
+		return invalidIdentity(settings)
 	}
 	body, err := document.Read(ctx)
 	if err != nil {
-		return "invalid"
+		return invalidIdentity(settings)
 	}
 	sum := sha256.Sum256(append([]byte(document.Name+"\x00"), body...))
 	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// invalidIdentity is what a settings blob that cannot be resolved hashes to.
+//
+// Decode refuses such a blob, so this is unreachable through the loader; if it is
+// reached anyway the identity must differ from every real document's — and from
+// every *other* broken one, because two deployments sharing an identity would
+// resume each other's checkpoints.
+func invalidIdentity(settings json.RawMessage) string {
+	sum := sha256.Sum256(settings)
+	return "invalid:" + hex.EncodeToString(sum[:])
 }

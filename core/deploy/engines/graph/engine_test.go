@@ -2,6 +2,8 @@ package graph_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -59,7 +61,7 @@ func table(t *testing.T) deploy.Kinds {
 
 func opener(t *testing.T, kinds deploy.Kinds) deploy.SourceOpener {
 	t.Helper()
-	return func(ctx context.Context, document *deploy.LayerSourceDocument) (deploy.LayerSource, error) {
+	return func(ctx context.Context, document *deploy.SourceDocument) (deploy.Source, error) {
 		return kinds.OpenSource(ctx, "engine settings", document)
 	}
 }
@@ -81,18 +83,46 @@ func TestEngineIsALocalGraph(t *testing.T) {
 
 // A graph without a document is a wiring mistake, and it fails at load.
 func TestDecodeRequiresASource(t *testing.T) {
-	for name, raw := range map[string]json.RawMessage{
-		"absent":  nil,
-		"null":    json.RawMessage(`null`),
-		"empty":   json.RawMessage(`{}`),
-		"no kind": settings(t, map[string]any{"source": map[string]any{"settings": map[string]any{"path": doc}}}),
-	} {
+	cases := map[string]struct {
+		raw  json.RawMessage
+		want string
+	}{
+		"absent":  {nil, "settings.source is required"},
+		"null":    {json.RawMessage(`null`), "settings.source is required"},
+		"empty":   {json.RawMessage(`{}`), "settings.source is required"},
+		"no kind": {settings(t, map[string]any{"source": map[string]any{}}), "source.kind is required"},
+	}
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			if _, err := decode(t, table(t), raw); err == nil ||
-				!strings.Contains(err.Error(), "settings.source") {
-				t.Fatalf("Decode = %v, want a missing-source complaint", err)
+			if _, err := decode(t, table(t), tc.raw); err == nil ||
+				!strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Decode = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// The removed setting is refused with the replacement: this is the message every
+// existing deployment reads once, and "unknown field path" names neither the
+// location nor what to write instead.
+func TestDecodeRejectsTheRemovedPathSetting(t *testing.T) {
+	_, err := decode(t, table(t), settings(t, map[string]any{"path": write(t, doc)}))
+	if err == nil {
+		t.Fatal("the removed settings.path was accepted")
+	}
+	for _, want := range []string{"path was replaced by source", "settings: {path:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A host that calls Decode without a table gets a sentence, not a panic.
+func TestDecodeRejectsANilSourceTable(t *testing.T) {
+	raw := settings(t, map[string]any{"source": fileSource(write(t, doc))})
+	_, err := graph.Engine().Decode(context.Background(), raw, nil)
+	if err == nil || !strings.Contains(err.Error(), "no source table") {
+		t.Fatalf("Decode = %v, want the missing table named", err)
 	}
 }
 
@@ -148,19 +178,19 @@ func TestDecodeRejectsUnknownSettings(t *testing.T) {
 // The point of the source table: a document compiled into the host runs the
 // engine without a file existing anywhere.
 func TestDocumentComesFromTheSourceTable(t *testing.T) {
-	kinds := deploy.Kinds{}.WithLayerSources(deploy.LayerSourceKind{
+	kinds := deploy.Kinds{}.WithSources(deploy.SourceKind{
 		Name: "memory",
-		Open: func(_ context.Context, settings json.RawMessage) (deploy.LayerSource, error) {
+		Open: func(_ context.Context, settings json.RawMessage) (deploy.Source, error) {
 			var decoded struct {
 				Name string `json:"name"`
 			}
 			if err := json.Unmarshal(settings, &decoded); err != nil {
-				return deploy.LayerSource{}, err
+				return deploy.Source{}, err
 			}
 			if decoded.Name != "graph" {
-				return deploy.LayerSource{}, errors.New("no document named " + decoded.Name)
+				return deploy.Source{}, errors.New("no document named " + decoded.Name)
 			}
-			return deploy.LayerSource{Name: "memory:graph", Body: config.Bytes([]byte(doc))}, nil
+			return deploy.Source{Name: "memory:graph", Body: config.Bytes([]byte(doc))}, nil
 		},
 	})
 	raw := settings(t, map[string]any{"source": map[string]any{"kind": "memory", "settings": map[string]any{"name": "graph"}}})
@@ -204,10 +234,34 @@ func TestFingerprintTracksTheSourceName(t *testing.T) {
 }
 
 // A host that registered nothing gets a fingerprint that matches no deployment,
-// rather than one that silently equals an empty document's.
-func TestFingerprintOfAnUnreadableSourceIsInvalid(t *testing.T) {
-	raw := settings(t, map[string]any{"source": map[string]any{"kind": "absent"}})
-	if got := graph.Engine().Fingerprint(context.Background(), raw, opener(t, deploy.Kinds{})); got != "invalid" {
-		t.Errorf("fingerprint = %q, want invalid", got)
+// rather than one that silently equals an empty document's. Two different broken
+// deployments must not share one either: that would resume each other's
+// checkpoints.
+func TestFingerprintOfAnUnreadableSourceIsDistinct(t *testing.T) {
+	kind := graph.Engine()
+	one := kind.Fingerprint(context.Background(),
+		settings(t, map[string]any{"source": map[string]any{"kind": "absent"}}), opener(t, deploy.Kinds{}))
+	two := kind.Fingerprint(context.Background(),
+		settings(t, map[string]any{"source": map[string]any{"kind": "other"}}), opener(t, deploy.Kinds{}))
+	for _, got := range []string{one, two} {
+		if !strings.HasPrefix(got, "invalid:") {
+			t.Errorf("fingerprint = %q, want an invalid: identity", got)
+		}
+	}
+	if one == two {
+		t.Error("two broken deployments share one identity")
+	}
+}
+
+// The preimage is pinned: sha256(name "\x00" bytes), which is what a file-backed
+// graph hashed before this change. An upgrade that moved it would silently discard
+// every in-flight task of every graph deployment.
+func TestFingerprintPreimageIsPinned(t *testing.T) {
+	path := write(t, doc)
+	raw := settings(t, map[string]any{"source": fileSource(path)})
+	got := graph.Engine().Fingerprint(context.Background(), raw, opener(t, table(t)))
+	sum := sha256.Sum256([]byte(path + "\x00" + doc))
+	if want := "sha256:" + hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("fingerprint = %q, want %q (the pre-change preimage)", got, want)
 	}
 }

@@ -98,7 +98,7 @@ legitimate: the engine owns the state, the adapter owns its token.
 runtime digest, the engine identity and the settings that define them. A resume
 under a different fingerprint is not the same deployment, so a host can refuse
 rather than replay a transcript into a stack that did not produce it. For the
-graph engine the fingerprint is the document's **path and bytes**, which is why
+graph engine the fingerprint is the document's **source name and bytes**, which is why
 editing the graph invalidates the checkpoints taken under the old one.
 
 ## Who writes what

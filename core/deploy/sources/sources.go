@@ -11,7 +11,8 @@
 // registrations because the document carries the whole address — a path, or the
 // text itself. [FS] and [Func] are factories because their address is a Go value
 // (an fs.FS, a loader) that no document can write, so the host names the kind and
-// hands it over.
+// hands it over. A factory registered under an empty name is unreachable: the
+// loader refuses a blank `source.kind` before it consults the table.
 //
 // Everything else a host might want — HTTP, a vault, a row in a table, a document
 // generated at startup — is [Func] with five lines of the host's own policy. That

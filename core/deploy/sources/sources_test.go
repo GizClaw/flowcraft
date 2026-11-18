@@ -16,17 +16,17 @@ import (
 )
 
 // open runs a kind the way the loader does: the settings blob in, a layer out.
-func open(t *testing.T, kind deploy.LayerSourceKind, settings string) (deploy.LayerSource, error) {
+func open(t *testing.T, kind deploy.SourceKind, settings string) (deploy.Source, error) {
 	t.Helper()
 	return kind.Open(context.Background(), json.RawMessage(settings))
 }
 
 // read is open plus the body, which is what a test about bytes usually wants.
-func read(t *testing.T, kind deploy.LayerSourceKind, settings string) (deploy.LayerSource, string, error) {
+func read(t *testing.T, kind deploy.SourceKind, settings string) (deploy.Source, string, error) {
 	t.Helper()
 	layer, err := open(t, kind, settings)
 	if err != nil {
-		return deploy.LayerSource{}, "", err
+		return deploy.Source{}, "", err
 	}
 	body, err := layer.Read(context.Background())
 	return layer, string(body), err

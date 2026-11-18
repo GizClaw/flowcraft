@@ -65,7 +65,7 @@ type ProtocolDeps struct {
 // SourceOpener opens a document a deployment names by source kind. It is the
 // loader's table bound to one location, so a kind that reads a document of its
 // own reports a bad source the same way a runtime layer does.
-type SourceOpener func(ctx context.Context, document *LayerSourceDocument) (LayerSource, error)
+type SourceOpener func(ctx context.Context, document *SourceDocument) (Source, error)
 
 // EngineKind registers one engine kind.
 type EngineKind struct {
@@ -141,12 +141,13 @@ type HookKind struct {
 	Build func(ctx context.Context, deps HookDeps) (agent.Hooks, error)
 }
 
-// LayerSource is what a registered layer source produced for one layer: the
-// bytes to merge and the name to report them under.
-type LayerSource struct {
-	// Name identifies the layer in errors and provenance. It is not a path: an
-	// embedded or generated layer has none, and one read from a temporary file
-	// should be reported under the name its author knows.
+// Source is one document read through a source kind: its bytes and the name to
+// report them under. It is the deploy-side counterpart of [config.Source], which
+// is only bytes because a merge has no reader to name them for.
+type Source struct {
+	// Name is what errors report: the layer a merge failed on, the document the
+	// graph engine could not parse. It is not a path — an embedded document has
+	// none — and it is what the graph deployment's identity is built from.
 	Name string
 	// Body is where the bytes come from. [config.File], [config.Bytes],
 	// [config.FS] and [config.Func] are the four ways core supplies one; a host
@@ -157,37 +158,41 @@ type LayerSource struct {
 // Read returns the layer's bytes. A kind that reads a document of its own calls
 // it; the merge reads through Body directly, because it wraps the error with the
 // provenance of the load rather than of one layer.
-func (s LayerSource) Read(ctx context.Context) ([]byte, error) {
+func (s Source) Read(ctx context.Context) ([]byte, error) {
 	if s.Body == nil {
 		return nil, errdefs.Validationf("layer %q has no body", s.Name)
 	}
 	return s.Body.Body(ctx)
 }
 
-// LayerSourceKind registers one way a runtime layer's bytes are obtained: a file
-// on this host, a member of an //go:embed tree, a key in a secret store.
+// SourceKind registers one way a document's bytes are obtained: a file on this
+// host, a member of an //go:embed tree, a key in a secret store.
 //
 // Open decodes its own settings because it runs at load time, while the layers
 // are merged. That is also why there is no separate Decode as there is for
 // engines: a source is opened once and has nothing left to build.
-type LayerSourceKind struct {
-	// Name is what a document writes in runtime.layers[].source.kind.
+type SourceKind struct {
+	// Name is what a document writes in source.kind: a runtime layer, an engine's
+	// settings, or the deployment document itself.
 	Name string
 	// Open produces the layer from the written settings. The context is the
 	// load's, so a source that reaches a network or a vault can be cancelled.
-	Open func(ctx context.Context, settings json.RawMessage) (LayerSource, error)
+	Open func(ctx context.Context, settings json.RawMessage) (Source, error)
 }
 
-// Kinds is the registered engine, protocol, hook and layer source kinds. One
-// value is shared by the loader and the manager, so a kind cannot be loadable
-// and yet not deployable.
+// Kinds is the registered engine, protocol, hook and source kinds. One value is
+// shared by the loader and the manager, so a kind cannot be loadable and yet not
+// deployable.
 //
 // This package registers nothing: a registration belongs to the package that
 // knows the implementation (deploy/engines/graph, deploy/engines/a2a,
 // deploy/protocols/a2a, deploy/builtin), so a host that runs one engine links one
-// engine. Start from the zero value and add what the deployment names:
+// engine. Start from the zero value and add what the deployment names — engines,
+// and the sources its documents are read through:
 //
-//	kinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+//	kinds := deploy.Kinds{}.
+//		WithEngines(enginesgraph.Engine()).
+//		WithSources(sources.File())
 //
 // deploy/builtin carries the whole set in one call, for a host that wants every
 // kind core ships.
@@ -195,10 +200,10 @@ type Kinds struct {
 	Engines   map[string]EngineKind
 	Protocols map[string]ProtocolKind
 	Hooks     map[string]HookKind
-	// LayerSources are the ways a runtime layer's bytes are obtained. The zero
-	// table registers none, so a document naming a source fails to load;
-	// deploy/builtin registers file, the one a deployment almost always needs.
-	LayerSources map[string]LayerSourceKind
+	// Sources are the ways a document's bytes are obtained. The zero table
+	// registers none, so a document naming a source fails to load;
+	// deploy/builtin registers file and inline.
+	Sources map[string]SourceKind
 }
 
 // OpenSource opens the source a document names, naming at in every error it
@@ -208,23 +213,34 @@ type Kinds struct {
 // kind driven by a document of its own — the graph engine is one — uses it
 // through [SourceOpener]. A layer and an engine therefore cannot disagree about
 // what a source kind means.
-func (k Kinds) OpenSource(ctx context.Context, at string, document *LayerSourceDocument) (LayerSource, error) {
+func (k Kinds) OpenSource(ctx context.Context, at string, document *SourceDocument) (Source, error) {
+	opened, err := k.openSource(ctx, document)
+	if err != nil {
+		return Source{}, errdefs.Validationf("%s: %w", at, err)
+	}
+	return opened, nil
+}
+
+// openSource resolves a document reference without a location, so its caller can
+// name the place exactly once: an agent's engine settings, a stack entry, or the
+// deployment document itself.
+func (k Kinds) openSource(ctx context.Context, document *SourceDocument) (Source, error) {
 	if document == nil {
-		return LayerSource{}, errdefs.Validationf(
-			"%s: source is required; write source: {kind: file, settings: {path: ...}}", at)
+		return Source{}, errdefs.Validationf(
+			"source is required; write source: {kind: file, settings: {path: ...}}")
 	}
 	if strings.TrimSpace(document.Kind) == "" {
-		return LayerSource{}, errdefs.Validationf("%s.source: kind is required", at)
+		return Source{}, errdefs.Validationf("source.kind is required")
 	}
-	kind, found := k.LayerSources[document.Kind]
+	kind, found := k.Sources[document.Kind]
 	if !found {
-		return LayerSource{}, errdefs.Validationf(
-			"%s.source: kind %q is not registered; offered: %s",
-			at, document.Kind, offered(k.LayerSources, "deploy/builtin registers file"))
+		return Source{}, errdefs.Validationf(
+			"source: kind %q is not registered; offered: %s",
+			document.Kind, offered(k.Sources, "deploy/builtin registers file and inline"))
 	}
 	if kind.Open == nil {
-		return LayerSource{}, errdefs.Validationf(
-			"%s.source: kind %q is registered without Open", at, document.Kind)
+		return Source{}, errdefs.Validationf(
+			"source: kind %q is registered without Open", document.Kind)
 	}
 	settings := document.Settings
 	if len(strings.TrimSpace(string(settings))) == 0 {
@@ -232,18 +248,18 @@ func (k Kinds) OpenSource(ctx context.Context, at string, document *LayerSourceD
 	}
 	opened, err := kind.Open(ctx, settings)
 	if err != nil {
-		return LayerSource{}, errdefs.Validationf("%s.source: %v", at, err)
+		return Source{}, errdefs.Validationf("source: %w", err)
 	}
 	// A kind that produced nothing would merge as a silent no-op, and a layer
 	// nobody can name is a layer nobody can fix: both are registration bugs, and
 	// both are reported where the document named them.
 	if opened.Body == nil {
-		return LayerSource{}, errdefs.Validationf(
-			"%s.source: kind %q produced no body", at, document.Kind)
+		return Source{}, errdefs.Validationf(
+			"source: kind %q produced no body", document.Kind)
 	}
 	if strings.TrimSpace(opened.Name) == "" {
-		return LayerSource{}, errdefs.Validationf(
-			"%s.source: kind %q produced no name", at, document.Kind)
+		return Source{}, errdefs.Validationf(
+			"source: kind %q produced no name", document.Kind)
 	}
 	return opened, nil
 }
@@ -266,11 +282,11 @@ func (k Kinds) WithHooks(hooks ...HookKind) Kinds {
 	return merged
 }
 
-// WithLayerSources returns a copy with these layer sources registered.
-func (k Kinds) WithLayerSources(sources ...LayerSourceKind) Kinds {
+// WithSources returns a copy with these layer sources registered.
+func (k Kinds) WithSources(sources ...SourceKind) Kinds {
 	merged := k.clone()
 	for _, item := range sources {
-		merged.LayerSources[item.Name] = item
+		merged.Sources[item.Name] = item
 	}
 	return merged
 }
@@ -286,10 +302,10 @@ func (k Kinds) WithProtocols(protocols ...ProtocolKind) Kinds {
 
 func (k Kinds) clone() Kinds {
 	cloned := Kinds{
-		Engines:      make(map[string]EngineKind, len(k.Engines)),
-		Protocols:    make(map[string]ProtocolKind, len(k.Protocols)),
-		Hooks:        make(map[string]HookKind, len(k.Hooks)),
-		LayerSources: make(map[string]LayerSourceKind, len(k.LayerSources)),
+		Engines:   make(map[string]EngineKind, len(k.Engines)),
+		Protocols: make(map[string]ProtocolKind, len(k.Protocols)),
+		Hooks:     make(map[string]HookKind, len(k.Hooks)),
+		Sources:   make(map[string]SourceKind, len(k.Sources)),
 	}
 	for name, engine := range k.Engines {
 		cloned.Engines[name] = engine
@@ -300,8 +316,8 @@ func (k Kinds) clone() Kinds {
 	for name, hook := range k.Hooks {
 		cloned.Hooks[name] = hook
 	}
-	for name, source := range k.LayerSources {
-		cloned.LayerSources[name] = source
+	for name, source := range k.Sources {
+		cloned.Sources[name] = source
 	}
 	return cloned
 }

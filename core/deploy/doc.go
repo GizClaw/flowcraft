@@ -3,10 +3,11 @@
 // process-level Manager, Session and host bindings live in core/agent-host.
 //
 // It registers no implementation of its own. A registration ships beside the
-// thing it registers — deploy/engines/graph, deploy/engines/a2a, and
-// deploy/protocols/a2a for the exposure — so this package's import closure is the
-// document format and nothing beyond it, and a host links exactly the engines it
-// deploys. deploy/builtin wires the whole set for a host that wants it.
+// thing it registers — deploy/engines/graph, deploy/engines/a2a,
+// deploy/protocols/a2a for the exposure, and deploy/sources for the bytes a
+// document names — so this package's import closure is the document format and
+// nothing beyond it, and a host links exactly the engines it deploys.
+// deploy/builtin wires the whole set for a host that wants it.
 //
 // The built-in exposure is A2A: deploy/protocols/a2a holds the server and the
 // [ProtocolKind] that mounts it, which is possible there because the server takes
