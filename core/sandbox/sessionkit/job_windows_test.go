@@ -5,6 +5,7 @@ package sessionkit
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,18 +97,17 @@ func TestSamplerFailureFailsClosedAsUnenforceable(t *testing.T) {
 	jobMemorySampleInterval = time.Millisecond
 	t.Cleanup(func() { jobMemorySampleInterval = previousInterval })
 
-	kills := 0
-	previousKill := terminateJobFn
-	terminateJobFn = func(*job) { kills++ }
-	t.Cleanup(func() { terminateJobFn = previousKill })
-
 	j, err := createJob(sandbox.ResourceLimits{MemoryBytes: 1 << 20}, time.Minute)
 	if err != nil {
 		t.Fatalf("createJob: %v", err)
 	}
 	defer func() { _ = j.close() }()
-	samples := 0
-	j.sample = func() (uintptr, error) { samples++; return 0, errors.New("query refused") }
+	// The kill and the sampler both run on the sampler goroutine, so the counters
+	// they touch are atomic: this package's own tests run under -race on the
+	// Windows lane.
+	var kills, samples atomic.Int64
+	j.kill = func() { kills.Add(1) }
+	j.sample = func() (uintptr, error) { samples.Add(1); return 0, errors.New("query refused") }
 
 	done := make(chan struct{})
 	defer close(done)
@@ -120,17 +120,17 @@ func TestSamplerFailureFailsClosedAsUnenforceable(t *testing.T) {
 	if err := j.unenforceable(); err == nil {
 		t.Fatalf("still sampling after %d consecutive failures", maxCapSampleFailures)
 	}
-	if kills != 1 {
-		t.Errorf("kills = %d, want exactly 1: the verdict without the kill leaves the child running", kills)
+	if got := kills.Load(); got != 1 {
+		t.Errorf("kills = %d, want exactly 1: the verdict without the kill leaves the child running", got)
 	}
 	if cap := j.budgetCap(); cap != "" {
 		t.Errorf("budgetCap = %q, want empty: nothing was measured", cap)
 	}
 	// The goroutine stopped: no further samples after it gave up.
-	settled := samples
+	settled := samples.Load()
 	time.Sleep(5 * jobMemorySampleInterval)
-	if samples != settled {
-		t.Errorf("sampled %d more times after giving up; the watcher must stop", samples-settled)
+	if got := samples.Load(); got != settled {
+		t.Errorf("sampled %d more times after giving up; the watcher must stop", got-settled)
 	}
 }
 
@@ -145,10 +145,9 @@ func TestSamplerFailureResetsOnASuccessfulSample(t *testing.T) {
 		t.Fatalf("createJob: %v", err)
 	}
 	defer func() { _ = j.close() }()
-	calls := 0
+	var calls atomic.Int64
 	j.sample = func() (uintptr, error) {
-		calls++
-		if calls%2 == 0 {
+		if calls.Add(1)%2 == 0 {
 			return 0, nil // every second sample works
 		}
 		return 0, errors.New("transient")
@@ -158,8 +157,8 @@ func TestSamplerFailureResetsOnASuccessfulSample(t *testing.T) {
 	defer close(done)
 	j.enforceCaps(done)
 	time.Sleep(20 * maxCapSampleFailures * jobMemorySampleInterval)
-	if calls < 2*maxCapSampleFailures {
-		t.Fatalf("only %d samples in the window: the test proved nothing", calls)
+	if got := calls.Load(); got < 2*maxCapSampleFailures {
+		t.Fatalf("only %d samples in the window: the test proved nothing", got)
 	}
 	if err := j.unenforceable(); err != nil {
 		t.Fatalf("declared unenforceable on alternating samples: %v", err)

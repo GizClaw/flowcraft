@@ -494,6 +494,15 @@ jobs:
       - name: Test
         working-directory: core
         run: go test -count=1 ./...
+      # The unix half of this package is race-checked on the linux and macOS
+      # lanes (sandbox-faults.yml); the windows half is not, because those lanes
+      # do not build it. The sampler and the cap goroutine are the code where a
+      # race would be silent rather than loud, so the detector gets the package
+      # on the only platform that compiles it. Scoped to the package, not the
+      # module, to keep the merge gate's cost in seconds.
+      - name: Race (sessionkit)
+        working-directory: core
+        run: go test -count=1 -race -timeout 300s ./sandbox/sessionkit/
 
   test-sandbox-windows:
     name: Integration core/sandbox-windows
