@@ -88,18 +88,26 @@ func TestEnforceCapsStopsWithTheSession(t *testing.T) {
 
 // A sampler that stops working ends the session rather than leaving it unguarded:
 // the budget the caller asked for is no longer being measured, and the capability
-// still claims it. The verdict is unenforceable, not a budget breach.
+// still claims it. The verdict is unenforceable, not a budget breach, and the kill
+// has to actually happen — a verdict with no kill is the failure this exists to
+// prevent.
 func TestSamplerFailureFailsClosedAsUnenforceable(t *testing.T) {
-	previous := jobMemorySampleInterval
+	previousInterval := jobMemorySampleInterval
 	jobMemorySampleInterval = time.Millisecond
-	t.Cleanup(func() { jobMemorySampleInterval = previous })
+	t.Cleanup(func() { jobMemorySampleInterval = previousInterval })
+
+	kills := 0
+	previousKill := terminateJobFn
+	terminateJobFn = func(*job) { kills++ }
+	t.Cleanup(func() { terminateJobFn = previousKill })
 
 	j, err := createJob(sandbox.ResourceLimits{MemoryBytes: 1 << 20}, time.Minute)
 	if err != nil {
 		t.Fatalf("createJob: %v", err)
 	}
 	defer func() { _ = j.close() }()
-	j.sample = func() (uintptr, error) { return 0, errors.New("query refused") }
+	samples := 0
+	j.sample = func() (uintptr, error) { samples++; return 0, errors.New("query refused") }
 
 	done := make(chan struct{})
 	defer close(done)
@@ -112,8 +120,17 @@ func TestSamplerFailureFailsClosedAsUnenforceable(t *testing.T) {
 	if err := j.unenforceable(); err == nil {
 		t.Fatalf("still sampling after %d consecutive failures", maxCapSampleFailures)
 	}
+	if kills != 1 {
+		t.Errorf("kills = %d, want exactly 1: the verdict without the kill leaves the child running", kills)
+	}
 	if cap := j.budgetCap(); cap != "" {
 		t.Errorf("budgetCap = %q, want empty: nothing was measured", cap)
+	}
+	// The goroutine stopped: no further samples after it gave up.
+	settled := samples
+	time.Sleep(5 * jobMemorySampleInterval)
+	if samples != settled {
+		t.Errorf("sampled %d more times after giving up; the watcher must stop", samples-settled)
 	}
 }
 
@@ -141,6 +158,9 @@ func TestSamplerFailureResetsOnASuccessfulSample(t *testing.T) {
 	defer close(done)
 	j.enforceCaps(done)
 	time.Sleep(20 * maxCapSampleFailures * jobMemorySampleInterval)
+	if calls < 2*maxCapSampleFailures {
+		t.Fatalf("only %d samples in the window: the test proved nothing", calls)
+	}
 	if err := j.unenforceable(); err != nil {
 		t.Fatalf("declared unenforceable on alternating samples: %v", err)
 	}
@@ -168,18 +188,66 @@ func TestSamplerIgnoresAReleasedJob(t *testing.T) {
 	}
 }
 
-// A dead cpu verdict channel is unenforceable, not a plain failure: the kernel
-// still ends the job, but nothing can attribute the exit to the budget.
-func TestClassifyCPUVerdictLossIsUnenforceable(t *testing.T) {
-	j := &job{limits: sandbox.ResourceLimits{CPUMillicores: 500}, capped: make(chan struct{})}
+// A breach is attributed from the job's accounting, so a lost verdict channel
+// still reports a budget breach rather than a broken guarantee.
+func TestClassifyCPUBreachSurvivesALostReport(t *testing.T) {
+	j := &job{limits: sandbox.ResourceLimits{CPUMillicores: 500}, capped: make(chan struct{}), cpuLimit: 10_000_000}
+	j.accounting = func() (int64, error) { return j.cpuLimit, nil }
 	j.notify = &jobNotifier{done: make(chan struct{})}
 	j.notify.recordStop(errors.New("completion port closed"))
 	exit, err := classifyExit(&session{}, j, &ttyExitError{code: 1})
+	if exit.Reason != sandbox.SessionBudgetExceeded {
+		t.Errorf("Reason = %v, want budget exceeded", exit.Reason)
+	}
+	if !errdefs.IsBudgetExceeded(err) || errdefs.IsNotAvailable(err) {
+		t.Errorf("err = %v, want BudgetExceeded and not NotAvailable", err)
+	}
+}
+
+// Nothing can attribute the exit when the accounting is unreadable *and* the
+// report is gone: that is a broken guarantee, and it must say so.
+func TestClassifyCPUVerdictLossIsUnenforceable(t *testing.T) {
+	j := &job{limits: sandbox.ResourceLimits{CPUMillicores: 500}, capped: make(chan struct{}), cpuLimit: 10_000_000}
+	j.accounting = func() (int64, error) { return 0, errors.New("query refused") }
+	j.notify = &jobNotifier{done: make(chan struct{})}
+	j.notify.recordStop(errors.New("completion port closed"))
+	exit, err := classifyExit(&session{}, j, &ttyExitError{code: 3})
 	if exit.Reason != sandbox.SessionUnenforceable {
 		t.Errorf("Reason = %v, want unenforceable", exit.Reason)
 	}
 	if !errdefs.IsNotAvailable(err) || errdefs.IsBudgetExceeded(err) {
 		t.Errorf("err = %v, want NotAvailable and not BudgetExceeded", err)
+	}
+}
+
+// With the accounting readable and the budget untouched, an exit is just an exit:
+// the lost report costs attribution, not the exit code.
+func TestClassifyCPUExitKeepsItsCodeWhenTheBudgetWasNotReached(t *testing.T) {
+	j := &job{limits: sandbox.ResourceLimits{CPUMillicores: 500}, capped: make(chan struct{}), cpuLimit: 10_000_000}
+	j.accounting = func() (int64, error) { return 1, nil }
+	j.notify = &jobNotifier{done: make(chan struct{})}
+	j.notify.recordStop(errors.New("completion port closed"))
+	exit, err := classifyExit(&session{}, j, &ttyExitError{code: 3})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if exit.Reason != sandbox.SessionExited || exit.Code != 3 {
+		t.Errorf("exit = %+v, want exited with code 3", exit)
+	}
+}
+
+// A caller's Terminate outranks a lost verdict channel.
+func TestClassifyTerminatedOutranksALostReport(t *testing.T) {
+	j := &job{limits: sandbox.ResourceLimits{CPUMillicores: 500}, capped: make(chan struct{}), cpuLimit: 10_000_000}
+	j.accounting = func() (int64, error) { return 0, errors.New("query refused") }
+	j.notify = &jobNotifier{done: make(chan struct{})}
+	j.notify.recordStop(errors.New("completion port closed"))
+	exit, err := classifyExit(&session{terminated: true}, j, &ttyExitError{code: 1})
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if exit.Reason != sandbox.SessionTerminated {
+		t.Errorf("Reason = %v, want terminated", exit.Reason)
 	}
 }
 
@@ -191,8 +259,14 @@ func TestClassifySamplerFailureOutranksATimeout(t *testing.T) {
 	if exit.Reason != sandbox.SessionUnenforceable {
 		t.Errorf("Reason = %v, want unenforceable over a timeout", exit.Reason)
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("err = %v, must not surface as a deadline", err)
+	if exit.Code != -1 {
+		t.Errorf("Code = %d, want -1", exit.Code)
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Errorf("err = %v, want NotAvailable", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errdefs.IsBudgetExceeded(err) {
+		t.Errorf("err = %v, must be neither a deadline nor a budget breach", err)
 	}
 }
 
@@ -208,4 +282,33 @@ func TestClassifyCPUReportIsStillABudgetBreach(t *testing.T) {
 	if !errdefs.IsBudgetExceeded(err) {
 		t.Errorf("err = %v, want BudgetExceeded", err)
 	}
+}
+
+// With both budgets configured, the cpu report arrives from the notifier's
+// goroutine while the memory sampler runs in its own. The verdicts are
+// first-wins in one direction: a host is never told both "you exceeded a budget"
+// and "nothing was measured".
+func TestBothVerdictsFirstWins(t *testing.T) {
+	t.Run("cap first", func(t *testing.T) {
+		j := &job{capped: make(chan struct{})}
+		j.markCap("cpu")
+		j.markUnenforceable(errors.New("memory sampler broke"))
+		if got := j.budgetCap(); got != "cpu" {
+			t.Errorf("budgetCap = %q, want the reported cap", got)
+		}
+		if err := j.unenforceable(); err != nil {
+			t.Errorf("unenforceable = %v, want nil after a cap was reported", err)
+		}
+	})
+	t.Run("unenforceable first", func(t *testing.T) {
+		j := &job{capped: make(chan struct{})}
+		j.markUnenforceable(errors.New("memory sampler broke"))
+		j.markCap("cpu")
+		if got := j.budgetCap(); got != "" {
+			t.Errorf("budgetCap = %q, want empty: the guarantee broke first", got)
+		}
+		if err := j.unenforceable(); err == nil {
+			t.Error("unenforceable = nil, want the sampler failure")
+		}
+	})
 }

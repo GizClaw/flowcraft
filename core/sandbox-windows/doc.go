@@ -117,14 +117,18 @@
 //	                              measurable ends the session as
 //	                              SessionUnenforceable with an
 //	                              errdefs NotAvailable error once
-//	                              maxCapSampleFailures samples in a
-//	                              row fail, or when the cpu
-//	                              verdict channel dies before the
-//	                              session ends — running a child
-//	                              unguarded under a capability that
-//	                              still claims the cap is the
-//	                              failure the contract exists to
-//	                              prevent. A session that reaches
+//	                              three consecutive samples fail,
+//	                              — running a child unguarded under
+//	                              a capability that still claims the
+//	                              cap is the failure the contract
+//	                              exists to prevent. A cpu breach is
+//	                              attributed from the job's own
+//	                              accounting, so a lost completion
+//	                              port does not lose the verdict; the
+//	                              exit is reported as
+//	                              SessionUnenforceable only when
+//	                              neither the accounting nor the
+//	                              report can attribute it. A session that reaches
 //	                              its Timeout with a memory budget
 //	                              configured records the job's peak
 //	                              as telemetry, because an exceeded

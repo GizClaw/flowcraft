@@ -131,6 +131,14 @@ silently widen a tool. Three consequences worth knowing:
 - `cpu_millicores` without `timeout` is a validation error, because the budget
   is derived from the deadline.
 
+A cap that cannot be enforced is a build error; a cap that stops being
+enforceable mid-session is an exit reason. Every backend that measures a budget
+at runtime reaps the session as `SessionUnenforceable` with a `NotAvailable`
+error once its sampler has failed three consecutive times, rather than letting
+the child run unguarded under a capability that still claims the cap. The
+`local`, `bwrap` and `seatbelt` backends sample the process group; `windows`
+samples the job's commit and attributes a cpu breach from the job's accounting.
+
 ### `local`
 
 No isolation, for trusted workflows: `Capabilities.Enforcement` is empty, so a
@@ -182,10 +190,9 @@ enforces by ending the job; a memory budget is sampled from the job's peak
 commit every 25 ms and terminates the tree on a breach, the same shape as the
 unix watcher, so a session may briefly run past its budget. Memory is
 deliberately not a kernel commit limit there: refusing the allocation leaves the
-process running with nothing to report. When a cap stops being measurable — a
-sampler that fails `maxCapSampleFailures` times in a row, or a lost verdict
-channel — the session is ended as `SessionUnenforceable` with a `NotAvailable`
-error rather than left running unguarded. Without
+process running with nothing to report. When a cap stops being measurable — three
+consecutive failed samples — the session is ended as `SessionUnenforceable` with
+a `NotAvailable` error rather than left running unguarded. Without
 `write_confine` the runner is lifecycle-only and a call that asks for write
 confinement is rejected with `NotAvailable`. Network policy runs the child in an
 AppContainer with no network capabilities, plus WFP bind-layer filters for

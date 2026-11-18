@@ -227,6 +227,11 @@ func StartSessionWithPolicy(
 	return s, nil
 }
 
+// terminateJobFn is the kill a cap verdict performs. It is a variable so the
+// Windows lane can assert the kill happened rather than only that a verdict was
+// recorded — the unix watcher's killGroupFn pattern.
+var terminateJobFn = terminateJob
+
 // terminateJob kills the whole tree. Failures are best-effort: the processes may
 // already be gone.
 func terminateJob(j *job) {
@@ -313,24 +318,27 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 			errdefs.FromContext(fmt.Errorf(
 				"windows: process exceeded its Timeout: %w", context.DeadlineExceeded))
 	}
+	// A cpu budget is attributed from the job's own accounting, not from the
+	// completion-port report: the kernel ends the job when the user-time limit is
+	// reached and the accounting survives that, so a missing report does not lose
+	// the verdict. The check runs before the clean-exit return because a leader can
+	// exit 0 while the job it leads exhausted the budget — the unix watcher reads
+	// its verdict at reap time for the same reason.
+	if breached, err := j.cpuBreach(); err != nil {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+			errdefs.NotAvailablef(
+				"windows: cpu budget verdict unavailable while running process: %w", err)
+	} else if breached {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+			errdefs.BudgetExceededf(
+				"windows: cpu resource cap exceeded while running process")
+	}
 	if waitErr == nil {
 		return sandbox.SessionExit{Code: 0, Reason: sandbox.SessionExited}, nil
 	}
 	if exitErr, ok := waitErr.(interface{ ExitCode() int }); ok {
 		if terminated {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTerminated}, nil
-		}
-		// A cpu budget whose report channel died still ends the job in the kernel,
-		// but nothing can attribute the exit to it any more. Say that instead of
-		// reporting a plain failure: a caller that routes a breach differently needs
-		// to know the difference, and a caller that inspects errors gets NotAvailable
-		// — the same pair unix produces when its sampler breaks.
-		if j.limits.CPUMillicores > 0 {
-			if notifyErr := j.notifierFailure(); notifyErr != nil {
-				return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
-					errdefs.NotAvailablef(
-						"windows: cpu budget verdict lost while running process: %w", notifyErr)
-			}
 		}
 		return sandbox.SessionExit{Code: exitErr.ExitCode(), Reason: sandbox.SessionExited}, nil
 	}

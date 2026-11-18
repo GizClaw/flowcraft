@@ -116,10 +116,10 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 	return r, nil
 }
 
-// Capabilities declares the honest surface: env allow-lists and
-// job-object resource caps are always enforced; filesystem write
-// bounds are enforced when the runner was constructed with
-// WithWriteConfinement. TTY sessions are supported through ConPTY;
+// Capabilities declares the honest surface: env allow-lists and resource
+// caps are always enforced (a cpu budget as a job-object limit, a memory
+// budget by sampling the job's commit); filesystem write bounds are
+// enforced when the runner was constructed with WithWriteConfinement. TTY sessions are supported through ConPTY;
 // signal and event features are not. A journal is reported when the
 // runner was constructed with one.
 func (r *Runner) Capabilities() sandbox.Capabilities {
