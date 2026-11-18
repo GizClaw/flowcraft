@@ -50,7 +50,17 @@ func (s *textStream) events(event agent.Event) []a2a.Event {
 		return []a2a.Event{s.artifact(typed.Artifact)}
 	case agent.Status:
 		var out []a2a.Event
-		if typed.State.Terminal() {
+		// A round ends when the task stops working: a terminal state finishes it
+		// and a pause suspends it, so the buffered text belongs to the round and
+		// has to reach the client before the status event.
+		//
+		// For input-required the order is load-bearing, not cosmetic: a client
+		// stops reading at that status, so text flushed after it is text nobody
+		// ever sees. auth-required does not end the execution on the wire, and a
+		// peer that keeps streaming after it gets its answer split into a second
+		// artifact — the text still reads in order, only tasks/get shows two.
+		// Nothing in this repository emits auth-required mid-run.
+		if typed.State != agent.StateSubmitted && typed.State != agent.StateWorking {
 			out = s.close()
 		}
 		return append(out, a2a.NewStatusUpdateEvent(s.info, a2awire.State(typed.State), reasonMessage(typed.Reason)))

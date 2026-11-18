@@ -58,6 +58,66 @@ func TestTextBecomesArtifactChunksPerRound(t *testing.T) {
 	}
 }
 
+// A pause ends the round too. The buffered text has to reach the client before
+// the status that suspends the task, because a client stops reading at the pause:
+// text flushed afterwards is text nobody sees. A cross-adapter round trip caught
+// this once, which is why the rule is pinned here as well.
+func TestAPauseFlushesTheBufferedText(t *testing.T) {
+	stream := newTextStream(testInfo(), nil)
+	if events := stream.events(agent.Text{Text: "which seat?"}); len(events) != 0 {
+		t.Fatalf("a held chunk crossed early: %+v", events)
+	}
+	events := stream.events(agent.Status{State: agent.StateInputRequired, Reason: "which seat?"})
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want the text chunk and the status", len(events))
+	}
+	chunk, ok := events[0].(*a2a.TaskArtifactUpdateEvent)
+	if !ok || !chunk.LastChunk {
+		t.Fatalf("first event = %T, want the closing artifact chunk", events[0])
+	}
+	if text := chunk.Artifact.Parts[0].Text(); text != "which seat?" {
+		t.Errorf("chunk = %q, want the buffered text", text)
+	}
+	status, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	if !ok || status.Status.State != a2a.TaskStateInputRequired {
+		t.Errorf("second event = %T, want input-required", events[1])
+	}
+}
+
+// The other half of the round rule: a working status does not end the round, so
+// an engine that reports one between two deltas keeps writing to one artifact. If
+// the condition were "close on any status", the answer would arrive as two.
+func TestAWorkingStatusKeepsTheRoundOpen(t *testing.T) {
+	stream := newTextStream(testInfo(), nil)
+	var events []a2a.Event
+	for _, event := range []agent.Event{
+		agent.Text{Text: "a"},
+		agent.Status{State: agent.StateWorking},
+		agent.Text{Text: "b"},
+		agent.Status{State: agent.StateCompleted},
+	} {
+		events = append(events, stream.events(event)...)
+	}
+	events = append(events, stream.close()...)
+	if len(events) != 4 {
+		t.Fatalf("events = %d, want the working status, two chunks and the completed status", len(events))
+	}
+	first, ok := events[1].(*a2a.TaskArtifactUpdateEvent)
+	if !ok || first.Append || first.LastChunk {
+		t.Fatalf("event 1 = %T, want the opening chunk", events[1])
+	}
+	second := events[2].(*a2a.TaskArtifactUpdateEvent)
+	if !second.Append || !second.LastChunk {
+		t.Errorf("event 2 append=%v last=%v, want the closing append", second.Append, second.LastChunk)
+	}
+	if first.Artifact.ID != second.Artifact.ID {
+		t.Errorf("the working status split the answer into two artifacts")
+	}
+	if text := first.Artifact.Parts[0].Text() + second.Artifact.Parts[0].Text(); text != "ab" {
+		t.Errorf("answer = %q, want ab", text)
+	}
+}
+
 // Each model round is its own artifact: a tool round that follows must not
 // append to the answer that already finished.
 func TestANewRoundClosesThePreviousArtifact(t *testing.T) {
