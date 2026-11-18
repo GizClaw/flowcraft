@@ -51,9 +51,12 @@ linters:
       # there means lowering this number, never adding an entry.
       #
       # The baseline is empty: every package in scope is at or below 40. The
-      # next step down is 35, and one function stands in the way —
-      # (*Run).runStep in core/agent-graph/run.go, at 37. Lower this number
-      # when it is split; do not add an entry to keep it at 40.
+      # next step down is 35, and four functions stand in the way, as the
+      # linter reports them at that floor: (*Run).runStep (37) in
+      # core/agent-graph/run.go, and compileVideo (37), applyVideoOptions (37)
+      # and dashscope's compileVideo (38) in driver/bytedance and
+      # driver/dashscope. Lower this number when they are split; do not add an
+      # entry to keep it at 40.
       min-complexity: 40
 
     depguard:
@@ -92,6 +95,12 @@ linters:
             # (core/inference/usage, core/inference/model) that depend on it.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/model must not import the contract"
+        usage-is-a-leaf:
+          files:
+            - "**/core/inference/usage/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/inference$"
+              desc: "core/inference/usage must not import the contract"
         # Tier 1 — contracts. Vocabulary and nothing else: message, errdefs,
         # permission, fsx, skill, config, correlation. A contract that reached
         # for any tier above it could not be imported by the package it
@@ -190,20 +199,15 @@ linters:
               desc: "the execution tier must not import the deployment tier"
 
   exclusions:
-    # gocyclo baseline: the functions still above min-complexity today. Each
-    # entry is known debt, not a pattern to copy — gocyclo reports a position
-    # rather than a symbol, so an entry exempts the whole file. Split the file
-    # and delete its entry; never add one for new code.
+    # The gocyclo baseline is empty: no function in scope is above 40, so the
+    # only entry left is the test-file budget below. A future entry is known
+    # debt, not a pattern to copy — gocyclo reports a position rather than a
+    # symbol, so an entry exempts the whole file. Split the file and delete its
+    # entry; never add one for new code.
     rules:
       # Test files keep their own budget: a fixture builder, a table or a
       # conformance suite that enumerates every entry point is long by nature,
       # and a short test with a clear failure message beats an artificially
       # split one.
       - linters: [gocyclo]
-        path: "_test\\.go"
-      # A test may cross a tier to build what it exercises: a tool middleware
-      # test wires a real sandbox-local runner, and that proves the middleware
-      # against the contract instead of a stub. The ladder in depguard governs
-      # shipped code; production imports are what a consumer pays for.
-      - linters: [depguard]
         path: "_test\\.go"
