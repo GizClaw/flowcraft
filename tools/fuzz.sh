@@ -10,7 +10,7 @@ time="${FUZZTIME:-15s}"
 targets=(
 	"./internal/decode FuzzToJSON"
 	"./config FuzzLoad"
-	"./agent-a2a/wire FuzzFromMessage"
+	"./internal/a2awire FuzzFromMessage"
 	"./agent-graph FuzzStateEvent"
 	"./sandbox-remote/wire FuzzSpecRoundTrip"
 	"./sandbox-remote/wire FuzzErrorRoundTrip"
