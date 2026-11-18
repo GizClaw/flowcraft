@@ -83,6 +83,9 @@ const savedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // with the same shape, which is why nothing here is named "local".
 type SQLite struct {
 	db *sql.DB
+	// owned reports whether this store opened db, because Close has to know:
+	// a borrowed handle outlives the store that ran on it.
+	owned bool
 }
 
 var _ agent.Store = (*SQLite)(nil)
@@ -114,13 +117,10 @@ func WithSynchronous(mode Synchronous) Option {
 }
 
 // Open prepares a SQLite store at path. ":memory:" is accepted for tests.
+//
+// The store owns the handle it opens, and Close ends it. A host that keeps its
+// own tables in the same file hands OpenOn the handle instead.
 func Open(path string, config ...Option) (*SQLite, error) {
-	var opts options
-	for _, option := range config {
-		if option != nil {
-			option(&opts)
-		}
-	}
 	if path == "" {
 		return nil, errdefs.Validationf("checkpoint: a database path is required")
 	}
@@ -132,11 +132,80 @@ func Open(path string, config ...Option) (*SQLite, error) {
 	// writing at once return SQLITE_BUSY even with a busy timeout set on only one
 	// of them. A local checkpoint store gains nothing from a pool.
 	db.SetMaxOpenConns(1)
-	// Foreign keys are off by default in SQLite, and a cascade that silently
-	// does not fire leaves events behind a deleted task. WAL keeps a reader from
-	// blocking the loop's writes.
+	store, err := OpenOn(db, config...)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	store.owned = true
+	return store, nil
+}
+
+// OpenOn runs the store on a caller-owned handle, so a host can keep its own
+// tables in the same database and back up, export or delete one file. It
+// prepares the same store Open does — the pragmas, the additive ALTER tail and
+// the schema all run here too, because a caller that had to repeat them would
+// re-derive the migration the store exists to own.
+//
+// Three things the caller answers:
+//
+// The handle must be pinned to one connection (db.SetMaxOpenConns(1)). The
+// pragmas apply to the connection that ran them, so on a pool the store is left
+// with busy_timeout=0 — an immediate SQLITE_BUSY instead of the named wait — and
+// a synchronous mode that holds for one connection and not the others. OpenOn
+// checks this rather than reconfiguring a pool its caller set up.
+//
+// The pragmas land on the whole handle, and so on everything else the caller
+// writes through it: its commits take the synchronous mode, its writes wait on
+// the busy timeout, and foreign_keys=ON applies to its tables as well. That is
+// the price of one handle and one commit order, and the reason this is a
+// separate constructor rather than an option to Open.
+//
+// Ownership does not move. Close does nothing here: the caller closes the
+// handle, and the store holds no statement of its own to release.
+func OpenOn(db *sql.DB, config ...Option) (*SQLite, error) {
+	if db == nil {
+		return nil, errdefs.Validationf("checkpoint: a database handle is required")
+	}
+	if got := db.Stats().MaxOpenConnections; got != 1 {
+		return nil, errdefs.Validationf(
+			"checkpoint: the handle must be limited to one connection with SetMaxOpenConns(1), got %d", got)
+	}
+	if err := prepare(db, config); err != nil {
+		return nil, err
+	}
+	return &SQLite{db: db}, nil
+}
+
+// prepare applies the pragmas, the additive ALTER tail and the schema to a
+// handle that is already open and pinned to one connection.
+func prepare(db *sql.DB, config []Option) error {
+	var opts options
+	for _, option := range config {
+		if option != nil {
+			option(&opts)
+		}
+	}
+	// WAL keeps a reader from blocking the loop's writes. It is a property of
+	// the file rather than of the connection, so this is a one-time switch — but
+	// the pragma reports the mode it ended on instead of failing, and Exec drops
+	// the row: a database that stayed in "delete" (another writer holding it, a
+	// filesystem without the shared memory WAL needs) is an error here, not a
+	// silent difference later.
+	var mode string
+	if err := db.QueryRow("PRAGMA journal_mode=WAL").Scan(&mode); err != nil {
+		return fmt.Errorf("checkpoint: PRAGMA journal_mode=WAL: %w", err)
+	}
+	// An in-memory database has no journal file, so it reports "memory" and WAL
+	// cannot apply to it: the promise that ":memory:" works is older than this
+	// check, and the mode is moot on a database that cannot be reopened.
+	if !strings.EqualFold(mode, "wal") && !strings.EqualFold(mode, "memory") {
+		return fmt.Errorf("checkpoint: PRAGMA journal_mode=WAL: the database stayed in %q mode", mode)
+	}
+	// Foreign keys are off by default in SQLite. This schema declares none, so
+	// the pragma is inert for these tables — on a shared handle it is not: it
+	// turns enforcement on for the caller's tables too.
 	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=5000",
 	}
@@ -146,12 +215,11 @@ func Open(path string, config ...Option) (*SQLite, error) {
 	case SynchronousNormal:
 		pragmas = append(pragmas, "PRAGMA synchronous=NORMAL")
 	default:
-		return nil, errdefs.Validationf("checkpoint: unknown synchronous mode %d", opts.synchronous)
+		return errdefs.Validationf("checkpoint: unknown synchronous mode %d", opts.synchronous)
 	}
 	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("checkpoint: %s: %w", pragma, err)
+			return fmt.Errorf("checkpoint: %s: %w", pragma, err)
 		}
 	}
 	// An older database predates the adapter's own counter; adding it here keeps
@@ -168,14 +236,21 @@ func Open(path string, config ...Option) (*SQLite, error) {
 	// read back as zero, which a reader treats as unknown rather than as 1970.
 	_, _ = db.Exec("ALTER TABLE events ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
 	if _, err := db.Exec(schema); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("checkpoint: migrate: %w", err)
+		return fmt.Errorf("checkpoint: migrate: %w", err)
 	}
-	return &SQLite{db: db}, nil
+	return nil
 }
 
-// Close releases the database handle.
-func (l *SQLite) Close() error { return l.db.Close() }
+// Close releases the handle Open created. A store built on a borrowed handle
+// closes nothing: the handle is the caller's, and a Close that quietly took it
+// away would surface as an error somewhere else entirely. agent.Store has no
+// Close, so this stays a property of the concrete backend.
+func (l *SQLite) Close() error {
+	if !l.owned {
+		return nil
+	}
+	return l.db.Close()
+}
 
 // Save updates the projection and appends the round's events in one transaction.
 // When the options ask for compaction, the obsolete prefix goes in that same
