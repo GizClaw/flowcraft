@@ -458,3 +458,179 @@ VALUES ('legacy', 'session', 'completed', 1, 1, '', ?, '2026-01-01T00:00:00.0000
 		t.Fatalf("LatestForSession = %q, want the task saved after the migration", latest.Task.ID)
 	}
 }
+
+// A host that keeps its own tables in the same file hands OpenOn the handle it
+// already has. The preparation must land on that handle, the migration must
+// run there, and the store must not close what it did not open.
+func TestOpenOnBorrowsTheCallersHandle(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", t.TempDir()+"/session.db")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Exec("CREATE TABLE host_messages (id TEXT PRIMARY KEY)"); err != nil {
+		t.Fatalf("create the host's own table: %v", err)
+	}
+
+	store, err := OpenOn(db, WithSynchronous(SynchronousNormal))
+	if err != nil {
+		t.Fatalf("OpenOn: %v", err)
+	}
+	if store.owned {
+		t.Error("a borrowed store claims the handle")
+	}
+
+	// The pragmas are per connection, so the point of the injection is that they
+	// reached the caller's connection and not one of the store's own.
+	var busyTimeout, synchronous int
+	if err := db.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busyTimeout != 5000 {
+		t.Errorf("busy_timeout = %d, want 5000 on the caller's connection", busyTimeout)
+	}
+	if err := db.QueryRow("PRAGMA synchronous").Scan(&synchronous); err != nil {
+		t.Fatalf("read synchronous: %v", err)
+	}
+	if synchronous != 1 {
+		t.Errorf("synchronous = %d, want NORMAL on the caller's connection", synchronous)
+	}
+
+	// The migration runs on the borrowed handle: the host's tooling reads the
+	// store's rows with its own connection, which is the whole reason to share it.
+	if _, _, err := store.Save(ctx, checkpoint("task-1", 0), []agent.EventRecord{event("message", `"a"`)}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	var id string
+	if err := db.QueryRow("SELECT task_id FROM tasks WHERE task_id = ?", "task-1").Scan(&id); err != nil {
+		t.Fatalf("read the store's row through the host handle: %v", err)
+	}
+	if id != "task-1" {
+		t.Errorf("task_id = %q, want task-1", id)
+	}
+
+	// Close releases nothing it does not own.
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	var host int
+	if err := db.QueryRow("SELECT count(*) FROM host_messages").Scan(&host); err != nil {
+		t.Fatalf("the caller's handle was closed under it: %v", err)
+	}
+}
+
+// Open is the owning counterpart: it takes the handle it opened, and the
+// borrowed case above is the exception that proves it.
+func TestCloseEndsTheHandleOpenCreated(t *testing.T) {
+	store, err := Open(t.TempDir() + "/cp.db")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if !store.owned {
+		t.Fatal("Open did not take the handle it opened")
+	}
+	db := store.db
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := db.Ping(); err == nil {
+		t.Fatal("Close left the handle it opened usable")
+	}
+}
+
+// A pool is a store that is half configured: the pragmas apply to the
+// connection that ran them. OpenOn says so instead of reconfiguring a pool its
+// caller set up.
+func TestOpenOnRefusesAHandleWithoutOneConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		limit int
+	}{
+		{"unset", 0},
+		{"pool", 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sql.Open("sqlite", t.TempDir()+"/session.db")
+			if err != nil {
+				t.Fatalf("sql.Open: %v", err)
+			}
+			t.Cleanup(func() { _ = db.Close() })
+			if tc.limit != 0 {
+				db.SetMaxOpenConns(tc.limit)
+			}
+			if _, err := OpenOn(db); err == nil {
+				t.Fatalf("OpenOn accepted a handle limited to %d connections", tc.limit)
+			}
+			if got := db.Stats().MaxOpenConnections; got != tc.limit {
+				t.Errorf("the caller's pool was changed to %d, want %d", got, tc.limit)
+			}
+			if err := db.Ping(); err != nil {
+				t.Errorf("the refused handle was left unusable: %v", err)
+			}
+		})
+	}
+	if _, err := OpenOn(nil); err == nil {
+		t.Fatal("OpenOn accepted a nil handle")
+	}
+}
+
+// The journal mode is a property of the file, and the pragma reports where it
+// ended up instead of failing. Reading it back is what makes a database that
+// could not switch an error rather than a silent difference.
+func TestOpenPutsASharedFileInWALMode(t *testing.T) {
+	store := openStore(t)
+	var mode string
+	if err := store.db.QueryRow("PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Errorf("journal_mode = %q, want wal", mode)
+	}
+}
+
+// ":memory:" is in Open's contract and it is the one database WAL cannot apply
+// to — it reports "memory" instead — so the exemption is the only thing keeping
+// that promise true.
+func TestOpenAcceptsInMemory(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:): %v", err)
+	}
+	if _, _, err := store.Save(context.Background(), checkpoint("task-1", 0), nil); err != nil {
+		t.Fatalf("Save on an in-memory store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// A rejected call must change nothing: on a borrowed handle the journal mode is
+// the caller's, and the option is resolved before it is touched.
+func TestOpenOnValidatesBeforeTouchingTheFile(t *testing.T) {
+	db, err := sql.Open("sqlite", t.TempDir()+"/session.db")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	var before string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&before); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if strings.EqualFold(before, "wal") {
+		t.Fatalf("the fresh file is already %q: the test cannot see a change", before)
+	}
+	if _, err := OpenOn(db, WithSynchronous(99)); err == nil {
+		t.Fatal("an unknown synchronous mode was accepted")
+	}
+	var after string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&after); err != nil {
+		t.Fatalf("read journal_mode after the refusal: %v", err)
+	}
+	if after != before {
+		t.Errorf("journal_mode = %q after a refused call, want %q untouched", after, before)
+	}
+}

@@ -145,6 +145,51 @@ The option is what makes the line explicit: the default is `SynchronousFull`
 (see [Durability](#durability)), and a host that picks `NORMAL` is saying it
 would rather replay than fsync.
 
+### Sharing a database file
+
+A host that keeps its own tables in the same SQLite file hands the store the
+handle it already has:
+
+```go
+db, err := sql.Open("sqlite", "session.db")
+db.SetMaxOpenConns(1)   // required: see below
+db.SetConnMaxLifetime(0) // required: see below
+db.SetConnMaxIdleTime(0)
+
+db.Exec("CREATE TABLE IF NOT EXISTS messages (…)")
+store, err := checkpoint.OpenOn(db, checkpoint.WithSynchronous(checkpoint.SynchronousNormal))
+// no defer store.Close(): the handle is the caller's
+```
+
+`OpenOn` prepares the same store `Open` does — the pragmas, the additive `ALTER`
+tail and the schema — so a shared file costs no duplicated migration. Three
+obligations come with it:
+
+- **One connection, and one that does not expire.** The pragmas apply to the
+  connection that ran them, so a pool leaves the store with `busy_timeout=0` (an
+  immediate `SQLITE_BUSY` instead of a wait) and a `synchronous` mode that holds
+  for one connection and not the others; a connection `database/sql` replaces
+  takes them with it, which is why it must not have a lifetime or an idle time.
+  `OpenOn` refuses a handle whose `db.Stats().MaxOpenConnections` is not 1 rather
+  than reconfiguring a pool the caller set up — the expiry settings it does not
+  expose, so those stay the caller's to keep.
+- **The pragmas are handle-wide.** They land on everything else written through
+  that handle: foreign keys are enforced on the caller's tables too, its commits
+  take the synchronous mode, and its writes wait on the busy timeout. A failed
+  `OpenOn` leaves the pragmas it already applied; they cannot be rolled back.
+- **The caller closes.** `Close` on a borrowed store is a no-op; `agent.Store`
+  has no `Close` at all, so it is a property of the backend.
+
+A database that cannot reach WAL — a filesystem without the shared memory WAL
+needs, or a file another writer holds in `delete` mode — is an error rather than
+a silent downgrade. `:memory:` is exempt: it reports `memory`, and the mode is
+moot on a database that cannot be reopened.
+
+Sharing a file puts the three table names above in the caller's namespace, which
+is a decision to make on purpose: they are not prefixed, and a host tool that
+writes those rows directly is depending on a schema the module has never
+promised to keep.
+
 `core/agent/checkpoint` is two tables plus a blob table:
 
 ```text
