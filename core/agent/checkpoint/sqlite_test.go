@@ -589,3 +589,48 @@ func TestOpenPutsASharedFileInWALMode(t *testing.T) {
 		t.Errorf("journal_mode = %q, want wal", mode)
 	}
 }
+
+// ":memory:" is in Open's contract and it is the one database WAL cannot apply
+// to — it reports "memory" instead — so the exemption is the only thing keeping
+// that promise true.
+func TestOpenAcceptsInMemory(t *testing.T) {
+	store, err := Open(":memory:")
+	if err != nil {
+		t.Fatalf("Open(:memory:): %v", err)
+	}
+	if _, _, err := store.Save(context.Background(), checkpoint("task-1", 0), nil); err != nil {
+		t.Fatalf("Save on an in-memory store: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+// A rejected call must change nothing: on a borrowed handle the journal mode is
+// the caller's, and the option is resolved before it is touched.
+func TestOpenOnValidatesBeforeTouchingTheFile(t *testing.T) {
+	db, err := sql.Open("sqlite", t.TempDir()+"/session.db")
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+
+	var before string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&before); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if strings.EqualFold(before, "wal") {
+		t.Fatalf("the fresh file is already %q: the test cannot see a change", before)
+	}
+	if _, err := OpenOn(db, WithSynchronous(99)); err == nil {
+		t.Fatal("an unknown synchronous mode was accepted")
+	}
+	var after string
+	if err := db.QueryRow("PRAGMA journal_mode").Scan(&after); err != nil {
+		t.Fatalf("read journal_mode after the refusal: %v", err)
+	}
+	if after != before {
+		t.Errorf("journal_mode = %q after a refused call, want %q untouched", after, before)
+	}
+}

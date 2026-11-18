@@ -149,17 +149,23 @@ func Open(path string, config ...Option) (*SQLite, error) {
 //
 // Three things the caller answers:
 //
-// The handle must be pinned to one connection (db.SetMaxOpenConns(1)). The
-// pragmas apply to the connection that ran them, so on a pool the store is left
-// with busy_timeout=0 — an immediate SQLITE_BUSY instead of the named wait — and
-// a synchronous mode that holds for one connection and not the others. OpenOn
-// checks this rather than reconfiguring a pool its caller set up.
+// The handle must be pinned to one connection (db.SetMaxOpenConns(1)), and that
+// connection must not expire: SetConnMaxLifetime(0), SetConnMaxIdleTime(0) and a
+// non-zero SetMaxIdleConns keep database/sql from replacing it, which would
+// replace the pragmas with it. The pragmas apply to the connection that ran
+// them, so on a pool the store is left with busy_timeout=0 — an immediate
+// SQLITE_BUSY instead of the named wait — and a synchronous mode that holds for
+// one connection and not the others. OpenOn checks the connection limit and
+// refuses rather than reconfiguring a pool its caller set up; the expiry
+// settings database/sql does not expose, so they stay the caller's to keep.
 //
 // The pragmas land on the whole handle, and so on everything else the caller
 // writes through it: its commits take the synchronous mode, its writes wait on
 // the busy timeout, and foreign_keys=ON applies to its tables as well. That is
 // the price of one handle and one commit order, and the reason this is a
-// separate constructor rather than an option to Open.
+// separate constructor rather than an option to Open. A failed OpenOn keeps
+// whatever pragmas it already applied: they cannot be rolled back, and on a
+// borrowed handle they change the caller's behaviour from then on.
 //
 // Ownership does not move. Close does nothing here: the caller closes the
 // handle, and the store holds no statement of its own to release.
@@ -186,6 +192,18 @@ func prepare(db *sql.DB, config []Option) error {
 			option(&opts)
 		}
 	}
+	// The option is resolved before anything below touches the database: a
+	// rejected call must not leave the file in a journal mode nobody asked for,
+	// which matters most on a handle the caller keeps.
+	var durability string
+	switch opts.synchronous {
+	case SynchronousFull:
+		durability = "PRAGMA synchronous=FULL"
+	case SynchronousNormal:
+		durability = "PRAGMA synchronous=NORMAL"
+	default:
+		return errdefs.Validationf("checkpoint: unknown synchronous mode %d", opts.synchronous)
+	}
 	// WAL keeps a reader from blocking the loop's writes. It is a property of
 	// the file rather than of the connection, so this is a one-time switch — but
 	// the pragma reports the mode it ended on instead of failing, and Exec drops
@@ -208,14 +226,7 @@ func prepare(db *sql.DB, config []Option) error {
 	pragmas := []string{
 		"PRAGMA foreign_keys=ON",
 		"PRAGMA busy_timeout=5000",
-	}
-	switch opts.synchronous {
-	case SynchronousFull:
-		pragmas = append(pragmas, "PRAGMA synchronous=FULL")
-	case SynchronousNormal:
-		pragmas = append(pragmas, "PRAGMA synchronous=NORMAL")
-	default:
-		return errdefs.Validationf("checkpoint: unknown synchronous mode %d", opts.synchronous)
+		durability,
 	}
 	for _, pragma := range pragmas {
 		if _, err := db.Exec(pragma); err != nil {
