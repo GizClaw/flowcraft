@@ -95,10 +95,11 @@ Command reference and scenario layout live in
 ### Embed FlowCraft in a Go service
 
 ```go
-loader := deploy.Loader{Kinds: deploy.BuiltinKinds()}
+kinds := builtin.Kinds()                          // every kind core ships; or build the table yourself
+loader := deploy.Loader{Kinds: kinds}
 specs, err := loader.LoadFile(ctx, "deploy.yaml")   // strict; unknown fields fail
 
-manager := host.New(deploy.BuiltinKinds(), host.Bindings{
+manager := host.New(kinds, host.Bindings{
     Store:          store,                          // sessions survive a restart
     RuntimeOptions: []runtime.Option{runtime.WithDrivers(myDrivers...)},
     LoadOptions:    []config.Option{config.WithResolver("secret", vault.Resolve)},
@@ -186,9 +187,12 @@ above nothing and below nothing.
 ### One document, three kind tables
 
 A deployment names agents; each agent names an engine, optionally a protocol and
-its own hooks. Registration lives with the loader (`deploy.BuiltinKinds`,
-`WithEngines`/`WithProtocols`/`WithHooks`) while the implementation stays in its
-own package, so a kind cannot be loadable and yet not deployable. Placeholders
+its own hooks. The implementation stays in its own package and so does the
+registration — `deploy/engines/graph`, `deploy/engines/a2a`, and
+`deploy/protocols/a2a` for the exposure, wired together by `deploy/builtin` — while
+`deploy` itself owns only the document, `Spec` and the kind tables. So a kind cannot be
+loadable and yet not deployable, and a host links exactly the engines it deploys
+instead of every engine core ships. Placeholders
 (`${VAR}`, `${VAR:-fallback}`, `${scheme:arg}`) expand once, after the layers
 merge, and `Loader.RequiredPlaceholders` prints the whole startup checklist in
 one pass instead of failing at the first unset reference.

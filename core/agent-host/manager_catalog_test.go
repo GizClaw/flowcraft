@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/backends"
@@ -90,7 +91,7 @@ func TestRemoteEngineHasNoCatalogView(t *testing.T) {
 // The view lives exactly as long as its session: the table says when it
 // ends, and deploy drops the view with it.
 func TestSessionScopedViewIsDroppedOnEviction(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("done", func() agent.Runner {
+	manager := newManager(t, builtin.Kinds().WithEngines(engineFor("done", func() agent.Runner {
 		return &completedRunner{}
 	})), testHost(t))
 	spec := testSpec(t, "a", "done")

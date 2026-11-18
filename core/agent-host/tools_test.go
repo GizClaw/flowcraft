@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/runtime"
 )
 
@@ -13,7 +13,7 @@ import (
 // deployment currently prompts with, which is the assembled text — not the string
 // a built-in tool would have produced.
 func TestManagerExposesTheModelFacingToolDefinitions(t *testing.T) {
-	manager := newManager(t, deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := newManager(t, builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hello"}
 	})), testHost(t))
 	spec := testSpec(t, "a", "echo")

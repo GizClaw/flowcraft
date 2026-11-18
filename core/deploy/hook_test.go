@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/goccy/go-json"
 )
 
@@ -58,7 +59,7 @@ agents:
 
 func TestLoaderCarriesHooksInOrder(t *testing.T) {
 	var seen json.RawMessage
-	loader := deploy.Loader{Kinds: deploy.BuiltinKinds().WithEngines(remoteKind()).WithHooks(hookKind(t, &seen))}
+	loader := deploy.Loader{Kinds: builtin.Kinds().WithEngines(remoteKind()).WithHooks(hookKind(t, &seen))}
 	specs, err := loader.Load(context.Background(), hookDocument(`      - kind: probe
         settings: {recap: 12}
       - kind: probe
@@ -82,7 +83,7 @@ func TestLoaderCarriesHooksInOrder(t *testing.T) {
 }
 
 func TestLoaderRejectsAnUnknownHookKind(t *testing.T) {
-	loader := deploy.Loader{Kinds: deploy.BuiltinKinds().WithEngines(remoteKind())}
+	loader := deploy.Loader{Kinds: builtin.Kinds().WithEngines(remoteKind())}
 	_, err := loader.Load(context.Background(), hookDocument(`      - kind: memory
 `))
 	if err == nil {
@@ -94,7 +95,7 @@ func TestLoaderRejectsAnUnknownHookKind(t *testing.T) {
 }
 
 func TestLoaderRejectsAHookWithoutAKind(t *testing.T) {
-	loader := deploy.Loader{Kinds: deploy.BuiltinKinds().WithEngines(remoteKind())}
+	loader := deploy.Loader{Kinds: builtin.Kinds().WithEngines(remoteKind())}
 	_, err := loader.Load(context.Background(), hookDocument(`      - settings: {recap: 1}
 `))
 	if err == nil || !strings.Contains(err.Error(), "kind is required") {
@@ -104,7 +105,7 @@ func TestLoaderRejectsAHookWithoutAKind(t *testing.T) {
 
 func TestLoaderReportsWhatTheKindRejects(t *testing.T) {
 	var seen json.RawMessage
-	loader := deploy.Loader{Kinds: deploy.BuiltinKinds().WithEngines(remoteKind()).WithHooks(hookKind(t, &seen))}
+	loader := deploy.Loader{Kinds: builtin.Kinds().WithEngines(remoteKind()).WithHooks(hookKind(t, &seen))}
 	_, err := loader.Load(context.Background(), hookDocument(`      - kind: probe
         settings: {recap: -1}
 `))

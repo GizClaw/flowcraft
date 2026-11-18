@@ -1,4 +1,15 @@
-package deploy
+// Package graph registers the "graph" engine with a deployment.
+//
+// It is the opt-in half of core/deploy's kind table, split out for the reason
+// core/runtime/backends is: a host that never runs a graph agent should not link
+// the graph runtime, and core/deploy itself imports no engine at all. Importing
+// this package is the decision to run one.
+//
+// The registration is a binding, not an implementation: reading the document,
+// compiling it and building the node registry all belong to
+// core/agent-graph/nodes, so this package only maps the settings onto it —
+// exactly as the a2a engine maps its peer onto core/agent-a2a.
+package graph
 
 import (
 	"context"
@@ -8,30 +19,30 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-graph"
+	agentgraph "github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/goccy/go-json"
 )
 
-// GraphEngine registers the "graph" engine: a document compiled once per
+// Engine returns the "graph" engine kind: a document compiled once per
 // deployment, one runner per task.
 //
-// It is a binding, not an implementation: reading the document, compiling it and
-// building the node registry all belong to core/agent-graph/nodes, so this
-// package only maps the settings onto it — exactly as the a2a engine maps its
-// peer onto core/agent-a2a.
-func GraphEngine(options ...nodes.Option) EngineKind {
-	return EngineKind{
+// Options extend the node registry the engine builds, which is how a host adds
+// its own node kinds — a script node, a provider-specific model wrapper — beside
+// the built-in model, tool and condition.
+func Engine(options ...nodes.Option) deploy.EngineKind {
+	return deploy.EngineKind{
 		Name:  "graph",
 		Local: true,
 		Decode: func(settings json.RawMessage) (any, error) {
-			return decodeGraphSettings(settings)
+			return decodeSettings(settings)
 		},
-		Fingerprint: graphFingerprint,
-		Build: func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error) {
-			settings, err := decodeGraphSettings(deps.Spec.Settings)
+		Fingerprint: fingerprint,
+		Build: func(ctx context.Context, deps deploy.EngineDeps) (agent.RunnerFactory, error) {
+			settings, err := decodeSettings(deps.Spec.Settings)
 			if err != nil {
 				return nil, err
 			}
@@ -42,7 +53,7 @@ func GraphEngine(options ...nodes.Option) EngineKind {
 				return nil, err
 			}
 			return func(_ context.Context, sessionID, taskID string) (agent.Runner, error) {
-				return graph.NewRunner(built, graph.RunnerConfig{
+				return agentgraph.NewRunner(built, agentgraph.RunnerConfig{
 					Store:     deps.Store,
 					Identity:  deps.Fingerprint,
 					SessionID: sessionID,
@@ -63,7 +74,7 @@ type graphSettings struct {
 	Path string `json:"path"`
 }
 
-func decodeGraphSettings(settings json.RawMessage) (graphSettings, error) {
+func decodeSettings(settings json.RawMessage) (graphSettings, error) {
 	if len(settings) == 0 || string(settings) == "null" {
 		return graphSettings{}, errdefs.Validationf("graph: settings.path is required")
 	}
@@ -83,12 +94,18 @@ func decodeGraphSettings(settings json.RawMessage) (graphSettings, error) {
 	return decoded, nil
 }
 
-// graphFingerprint is the document's identity: its path and its bytes. Editing the
+// fingerprint is the document's identity: its path and its bytes. Editing the
 // file therefore invalidates the checkpoints taken under the old graph, which is
 // the same rule a changed runtime or engine setting follows.
-func graphFingerprint(settings json.RawMessage) string {
+func fingerprint(settings json.RawMessage) string {
 	var decoded graphSettings
-	_ = json.Unmarshal(settings, &decoded)
+	if err := json.Unmarshal(settings, &decoded); err != nil {
+		// Decode refuses a settings blob that does not parse, so this is
+		// unreachable through the loader. If it is reached anyway, the identity
+		// must differ from every real document's rather than silently match the
+		// hash of the empty path.
+		return "invalid"
+	}
 	sum := sha256.Sum256([]byte(decoded.Path))
 	if body, err := os.ReadFile(decoded.Path); err == nil {
 		sum = sha256.Sum256(append([]byte(decoded.Path+"\x00"), body...))

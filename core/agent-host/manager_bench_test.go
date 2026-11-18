@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/backends"
@@ -39,7 +40,7 @@ func benchHost() Bindings {
 // without the substrate a real deployment builds.
 func benchManager(b *testing.B) *Manager {
 	b.Helper()
-	manager := New(deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := New(builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	})), benchHost())
 	b.Cleanup(func() { _ = manager.Close() })
@@ -85,7 +86,7 @@ func BenchmarkSessionRun(b *testing.B) {
 // BenchmarkManagerAdd measures deploying an agent: validation, fingerprint, table and
 // no runtime.
 func BenchmarkManagerAdd(b *testing.B) {
-	manager := New(deploy.BuiltinKinds().WithEngines(engineFor("echo", func() agent.Runner {
+	manager := New(builtin.Kinds().WithEngines(engineFor("echo", func() agent.Runner {
 		return &textRunner{text: "hi"}
 	})), benchHost())
 	b.Cleanup(func() { _ = manager.Close() })

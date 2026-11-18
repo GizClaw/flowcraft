@@ -1,4 +1,4 @@
-package a2aprotocol_test
+package a2a_test
 
 import (
 	"context"
@@ -11,7 +11,8 @@ import (
 	agenta2a "github.com/GizClaw/flowcraft/core/agent-a2a"
 	"github.com/GizClaw/flowcraft/core/agent-host"
 	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/deploy/a2aprotocol"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
+	"github.com/GizClaw/flowcraft/core/deploy/protocols/a2a"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -48,7 +49,7 @@ func stubDriver() runtime.Option {
 	})
 }
 
-func runtimeConfig(t *testing.T) runtime.Config {
+func runtimeConfig(t testing.TB) runtime.Config {
 	t.Helper()
 	root := t.TempDir()
 	return runtime.Config{
@@ -67,14 +68,14 @@ func runtimeConfig(t *testing.T) runtime.Config {
 // after the runtime config: registration order is cleanup order reversed, and a
 // manager that outlives its runtime root keeps a directory handle open, which
 // Windows refuses to remove.
-func newManager(t *testing.T, kinds deploy.Kinds, bindings host.Bindings) *host.Manager {
+func newManager(t testing.TB, kinds deploy.Kinds, bindings host.Bindings) *host.Manager {
 	t.Helper()
 	manager := host.New(kinds, bindings)
 	t.Cleanup(func() { _ = manager.Close() })
 	return manager
 }
 
-func specFor(t *testing.T, name, kind string) deploy.Spec {
+func specFor(t testing.TB, name, kind string) deploy.Spec {
 	t.Helper()
 	return deploy.Spec{
 		Name:    name,
@@ -117,7 +118,7 @@ func (r *textRunner) Cancel(context.Context, string) error { return nil }
 func (r *textRunner) Close() error                         { return nil }
 
 // peer serves an A2A agent answering with text, for tests that need a remote.
-func peer(t *testing.T, text string) *httptest.Server {
+func peer(t testing.TB, text string) *httptest.Server {
 	t.Helper()
 	table, err := agent.NewAgent(agent.AgentOptions{
 		NewRunner: func(context.Context, string, string) (agent.Runner, error) {
@@ -128,7 +129,7 @@ func peer(t *testing.T, text string) *httptest.Server {
 		t.Fatalf("NewAgent: %v", err)
 	}
 	t.Cleanup(func() { _ = table.Close() })
-	srv, err := a2aprotocol.New(a2aprotocol.Config{
+	srv, err := a2a.New(a2a.Config{
 		Name: "backend",
 		Settings: settingsJSON(map[string]any{"card": map[string]any{
 			"version": "1.0.0", "url": "https://backend.test",
@@ -136,7 +137,7 @@ func peer(t *testing.T, text string) *httptest.Server {
 		Agent: table,
 	})
 	if err != nil {
-		t.Fatalf("a2aprotocol.New: %v", err)
+		t.Fatalf("a2a.New: %v", err)
 	}
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
@@ -148,7 +149,7 @@ func peer(t *testing.T, text string) *httptest.Server {
 func TestExposedAgentServesA2A(t *testing.T) {
 	peerServer := peer(t, "served")
 	manager := newManager(t,
-		deploy.BuiltinKinds(),
+		builtin.Kinds(),
 		host.Bindings{
 			RuntimeOptions:  []runtime.Option{stubDriver()},
 			SandboxBackends: backends.All(),
@@ -225,9 +226,9 @@ func (artifactRunner) Close() error                         { return nil }
 // The deployment decides how a blob becomes fetchable; without the hook the
 // server can only send the reference.
 func TestArtifactURLReachesTheWire(t *testing.T) {
-	kinds := deploy.BuiltinKinds().
+	kinds := builtin.Kinds().
 		WithEngines(artifactEngine()).
-		WithProtocols(deploy.A2AProtocol())
+		WithProtocols(a2a.Protocol())
 	spec := specFor(t, "artifacts", "artifact")
 	manager := newManager(t, kinds, host.Bindings{
 		RuntimeOptions:  []runtime.Option{stubDriver()},
@@ -273,7 +274,7 @@ func TestArtifactURLReachesTheWire(t *testing.T) {
 // withholds it explicitly — the rule under test is "the host must register it", not
 // "the built-ins must not".
 func TestA2AProtocolMustBeRegistered(t *testing.T) {
-	kinds := deploy.BuiltinKinds()
+	kinds := builtin.Kinds()
 	delete(kinds.Protocols, "a2a")
 	manager := newManager(t, kinds, host.Bindings{SandboxBackends: backends.All()})
 	err := manager.Add(context.Background(), deploy.Spec{
@@ -290,7 +291,7 @@ var _ = sync.Mutex{}
 
 // The registration is a value a host composes: a name, a decoder and a builder.
 func TestKindRegistersA2A(t *testing.T) {
-	kind := deploy.A2AProtocol()
+	kind := a2a.Protocol()
 	if kind.Name != "a2a" {
 		t.Fatalf("name = %q, want a2a", kind.Name)
 	}

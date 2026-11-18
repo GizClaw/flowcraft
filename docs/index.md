@@ -107,7 +107,7 @@ layered: a package imports only from the layers below it.
 | Sandbox       | `core/sandbox` (+`engine`, `journal`, `netpolicy`), `core/sandbox-*`                                           | The command boundary: contract, policy decorators, backends.                                                           |
 | Execution     | `core/agent` (+`checkpoint`), `core/agent-graph`, `core/agent-a2a`, `core/delegation`                          | Runs: the engine contract, the graph engine, the A2A client, delegation.                                               |
 | Assembly      | `core/runtime`                                                                                                 | One runtime per configuration document, owning what it built.                                                          |
-| Deployment    | `core/deploy` (+`a2aprotocol`), `core/agent-host`                                                              | Documents and kind tables; host bindings, sessions, lifecycle.                                                         |
+| Deployment    | `core/deploy` (+`engines/*`, `protocols/*`, `builtin`), `core/agent-host`                                      | Documents and kind tables; host bindings, sessions, lifecycle.                                                         |
 | Observability | `core/telemetry`                                                                                               | Tracing, run records, attributes.                                                                                      |
 
 `core/internal/...` holds module-private helpers and is never importable outside

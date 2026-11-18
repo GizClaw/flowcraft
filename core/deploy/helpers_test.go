@@ -27,6 +27,22 @@ func a2aKind() ProtocolKind {
 	}
 }
 
+// builtinKinds is the kind table these tests load documents against.
+//
+// The real registrations are opt-in packages (deploy/engines/*,
+// deploy/protocols/a2a) that import this one, so an in-package test cannot import
+// them back. What the loader needs from a kind is its name, its local-or-remote
+// answer and a Decode that validates the settings; the engines themselves are
+// tested where they live, and a2aKind stands in for the protocol.
+func builtinKinds() Kinds {
+	return Kinds{}.
+		WithEngines(
+			EngineKind{Name: "a2a"},
+			EngineKind{Name: "graph", Local: true},
+		).
+		WithProtocols(a2aKind())
+}
+
 type stubProtocol struct{}
 
 func (stubProtocol) Handler() http.Handler { return http.NewServeMux() }
@@ -73,18 +89,4 @@ func writeLayer(t *testing.T) string {
 		t.Fatalf("write layer: %v", err)
 	}
 	return path
-}
-
-// rawJSON turns a Go literal into the JSON a settings block now is.
-func rawJSON(value any) json.RawMessage {
-	body, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	return body
-}
-
-// rawSettings renders an engine settings block the way the document would.
-func rawSettings(value any) json.RawMessage {
-	return rawJSON(value)
 }

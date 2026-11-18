@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -55,7 +56,7 @@ func (p *probeHook) snapshot() (agents, turns []string, after []agent.TaskState)
 
 func TestDocumentHooksRunAroundTheTurn(t *testing.T) {
 	probe := &probeHook{}
-	manager := newManager(t, deploy.BuiltinKinds().
+	manager := newManager(t, builtin.Kinds().
 		WithEngines(engineFor("done", func() agent.Runner { return &completedRunner{} })).
 		WithHooks(probe.kind()), testHost(t))
 
@@ -112,7 +113,7 @@ func TestHostHooksRunBeforeTheDocument(t *testing.T) {
 	}
 	bindings := testHost(t)
 	bindings.Hooks = hostHook
-	manager := newManager(t, deploy.BuiltinKinds().
+	manager := newManager(t, builtin.Kinds().
 		WithEngines(engineFor("done", func() agent.Runner { return &completedRunner{} })).
 		WithHooks(documentHook), bindings)
 

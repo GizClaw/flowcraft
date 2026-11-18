@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
@@ -310,7 +311,7 @@ func rawSettings(value any) json.RawMessage {
 func testLoader(t *testing.T) deploy.Loader {
 	t.Helper()
 	return deploy.Loader{
-		Kinds: deploy.BuiltinKinds().
+		Kinds: builtin.Kinds().
 			WithEngines(deploy.EngineKind{Name: "local", Local: true}).
 			WithProtocols(a2aKind()),
 	}
