@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/rs/xid"
+	"go.opentelemetry.io/otel/attribute"
 
 	xwin "golang.org/x/sys/windows"
 )
@@ -210,6 +211,11 @@ func StartSessionWithPolicy(
 		release: release,
 	}
 
+	// A cap the kernel reports ends the job here instead of waiting for the child
+	// to give up, which is what the unix watcher does by sampling. See
+	// job.awaitCapKill for why Windows needs it.
+	j.awaitCapKill(s.done)
+
 	if spec.Opts.Timeout > 0 {
 		timer := time.AfterFunc(spec.Opts.Timeout, s.timeoutKill)
 		go func() {
@@ -277,6 +283,19 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 		}
 	}
 	if timedOut {
+		// A memory cap that the kernel enforced without terminating anything looks
+		// exactly like a slow child from here: the allocation is refused, the child
+		// retries, the deadline arrives. Record what the job actually used, so the
+		// next one of these is a diagnosable number rather than a timeout with no
+		// story.
+		if j.limits.MemoryBytes > 0 {
+			if peak, limit, err := j.peakMemory(); err == nil {
+				telemetry.Warn(context.Background(),
+					"windows: session exceeded its Timeout with a memory cap set",
+					attribute.Int64("sandbox.memory_limit_bytes", int64(limit)),
+					attribute.Int64("sandbox.peak_memory_bytes", int64(peak)))
+			}
+		}
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTimedOut},
 			errdefs.FromContext(fmt.Errorf(
 				"windows: process exceeded its Timeout: %w", context.DeadlineExceeded))

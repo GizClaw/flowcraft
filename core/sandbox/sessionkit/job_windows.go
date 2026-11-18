@@ -20,14 +20,18 @@ import (
 // and job limits apply across the whole tree.
 type job struct {
 	h      xwin.Handle
-	notify *jobNotifier // nil when no resource caps are configured
+	notify *jobNotifier           // nil when no resource caps are configured
+	limits sandbox.ResourceLimits // what the caller asked for; diagnostics only
 }
 
-// Job completion-port message codes (winnt.h).
+// Job completion-port message codes (winnt.h). The numbers are not adjacent —
+// 5 is unused and the two memory codes come after the process ones — so they
+// are spelled out rather than inferred, and the job-time code is the only one a
+// limit this file sets can produce.
 const (
-	jobObjectMsgEndOfJobTime     = 1
-	jobObjectMsgEndOfProcessTime = 3
-	jobObjectMsgJobMemoryLimit   = 10
+	jobObjectMsgEndOfJobTime     = 1  // JOB_OBJECT_MSG_END_OF_JOB_TIME
+	jobObjectMsgEndOfProcessTime = 2  // JOB_OBJECT_MSG_END_OF_PROCESS_TIME
+	jobObjectMsgJobMemoryLimit   = 10 // JOB_OBJECT_MSG_JOB_MEMORY_LIMIT
 
 	// notifierKey is the completion key recorded in the job
 	// association; notifierStop is the sentinel posted to shut the
@@ -47,10 +51,16 @@ type associateCompletionPort struct {
 // resource cap the kernel enforced, so a cap kill can be classified as
 // SessionBudgetExceeded instead of a plain exit.
 type jobNotifier struct {
-	port   xwin.Handle
-	done   chan struct{}
-	mu     sync.Mutex
-	budget string // "memory" or "cpu"; first cap wins
+	port xwin.Handle
+	done chan struct{}
+	// hit is closed on the first cap the kernel reports. A memory cap refuses
+	// allocations instead of ending the process, so without something acting on
+	// this the child is left to decide when it is over budget — see
+	// awaitCapKill.
+	hit     chan struct{}
+	hitOnce sync.Once
+	mu      sync.Mutex
+	budget  string // "memory" or "cpu"; first cap wins
 }
 
 func (n *jobNotifier) setBudget(cap string) {
@@ -59,6 +69,7 @@ func (n *jobNotifier) setBudget(cap string) {
 		n.budget = cap
 	}
 	n.mu.Unlock()
+	n.hitOnce.Do(func() { close(n.hit) })
 }
 
 func (n *jobNotifier) budgetCap() string {
@@ -115,6 +126,7 @@ func newJobNotifier(jobHandle xwin.Handle) (*jobNotifier, error) {
 	n := &jobNotifier{
 		port: port,
 		done: make(chan struct{}),
+		hit:  make(chan struct{}),
 	}
 	assoc := associateCompletionPort{CompletionKey: notifierKey, CompletionPort: port}
 	if _, err := xwin.SetInformationJobObject(jobHandle,
@@ -137,7 +149,7 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 	if err != nil {
 		return nil, errdefs.Internal(fmt.Errorf("windows: create job object: %w", err))
 	}
-	j := &job{h: h}
+	j := &job{h: h, limits: limits}
 	info := jobLimits(limits, timeout)
 	if _, err := xwin.SetInformationJobObject(
 		h, xwin.JobObjectExtendedLimitInformation,
@@ -163,6 +175,42 @@ func (j *job) budgetCap() string {
 		return ""
 	}
 	return j.notify.budgetCap()
+}
+
+// awaitCapKill ends the job as soon as the kernel reports a cap, matching the
+// unix watcher's "exceeding a cap ends the session" semantics.
+//
+// Windows makes this necessary rather than tidy: a memory cap refuses the
+// allocation and leaves the process running, so a child that retries instead of
+// exiting (PowerShell under a commit cap thrashes in its allocator) reaches the
+// wall-clock Timeout first and is classified as TimedOut even though the memory
+// budget was what stopped it. The kill is best-effort: a job whose processes are
+// already gone reports ERROR_ACCESS_DENIED, which terminate treats as a no-op.
+func (j *job) awaitCapKill(done <-chan struct{}) {
+	if j.notify == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-j.notify.hit:
+			terminateJob(j)
+		case <-done:
+		}
+	}()
+}
+
+// peakMemory reports the job's peak committed memory and its configured cap. A
+// timed-out session is diagnosed with it: a cap the kernel enforced without
+// terminating anything looks exactly like a slow child from the outside, and the
+// difference is only visible in these two numbers.
+func (j *job) peakMemory() (peak, limit uintptr, err error) {
+	var info xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := xwin.QueryInformationJobObject(j.h,
+		xwin.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil); err != nil {
+		return 0, 0, err
+	}
+	return info.PeakJobMemoryUsed, info.JobMemoryLimit, nil
 }
 
 // jobLimits maps sandbox.ResourceLimits onto the Windows extended

@@ -51,7 +51,10 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //   - Permission != nil without WithWriteConfinement: errdefs.NotAvailable
 //     (no OS boundary to confine a caller-supplied file boundary).
 //   - Resources.MemoryBytes: enforced as a job-wide memory limit
-//     (JOB_OBJECT_LIMIT_JOB_MEMORY).
+//     (JOB_OBJECT_LIMIT_JOB_MEMORY); the kernel refuses the allocation,
+//     and the job's completion-port report terminates the tree, so the
+//     session ends when the budget is exceeded rather than when the
+//     child gives up.
 //   - Resources.CPUMillicores: enforced as a per-process user-time
 //     limit = Timeout x millicores/1000; requires Timeout > 0,
 //     otherwise errdefs.NotAvailable.

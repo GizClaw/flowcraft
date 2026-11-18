@@ -388,19 +388,31 @@ func TestSessionTTYWithConfinementNotAvailable(t *testing.T) {
 
 func TestExecBudgetExceededMemory(t *testing.T) {
 	r := mustNewRunner(t)
+	start := time.Now()
 	_, err := engine.Exec(context.Background(), r, "powershell",
 		[]string{"-NoProfile", "-Command", "$a = New-Object byte[] 400MB"},
 		sandbox.ExecOptions{
-			Timeout: 20 * time.Second,
+			// The cap has to end the session, not the deadline: a 30s Timeout
+			// leaves a slow runner room to start PowerShell, so the elapsed bound
+			// below can tell "the cap ended it" from "the wall clock ended it".
+			// This case used to fail exactly that way — the allocation was
+			// refused, the child thrashed instead of exiting, and the run was
+			// classified as TimedOut with the budget already exceeded.
+			Timeout: 30 * time.Second,
 			Resources: sandbox.ResourceLimits{
 				MemoryBytes: 32 << 20,
 			},
 		})
+	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatal("Exec succeeded, want budget exceeded")
 	}
 	if !errdefs.IsBudgetExceeded(err) {
-		t.Fatalf("err = %v, want BudgetExceeded", err)
+		t.Fatalf("err = %v after %s, want BudgetExceeded", err, elapsed.Round(time.Millisecond))
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("the memory cap took %s to end the session; it must not wait out the 30s Timeout",
+			elapsed.Round(time.Millisecond))
 	}
 }
 

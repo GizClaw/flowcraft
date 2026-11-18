@@ -74,7 +74,13 @@
 //	                              option the call fails with
 //	                              errdefs.NotAvailable.
 //	Resources.MemoryBytes         enforced as a job-wide memory limit
-//	                              (JOB_OBJECT_LIMIT_JOB_MEMORY).
+//	                              (JOB_OBJECT_LIMIT_JOB_MEMORY). The
+//	                              kernel refuses the allocation
+//	                              rather than ending the process, so
+//	                              the job's completion-port report
+//	                              terminates the tree: the session
+//	                              ends when the budget is exceeded,
+//	                              not when the child gives up.
 //	Resources.CPUMillicores       enforced as a job-wide user-time
 //	                              budget (JOB_OBJECT_LIMIT_JOB_TIME)
 //	                              derived from Timeout x millicores /
@@ -102,6 +108,13 @@
 //	                              cpu-time cap is reported as
 //	                              SessionBudgetExceeded via the job
 //	                              object's completion-port messages.
+//	                              A session that reaches its Timeout
+//	                              with a memory cap configured
+//	                              records the job's peak and limit
+//	                              as telemetry, because a
+//	                              kernel-refused allocation and a
+//	                              slow child are otherwise
+//	                              indistinguishable at that point.
 //
 // # File journal
 //
