@@ -53,7 +53,10 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 	manager := newManager(t, kinds, testHost(t))
 	spec := testSpec(t, "g", "graph")
 	spec.Engine.Settings = rawSettings(map[string]any{
-		"path": writeGraphDocument(t, fixedGraph),
+		"source": map[string]any{
+			"kind":     "file",
+			"settings": map[string]any{"path": writeGraphDocument(t, fixedGraph)},
+		},
 	})
 	if err := manager.Add(context.Background(), spec); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -88,7 +91,7 @@ bogus: true
 `)
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), []byte(
 		"version: 1\nagents:\n  - name: g\n    engine:\n      kind: graph\n"+
-			"      settings: {path: "+path+"}\n"))
+			"      settings: {source: {kind: file, settings: {path: "+path+"}}}\n"))
 	if err == nil {
 		t.Fatal("a document with an unknown field was loaded")
 	}

@@ -1,5 +1,5 @@
-// Package builtin is the kind table core ships: every engine and protocol that
-// has a registration in this module, wired in one call.
+// Package builtin is the kind table core ships: every engine, protocol and layer
+// source that has a registration in this module, wired in one call.
 //
 // It is opt-in on purpose, and it mirrors core/runtime/backends. core/deploy
 // registers no implementation of its own — it owns the document, the Spec and
@@ -21,16 +21,25 @@ import (
 	enginesa2a "github.com/GizClaw/flowcraft/core/deploy/engines/a2a"
 	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 	protocolsa2a "github.com/GizClaw/flowcraft/core/deploy/protocols/a2a"
+	"github.com/GizClaw/flowcraft/core/deploy/sources"
 )
 
 // Kinds returns the kinds every deployment starts with: the graph and a2a
-// engines, the a2a protocol, and no hooks — a hook is the host's own policy, so
-// the platform registers none.
+// engines, the a2a protocol, the two layer sources that need nothing from the
+// host (file and inline), and no hooks — a hook is the host's own policy, so the
+// platform registers none.
+//
+// The two sources are registered because a deployment that names no source at all
+// cannot describe a runtime: every stack has to read something. A stack read from
+// an embedded tree or a secret store is a factory the host adds
+// (sources.FS, sources.Func) rather than an entry of this table: it needs a value
+// — an fs.FS, a loader — that no document can write.
 //
 // The table is a value, so WithEngines and friends return a copy and extending it
 // never mutates what this returned.
 func Kinds() deploy.Kinds {
 	return deploy.Kinds{}.
 		WithEngines(enginesgraph.Engine(), enginesa2a.Engine()).
-		WithProtocols(protocolsa2a.Protocol())
+		WithProtocols(protocolsa2a.Protocol()).
+		WithLayerSources(sources.File(), sources.Inline())
 }

@@ -94,6 +94,23 @@ func TestLoaderRejectsAnUnknownHookKind(t *testing.T) {
 	}
 }
 
+// Core ships no hooks, so this is the first message a host sees when it declares
+// one without registering it: the table is empty, and the error says who would
+// supply an entry instead of listing nothing.
+func TestLoaderExplainsAnEmptyHookTable(t *testing.T) {
+	loader := deploy.Loader{Kinds: deploy.Kinds{}.WithEngines(remoteKind())}
+	_, err := loader.Load(context.Background(), hookDocument(`      - kind: probe
+`))
+	if err == nil {
+		t.Fatal("an unregistered hook kind must fail the load")
+	}
+	for _, want := range []string{"hooks[0]", "core ships none"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
 func TestLoaderRejectsAHookWithoutAKind(t *testing.T) {
 	loader := deploy.Loader{Kinds: builtin.Kinds().WithEngines(remoteKind())}
 	_, err := loader.Load(context.Background(), hookDocument(`      - settings: {recap: 1}

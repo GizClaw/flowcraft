@@ -48,6 +48,17 @@ func sortedKeys[V any](values map[string]V) []string {
 	return keys
 }
 
+// offered names a kind table's entries for an "is not registered" error, or says
+// why the list is empty: a reader who named an unregistered kind has to learn what
+// to register, and a blank list after "offered:" is not an answer. whenEmpty is
+// the table's own sentence about who would supply one.
+func offered[V any](table map[string]V, whenEmpty string) string {
+	if len(table) == 0 {
+		return "none (" + whenEmpty + ")"
+	}
+	return strings.Join(sortedKeys(table), ", ")
+}
+
 // Spec is everything needed to deploy one agent: configuration only. Host
 // dependencies live in host.Bindings, so a Spec can be compared, logged and
 // rebuilt.

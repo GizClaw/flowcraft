@@ -13,7 +13,7 @@ agents:
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: ` + writeLayer(t) + `}
+        - {priority: 0, source: {kind: file, settings: {path: ` + writeLayer(t) + `}}}
     delegation:
       targets: [worker]
       modes: [sync]
@@ -55,7 +55,7 @@ agents:
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: ` + writeLayer(t) + `}
+        - {priority: 0, source: {kind: file, settings: {path: ` + writeLayer(t) + `}}}
     ` + block + `
 `
 		if _, err := testLoader(t).Load(context.Background(), []byte(document)); err == nil {

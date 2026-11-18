@@ -6,9 +6,9 @@ title: Deployment Assembly
 # Deployment Assembly Guide
 
 `core/deploy` is the document and kind layer: it turns a deployment file into
-`[]deploy.Spec` and decides which engine, protocol and hook kinds a host may
-name. It does not run anything. The process-level `Manager`, the session table
-and the host bindings live in `core/agent-host`.
+`[]deploy.Spec` and decides which engine, protocol, hook and layer-source kinds a
+host may name. It does not run anything. The process-level `Manager`, the session
+table and the host bindings live in `core/agent-host`.
 
 The split is deliberate: a document is data, a kind is a registration, and
 neither needs a process to be validated. A host can lint a deployment in CI with
@@ -28,8 +28,8 @@ agents:
       settings: { ... } # decoded by the kind
     runtime:
       layers:
-        - { priority: 0, path: base.yaml }
-        - { priority: 10, path: local.yaml }
+        - { priority: 0, source: { kind: file, settings: { path: base.yaml } } }
+        - { priority: 10, source: { kind: file, settings: { path: local.yaml } } }
     catalog:
       scope: run
     protocol:
@@ -51,7 +51,7 @@ agents:
 | `version`                | Must be `1`. Anything else is rejected instead of being read as a coincidence.                                    |
 | `agents[].name`          | Required, unique within the document, and what a caller addresses.                                                |
 | `agents[].engine`        | Required. `kind` has no default: an agent that does not say what it is cannot be deployed meaningfully.           |
-| `agents[].runtime`       | A stack of layers, at least one. Absent is only legal for an engine kind that reports `Local: false`.             |
+| `agents[].runtime`       | A stack of layers, at least one; each names where its bytes come from. Absent only for a remote engine.           |
 | `agents[].catalog`       | `scope: run` (default) or `session`: how far a tool projection is scoped.                                         |
 | `agents[].protocol`      | Absent means the agent is not exposed. `kind` is required when the block is present.                              |
 | `agents[].delegation`    | Absent means the agent gets no delegation tools at all — not "unrestricted".                                      |
@@ -64,17 +64,17 @@ names in the error — never by being skipped.
 
 ## Kinds
 
-A kind is a name, a decoder and a builder. Three kinds exist, one per thing a
+A kind is a name, a decoder and a builder. Four kinds exist, one per thing a
 document can name:
 
 ```go
 type EngineKind struct {
     Name   string
     Local  bool                     // local: runs here, needs a runtime; remote: has a peer
-    Decode func(json.RawMessage) (any, error)   // validates at load
+    Decode func(ctx context.Context, settings json.RawMessage, sources SourceOpener) (any, error)
     // Fingerprint is the non-secret part of the settings. Nil means the whole
     // canonical settings object — wrong for anything carrying a credential.
-    Fingerprint func(json.RawMessage) string
+    Fingerprint func(ctx context.Context, settings json.RawMessage, sources SourceOpener) string
     Build      func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error)
 }
 
@@ -91,6 +91,13 @@ type HookKind struct {
 }
 ```
 
+An engine is the only kind whose `Decode` and `Fingerprint` receive the source
+table, because it is the only one that may be driven by a document of its own:
+reading it is part of validating the settings, and its bytes are part of the
+deployment's identity. The table is the same one runtime layers resolve through
+(see [Layer sources](#layer-sources)), which is why the two cannot disagree
+about what a source kind means.
+
 `Decode` runs twice by design: once at load, so a typo in a settings block fails
 before any resource is built, and once inside `Build` to get the typed value. It
 is the kind's only validation hook, and it is why an unregistered field inside
@@ -102,14 +109,117 @@ carries no deployment internals — name, store, fingerprint, an artifact resolv
 and the agent's session table — because a protocol drives sessions directly and
 should not need the manager.
 
+### Layer sources
+
+A runtime layer names the kind its bytes come from instead of a path the document
+interprets:
+
+```yaml
+    runtime:
+      layers:
+        - priority: 0
+          source: { kind: file, settings: { path: ./runtime.yaml } }
+        - priority: 10
+          source: { kind: assets, settings: { name: runtime/prod.yaml } }
+```
+
+```go
+type LayerSourceKind struct {
+    Name string
+    Open func(ctx context.Context, settings json.RawMessage) (LayerSource, error)
+}
+
+type LayerSource struct {
+    Name string        // what errors and provenance report
+    Body config.Source // config.File, config.Bytes, config.FS or config.Func
+}
+```
+
+A source has one hook rather than two, because it runs while the document is
+loaded: the layers are merged then, so `Open` is the only place a typo can be
+caught, and there is nothing left to build afterwards.
+
+`file` and `inline` are the two registrations `deploy/builtin` ships, and the
+reason is the same for both: the document states the whole address, a path or the
+text itself. Everything else needs a value only the host has — an `fs.FS` from
+`//go:embed`, a vault client, a table handle — so `deploy/sources` offers a factory
+instead of a registration:
+
+```go
+//go:embed assets
+var assets embed.FS
+
+// {"kind": "assets", "settings": {"name": "runtime/base.yaml"}}
+kinds := builtin.Kinds().WithLayerSources(sources.FS("assets", assets))
+```
+
+`deploy/sources` is the whole family, one factory per `config.Source`:
+
+| Source | Settings | Comes from |
+| ------ | -------- | ---------- |
+| `file` | `{path}` | `config.File` — a registration |
+| `inline` | `{name?, body}` | `config.Bytes` — a registration, for generated deployments and tests |
+| a host name, e.g. `assets` | `{name}` | `config.FS` — `sources.FS(name, fsys)` |
+| a host name, e.g. `vault` | `{name}` | `config.Func` — `sources.Func(name, load)` |
+
+There is no HTTP, vault or database source in the platform, and that is the
+point: each of those is a policy — TLS, retries, a size limit, credentials — and
+`sources.Func` turns any of them into five lines the host owns rather than a
+feature that decides them for every deployment.
+
+A factory names its layers `<kind>:<reference>` (`assets:runtime/base.yaml`,
+`vault:openai/luna`), so an error or a provenance entry says which store the
+layer came from; `file` is the exception and names itself by the path, because
+the reference already is a location.
+
+`Body` is the same `config.Source` a layer stack has always used, so nothing below
+this seam changes: merge, placeholder expansion, provenance and `runtime.Digest`
+read bytes. `LayerSource.Name` is what errors and provenance report, which is why
+it exists at all — a layer read from an embedded tree has no path to print.
+
+An engine can name a document the same way. The graph engine's settings are a
+source reference and nothing else:
+
+```yaml
+    engine:
+      kind: graph
+      settings:
+        source: { kind: assets, settings: { name: graphs/react.yaml } }
+```
+
+It goes through the same `Kinds.LayerSources` table, which is the point: a host
+registers `assets` once and both its runtime layers and its graph documents come
+from the embedded tree. The engine opens the source at load (to validate the
+document), for the fingerprint (the bytes are part of the deployment's identity)
+and once more when the graph is compiled.
+
+The deployment document itself is the third user: `Loader.LoadSource` takes the
+same reference, which is what makes `LoadFile` sugar over
+`{kind: file, settings: {path: ...}}` rather than a second rule about where a
+document may live. `Loader.Load` stays the entry for a body the host already
+holds.
+
 ### What ships
 
 ```go
 deploy/builtin — Kinds()
-// Engines:   a2a (deploy/engines/a2a, core/agent-a2a client), graph (deploy/engines/graph, core/agent-graph)
-// Protocols: a2a (deploy/protocols/a2a, which holds the server and the kind)
-// Hooks:     none — a host's policy is the host's
+// Engines:      a2a (deploy/engines/a2a, core/agent-a2a client), graph (deploy/engines/graph, core/agent-graph)
+// Protocols:    a2a (deploy/protocols/a2a, which holds the server and the kind)
+// LayerSources: file and inline (deploy/sources); the FS and Func factories are the host's to register
+// Hooks:        none — a host's policy is the host's
 ```
+
+A hook is the one kind core ships none of, and the reason is what the four kinds
+are. An engine, a protocol and a layer source are mechanisms: a way to run a
+graph, to speak A2A, to read bytes. A hook is a policy attached to an agent's
+life — memory, an audit trail, a seat binding — and building one means reading
+the host's own store, workspace and session table. The platform ships the seam
+(declaration order, `HookDeps`, load-time validation through `Decode`) and no
+policy, so nothing decides how a deployment behaves on the host's behalf.
+Everything hook-shaped that core already has is a binding instead:
+`Bindings.OnEvent`, `Bindings.OnRun`, the delegation service, the sandbox
+journal. `examples/forge` is what a real one looks like: `WithHooks(memory.Kind())`,
+registered by the host that owns the memory.
 
 Each registration ships beside the package that implements it, and `deploy`
 itself imports none of them: a host that runs one engine should not link the
@@ -172,7 +282,7 @@ internally.
 To print a startup checklist instead of a restart loop, ask first:
 
 ```go
-req, err := loader.RequiredPlaceholdersFile("deploy.yaml")
+req, err := loader.RequiredPlaceholdersFile(ctx, "deploy.yaml")
 // req lists every unset reference in one pass; Load stops at the first.
 ```
 
@@ -184,7 +294,16 @@ loader := deploy.Loader{
     LoadOptions: []config.Option{config.WithResolver("secret", vault.Resolve)},
 }
 
-specs, err := loader.LoadFile(ctx, "deploy.yaml")
+// The document itself is read through the same source table as everything else.
+specs, err := loader.LoadSource(ctx, &deploy.LayerSourceDocument{
+    Kind:     "assets",
+    Settings: json.RawMessage(`{"name":"deploy.yaml"}`),
+})
+
+// The three entries, in order of how much the host has already done:
+//   LoadSource  — the host names a source kind; the loader reads it.
+//   LoadFile    — LoadSource with the file source: {kind: file, settings: {path}}.
+//   Load        — the host already holds the bytes (HTTP, a database, a test).
 ```
 
 A `deploy.Spec` is the validated form of one agent:
@@ -201,7 +320,7 @@ A `deploy.Spec` is the validated form of one agent:
 | `Hooks`                      | In declaration order.                                                                                             |
 | `IdleTimeout`, `MaxSessions` | Host decisions, not document fields: a session lives in the store, so eviction is a cache concern, not data loss. |
 
-Errors are `errdefs.Validation` and name the path, e.g.
+Errors are `errdefs.Validation` and name the location, e.g.
 `agents[forge].engine: kind "grpah" is not registered; offered: a2a, graph`.
 
 ## Running the specs

@@ -15,8 +15,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	agentgraph "github.com/GizClaw/flowcraft/core/agent-graph"
@@ -37,18 +35,22 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 	return deploy.EngineKind{
 		Name:  "graph",
 		Local: true,
-		Decode: func(settings json.RawMessage) (any, error) {
-			return decodeSettings(settings)
+		Decode: func(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) (any, error) {
+			decoded, _, err := openSettings(ctx, settings, sources)
+			if err != nil {
+				return nil, err
+			}
+			return decoded, nil
 		},
 		Fingerprint: fingerprint,
 		Build: func(ctx context.Context, deps deploy.EngineDeps) (agent.RunnerFactory, error) {
-			settings, err := decodeSettings(deps.Spec.Settings)
+			_, document, err := openSettings(ctx, deps.Spec.Settings, deps.Sources)
 			if err != nil {
 				return nil, err
 			}
 			open := append([]nodes.Option{}, options...)
 			open = append(open, nodes.WithBlobStore(deps.Store))
-			built, err := nodes.Open(ctx, deps.Runtime, settings.Path, open...)
+			built, err := nodes.Open(ctx, deps.Runtime, document.Name, document.Body, open...)
 			if err != nil {
 				return nil, err
 			}
@@ -69,46 +71,65 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 
 // graphSettings is the engine's written configuration.
 type graphSettings struct {
-	// Path is the graph document. It is read at load time and again at build
-	// time; a relative path is relative to the process's working directory.
-	Path string `json:"path"`
+	// Source is the graph document: the kind its bytes come from, and that kind's
+	// settings. It is read at load time for validation, again for the
+	// fingerprint, and once more when the graph is compiled — the same three
+	// reads a path used to cost.
+	Source *deploy.LayerSourceDocument `json:"source"`
 }
 
-func decodeSettings(settings json.RawMessage) (graphSettings, error) {
+// openSettings decodes the settings and opens the document they name, validating
+// it on the way: a wiring mistake fails at load, not when the first task starts.
+// Node kinds are still checked at build, when the registry is known.
+func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) (graphSettings, deploy.LayerSource, error) {
+	const missing = "graph: settings.source is required"
 	if len(settings) == 0 || string(settings) == "null" {
-		return graphSettings{}, errdefs.Validationf("graph: settings.path is required")
+		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(missing)
 	}
 	decoded, err := decode.Decode[graphSettings](settings)
 	if err != nil {
-		return graphSettings{}, errdefs.Validationf("graph: settings: %v", err)
+		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf("graph: settings: %v", err)
 	}
-	if strings.TrimSpace(decoded.Path) == "" {
-		return graphSettings{}, errdefs.Validationf("graph: settings.path is required")
+	if decoded.Source == nil {
+		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(missing)
 	}
-	// Validate the document now so a wiring mistake fails at load, not when the
-	// first task starts. Node kinds are checked at build, when the registry is
-	// known.
-	if err := nodes.Validate(context.Background(), decoded.Path); err != nil {
-		return graphSettings{}, err
+	if sources == nil {
+		return graphSettings{}, deploy.LayerSource{}, errdefs.Validationf(
+			"graph: settings.source: this host registered no source table")
 	}
-	return decoded, nil
+	document, err := sources(ctx, decoded.Source)
+	if err != nil {
+		return graphSettings{}, deploy.LayerSource{}, err
+	}
+	if err := nodes.Validate(ctx, document.Name, document.Body); err != nil {
+		return graphSettings{}, deploy.LayerSource{}, err
+	}
+	return decoded, document, nil
 }
 
-// fingerprint is the document's identity: its path and its bytes. Editing the
-// file therefore invalidates the checkpoints taken under the old graph, which is
-// the same rule a changed runtime or engine setting follows.
-func fingerprint(settings json.RawMessage) string {
+// fingerprint is the document's identity: the source it names and its bytes.
+// Editing the document therefore invalidates the checkpoints taken under the old
+// graph, which is the same rule a changed runtime or engine setting follows.
+func fingerprint(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) string {
 	var decoded graphSettings
-	if err := json.Unmarshal(settings, &decoded); err != nil {
+	if err := json.Unmarshal(settings, &decoded); err != nil || decoded.Source == nil || sources == nil {
 		// Decode refuses a settings blob that does not parse, so this is
 		// unreachable through the loader. If it is reached anyway, the identity
 		// must differ from every real document's rather than silently match the
-		// hash of the empty path.
+		// hash of an empty one.
 		return "invalid"
 	}
-	sum := sha256.Sum256([]byte(decoded.Path))
-	if body, err := os.ReadFile(decoded.Path); err == nil {
-		sum = sha256.Sum256(append([]byte(decoded.Path+"\x00"), body...))
+	document, err := sources(ctx, decoded.Source)
+	if err != nil {
+		// Decode opened the same source successfully, so a failure here is a
+		// source that disappeared between the two calls: the identity has to
+		// differ from the old one, which is what an unreadable document means.
+		return "invalid"
 	}
+	body, err := document.Read(ctx)
+	if err != nil {
+		return "invalid"
+	}
+	sum := sha256.Sum256(append([]byte(document.Name+"\x00"), body...))
 	return "sha256:" + hex.EncodeToString(sum[:])
 }

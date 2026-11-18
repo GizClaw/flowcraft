@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -94,10 +93,24 @@ type RuntimeDocument struct {
 	Layers []LayerDocument `json:"layers"`
 }
 
-// LayerDocument is one file in the stack.
+// LayerDocument is one layer in the stack.
 type LayerDocument struct {
-	Priority int    `json:"priority"`
-	Path     string `json:"path"`
+	// Priority orders the layer; higher wins.
+	Priority int `json:"priority"`
+	// Source is how this layer's bytes are obtained. It is required: a layer
+	// whose bytes come from nowhere cannot be merged, and defaulting to a file
+	// would be a choice the document made by accident.
+	Source *LayerSourceDocument `json:"source"`
+}
+
+// LayerSourceDocument selects one registered layer source and carries its
+// settings.
+type LayerSourceDocument struct {
+	// Kind is required. An unregistered kind is a document error naming what is
+	// registered, the same rule engines, protocols and hooks follow.
+	Kind string `json:"kind"`
+	// Settings is the kind's own configuration, decoded by its registration.
+	Settings json.RawMessage `json:"settings"`
 }
 
 // ProtocolDocument selects the exposure and carries its settings.
@@ -112,24 +125,68 @@ type ProtocolDocument struct {
 //
 // The same kind table the manager uses decides what a document may name: an
 // unregistered kind is rejected at load time, with the registered names in the
-// error, rather than failing halfway through assembling an agent.
+// error, rather than failing halfway through assembling an agent. That covers
+// the engines and protocols an agent is made of and the sources its runtime
+// layers are read from.
 type Loader struct {
 	// LoadOptions are handed to [config.Load]: resolvers for placeholder
 	// schemes. They are not Spec fields because they are host wiring, not
 	// deployment data.
 	LoadOptions []config.Option
-	// Kinds are the registered engines and protocols. Decode is invoked here, so
-	// a bad settings block fails at load time.
+	// Kinds are the registered engines, protocols, hooks and layer sources.
+	// Decode and Open are invoked here, so a bad settings block fails at load
+	// time.
 	Kinds Kinds
+}
+
+// FileSourceDocument is the file source written as a document reference: the same
+// block a deployment writes in runtime.layers[].source. It exists so that
+// [Loader.LoadFile] is sugar over [Loader.LoadSource] rather than a second rule
+// about where a document may live.
+func FileSourceDocument(path string) *LayerSourceDocument {
+	settings, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		// A map of strings cannot fail to marshal. If it ever does, an empty
+		// settings block is refused by the file source instead of being guessed
+		// at here.
+		return &LayerSourceDocument{Kind: "file"}
+	}
+	return &LayerSourceDocument{Kind: "file", Settings: settings}
+}
+
+// LoadSource reads a deployment document through a source kind: the same table a
+// runtime layer and a graph document are read from.
+//
+// It is the entry for a host whose document is embedded, fetched or stored: it
+// names the source once instead of holding the bytes itself. [Loader.Load] is the
+// entry for a body that is already in memory, and [Loader.LoadFile] is this with
+// the file source.
+func (l Loader) LoadSource(ctx context.Context, source *LayerSourceDocument) ([]Spec, error) {
+	body, err := l.documentBody(ctx, source)
+	if err != nil {
+		return nil, err
+	}
+	return l.Load(ctx, body)
 }
 
 // LoadFile reads a document from disk.
 func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
-	body, err := os.ReadFile(path)
+	return l.LoadSource(ctx, FileSourceDocument(path))
+}
+
+// documentBody opens the deployment document itself. The location is not a field
+// path: this is the root, and every error below it names the agent it belongs to.
+func (l Loader) documentBody(ctx context.Context, source *LayerSourceDocument) ([]byte, error) {
+	const at = "manage: deployment document"
+	opened, err := l.Kinds.OpenSource(ctx, at, source)
 	if err != nil {
-		return nil, errdefs.Validationf("manage: read %s: %w", path, err)
+		return nil, err
 	}
-	return l.Load(ctx, body)
+	body, err := opened.Read(ctx)
+	if err != nil {
+		return nil, errdefs.Validationf("%s: %s: %w", at, opened.Name, err)
+	}
+	return body, nil
 }
 
 // RequiredPlaceholders reports the environment variables a deployment document names,
@@ -140,13 +197,19 @@ func (l Loader) RequiredPlaceholders(body []byte) (config.Requirement, error) {
 	return config.RequiredPlaceholdersDocument(body, "deployment document")
 }
 
-// RequiredPlaceholdersFile reads a document and reports its environment requirements.
-func (l Loader) RequiredPlaceholdersFile(path string) (config.Requirement, error) {
-	body, err := os.ReadFile(path)
+// RequiredPlaceholdersSource does the same for a document read through a source
+// kind.
+func (l Loader) RequiredPlaceholdersSource(ctx context.Context, source *LayerSourceDocument) (config.Requirement, error) {
+	body, err := l.documentBody(ctx, source)
 	if err != nil {
-		return config.Requirement{}, errdefs.Validationf("manage: read %s: %w", path, err)
+		return config.Requirement{}, err
 	}
-	return config.RequiredPlaceholdersDocument(body, path)
+	return l.RequiredPlaceholders(body)
+}
+
+// RequiredPlaceholdersFile reads a document and reports its environment requirements.
+func (l Loader) RequiredPlaceholdersFile(ctx context.Context, path string) (config.Requirement, error) {
+	return l.RequiredPlaceholdersSource(ctx, FileSourceDocument(path))
 }
 
 // Load parses and validates a deployment document.
@@ -199,7 +262,8 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	if !found {
 		return Spec{}, errdefs.Validationf(
 			"%s: kind %q is not registered; offered: %s",
-			where("engine"), agent.Engine.Kind, strings.Join(sortedKeys(l.Kinds.Engines), ", "))
+			where("engine"), agent.Engine.Kind,
+			offered(l.Kinds.Engines, "deploy/builtin registers graph and a2a"))
 	}
 
 	// The kind says whether it runs here and speaks for its own fields; the
@@ -210,7 +274,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 	}
 	engineSpec := EngineSpec{Kind: agent.Engine.Kind, Settings: settings}
 	if kind.Decode != nil {
-		if _, err := kind.Decode(settings); err != nil {
+		if _, err := kind.Decode(ctx, settings, l.opener(where("engine")+".settings")); err != nil {
 			return Spec{}, errdefs.Validationf("%s: %v", where("engine"), err)
 		}
 	}
@@ -227,7 +291,8 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		if !found {
 			return Spec{}, errdefs.Validationf(
 				"%s: kind %q is not registered; offered: %s",
-				where("protocol"), agent.Protocol.Kind, strings.Join(sortedKeys(l.Kinds.Protocols), ", "))
+				where("protocol"), agent.Protocol.Kind,
+				offered(l.Kinds.Protocols, "deploy/builtin registers a2a"))
 		}
 		settings := agent.Protocol.Settings
 		if len(strings.TrimSpace(string(settings))) == 0 {
@@ -271,7 +336,7 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 		Observability: observability,
 	}
 	if agent.Runtime != nil {
-		layers, err := l.layers(agent.Name, agent.Runtime)
+		layers, err := l.layers(ctx, agent.Name, agent.Runtime)
 		if err != nil {
 			return Spec{}, err
 		}
@@ -285,24 +350,41 @@ func (l Loader) agent(ctx context.Context, index int, agent AgentDocument) (Spec
 }
 
 // layers turns the document's stack into configuration layers.
-func (l Loader) layers(agent string, runtimeDocument *RuntimeDocument) ([]config.Layer, error) {
+//
+// Each layer's bytes come from the source kind it names, so the document states
+// where a layer lives without deciding what "where" means: a file on this host is
+// one registration, an embedded tree or a secret store is another, and the loader
+// tells them apart only by the kind.
+func (l Loader) layers(ctx context.Context, agent string, runtimeDocument *RuntimeDocument) ([]config.Layer, error) {
 	if len(runtimeDocument.Layers) == 0 {
 		return nil, errdefs.Validationf(
 			"manage: agents[%s].runtime: at least one layer is required", agent)
 	}
 	layers := make([]config.Layer, 0, len(runtimeDocument.Layers))
 	for i, layer := range runtimeDocument.Layers {
-		if strings.TrimSpace(layer.Path) == "" {
-			return nil, errdefs.Validationf(
-				"manage: agents[%s].runtime.layers[%d]: path is required", agent, i)
+		at := "manage: agents[" + agent + "].runtime.layers[" + strconv.Itoa(i) + "]"
+		source, err := l.Kinds.OpenSource(ctx, at, layer.Source)
+		if err != nil {
+			return nil, err
 		}
 		layers = append(layers, config.Layer{
 			Priority: layer.Priority,
-			Name:     layer.Path,
-			Source:   config.File(layer.Path),
+			// The source names the layer: it is the only part that knows whether
+			// this stack has paths or embedded members in it.
+			Name:   source.Name,
+			Source: source.Body,
 		})
 	}
 	return layers, nil
+}
+
+// layerSource opens one layer through the kind it names.
+// opener binds [Kinds.OpenSource] to the location a kind's settings occupy, so a
+// document the kind reads is reported the way the deployment declared it.
+func (l Loader) opener(at string) SourceOpener {
+	return func(ctx context.Context, document *LayerSourceDocument) (LayerSource, error) {
+		return l.Kinds.OpenSource(ctx, at, document)
+	}
 }
 
 func (l Loader) engine(name string) (EngineKind, bool) {
@@ -386,7 +468,8 @@ func (l Loader) hookSpecs(agent string, documents []HookDocument, where func(str
 		kind, found := l.Kinds.Hooks[document.Kind]
 		if !found {
 			return nil, errdefs.Validationf("%s: kind %q is not registered; offered: %s",
-				at, document.Kind, strings.Join(sortedKeys(l.Kinds.Hooks), ", "))
+				at, document.Kind,
+				offered(l.Kinds.Hooks, "core ships none: a hook is the host's own policy"))
 		}
 		settings := document.Settings
 		if len(strings.TrimSpace(string(settings))) == 0 {

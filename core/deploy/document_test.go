@@ -65,7 +65,7 @@ agents:
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: `+writeLayer(t)+`}
+        - {priority: 0, source: {kind: file, settings: {path: `+writeLayer(t)+`}}}
 `))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -86,7 +86,7 @@ version: 1
 agents:
   - name: x
     engine: {kind: a2a, settings: {peer: https://peer.example}}
-    runtime: {layers: [{priority: 0, path: ./r.yaml}]}
+    runtime: {layers: [{priority: 0, source: {kind: file, settings: {path: ./r.yaml}}}]}
 `,
 		"a local engine without a runtime": `
 version: 1
@@ -193,12 +193,12 @@ agents:
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: `+writeLayer(t)+`}
+        - {priority: 0, source: {kind: file, settings: {path: `+writeLayer(t)+`}}}
   - name: loud
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: `+writeLayer(t)+`}
+        - {priority: 0, source: {kind: file, settings: {path: `+writeLayer(t)+`}}}
     observability: {trace: node, bodies: true}
 `))
 	if err != nil {
@@ -233,7 +233,7 @@ agents:
     engine: {kind: local}
     runtime:
       layers:
-        - {priority: 0, path: `+writeLayer(t)+`}
+        - {priority: 0, source: {kind: file, settings: {path: `+writeLayer(t)+`}}}
     observability: {trace: everything}
 `))
 	if err == nil {

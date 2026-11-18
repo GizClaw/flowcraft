@@ -143,13 +143,14 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		return nil, err
 	}
 	m.mu.Lock()
-	engineKind, engineFound := m.kinds.Engines[spec.Engine.Kind]
+	kinds := m.kinds
+	engineKind, engineFound := kinds.Engines[spec.Engine.Kind]
 	protocolKind, protocolFound := deploy.ProtocolKind{}, false
 	if spec.Protocol != nil {
-		protocolKind, protocolFound = m.kinds.Protocols[spec.Protocol.Kind]
+		protocolKind, protocolFound = kinds.Protocols[spec.Protocol.Kind]
 	}
-	engineNames := sortedKeys(m.kinds.Engines)
-	protocolNames := sortedKeys(m.kinds.Protocols)
+	engineNames := sortedKeys(kinds.Engines)
+	protocolNames := sortedKeys(kinds.Protocols)
 	m.mu.Unlock()
 	if !engineFound {
 		return nil, errdefs.Validationf(
@@ -163,6 +164,12 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	}
 	if err := deploy.ValidateEngineSpec(engineKind, spec.Engine, spec.Runtime.Version != 0); err != nil {
 		return nil, errdefs.Validationf("manage: agent %q: %v", spec.Name, err)
+	}
+	// A kind that is driven by a document reads it through the same table a
+	// runtime layer comes from, so an engine cannot disagree with a layer about
+	// what a source kind means.
+	sources := func(ctx context.Context, document *deploy.LayerSourceDocument) (deploy.LayerSource, error) {
+		return kinds.OpenSource(ctx, fmt.Sprintf("manage: agent %q: engine settings", spec.Name), document)
 	}
 	// The document wins when it states a level; the host's bindings are the
 	// default for the fields it leaves out. A host that must be able to force a
@@ -211,7 +218,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	}
 	engineFingerprint := deploy.CanonicalSettings(spec.Engine.Settings)
 	if engineKind.Fingerprint != nil {
-		engineFingerprint = engineKind.Fingerprint(spec.Engine.Settings)
+		engineFingerprint = engineKind.Fingerprint(ctx, spec.Engine.Settings, sources)
 	}
 	protocolName := ""
 	if spec.Protocol != nil {
@@ -244,6 +251,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Manifest:    deployed.manifest,
 		Trace:       trace,
 		Bodies:      bodies,
+		Sources:     sources,
 	})
 	if err != nil {
 		if rt != nil {

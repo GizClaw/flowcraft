@@ -2,7 +2,6 @@ package nodes
 
 import (
 	"context"
-	"os"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/config"
@@ -60,10 +59,12 @@ func WithBlobStore(store graph.BlobStore) Option {
 // Open reads, validates and compiles a graph document for a runtime.
 //
 // The document is YAML; placeholders are expanded the same way a deployment
-// document's are. The registry is the built-in model, tool and condition kinds
-// plus whatever the options add.
-func Open(ctx context.Context, rt Runtime, path string, opts ...Option) (*graph.Graph, error) {
-	document, err := load(ctx, path)
+// document's are. name is what errors report, and body is where the bytes come
+// from — [config.File], [config.Bytes], [config.FS] or [config.Func]. The
+// registry is the built-in model, tool and condition kinds plus whatever the
+// options add.
+func Open(ctx context.Context, rt Runtime, name string, body config.Source, opts ...Option) (*graph.Graph, error) {
+	document, err := load(ctx, name, body)
 	if err != nil {
 		return nil, err
 	}
@@ -86,24 +87,27 @@ func Open(ctx context.Context, rt Runtime, path string, opts ...Option) (*graph.
 
 // Validate checks a document without compiling it: a host reports a broken
 // graph before it builds any resource.
-func Validate(ctx context.Context, path string) error {
-	_, err := load(ctx, path)
+func Validate(ctx context.Context, name string, body config.Source) error {
+	_, err := load(ctx, name, body)
 	return err
 }
 
 // load reads and parses one document, without a registry.
-func load(ctx context.Context, path string) (graph.Document, error) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return graph.Document{}, errdefs.Validationf("graph: read %s: %w", path, err)
+func load(ctx context.Context, name string, body config.Source) (graph.Document, error) {
+	if body == nil {
+		return graph.Document{}, errdefs.Validationf("graph: %s: no source", name)
 	}
-	expanded, err := config.ExpandDocument(ctx, body)
+	raw, err := body.Body(ctx)
 	if err != nil {
-		return graph.Document{}, errdefs.Validationf("graph: %s: %w", path, err)
+		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
+	}
+	expanded, err := config.ExpandDocument(ctx, raw)
+	if err != nil {
+		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
 	}
 	document, err := graph.Parse(expanded)
 	if err != nil {
-		return graph.Document{}, errdefs.Validationf("graph: %s: %w", path, err)
+		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
 	}
 	return document, nil
 }

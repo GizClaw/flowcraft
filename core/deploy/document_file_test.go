@@ -63,7 +63,7 @@ func TestRequiredPlaceholdersNamesEveryVariable(t *testing.T) {
 
 func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
 	loader := Loader{Kinds: builtinKinds()}
-	requirement, err := loader.RequiredPlaceholdersFile(writeDocument(t))
+	requirement, err := loader.RequiredPlaceholdersFile(context.Background(), writeDocument(t))
 	if err != nil {
 		t.Fatalf("RequiredPlaceholdersFile: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
 
 func TestRequiredPlaceholdersFileReportsAnUnreadableFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	_, err := Loader{Kinds: builtinKinds()}.RequiredPlaceholdersFile(missing)
+	_, err := Loader{Kinds: builtinKinds()}.RequiredPlaceholdersFile(context.Background(), missing)
 	if err == nil || !strings.Contains(err.Error(), "absent.yaml") {
 		t.Fatalf("err = %v, want the path named", err)
 	}

@@ -56,9 +56,11 @@ agents:
     engine:
       kind: graph
       settings:
-        path: ./graphs/react.yaml
+        source: { kind: file, settings: { path: ./graphs/react.yaml } }
     runtime:
-      layers: [{ priority: 0, path: ./runtime.yaml }]
+      layers:
+        - priority: 0
+          source: { kind: file, settings: { path: ./runtime.yaml } }
 ```
 
 ```yaml
