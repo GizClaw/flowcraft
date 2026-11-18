@@ -168,9 +168,7 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 	// A kind that is driven by a document reads it through the same table a
 	// runtime layer comes from, so an engine cannot disagree with a layer about
 	// what a source kind means.
-	sources := func(ctx context.Context, document *deploy.SourceDocument) (deploy.Source, error) {
-		return kinds.OpenSource(ctx, fmt.Sprintf("manage: agent %q: engine settings", spec.Name), document)
-	}
+	sources := kinds.Opener("engine settings")
 	// The document wins when it states a level; the host's bindings are the
 	// default for the fields it leaves out. A host that must be able to force a
 	// level downward would need a different rule, and there is none because

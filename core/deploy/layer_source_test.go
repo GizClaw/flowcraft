@@ -49,6 +49,17 @@ func layerConfig(name string) string {
 		"files: {roots: [" + root + "]}\n"
 }
 
+// writeLayerFile is layerConfig on disk, for a case that needs one real path
+// twice.
+func writeLayerFile(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "runtime.yaml")
+	if err := os.WriteFile(path, []byte(layerConfig("from-file")), 0o600); err != nil {
+		t.Fatalf("write layer: %v", err)
+	}
+	return path
+}
+
 // fileLayer is the file source's written form. The path is rendered by
 // encoding/json rather than by hand: YAML's double-quoted scalars treat a
 // backslash as an escape, so a Windows path pasted in raw would be corrupted.
@@ -318,7 +329,7 @@ func TestLoadRejectsTwoLayersWithOneName(t *testing.T) {
 		"- priority: 10\n" +
 		"  source: {kind: inline, settings: {body: \"{\\\"version\\\": 1}\"}}\n"
 	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), layerDocument(stack))
-	if err == nil || !strings.Contains(err.Error(), "declared twice") {
+	if err == nil || !strings.Contains(err.Error(), "name one of them") {
 		t.Fatalf("err = %v, want the duplicate name refused", err)
 	}
 }
@@ -352,6 +363,36 @@ func TestInlineLayerLoadsThroughTheDocument(t *testing.T) {
 	}
 	if got := specs[0].Runtime.Name; got != "from-inline" {
 		t.Errorf("runtime name = %q, want the inline layer", got)
+	}
+}
+
+// A file layer names itself by the path it reads and has no name knob, so listing
+// one file twice stays legal: it is redundant, not ambiguous.
+func TestLoadAllowsARepeatedFilePath(t *testing.T) {
+	path := writeLayerFile(t)
+	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(), layerDocument(
+		"- priority: 0\n  source: {kind: file, settings: {path: "+path+"}}\n"+
+			"- priority: 10\n  source: {kind: file, settings: {path: "+path+"}}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// The half-migrated spelling - a path copied next to kind instead of into the
+// source's settings - is the most likely wrong rewrite, so it is refused with the
+// replacement rather than as an unknown field.
+func TestLoadRejectsAPathInsideTheSource(t *testing.T) {
+	kinds := deploy.Kinds{}.WithEngines(localEngine()).WithSources(sources.File())
+	_, err := deploy.Loader{Kinds: kinds}.Load(context.Background(),
+		layerDocument("- priority: 0\n  source: {path: ./runtime.yaml}\n"))
+	if err == nil {
+		t.Fatal("the half-migrated source.path was accepted")
+	}
+	for _, want := range []string{"source.path was replaced by source.settings.path", "{kind: file, settings: {path:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 

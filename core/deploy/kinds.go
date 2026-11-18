@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"strings"
 
@@ -160,7 +162,7 @@ type Source struct {
 // provenance of the load rather than of one layer.
 func (s Source) Read(ctx context.Context) ([]byte, error) {
 	if s.Body == nil {
-		return nil, errdefs.Validationf("layer %q has no body", s.Name)
+		return nil, errdefs.Validationf("%q has no body", s.Name)
 	}
 	return s.Body.Body(ctx)
 }
@@ -175,8 +177,14 @@ type SourceKind struct {
 	// Name is what a document writes in source.kind: a runtime layer, an engine's
 	// settings, or the deployment document itself.
 	Name string
-	// Open produces the layer from the written settings. The context is the
+	// Open produces the document from the written settings. The context is the
 	// load's, so a source that reaches a network or a vault can be cancelled.
+	//
+	// The same reference is opened more than once for one deployment — to
+	// validate, for the engine's identity, and to compile — so a source has to
+	// return the same bytes each time within one load. A source that cannot
+	// (a token that rotates per call, a document generated afresh) makes the
+	// recorded identity advisory rather than the identity of what ran.
 	Open func(ctx context.Context, settings json.RawMessage) (Source, error)
 }
 
@@ -221,6 +229,19 @@ func (k Kinds) OpenSource(ctx context.Context, at string, document *SourceDocume
 	return opened, nil
 }
 
+// Opener returns this table as a [SourceOpener] for a caller that names the
+// location itself: a source's error is prefixed with label when it is not empty
+// and left bare when it is, so the caller adds its own location exactly once.
+func (k Kinds) Opener(label string) SourceOpener {
+	return func(ctx context.Context, document *SourceDocument) (Source, error) {
+		opened, err := k.openSource(ctx, document)
+		if err != nil && label != "" {
+			return Source{}, errdefs.Validationf("%s: %w", label, err)
+		}
+		return opened, err
+	}
+}
+
 // openSource resolves a document reference without a location, so its caller can
 // name the place exactly once: an agent's engine settings, a stack entry, or the
 // deployment document itself.
@@ -228,6 +249,11 @@ func (k Kinds) openSource(ctx context.Context, document *SourceDocument) (Source
 	if document == nil {
 		return Source{}, errdefs.Validationf(
 			"source is required; write source: {kind: file, settings: {path: ...}}")
+	}
+	if strings.TrimSpace(document.Path) != "" {
+		return Source{}, errdefs.Validationf(
+			"source.path was replaced by source.settings.path; write source: {kind: file, settings: {path: %q}}",
+			document.Path)
 	}
 	if strings.TrimSpace(document.Kind) == "" {
 		return Source{}, errdefs.Validationf("source.kind is required")
@@ -332,6 +358,18 @@ func ValidateEngineSpec(kind EngineKind, spec EngineSpec, hasRuntime bool) error
 		return errdefs.Validationf("kind %q has no local runtime to configure", spec.Kind)
 	}
 	return nil
+}
+
+// InvalidIdentity is the identity of settings that cannot be resolved to a
+// document at all.
+//
+// Decode refuses such settings, so this is unreachable through the loader. If a
+// host builds a Spec by hand and reaches it anyway, the identity must differ from
+// every real deployment's — and from every other broken one's, because two
+// deployments sharing an identity would resume each other's checkpoints.
+func InvalidIdentity(settings json.RawMessage) string {
+	sum := sha256.Sum256(settings)
+	return "invalid:" + hex.EncodeToString(sum[:])
 }
 
 // CanonicalSettings renders settings the same way regardless of the whitespace

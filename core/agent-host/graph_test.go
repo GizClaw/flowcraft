@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/fstest"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
@@ -12,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
+	"github.com/GizClaw/flowcraft/core/deploy/sources"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -85,35 +87,78 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 // its runtime layer and another for the graph, the loader resolves both, and the
 // manager runs a turn. This is the only test that crosses document → source →
 // manager → graph, as opposed to proving the halves separately.
+// The whole path in one run, over both kinds of address: a document that names
+// the file source and one that names a source the host registered. The second is
+// the case the feature exists for, and the only test in which one host table
+// serves a runtime layer and a graph document at once.
 func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"})))
 	layer := writeRuntimeLayer(t)
 	graphDocument := writeGraphDocument(t, fixedGraph)
-	document := filepath.Join(t.TempDir(), "deploy.yaml")
-	// Paths are quoted by encoding/json: a Windows temporary directory can hold a
-	// space, and a YAML double-quoted scalar would corrupt its backslashes.
-	layerPath, err := json.Marshal(layer)
-	if err != nil {
-		t.Fatalf("marshal layer path: %v", err)
+	document := writeDeploymentDocument(t,
+		map[string]any{"kind": "file", "settings": map[string]any{"path": graphDocument}},
+		map[string]any{"kind": "file", "settings": map[string]any{"path": layer}},
+	)
+	if got := runDeploymentDocument(t, kinds, document); got != "hello" {
+		t.Errorf("text = %q, want the graph's output", got)
 	}
-	graphPath, err := json.Marshal(graphDocument)
-	if err != nil {
-		t.Fatalf("marshal graph path: %v", err)
+}
+
+// The host-value case: one registration serves both documents, which is what the
+// source table promises and no per-package test can show.
+func TestHostSourceDeploymentRunsEndToEnd(t *testing.T) {
+	tree := fstest.MapFS{
+		"runtime.yaml": {Data: []byte(runtimeLayerBody(t))},
+		"graph.yaml":   {Data: []byte(fixedGraph)},
 	}
-	body := "version: 1\n" +
-		"agents:\n" +
-		"  - name: g\n" +
-		"    engine:\n" +
-		"      kind: graph\n" +
-		"      settings:\n" +
-		"        source: {kind: file, settings: {path: " + string(graphPath) + "}}\n" +
-		"    runtime:\n" +
-		"      layers:\n" +
-		"        - priority: 0\n" +
-		"          source: {kind: file, settings: {path: " + string(layerPath) + "}}\n"
-	if err := os.WriteFile(document, []byte(body), 0o600); err != nil {
+	kinds := kindsWithHostSource(tree)
+	document := writeDeploymentDocument(t,
+		map[string]any{"kind": "assets", "settings": map[string]any{"name": "graph.yaml"}},
+		map[string]any{"kind": "assets", "settings": map[string]any{"name": "runtime.yaml"}},
+	)
+	if got := runDeploymentDocument(t, kinds, document); got != "hello" {
+		t.Errorf("text = %q, want the graph's output", got)
+	}
+}
+
+// kindsWithHostSource is the deployment's kind table with one host-registered
+// source under a name the host chose.
+func kindsWithHostSource(tree fstest.MapFS) deploy.Kinds {
+	// `file` is registered beside `assets` because the deployment document itself
+	// is still read from disk: LoadFile is the file source written as a call.
+	return deploy.Kinds{}.
+		WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"}))).
+		WithSources(sources.File(), sources.FS("assets", tree))
+}
+
+// writeDeploymentDocument writes the document as JSON: config reads it as YAML,
+// and a JSON string needs no quoting decisions, so a Windows path survives.
+func writeDeploymentDocument(t *testing.T, engine, layer map[string]any) string {
+	t.Helper()
+	document, err := json.Marshal(map[string]any{
+		"version": 1,
+		"agents": []any{map[string]any{
+			"name":   "g",
+			"engine": map[string]any{"kind": "graph", "settings": map[string]any{"source": engine}},
+			"runtime": map[string]any{"layers": []any{
+				map[string]any{"priority": 0, "source": layer},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal document: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "deploy.json")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
 		t.Fatalf("write document: %v", err)
 	}
+	return path
+}
+
+// runDeploymentDocument loads, deploys and drives one turn, returning the text
+// the graph produced.
+func runDeploymentDocument(t *testing.T, kinds deploy.Kinds, document string) string {
+	t.Helper()
 	specs, err := deploy.Loader{Kinds: kinds}.LoadFile(context.Background(), document)
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
@@ -136,28 +181,31 @@ func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
 			text += typed.Text
 		}
 	}
-	if text != "hello" {
-		t.Errorf("text = %q, want the graph's output", text)
-	}
+	return text
 }
 
-// writeRuntimeLayer is the substrate a document has to point at: a local boundary
+// runtimeLayerBody is the substrate a document has to point at: a local boundary
 // and one writable root, rooted at the test's temporary directory.
-func writeRuntimeLayer(t *testing.T) string {
+func runtimeLayerBody(t *testing.T) string {
 	t.Helper()
 	root := filepath.ToSlash(t.TempDir())
-	body := "version: 1\n" +
+	return "version: 1\n" +
 		"name: doc-layer\n" +
 		"sandbox: {backend: local, writes: [\"" + root + "\"]}\n" +
 		"files: {roots: [\"" + root + "\"]}\n"
+}
+
+// writeRuntimeLayer is runtimeLayerBody on disk.
+func writeRuntimeLayer(t *testing.T) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "runtime.yaml")
-	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(runtimeLayerBody(t)), 0o600); err != nil {
 		t.Fatalf("write runtime layer: %v", err)
 	}
 	return path
 }
 
-// A malformed document fails at load, before any resource is built.
+// A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.
 func TestGraphEngineValidatesTheDocumentAtLoad(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "x"})))
 	path := writeGraphDocument(t, `version: 1

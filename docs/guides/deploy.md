@@ -60,6 +60,9 @@ agents:
 | `agents[].observability` | Absent fields fall back to the host's bindings, which is why the written form keeps "silent" distinct from "off". |
 | `agents[].hooks`         | Chained in declaration order, before the host's own hooks.                                                        |
 
+`version` stays `1` while the field-level tombstones name the replacement: a bump
+would tell a reader "this build reads 2" and nothing about what to write.
+
 Unknown fields, duplicate agent names and unregistered kinds are load errors. A
 kind the document names but the host did not register fails with the registered
 names in the error — never by being skipped.
@@ -93,10 +96,12 @@ type HookKind struct {
 }
 ```
 
-An engine is the only kind whose `Decode` and `Fingerprint` receive the source
-table, because it is the only one that may be driven by a document of its own:
-reading it is part of validating the settings, and its bytes are part of the
-deployment's identity. The table is the same one runtime layers resolve through
+An engine is the only kind whose settings are validated at load time by reading a
+document, and whose bytes are part of the deployment's identity, so its `Decode`
+and `Fingerprint` receive the source table — and `EngineDeps.Sources` carries the
+same opener to `Build`. (A hook can read a document of its own too, but through
+`HookDeps.LoadOptions`, which is host wiring rather than a source reference.) The
+table is the same one runtime layers resolve through
 (see [Layer sources](#layer-sources)), which is why the two cannot disagree
 about what a source kind means.
 
@@ -164,6 +169,10 @@ kinds := builtin.Kinds().WithSources(sources.FS("assets", assets))
 | a host name, e.g. `assets` | `{name}`        | `config.FS` — `sources.FS(name, fsys)`                               |
 | a host name, e.g. `vault`  | `{name}`        | `config.Func` — `sources.Func(name, load)`                           |
 
+An `inline` body is expanded once as part of the deploying document and again as a
+layer, so a `${…}` inside one becomes layer source text: a body that carries a
+reference has to escape its `$` one level deeper.
+
 There is no HTTP, vault or database source in the platform, and that is the
 point: each of those is a policy — TLS, retries, a size limit, credentials — and
 `sources.Func` turns any of them into five lines the host owns rather than a
@@ -171,8 +180,15 @@ feature that decides them for every deployment.
 
 A factory names its layers `<kind>:<reference>` (`assets:runtime/base.yaml`,
 `vault:openai/luna`), so an error or a provenance entry says which store the
-layer came from; `file` is the exception and names itself by the path, because
-the reference already is a location.
+layer came from. The two registrations name themselves differently: `file` uses
+the path it reads, because that is already a location, and `inline` uses its
+`name` setting, defaulting to `inline` — which is why two anonymous inline layers
+in one stack are a load error.
+
+A source is opened more than once for one deployment (to validate, for the
+engine's identity, to compile), so it must return the same bytes each time: a
+loader that rotates a token per call makes the recorded identity advisory rather
+than a description of what ran.
 
 `Body` is the same `config.Source` a layer stack has always used, so nothing below
 this seam changes: merge, placeholder expansion, provenance and `runtime.Digest`
@@ -225,9 +241,11 @@ registered by the host that owns the memory.
 
 Each registration ships beside the package that implements it, and `deploy`
 itself imports none of them: a host that runs one engine should not link the
-other, which a hardcoded table in `deploy` would make impossible. The directory
-tree mirrors `deploy.Kinds` — `deploy/engines/<kind>` and
-`deploy/protocols/<kind>` — and the asymmetry between them is content, not shape.
+other, which a hardcoded table in `deploy` would make impossible. The opt-in
+packages mirror the four tables of `deploy.Kinds` — `deploy/engines/<kind>`,
+`deploy/protocols/<kind>`, `deploy/sources` for the sources and
+`deploy/builtin` for the whole set — and the asymmetry between them is content,
+not shape.
 An engine kind is a registration only, because its implementation is a lower
 layer (`core/agent-graph`, `core/agent-a2a`) that must not import `deploy`. The
 A2A protocol kind has no such lower home: it is driven by a deployment, so the
@@ -238,6 +256,7 @@ chooses:
 import (
     "github.com/GizClaw/flowcraft/core/deploy"
     enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
+    "github.com/GizClaw/flowcraft/core/deploy/sources"
 )
 
 // A document is read through the source table, so a host that builds its own
@@ -249,8 +268,8 @@ kinds := deploy.Kinds{}.
 ```
 
 `deploy/builtin` is the convenience trade for a host that wants every kind in one
-line: it imports all three registrations, so the binary carries the graph runtime
-and the A2A client and server. `deploy` alone is the document format and nothing
+line: it imports every registration, so the binary carries the graph runtime and
+the A2A client and server. `deploy` alone is the document format and nothing
 else.
 
 Extend with copies, never by mutating the shared tables:

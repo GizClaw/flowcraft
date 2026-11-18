@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/goccy/go-json"
 )
 
 // testLoader registers one local fake kind beside the stubbed a2a and graph kinds.
@@ -99,6 +100,32 @@ agents:
 		if _, err := testLoader(t).Load(context.Background(), []byte(body)); err == nil {
 			t.Errorf("%s was accepted", name)
 		}
+	}
+}
+
+// A source that cannot open a document already names its own location, so the
+// loader must not prefix the same field again: the agent is named once.
+func TestLoadNamesTheAgentOnceForASourceError(t *testing.T) {
+	kind := EngineKind{
+		Name:  "local",
+		Local: true,
+		Decode: func(ctx context.Context, _ json.RawMessage, sources SourceOpener) (any, error) {
+			_, err := sources(ctx, &SourceDocument{Kind: "vault"})
+			return nil, err
+		},
+	}
+	_, err := Loader{Kinds: Kinds{}.WithEngines(kind)}.Load(context.Background(), []byte(`
+version: 1
+agents:
+  - name: local
+    engine: {kind: local}
+    runtime: {layers: [{priority: 0, source: {kind: file, settings: {path: /x}}}]}
+`))
+	if err == nil {
+		t.Fatal("a source that is not registered was accepted")
+	}
+	if got := strings.Count(err.Error(), "agents[local].engine"); got != 1 {
+		t.Fatalf("error %q names the agent %d times, want 1", err, got)
 	}
 }
 

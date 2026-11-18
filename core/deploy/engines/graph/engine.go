@@ -127,30 +127,19 @@ func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.
 func fingerprint(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) string {
 	var decoded graphSettings
 	if err := json.Unmarshal(settings, &decoded); err != nil || decoded.Source == nil || sources == nil {
-		return invalidIdentity(settings)
+		return deploy.InvalidIdentity(settings)
 	}
 	document, err := sources(ctx, decoded.Source)
 	if err != nil {
 		// Decode opened the same source successfully, so a failure here is a
 		// source that disappeared between the two calls: the identity has to
 		// differ from the old one, which is what an unreadable document means.
-		return invalidIdentity(settings)
+		return deploy.InvalidIdentity(settings)
 	}
 	body, err := document.Read(ctx)
 	if err != nil {
-		return invalidIdentity(settings)
+		return deploy.InvalidIdentity(settings)
 	}
 	sum := sha256.Sum256(append([]byte(document.Name+"\x00"), body...))
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// invalidIdentity is what a settings blob that cannot be resolved hashes to.
-//
-// Decode refuses such a blob, so this is unreachable through the loader; if it is
-// reached anyway the identity must differ from every real document's — and from
-// every *other* broken one, because two deployments sharing an identity would
-// resume each other's checkpoints.
-func invalidIdentity(settings json.RawMessage) string {
-	sum := sha256.Sum256(settings)
-	return "invalid:" + hex.EncodeToString(sum[:])
 }

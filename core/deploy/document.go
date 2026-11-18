@@ -116,6 +116,10 @@ type SourceDocument struct {
 	Kind string `json:"kind"`
 	// Settings is the kind's own configuration, decoded by its registration.
 	Settings json.RawMessage `json:"settings"`
+	// Path is the half-migrated spelling this block refuses: a document that
+	// copied an old path next to kind instead of inside settings. It is decoded
+	// only so the reader is told where the field went.
+	Path string `json:"path"`
 }
 
 // ProtocolDocument selects the exposure and carries its settings.
@@ -167,7 +171,7 @@ func FileSourceDocument(path string) *SourceDocument {
 // entry for a body that is already in memory, and [Loader.LoadFile] is this with
 // the file source.
 func (l Loader) LoadSource(ctx context.Context, source *SourceDocument) ([]Spec, error) {
-	body, err := l.documentBody(ctx, source)
+	_, body, err := l.documentBody(ctx, source)
 	if err != nil {
 		return nil, err
 	}
@@ -182,17 +186,17 @@ func (l Loader) LoadFile(ctx context.Context, path string) ([]Spec, error) {
 
 // documentBody opens the deployment document itself. The location is not a field
 // path: this is the root, and every error below it names the agent it belongs to.
-func (l Loader) documentBody(ctx context.Context, source *SourceDocument) ([]byte, error) {
+func (l Loader) documentBody(ctx context.Context, source *SourceDocument) (string, []byte, error) {
 	const at = "manage: deployment document"
 	opened, err := l.Kinds.OpenSource(ctx, at, source)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	body, err := opened.Read(ctx)
 	if err != nil {
-		return nil, errdefs.Validationf("%s: %s: %w", at, opened.Name, err)
+		return "", nil, errdefs.Validationf("%s: %s: %w", at, opened.Name, err)
 	}
-	return body, nil
+	return opened.Name, body, nil
 }
 
 // RequiredPlaceholders reports the environment variables a deployment document names,
@@ -206,11 +210,11 @@ func (l Loader) RequiredPlaceholders(body []byte) (config.Requirement, error) {
 // RequiredPlaceholdersSource does the same for a document read through a source
 // kind.
 func (l Loader) RequiredPlaceholdersSource(ctx context.Context, source *SourceDocument) (config.Requirement, error) {
-	body, err := l.documentBody(ctx, source)
+	name, body, err := l.documentBody(ctx, source)
 	if err != nil {
 		return config.Requirement{}, err
 	}
-	return l.RequiredPlaceholders(body)
+	return config.RequiredPlaceholdersDocument(body, name)
 }
 
 // RequiredPlaceholdersFile reads a document from disk and reports its environment
@@ -385,12 +389,17 @@ func (l Loader) layers(ctx context.Context, agent string, runtimeDocument *Runti
 			return nil, err
 		}
 		// Layer names are how a merge failure points at its layer, so two
-		// anonymous inline layers in one stack would be indistinguishable.
-		if _, duplicate := seen[source.Name]; duplicate {
-			return nil, errdefs.Validationf(
-				"%s: source %q is declared twice; name one of them", at, source.Name)
+		// anonymous inline layers in one stack would be indistinguishable. A file
+		// source names itself by the path it reads, and the kind has no `name`
+		// setting to obey a "name one of them" remedy, so listing one file twice
+		// (redundant, not ambiguous) stays legal.
+		if layer.Source != nil && layer.Source.Kind != "file" {
+			if _, duplicate := seen[source.Name]; duplicate {
+				return nil, errdefs.Validationf(
+					"%s: two layers report the name %q; name one of them", at, source.Name)
+			}
+			seen[source.Name] = struct{}{}
 		}
-		seen[source.Name] = struct{}{}
 		layers = append(layers, config.Layer{
 			Priority: layer.Priority,
 			// The source names the layer: it is the only part that knows whether
@@ -405,9 +414,7 @@ func (l Loader) layers(ctx context.Context, agent string, runtimeDocument *Runti
 // opener hands a kind the deployment's source table without a location: the
 // loader names the agent around whatever the kind or its source reports.
 func (l Loader) opener() SourceOpener {
-	return func(ctx context.Context, document *SourceDocument) (Source, error) {
-		return l.Kinds.openSource(ctx, document)
-	}
+	return l.Kinds.Opener("")
 }
 
 func (l Loader) engine(name string) (EngineKind, bool) {

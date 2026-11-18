@@ -6,9 +6,14 @@
 // the kind tables, and nothing else — so a host that wants exactly one engine
 // imports exactly that engine's package:
 //
-//	import enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
+//	import (
+//		enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
+//		"github.com/GizClaw/flowcraft/core/deploy/sources"
+//	)
 //
-//	kinds := deploy.Kinds{}.WithEngines(enginesgraph.Engine())
+//	kinds := deploy.Kinds{}.
+//		WithEngines(enginesgraph.Engine()).
+//		WithSources(sources.File())
 //
 // Importing this package instead is the convenience trade those call sites make:
 // one line, and the binary carries the graph runtime and the A2A client and

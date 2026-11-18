@@ -117,6 +117,21 @@ func TestDecodeRejectsTheRemovedPathSetting(t *testing.T) {
 	}
 }
 
+// The half-migrated spelling inside the source block - a path copied next to
+// kind instead of into the source's settings - is the most likely wrong rewrite,
+// so it is refused with the replacement rather than as an unknown field.
+func TestDecodeRejectsAPathInsideTheSource(t *testing.T) {
+	_, err := decode(t, table(t), settings(t, map[string]any{
+		"source": map[string]any{"path": write(t, doc)},
+	}))
+	if err == nil {
+		t.Fatal("the half-migrated source.path was accepted")
+	}
+	if !strings.Contains(err.Error(), "source.path was replaced by source.settings.path") {
+		t.Fatalf("Decode = %v, want the half-migration message", err)
+	}
+}
+
 // A host that calls Decode without a table gets a sentence, not a panic.
 func TestDecodeRejectsANilSourceTable(t *testing.T) {
 	raw := settings(t, map[string]any{"source": fileSource(write(t, doc))})

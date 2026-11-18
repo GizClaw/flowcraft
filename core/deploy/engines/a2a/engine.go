@@ -71,7 +71,7 @@ func fingerprint(settings json.RawMessage) string {
 		// Decode refuses a settings blob that does not parse, so this is
 		// unreachable through the loader. If it is reached anyway, the identity
 		// must differ from every real peer's rather than look like an empty one.
-		return "invalid"
+		return deploy.InvalidIdentity(settings)
 	}
 	var auth struct {
 		Type string `json:"type"`

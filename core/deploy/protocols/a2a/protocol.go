@@ -22,11 +22,13 @@ import (
 //     import deploy and register itself, and nothing in core/deploy has to know
 //     it exists.
 //
-// A host that wants one engine and this exposure takes exactly those two:
+// A host that wants one engine and this exposure takes exactly those two, plus a
+// source: the deployment document itself is read through the source table.
 //
 //	kinds := deploy.Kinds{}.
 //	    WithEngines(enginesgraph.Engine()).
-//	    WithProtocols(protocolsa2a.Protocol())
+//	    WithProtocols(protocolsa2a.Protocol()).
+//	    WithSources(sources.File())
 //
 // Handler options are host wiring (transport, interceptors), so they are captured
 // here rather than living on the document.
