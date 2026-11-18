@@ -56,10 +56,12 @@ agents:
   - name: assistant
     engine:
       kind: graph # registered kind, not a built-in name
-      settings: { path: ./graphs/assistant.yaml }
+      settings:
+        source: { kind: file, settings: { path: ./graphs/assistant.yaml } }
     runtime:
       layers:
-        - { priority: 0, path: ./runtime.yaml }
+        - priority: 0
+          source: { kind: file, settings: { path: ./runtime.yaml } }
     protocol:
       kind: a2a
       settings: { peer: { url: https://client.example } }
@@ -68,10 +70,11 @@ agents:
       modes: [sync]
 ```
 
-Everything a document can name is a **kind** — engine, protocol or hook — and a
-kind the host did not register is a load error listing what it did register,
-never a silently skipped block. The built-ins are `a2a` and `graph` engines, the
-`a2a` protocol, and no hooks: a host's policy is the host's.
+Everything a document can name is a **kind** — engine, protocol, hook or the
+source a runtime layer is read from — and a kind the host did not register is a
+load error listing what it did register, never a silently skipped block. The
+built-ins are `a2a` and `graph` engines, the `a2a` protocol, the `file` and
+`inline` layer sources, and no hooks: a host's policy is the host's.
 
 ## Quickstart
 

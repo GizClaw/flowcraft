@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/config"
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/goccy/go-json"
 )
@@ -30,17 +33,42 @@ func a2aKind() ProtocolKind {
 // builtinKinds is the kind table these tests load documents against.
 //
 // The real registrations are opt-in packages (deploy/engines/*,
-// deploy/protocols/a2a) that import this one, so an in-package test cannot import
-// them back. What the loader needs from a kind is its name, its local-or-remote
-// answer and a Decode that validates the settings; the engines themselves are
-// tested where they live, and a2aKind stands in for the protocol.
+// deploy/protocols/a2a, deploy/builtin) that import this one, so an in-package
+// test cannot import them back. What the loader needs from a kind is its name, its
+// local-or-remote answer and a Decode that validates the settings; the engines
+// themselves are tested where they live, and a2aKind stands in for the protocol.
 func builtinKinds() Kinds {
 	return Kinds{}.
 		WithEngines(
 			EngineKind{Name: "a2a"},
 			EngineKind{Name: "graph", Local: true},
 		).
-		WithProtocols(a2aKind())
+		WithProtocols(a2aKind()).
+		WithSources(fileSource())
+}
+
+// fileSource is the file layer source as the document sees it: settings.path,
+// named after the path it reads. The registration these tests exercise end to end
+// is deploy/builtin's, and it is tested from the external test package.
+func fileSource() SourceKind {
+	return SourceKind{
+		Name: "file",
+		Open: func(_ context.Context, settings json.RawMessage) (Source, error) {
+			// Strict, like core/deploy/sources.File: a hand copy that accepted
+			// unknown keys would keep these tests green while the real
+			// registration refused the same document.
+			decoded, err := decode.Decode[struct {
+				Path string `json:"path"`
+			}](settings)
+			if err != nil {
+				return Source{}, err
+			}
+			if decoded.Path == "" {
+				return Source{}, errors.New("file: settings.path is required")
+			}
+			return Source{Name: decoded.Path, Body: config.File(decoded.Path)}, nil
+		},
+	}
 }
 
 type stubProtocol struct{}

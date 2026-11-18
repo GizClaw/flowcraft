@@ -63,18 +63,24 @@ func TestRequiredPlaceholdersNamesEveryVariable(t *testing.T) {
 
 func TestRequiredPlaceholdersFileReadsTheDocument(t *testing.T) {
 	loader := Loader{Kinds: builtinKinds()}
-	requirement, err := loader.RequiredPlaceholdersFile(writeDocument(t))
+	path := writeDocument(t)
+	requirement, err := loader.RequiredPlaceholdersFile(context.Background(), path)
 	if err != nil {
 		t.Fatalf("RequiredPlaceholdersFile: %v", err)
 	}
 	if len(requirement.Required) != 1 || requirement.Required[0] != "PEER_URL" {
 		t.Errorf("required = %v, want PEER_URL", requirement.Required)
 	}
+	// A host prints this map as "edit X in <file>", so the name has to be the
+	// document the source read, not a constant.
+	if got := requirement.Sources["PEER_URL"]; len(got) != 1 || got[0] != path {
+		t.Errorf("sources = %v, want the document's path", got)
+	}
 }
 
 func TestRequiredPlaceholdersFileReportsAnUnreadableFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "absent.yaml")
-	_, err := Loader{Kinds: builtinKinds()}.RequiredPlaceholdersFile(missing)
+	_, err := Loader{Kinds: builtinKinds()}.RequiredPlaceholdersFile(context.Background(), missing)
 	if err == nil || !strings.Contains(err.Error(), "absent.yaml") {
 		t.Fatalf("err = %v, want the path named", err)
 	}

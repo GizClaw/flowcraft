@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
+	"github.com/GizClaw/flowcraft/core/config"
 )
 
 // probeKind exists to prove the hook registered it: the test graph below names a
@@ -44,7 +45,8 @@ func TestRuntimeKindsAreBuiltFromTheRuntime(t *testing.T) {
 	rt := testRuntime(t, &stubProvider{})
 	var seen nodes.Runtime
 	kind := &probeKind{}
-	built, err := nodes.Open(context.Background(), rt, writeProbeDocument(t),
+	path := writeProbeDocument(t)
+	built, err := nodes.Open(context.Background(), rt, path, config.File(path),
 		nodes.WithRuntimeKinds(func(got nodes.Runtime) ([]graph.NodeKind, error) {
 			seen = got
 			kind.seen = got
@@ -63,7 +65,8 @@ func TestRuntimeKindsAreBuiltFromTheRuntime(t *testing.T) {
 
 func TestRuntimeKindsReportAFailure(t *testing.T) {
 	rt := testRuntime(t, &stubProvider{})
-	_, err := nodes.Open(context.Background(), rt, writeProbeDocument(t),
+	path := writeProbeDocument(t)
+	_, err := nodes.Open(context.Background(), rt, path, config.File(path),
 		nodes.WithRuntimeKinds(func(nodes.Runtime) ([]graph.NodeKind, error) {
 			return nil, errors.New("a kind that cannot be built")
 		}))

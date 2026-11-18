@@ -18,10 +18,19 @@ func rawSettings(value any) json.RawMessage {
 	return body
 }
 
+// decode runs the kind's load-time validation. A peer has no document, so the
+// source table is nil: a kind that needed one would fail here, which is the point.
+func decode(settings json.RawMessage) (any, error) {
+	return enginesa2a.Engine().Decode(context.Background(), settings, nil)
+}
+
+func fingerprint(settings json.RawMessage) string {
+	return enginesa2a.Engine().Fingerprint(context.Background(), settings, nil)
+}
+
 // An auth block this build cannot honour is refused instead of being dropped:
 // connecting anonymously would look like a peer outage.
 func TestDecodeRejectsUnsupportedAuth(t *testing.T) {
-	decode := enginesa2a.Engine().Decode
 	for name, auth := range map[string]json.RawMessage{
 		"type":  json.RawMessage(`{"type":"basic","token":"secret"}`),
 		"empty": json.RawMessage(`{"type":"bearer"}`),
@@ -42,14 +51,14 @@ func TestDecodeAcceptsBearerAuth(t *testing.T) {
 		"peer": "https://peer.test",
 		"auth": map[string]string{"type": "bearer", "token": "secret"},
 	})
-	if _, err := enginesa2a.Engine().Decode(settings); err != nil {
+	if _, err := decode(settings); err != nil {
 		t.Fatalf("Decode = %v, want the bearer credential accepted", err)
 	}
 }
 
 // A missing peer is refused at load time, not at the first message.
 func TestDecodeRequiresAPeer(t *testing.T) {
-	if _, err := enginesa2a.Engine().Decode(json.RawMessage(`{}`)); err == nil {
+	if _, err := decode(json.RawMessage(`{}`)); err == nil {
 		t.Fatal("an a2a engine without a peer was accepted")
 	}
 }
@@ -58,7 +67,7 @@ func TestDecodeRequiresAPeer(t *testing.T) {
 // dropped on the way to the peer.
 func TestDecodeRejectsUnknownSettings(t *testing.T) {
 	settings := rawSettings(map[string]any{"peer": "https://peer.test", "bogus": 1})
-	_, err := enginesa2a.Engine().Decode(settings)
+	_, err := decode(settings)
 	if err == nil || !strings.Contains(err.Error(), "bogus") {
 		t.Fatalf("Decode = %v, want a complaint about the unknown setting", err)
 	}
@@ -67,7 +76,6 @@ func TestDecodeRejectsUnknownSettings(t *testing.T) {
 // The token is not part of the deployment's identity: rotating a credential must
 // not invalidate a session, changing the peer must.
 func TestFingerprintIgnoresTheToken(t *testing.T) {
-	fingerprint := enginesa2a.Engine().Fingerprint
 	one := fingerprint(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "one"}}))
 	two := fingerprint(rawSettings(map[string]any{"peer": "https://a", "auth": map[string]string{"type": "bearer", "token": "two"}}))
 	if one != two {

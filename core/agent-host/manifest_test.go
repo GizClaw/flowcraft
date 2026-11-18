@@ -24,7 +24,10 @@ func TestDeploymentRecordsAManifest(t *testing.T) {
 	manager := newManager(t, kinds, host)
 	spec := testSpec(t, "g", "graph")
 	spec.Engine.Settings = rawSettings(map[string]any{
-		"path": writeGraphDocument(t, fixedGraph),
+		"source": map[string]any{
+			"kind":     "file",
+			"settings": map[string]any{"path": writeGraphDocument(t, fixedGraph)},
+		},
 	})
 	if err := manager.Add(context.Background(), spec); err != nil {
 		t.Fatalf("Add: %v", err)

@@ -26,10 +26,16 @@ import (
 // Engine returns the "a2a" engine kind.
 func Engine() deploy.EngineKind {
 	return deploy.EngineKind{
-		Name:        "a2a",
-		Decode:      decodeSettings,
-		Fingerprint: fingerprint,
-		Build:       build,
+		Name: "a2a",
+		// A peer is described entirely by its settings: there is no document to
+		// read, so the source table goes unused.
+		Decode: func(_ context.Context, settings json.RawMessage, _ deploy.SourceOpener) (any, error) {
+			return decodeSettings(settings)
+		},
+		Fingerprint: func(_ context.Context, settings json.RawMessage, _ deploy.SourceOpener) string {
+			return fingerprint(settings)
+		},
+		Build: build,
 	}
 }
 
@@ -65,7 +71,7 @@ func fingerprint(settings json.RawMessage) string {
 		// Decode refuses a settings blob that does not parse, so this is
 		// unreachable through the loader. If it is reached anyway, the identity
 		// must differ from every real peer's rather than look like an empty one.
-		return "invalid"
+		return deploy.InvalidIdentity(settings)
 	}
 	var auth struct {
 		Type string `json:"type"`

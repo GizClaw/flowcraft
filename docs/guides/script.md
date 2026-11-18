@@ -14,7 +14,7 @@ It is not a built-in node kind — a script engine is a dependency choice, so th
 host registers it where it opens the graph:
 
 ```go
-built, err := nodes.Open(ctx, rt, "graphs/game.yaml",
+built, err := nodes.Open(ctx, rt, "graphs/game.yaml", config.File("graphs/game.yaml"),
     nodes.WithRuntimeKinds(func(rt nodes.Runtime) ([]graph.NodeKind, error) {
         kind, err := script.New(
             script.WithRuntime(rt),                 // what a tool call dispatches through

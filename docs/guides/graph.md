@@ -56,9 +56,11 @@ agents:
     engine:
       kind: graph
       settings:
-        path: ./graphs/react.yaml
+        source: { kind: file, settings: { path: ./graphs/react.yaml } }
     runtime:
-      layers: [{ priority: 0, path: ./runtime.yaml }]
+      layers:
+        - priority: 0
+          source: { kind: file, settings: { path: ./runtime.yaml } }
 ```
 
 ```yaml
@@ -260,7 +262,7 @@ apply them twice.
 Register kinds where the graph is opened:
 
 ```go
-built, err := nodes.Open(ctx, rt, "graphs/react.yaml",
+built, err := nodes.Open(ctx, rt, "graphs/react.yaml", config.File("graphs/react.yaml"),
     nodes.WithKinds(myKind()),                  // static kinds
     nodes.WithRuntimeKinds(func(rt nodes.Runtime) ([]graph.NodeKind, error) {
         kind, err := script.New(script.WithRuntime(rt))
@@ -296,7 +298,7 @@ by every session; the runner owns one run.
 
 - Deltas are written with the step; a base carries the whole state and is written
   when the deltas would be missing, or every `checkpoint.every` steps.
-- The engine's `Fingerprint` is the document's **path and bytes**: editing the
+- The engine's `Fingerprint` is the document's **source name and bytes**: editing the
   file invalidates the checkpoints taken under the old graph, the same rule a
   changed runtime or engine setting follows.
 - `Replay: true` answers model calls from the task's records. A miss is an error,
