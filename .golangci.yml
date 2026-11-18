@@ -1,9 +1,8 @@
 # golangci-lint configuration (schema v2).
 #
-# CI scope: the in-workspace modules except examples/forge (core, craft,
-# examples/anvil, backends/*, driver) — see .github/workflows/ci.yml.
-# examples/forge pins released versions and tools/releasegate stays out of
-# the gate.
+# CI scope: the in-workspace modules except examples/forge (core, driver) — see
+# .github/workflows/ci.yml. examples/forge pins released versions and
+# tools/releasegate stays out of the gate.
 #
 # The enabled set mirrors golangci-lint's "standard" linters, made explicit so
 # future additions are deliberate changes. errorlint is the one addition beyond
@@ -51,12 +50,39 @@ linters:
       # linters.exclusions.rules — that list may only shrink, and winning
       # there means lowering this number, never adding an entry.
       #
+      # The baseline is empty: every package in scope is at or below 40. The
+      # next step down is 35, and four functions stand in the way, as the
+      # linter reports them at that floor: (*Run).runStep (37) in
+      # core/agent-graph/run.go, and compileVideo (37), applyVideoOptions (37)
+      # and dashscope's compileVideo (38) in driver/bytedance and
+      # driver/dashscope. Lower this number when they are split; do not add an
+      # entry to keep it at 40.
       min-complexity: 40
 
     depguard:
+      # The tier ladder, as an import graph rather than a convention. core's
+      # package doc and README state that imports travel downwards only —
+      # contracts -> inference -> boundaries -> assembly -> execution ->
+      # deployment — and these rules are that sentence, checkable.
+      #
+      # Two things are deliberately outside the ladder:
+      #
+      #   core/internal    module-private helpers; every tier may use them.
+      #   core/telemetry   every layer reports through it, so it is above
+      #                    nothing and below nothing. It is not denied
+      #                    anywhere, and a tier rule lists nothing about it.
+      #
+      # Tier 6, the deployment layer (core/deploy, core/agent-host), is the top
+      # of the ladder and therefore denies nothing: no import can travel off
+      # the end of the graph.
+      #
+      # Matching: depguard resolves `files` against an absolute path, so the
+      # shape is **/core/<pkg>/** — a bare `tool/**` never matches. A deny
+      # entry matches by prefix, which is why denying core/tool also denies
+      # core/tool-builtin and core/tool-mcp.
       rules:
         # core/inference/model holds the model declaration vocabulary and
-        # depends only on core/message and the leaf core/utils/ptr, never on
+        # depends only on core/message and the leaf core/internal/ptr, never on
         # the inference contract that re-exports it. An import in this
         # direction would be a cycle — and, more importantly, would mean the
         # vocabulary had grown a dependency on the runtime it describes.
@@ -68,24 +94,116 @@ linters:
             # the value as a prefix and also denies the sibling leaves
             # (core/inference/usage, core/inference/model) that depend on it.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
-              desc: "core/inference/model must not import the inference contract"
-        # inference/usage is the accounting vocabulary a host names without
-        # taking on the inference runtime: core/agent depends on it, and that
-        # dependency only stays leaf-shaped if nothing here reaches back into
-        # the contract it describes.
+              desc: "core/inference/model must not import the contract"
         usage-is-a-leaf:
           files:
             - "**/core/inference/usage/**"
           deny:
-            # Exact match, so importing the model leaf stays legal.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
-              desc: "core/inference/usage must not import the inference contract"
+              desc: "core/inference/usage must not import the contract"
+        # Tier 1 — contracts. Vocabulary and nothing else: message, errdefs,
+        # permission, fsx, skill, config, correlation. A contract that reached
+        # for any tier above it could not be imported by the package it
+        # describes.
+        contracts-import-nothing-above:
+          files:
+            - "**/core/message/**"
+            - "**/core/errdefs/**"
+            - "**/core/permission/**"
+            - "**/core/fsx/**"
+            - "**/core/skill/**"
+            - "**/core/config/**"
+            - "**/core/correlation/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/inference"
+              desc: "a contract must not import the inference tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/tool"
+              desc: "a contract must not import the tool tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/sandbox"
+              desc: "a contract must not import the sandbox tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/runtime"
+              desc: "a contract must not import the assembly tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/agent"
+              desc: "a contract must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/delegation"
+              desc: "a contract must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/deploy"
+              desc: "a contract must not import the deployment tier"
+        # Tier 2 — inference: the provider contract, its vocabulary leaves, the
+        # two protocol families. It may not reach for a boundary, an assembly,
+        # or anything that speaks of a conversation.
+        inference-imports-nothing-above:
+          files:
+            - "**/core/inference/**"
+            - "**/core/inference-openai/**"
+            - "**/core/inference-anthropic/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/tool"
+              desc: "inference must not import the tool tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/sandbox"
+              desc: "inference must not import the sandbox tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/runtime"
+              desc: "inference must not import the assembly tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/agent"
+              desc: "inference must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/delegation"
+              desc: "inference must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/deploy"
+              desc: "inference must not import the deployment tier"
+        # Tier 3 — boundaries: tool, its sources and middlewares, the sandbox
+        # contract with its engine and backends. A boundary is handed a policy;
+        # it does not build one, so it may not import the assembly that decides
+        # it.
+        boundaries-import-nothing-above:
+          files:
+            - "**/core/tool/**"
+            - "**/core/tool-builtin/**"
+            - "**/core/tool-mcp/**"
+            - "**/core/sandbox/**"
+            - "**/core/sandbox-local/**"
+            - "**/core/sandbox-bwrap/**"
+            - "**/core/sandbox-seatbelt/**"
+            - "**/core/sandbox-windows/**"
+            - "**/core/sandbox-remote/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/runtime"
+              desc: "a boundary must not import the assembly tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/agent"
+              desc: "a boundary must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/delegation"
+              desc: "a boundary must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/deploy"
+              desc: "a boundary must not import the deployment tier"
+        # Tier 4 — assembly. core/runtime builds the substrate a turn runs on;
+        # it knows nothing about runs, sessions or deployments.
+        assembly-imports-nothing-above:
+          files:
+            - "**/core/runtime/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/agent"
+              desc: "the assembly must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/delegation"
+              desc: "the assembly must not import the execution tier"
+            - pkg: "github.com/GizClaw/flowcraft/core/deploy"
+              desc: "the assembly must not import the deployment tier"
+        # Tier 5 — execution. An engine produces agent.Event streams; it does
+        # not decide what a deployment is or how one is served.
+        execution-imports-nothing-above:
+          files:
+            - "**/core/agent/**"
+            - "**/core/agent-graph/**"
+            - "**/core/agent-a2a/**"
+            - "**/core/delegation/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/deploy"
+              desc: "the execution tier must not import the deployment tier"
 
   exclusions:
-    # gocyclo baseline: the functions still above min-complexity today. Each
-    # entry is known debt, not a pattern to copy — gocyclo reports a position
-    # rather than a symbol, so an entry exempts the whole file. Split the file
-    # and delete its entry; never add one for new code.
+    # The gocyclo baseline is empty: no function in scope is above 40, so the
+    # only entry left is the test-file budget below. A future entry is known
+    # debt, not a pattern to copy — gocyclo reports a position rather than a
+    # symbol, so an entry exempts the whole file. Split the file and delete its
+    # entry; never add one for new code.
     rules:
       # Test files keep their own budget: a fixture builder, a table or a
       # conformance suite that enumerates every entry point is long by nature,
@@ -93,25 +211,3 @@ linters:
       # split one.
       - linters: [gocyclo]
         path: "_test\\.go"
-      - linters: [gocyclo]
-        path: "agent/agenttest/checkpoint_store_suite\\.go"
-      - linters: [gocyclo]
-        path: "memory/eval/cmd/memory-eval/main\\.go"
-      - linters: [gocyclo]
-        path: "memory/retrieval/provider\\.go"
-      - linters: [gocyclo]
-        path: "memory/settings\\.go"
-      - linters: [gocyclo]
-        path: "memory/factory\\.go"
-      - linters: [gocyclo]
-        path: "memory/retrieval/fusion/fusion\\.go"
-      - linters: [gocyclo]
-        path: "openai/spec\\.go"
-      - linters: [gocyclo]
-        path: "bytedance/video\\.go"
-      - linters: [gocyclo]
-        path: "dashscope/video\\.go"
-      - linters: [gocyclo]
-        path: "dashscope/model\\.go"
-      - linters: [gocyclo]
-        path: "craft/hostmcp/hostmcp\\.go"
