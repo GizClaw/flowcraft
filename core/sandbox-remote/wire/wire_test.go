@@ -486,3 +486,30 @@ func FuzzDecodeWriteRequest(f *testing.F) {
 		}
 	})
 }
+
+// An exit reason is an untyped int on the wire, so a renumbered or dropped value
+// would travel silently: a remote session that lost its caps would arrive as a
+// budget breach, or the reverse. Round-trip the two verdicts a host must not
+// confuse.
+func TestEventRoundTripKeepsTheExitReason(t *testing.T) {
+	for _, reason := range []sandbox.SessionExitReason{
+		sandbox.SessionBudgetExceeded,
+		sandbox.SessionUnenforceable,
+	} {
+		exit := sandbox.SessionExit{Code: -1, Reason: reason}
+		want := sandbox.SessionEvent{Type: sandbox.SessionEventExited, Seq: 7, Exit: &exit}
+		got, err := wire.ToEvent(wire.FromEvent(want))
+		if err != nil {
+			t.Fatalf("ToEvent(FromEvent(%v)): %v", reason, err)
+		}
+		if got.Type != want.Type || got.Seq != want.Seq {
+			t.Errorf("round trip = %+v, want %+v", got, want)
+		}
+		if got.Exit == nil {
+			t.Fatalf("echoed exit is nil for %v", reason)
+		}
+		if *got.Exit != exit {
+			t.Errorf("exit = %+v, want %+v", *got.Exit, exit)
+		}
+	}
+}

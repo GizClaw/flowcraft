@@ -141,8 +141,11 @@ const (
 	// SessionBudgetExceeded on purpose: nothing was shown to exceed a
 	// budget, the budget stopped being observable, and a host that retries
 	// a budget breach differently from a broken guarantee needs to tell
-	// them apart. Every backend that enforces a cap at runtime produces it
-	// — see core/sandbox/sessionkit.
+	// them apart.
+	//
+	// The sampling backends in core/sandbox/sessionkit produce it. A
+	// backend outside this module that reaps its own processes owes the
+	// same verdict for the same reason, but nothing here can enforce that.
 	SessionUnenforceable
 )
 
