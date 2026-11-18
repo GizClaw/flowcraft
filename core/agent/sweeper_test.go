@@ -105,10 +105,20 @@ func TestSweeperEvictsAnIdleSession(t *testing.T) {
 	})
 	insertIdle(t, a, "stale", time.Now().Add(-time.Hour))
 
+	// The table and the callback are two observations of one eviction: a sweep
+	// removes the entry under the shard lock and reports it after unlocking, so
+	// waiting for "no longer held" can return before OnEvict has run. Wait for
+	// the report, not for the removal.
 	deadline := time.Now().Add(2 * time.Second)
-	for holds(a, "stale") {
+	for {
+		mu.Lock()
+		reported := len(evicted)
+		mu.Unlock()
+		if reported > 0 {
+			break
+		}
 		if time.Now().After(deadline) {
-			t.Fatal("the sweeper never evicted the idle session")
+			t.Fatalf("the sweeper never reported an eviction (held=%v)", holds(a, "stale"))
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
