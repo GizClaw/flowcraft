@@ -182,7 +182,10 @@ enforces by ending the job; a memory budget is sampled from the job's peak
 commit every 25 ms and terminates the tree on a breach, the same shape as the
 unix watcher, so a session may briefly run past its budget. Memory is
 deliberately not a kernel commit limit there: refusing the allocation leaves the
-process running with nothing to report. Without
+process running with nothing to report. When a cap stops being measurable — a
+sampler that fails `maxCapSampleFailures` times in a row, or a lost verdict
+channel — the session is ended as `SessionUnenforceable` with a `NotAvailable`
+error rather than left running unguarded. Without
 `write_confine` the runner is lifecycle-only and a call that asks for write
 confinement is rejected with `NotAvailable`. Network policy runs the child in an
 AppContainer with no network capabilities, plus WFP bind-layer filters for

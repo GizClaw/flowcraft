@@ -113,7 +113,18 @@
 //	                              budget through the kernel's
 //	                              JOB_OBJECT_MSG_END_OF_JOB_TIME,
 //	                              a memory budget through the
-//	                              sampler. A session that reaches
+//	                              sampler. A cap that stops being
+//	                              measurable ends the session as
+//	                              SessionUnenforceable with an
+//	                              errdefs NotAvailable error once
+//	                              maxCapSampleFailures samples in a
+//	                              row fail, or when the cpu
+//	                              verdict channel dies before the
+//	                              session ends — running a child
+//	                              unguarded under a capability that
+//	                              still claims the cap is the
+//	                              failure the contract exists to
+//	                              prevent. A session that reaches
 //	                              its Timeout with a memory budget
 //	                              configured records the job's peak
 //	                              as telemetry, because an exceeded

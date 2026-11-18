@@ -139,16 +139,16 @@ func TestHostSamplerFailsClosedAfterPersistentErrors(t *testing.T) {
 	w := StartGroupCapsWatcher(context.Background(), 31, sandbox.ResourceLimits{MemoryBytes: 1 << 20}, 0)
 	defer w.Stop()
 
-	for range maxSampleFailures - 1 {
+	for range maxCapSampleFailures - 1 {
 		sharedSampler.tick()
 		if err := w.Unenforceable(); err != nil {
-			t.Fatalf("gave up after fewer than %d failures: %v", maxSampleFailures, err)
+			t.Fatalf("gave up after fewer than %d failures: %v", maxCapSampleFailures, err)
 		}
 	}
 	sharedSampler.tick()
 
 	if err := w.Unenforceable(); err == nil {
-		t.Fatalf("still guarding after %d consecutive sampling failures", maxSampleFailures)
+		t.Fatalf("still guarding after %d consecutive sampling failures", maxCapSampleFailures)
 	}
 	if _, kills := h.counts(); len(kills) != 1 || kills[0] != 31 {
 		t.Fatalf("kills = %v, want group 31 once", kills)

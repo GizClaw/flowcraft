@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel/attribute"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -33,9 +34,15 @@ type job struct {
 	mu           sync.Mutex
 	closed       bool   // the handle has been (or is being) released
 	cap          string // "memory" or "cpu"; first cap wins
-	sampleWarned bool   // the sampler is unreadable; warn once, not every tick
+	sampleErr    error  // the caps stopped being measurable; first error wins
+	failures     int    // consecutive failed samples, reset by a good one
+	sampleWarned bool   // unreachable sampler; warn once rather than per tick
 	capped       chan struct{}
 	once         sync.Once
+	// sample reads the job's peak committed memory. It is a field so a test can
+	// simulate a sampler that stops working mid-run, the way the unix watcher's
+	// sampleGroupFn does.
+	sample func() (uintptr, error)
 }
 
 // Job completion-port message codes (winnt.h). The numbers are not adjacent —
@@ -69,6 +76,10 @@ type jobNotifier struct {
 	port  xwin.Handle
 	done  chan struct{}
 	onCap func(string)
+
+	mu       sync.Mutex
+	err      error // the drain died; the verdicts it carried are lost
+	stopping bool  // stop() was called: an aborted wait is expected
 }
 
 // run drains completion messages until stop posts the sentinel or the port is
@@ -80,17 +91,40 @@ func (n *jobNotifier) run() {
 		var key uintptr
 		var ovl *xwin.Overlapped
 		if err := xwin.GetQueuedCompletionStatus(n.port, &qty, &key, &ovl, xwin.INFINITE); err != nil {
+			n.recordStop(err)
 			return
 		}
 		if key == notifierStop {
 			return
 		}
-		switch cap := capForMessage(qty); cap {
-		case "":
-		default:
+		if cap := capForMessage(qty); cap != "" {
 			n.onCap(cap)
 		}
 	}
+}
+
+// recordStop remembers why the drain ended when it was not asked to. A port that
+// dies mid-session takes the cpu verdict with it: the kernel still enforces the
+// budget, but the exit can no longer be attributed to it.
+func (n *jobNotifier) recordStop(err error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.stopping {
+		return
+	}
+	if n.err == nil {
+		n.err = err
+	}
+}
+
+// failure reports why the drain ended, if it ended unasked.
+func (n *jobNotifier) failure() error {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.err
 }
 
 // capForMessage maps a job completion message to the cap it reports, or "" when
@@ -111,6 +145,9 @@ func (n *jobNotifier) stop() {
 	if n == nil {
 		return
 	}
+	n.mu.Lock()
+	n.stopping = true
+	n.mu.Unlock()
 	_ = xwin.PostQueuedCompletionStatus(n.port, 0, notifierStop, nil)
 	select {
 	case <-n.done:
@@ -154,6 +191,7 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 		return nil, errdefs.Internal(fmt.Errorf("windows: create job object: %w", err))
 	}
 	j := &job{h: h, limits: limits, capped: make(chan struct{})}
+	j.sample = j.peakMemory
 	info := jobLimits(limits, timeout)
 	if _, err := xwin.SetInformationJobObject(
 		h, xwin.JobObjectExtendedLimitInformation,
@@ -186,6 +224,27 @@ func (j *job) markCap(cap string) {
 	j.mu.Unlock()
 	j.once.Do(func() { close(j.capped) })
 }
+
+// markUnenforceable records that the caps stopped being measurable. It is
+// mutually exclusive with markCap — a watcher stops at whichever condition it
+// reaches first — and it is not a budget verdict: nothing was measured.
+func (j *job) markUnenforceable(err error) {
+	j.mu.Lock()
+	if j.sampleErr == nil {
+		j.sampleErr = err
+	}
+	j.mu.Unlock()
+}
+
+// unenforceable reports why the caps stopped being measurable, if they did.
+func (j *job) unenforceable() error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.sampleErr
+}
+
+// notifierFailure reports a cpu verdict channel that died mid-session.
+func (j *job) notifierFailure() error { return j.notify.failure() }
 
 // budgetCap reports which resource cap was enforced, if any.
 func (j *job) budgetCap() string {
@@ -230,7 +289,28 @@ func (j *job) enforceCaps(done <-chan struct{}) {
 				terminateJob(j)
 				return
 			case <-ticks:
-				if j.overMemory() {
+				over, err := j.sampleCaps()
+				if err != nil {
+					// A flaky sample must not kill an innocent session, but a sampler
+					// that stays broken means the budget the caller asked for has stopped
+					// being enforced. Polling on forever would run the child unguarded
+					// while the capability still claims the cap, so fail closed once the
+					// failure looks persistent — the unix watcher's rule.
+					if !j.failuresPassed() {
+						continue
+					}
+					wrapped := fmt.Errorf(
+						"windows: job memory sampling failed %d times in a row: %w", j.failureCount(), err)
+					j.markUnenforceable(wrapped)
+					telemetry.Warn(context.Background(),
+						"windows: resource caps became unenforceable, killing the job",
+						attribute.String("sandbox.kill_reason", "sample_failure"),
+						attribute.String("sandbox.cap", "memory"),
+						attribute.String(telemetry.AttrErrorMessage, err.Error()))
+					terminateJob(j)
+					return
+				}
+				if over {
 					j.markCap("memory")
 					terminateJob(j)
 					return
@@ -246,34 +326,48 @@ func (j *job) enforceCaps(done <-chan struct{}) {
 // It is tighter than the unix watcher's 250ms because a job handle answers the
 // same question with one kernel call instead of walking a process tree: the
 // interval is what bounds how far past its budget a session can run before it is
-// killed.
-const jobMemorySampleInterval = 25 * time.Millisecond
+// killed, and how long the caps can stay unobservable before the session is
+// ended. It is a variable so a test can drive the sampler deterministically.
+var jobMemorySampleInterval = 25 * time.Millisecond
 
-// overMemory reports whether the job's peak commit has passed the budget.
-func (j *job) overMemory() bool {
+// sampleCaps reads one sample and reports whether the budget is exceeded. An
+// error is a failed sample, not a breach: the caller decides when repeated
+// failures mean the caps are unenforceable.
+func (j *job) sampleCaps() (bool, error) {
 	// The sampler can tick between release (which marks the handle released) and
-	// the session's done channel closing. Query through the released handle would
-	// log a spurious warning on every teardown.
+	// the session's done channel closing. Querying through the released handle
+	// would log a spurious failure on every teardown.
 	j.mu.Lock()
 	closed := j.closed
 	j.mu.Unlock()
 	if closed {
-		return false
+		return false, nil
 	}
-	peak, err := j.peakMemory()
+	peak, err := j.sample()
+	j.mu.Lock()
+	defer j.mu.Unlock()
 	if err != nil {
-		// A sample that cannot be read is not a breach. Warn once: a silent
-		// sampler is the failure mode this whole path exists to avoid.
-		j.mu.Lock()
-		warned := j.sampleWarned
-		j.sampleWarned = true
-		j.mu.Unlock()
-		if !warned {
-			telemetry.WarnErr(context.Background(), "windows: sample job memory", err)
-		}
-		return false
+		j.failures++
+		return false, err
 	}
-	return peak > uintptr(j.limits.MemoryBytes)
+	j.failures = 0
+	return peak > uintptr(j.limits.MemoryBytes), nil
+}
+
+// failuresPassed advances one failed sample and reports whether the caps should
+// now be declared unenforceable.
+func (j *job) failuresPassed() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.failures >= maxCapSampleFailures
+}
+
+// failureCount is how many samples have failed in a row, for the message that
+// explains why the session was killed.
+func (j *job) failureCount() int {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.failures
 }
 
 // peakMemory reports the job's peak committed memory. A timed-out session is

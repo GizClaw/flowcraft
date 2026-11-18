@@ -278,6 +278,14 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+	// Order matters, and matches unix: a watcher that gave up killed the session
+	// itself, so nothing downstream may relabel that kill as a deadline or a plain
+	// exit. It is not a budget verdict — nothing was measured.
+	if sampleErr := j.unenforceable(); sampleErr != nil {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+			errdefs.NotAvailablef(
+				"windows: resource caps became unenforceable while running process: %w", sampleErr)
+	}
 	if cap := j.budgetCap(); cap != "" {
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
 			errdefs.BudgetExceededf(
@@ -311,6 +319,18 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 	if exitErr, ok := waitErr.(interface{ ExitCode() int }); ok {
 		if terminated {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTerminated}, nil
+		}
+		// A cpu budget whose report channel died still ends the job in the kernel,
+		// but nothing can attribute the exit to it any more. Say that instead of
+		// reporting a plain failure: a caller that routes a breach differently needs
+		// to know the difference, and a caller that inspects errors gets NotAvailable
+		// — the same pair unix produces when its sampler breaks.
+		if j.limits.CPUMillicores > 0 {
+			if notifyErr := j.notifierFailure(); notifyErr != nil {
+				return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+					errdefs.NotAvailablef(
+						"windows: cpu budget verdict lost while running process: %w", notifyErr)
+			}
 		}
 		return sandbox.SessionExit{Code: exitErr.ExitCode(), Reason: sandbox.SessionExited}, nil
 	}
