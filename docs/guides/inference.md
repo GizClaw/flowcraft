@@ -9,9 +9,7 @@ title: Inference Runtime
 the runtime: `core/inference/model` (what a model is), `core/inference/outcome`
 (what one call returned: its identity and its accounting),
 `core/inference/route` (selection, retry, fallback), and `core/runtime`
-(assembly from a deployment document). `core/inference/usage` forwards to
-`outcome` for one release cycle, so a consumer pinned to an older core keeps
-building. `core/inference-openai` and
+(assembly from a deployment document). `core/inference-openai` and
 `core/inference-anthropic` are the two protocol families that ship with the
 platform; every other vendor is a `driver/` module.
 

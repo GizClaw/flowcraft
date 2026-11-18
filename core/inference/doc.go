@@ -72,12 +72,11 @@ package inference
 //     Error without importing the seam);
 //   - a fourth seam lands.
 //
-// One type has already made that move on its own: [Metadata] — the outcome of one
+// One type has already made that move on its own: Metadata — the outcome of one
 // call rather than part of the generation payload — now lives in
 // core/inference/outcome beside the accounting, because core/agent has to name it
 // in a durable record without depending on the provider SPI. That is the second
-// condition, applied to one type. The alias here keeps the old spelling compiling
-// for one release cycle while the driver module moves.
+// condition, applied to one type.
 //
 // Until then each seam keeps its files self-contained — no private helpers
 // shared between seams — so the split stays a directory move.

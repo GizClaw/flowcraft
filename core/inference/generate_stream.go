@@ -108,7 +108,7 @@ type StreamEvent struct {
 	// Usage is the accounting for StreamUsage.
 	Usage *outcome.Usage `json:"usage,omitempty"`
 	// Metadata is the response identity for StreamStart.
-	Metadata *Metadata `json:"metadata,omitempty"`
+	Metadata *outcome.Metadata `json:"metadata,omitempty"`
 	// Finish is the reason for StreamEnd.
 	Finish FinishReason `json:"finish,omitempty"`
 }

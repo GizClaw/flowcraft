@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.11.1
+	github.com/GizClaw/flowcraft/core v0.11.3-0.20261118064449-33be935b63e7
 	github.com/goccy/go-json v0.12.0
 )
 

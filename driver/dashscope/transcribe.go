@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
@@ -125,7 +126,7 @@ func decodeTranscribe(_ context.Context, request inference.GenerateRequest, raw 
 		return inference.GenerateResponse{}, fmt.Errorf("dashscope: transcription returned no text")
 	}
 	return inference.GenerateResponse{Message: message.Message{Role: message.RoleAssistant, Content: message.NewTextContent(strings.Join(texts, "\n"))},
-		FinishReason: inference.FinishStop, Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
+		FinishReason: inference.FinishStop, Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
 }
 
 func (d *driver) compileTranscribe(ctx context.Context, request inference.GenerateRequest, shape protocol.Shape) (protocol.Compiled[transcribeWire], error) {

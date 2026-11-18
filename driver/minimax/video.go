@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -636,11 +636,11 @@ func decodeVideo(
 			Content: message.Content{Parts: []message.Part{message.VideoPart{Source: source}}},
 		},
 		FinishReason: inference.FinishStop,
-		Usage: usage.Usage{
+		Usage: outcome.Usage{
 			OutputTokens: raw.outputTokens,
-			Work:         map[usage.WorkKind]int64{usage.WorkVideosGenerated: 1},
+			Work:         map[outcome.WorkKind]int64{outcome.WorkVideosGenerated: 1},
 		},
-		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
+		Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID},
 	}, nil
 }
 

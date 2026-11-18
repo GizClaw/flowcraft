@@ -6,8 +6,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -270,8 +270,8 @@ func decodeVideo(_ context.Context, request inference.GenerateRequest, raw video
 		return inference.GenerateResponse{}, err
 	}
 	return inference.GenerateResponse{Message: message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{message.VideoPart{Source: source}}}},
-		FinishReason: inference.FinishStop, Usage: usage.Usage{Work: map[usage.WorkKind]int64{usage.WorkVideosGenerated: 1}},
-		Metadata: inference.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
+		FinishReason: inference.FinishStop, Usage: outcome.Usage{Work: map[outcome.WorkKind]int64{outcome.WorkVideosGenerated: 1}},
+		Metadata: outcome.Metadata{Model: request.Model.ID, RequestID: raw.requestID}}, nil
 }
 
 func (d *driver) compileVideo(ctx context.Context, request inference.GenerateRequest, shape protocol.Shape) (protocol.Compiled[videoWire], error) {

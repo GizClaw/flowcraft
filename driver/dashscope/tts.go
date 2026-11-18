@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -140,10 +140,10 @@ func decodeTTS(_ context.Context, request inference.GenerateRequest, raw ttsRaw)
 	out := inference.GenerateResponse{
 		Message:      message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{message.AudioPart{Source: source}}}},
 		FinishReason: inference.FinishStop,
-		Metadata:     inference.Metadata{Model: request.Model.ID, RequestID: raw.body.RequestID, ResponseID: audio.ID},
+		Metadata:     outcome.Metadata{Model: request.Model.ID, RequestID: raw.body.RequestID, ResponseID: audio.ID},
 	}
 	if raw.body.Usage.Characters != nil {
-		out.Usage.Work = map[usage.WorkKind]int64{usage.WorkInputCharacters: *raw.body.Usage.Characters}
+		out.Usage.Work = map[outcome.WorkKind]int64{outcome.WorkInputCharacters: *raw.body.Usage.Characters}
 	}
 	return out, nil
 }

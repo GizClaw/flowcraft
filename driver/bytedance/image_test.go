@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -108,7 +108,7 @@ func TestDecodeImageParts(t *testing.T) {
 	if len(response.Message.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want 2", len(response.Message.Content.Parts))
 	}
-	if got := response.Usage.WorkValue(usage.WorkImagesGenerated); got != 2 {
+	if got := response.Usage.WorkValue(outcome.WorkImagesGenerated); got != 2 {
 		t.Errorf("images generated = %d, want 2", got)
 	}
 	if response.Metadata.RequestID != "req-1" {
