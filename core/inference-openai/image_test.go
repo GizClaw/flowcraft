@@ -13,8 +13,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/goccy/go-json"
@@ -164,7 +164,7 @@ func TestImageDecodeInlineBytesAndRevisedPrompt(t *testing.T) {
 		decoded.RevisedPrompts[0].Prompt != "a crimson square" {
 		t.Fatalf("revised prompts = %+v", decoded.RevisedPrompts)
 	}
-	if got := response.Usage.WorkValue(usage.WorkImagesGenerated); got != 1 {
+	if got := response.Usage.WorkValue(outcome.WorkImagesGenerated); got != 1 {
 		t.Fatalf("generated images = %d, want 1", got)
 	}
 	if response.Metadata.Model.Name != "gpt-image-1" {

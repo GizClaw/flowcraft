@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -34,7 +34,7 @@ type UsageExpectation struct {
 	Input  int64
 	Output int64
 	Total  int64
-	Work   map[usage.WorkKind]int64
+	Work   map[outcome.WorkKind]int64
 }
 
 // StreamSample is one canned server-sent-event stream.

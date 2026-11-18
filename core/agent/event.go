@@ -3,7 +3,7 @@ package agent
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -77,7 +77,7 @@ type ToolResult struct {
 type ArtifactWritten struct{ Artifact Artifact }
 
 // UsageEvent reports one round's accounting.
-type UsageEvent struct{ Usage usage.Usage }
+type UsageEvent struct{ Usage outcome.Usage }
 
 // Status reports a lifecycle transition.
 type Status struct {

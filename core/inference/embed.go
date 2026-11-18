@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -73,7 +73,7 @@ type EmbedResponse struct {
 	// Vectors holds one vector per input document, in input order.
 	Vectors [][]float32 `json:"vectors"`
 	// Usage reports what the call consumed.
-	Usage usage.Usage `json:"usage,omitzero"`
+	Usage outcome.Usage `json:"usage,omitzero"`
 	// Metadata identifies the call that produced this answer.
 	Metadata Metadata `json:"metadata,omitzero"`
 	// Warnings reports requested options honoured only in part.

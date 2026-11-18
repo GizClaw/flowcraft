@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 )
 
@@ -55,7 +56,7 @@ func responsesStreamEvents(
 	}
 	if !*started && event.Response.ID != "" {
 		*started = true
-		metadata := inference.Metadata{
+		metadata := outcome.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: string(event.Response.Model)},
 			ResponseID: event.Response.ID,
 		}

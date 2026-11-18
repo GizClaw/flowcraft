@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -202,7 +202,7 @@ func (d *driver) decideDecode(
 	return inference.DecisionResponse{
 		Answers: answers,
 		Usage:   decisionUsage(raw),
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},
 	}, nil
@@ -226,8 +226,8 @@ func probabilityLabel(value openai.DecisionAnswerChoiceProbabilityValueUnion) st
 }
 
 // decisionUsage maps the token counters the endpoint reports.
-func decisionUsage(raw openai.Decision) usage.Usage {
-	return usage.Usage{
+func decisionUsage(raw openai.Decision) outcome.Usage {
+	return outcome.Usage{
 		InputTokens:  raw.Usage.InputTokens,
 		OutputTokens: raw.Usage.OutputTokens,
 	}

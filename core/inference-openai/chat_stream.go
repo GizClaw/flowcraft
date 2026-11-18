@@ -7,8 +7,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/goccy/go-json"
 )
 
@@ -62,7 +62,7 @@ func chatStreamEvents(
 	var events []inference.StreamEvent
 	if !*started && chunk.ID != "" {
 		*started = true
-		metadata := inference.Metadata{
+		metadata := outcome.Metadata{
 			Model:      model.ModelID{Provider: ProviderID, Name: chunk.Model},
 			ResponseID: chunk.ID,
 		}
@@ -139,8 +139,8 @@ func reasoningContent(delta openai.ChatCompletionChunkChoiceDelta) string {
 	return decoded.ReasoningContent
 }
 
-func chatChunkUsage(raw openai.CompletionUsage) usage.Usage {
-	out := usage.Usage{
+func chatChunkUsage(raw openai.CompletionUsage) outcome.Usage {
+	out := outcome.Usage{
 		InputTokens:  raw.PromptTokens,
 		OutputTokens: raw.CompletionTokens,
 	}

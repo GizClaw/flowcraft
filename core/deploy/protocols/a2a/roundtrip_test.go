@@ -27,7 +27,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	"github.com/GizClaw/flowcraft/core/deploy/protocols/a2a"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/backends"
@@ -220,7 +220,7 @@ func TestRoundTripDropsWhatTheWireCannotCarry(t *testing.T) {
 		agent.Status{State: agent.StateWorking},
 		agent.ToolCallStart{Call: message.ToolCall{ID: "call-1", Name: "read_file"}},
 		agent.ToolResult{Result: message.ToolResult{CallID: "call-1"}},
-		agent.UsageEvent{Usage: usage.Usage{InputTokens: 7, OutputTokens: 3}},
+		agent.UsageEvent{Usage: outcome.Usage{InputTokens: 7, OutputTokens: 3}},
 		agent.Reasoning{Text: "thinking out loud"},
 		agent.Text{Text: "the answer"},
 		agent.Status{State: agent.StateCompleted},

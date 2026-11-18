@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
 )
@@ -18,7 +19,7 @@ import (
 // before it starts emitting: the opening event carries it, and the response
 // repeats it.
 type announcingProvider struct {
-	metadata inference.Metadata
+	metadata outcome.Metadata
 	text     string
 }
 
@@ -71,8 +72,8 @@ func (*announcingStream) Close() error                                  { return
 
 // resolved is what the provider says answered, which is not what the request
 // asked for: an alias may route to another model.
-func resolved() inference.Metadata {
-	return inference.Metadata{
+func resolved() outcome.Metadata {
+	return outcome.Metadata{
 		Model:      model.ModelID{Provider: "stub", Name: "resolved-model"},
 		RequestID:  "req-1",
 		ResponseID: "resp-1",

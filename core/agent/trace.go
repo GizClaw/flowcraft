@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 )
 
 // RunRecord is one finished run as a trace exporter sees it.
@@ -25,21 +25,21 @@ type RunRecord struct {
 	// StartedAt is when the run began, the absolute anchor LatencyMs alone cannot
 	// provide: a dataset row joins to a span, a log range and a task by time, and
 	// "it took four seconds" says nothing about when.
-	StartedAt time.Time   `json:"started_at,omitzero"`
-	LatencyMs int64       `json:"latency_ms"`
-	Usage     usage.Usage `json:"usage,omitzero"`
+	StartedAt time.Time     `json:"started_at,omitzero"`
+	LatencyMs int64         `json:"latency_ms"`
+	Usage     outcome.Usage `json:"usage,omitzero"`
 }
 
 // addUsage folds one call's accounting into the run's totals. Token counts,
 // cache counters and cost are summed; counters a provider reports only in
 // aggregate stay on the last event.
-func addUsage(total *usage.Usage, add usage.Usage) {
+func addUsage(total *outcome.Usage, add outcome.Usage) {
 	*total = total.AddMeter(add)
 	if add.Billing == nil || add.Billing.Cost == nil {
 		return
 	}
 	if total.Billing == nil {
-		total.Billing = &usage.Billing{}
+		total.Billing = &outcome.Billing{}
 	}
 	if total.Billing.Cost == nil {
 		cost := *add.Billing.Cost

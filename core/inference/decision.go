@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -183,10 +183,10 @@ type Probability struct {
 // DecisionResponse is one batch of judgments.
 type DecisionResponse struct {
 	// Answers are in request order.
-	Answers  []Answer    `json:"answers"`
-	Usage    usage.Usage `json:"usage,omitzero"`
-	Metadata Metadata    `json:"metadata,omitzero"`
-	Warnings []Warning   `json:"warnings,omitempty"`
+	Answers  []Answer      `json:"answers"`
+	Usage    outcome.Usage `json:"usage,omitzero"`
+	Metadata Metadata      `json:"metadata,omitzero"`
+	Warnings []Warning     `json:"warnings,omitempty"`
 }
 
 // ValidateFor reports whether the answer can be the answer to request.

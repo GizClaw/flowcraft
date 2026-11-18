@@ -3,9 +3,8 @@ package agent
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
@@ -87,12 +86,12 @@ type LLMCallRecord struct {
 	// that keeps records and no spans cannot say which endpoint produced an
 	// answer. It is a few dozen bytes, so it is written even when the response's
 	// body is not.
-	Metadata   inference.Metadata `json:"metadata,omitzero"`
-	Usage      usage.Usage        `json:"usage,omitempty"`
-	StopReason string             `json:"stop_reason,omitempty"`
-	LatencyMs  int64              `json:"latency_ms,omitempty"`
-	ErrorKind  string             `json:"error_kind,omitempty"`
-	Response   []byte             `json:"response,omitempty"`
+	Metadata   outcome.Metadata `json:"metadata,omitzero"`
+	Usage      outcome.Usage    `json:"usage,omitempty"`
+	StopReason string           `json:"stop_reason,omitempty"`
+	LatencyMs  int64            `json:"latency_ms,omitempty"`
+	ErrorKind  string           `json:"error_kind,omitempty"`
+	Response   []byte           `json:"response,omitempty"`
 	// ResponseRef names the blob holding Response, when the engine stored it.
 	ResponseRef string          `json:"response_ref,omitempty"`
 	Messages    []MessageDigest `json:"messages,omitempty"`

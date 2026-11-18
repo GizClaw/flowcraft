@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -148,15 +148,15 @@ func (d *driver) embedDecode(
 	return inference.EmbedResponse{
 		Vectors: vectors,
 		Usage:   usageFromEmbedding(raw),
-		Metadata: inference.Metadata{
+		Metadata: outcome.Metadata{
 			Model: model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 		},
 	}, nil
 }
 
 // usageFromEmbedding maps the token counters the endpoint reports.
-func usageFromEmbedding(raw openai.CreateEmbeddingResponse) usage.Usage {
-	return usage.Usage{
+func usageFromEmbedding(raw openai.CreateEmbeddingResponse) outcome.Usage {
+	return outcome.Usage{
 		InputTokens: raw.Usage.PromptTokens,
 	}
 }

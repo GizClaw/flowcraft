@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
 )
 
@@ -88,7 +89,7 @@ func (d *driver) newStreamDecoder(
 				return nil, nil
 			}
 			started = true
-			metadata := inference.Metadata{
+			metadata := outcome.Metadata{
 				Model:      model.ModelID{Provider: ProviderID, Name: request.Model.ID.Name},
 				ResponseID: responseID,
 			}

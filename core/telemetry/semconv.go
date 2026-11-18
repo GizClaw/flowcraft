@@ -52,7 +52,7 @@ const (
 
 	// AttrGenAIUsageInputTokens is the prompt total. It includes cached
 	// tokens and every modality, which is exactly the inclusive semantics
-	// usage.Usage.InputTokens already documents.
+	// outcome.Usage.InputTokens already documents.
 	AttrGenAIUsageInputTokens = "gen_ai.usage.input_tokens"
 
 	// AttrGenAIUsageOutputTokens is the generated total.
@@ -140,7 +140,7 @@ var llmFacts = map[string]llmFactHome{
 		Note: "semconv has no time-to-first-token; llm.time_to_first_token.ms stays authoritative",
 	},
 	AttrLLMLatencyMs: {
-		Note: "the span duration already carries it; usage.Usage.LatencyMs covers non-span consumers",
+		Note: "the span duration already carries it; outcome.Usage.LatencyMs covers non-span consumers",
 	},
 }
 

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/correlation"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -350,7 +350,7 @@ func (a *Agent) Run(ctx context.Context, sessionID string, msg message.Message, 
 		defer cancel()
 		var failure error
 		var startedAt time.Time
-		var runUsage usage.Usage
+		var runUsage outcome.Usage
 		if a.opts.RunContext != nil {
 			runCtx = a.opts.RunContext(runCtx, sessionID)
 		}

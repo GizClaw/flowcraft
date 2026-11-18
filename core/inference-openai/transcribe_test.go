@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -62,7 +62,7 @@ func TestTranscriptionDecodesText(t *testing.T) {
 	if got := response.Message.Content.Text(); got != "hello there" {
 		t.Errorf("text = %q, want %q", got, "hello there")
 	}
-	if got := response.Usage.WorkValue(usage.WorkAudioDurationMillis); got != 2500 {
+	if got := response.Usage.WorkValue(outcome.WorkAudioDurationMillis); got != 2500 {
 		t.Errorf("audio duration = %d, want 2500", got)
 	}
 }

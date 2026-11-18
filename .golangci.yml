@@ -95,6 +95,25 @@ linters:
             # (core/inference/usage, core/inference/model) that depend on it.
             - pkg: "github.com/GizClaw/flowcraft/core/inference$"
               desc: "core/inference/model must not import the contract"
+        # inference/outcome is what one call returned — its identity and its
+        # accounting — and it is a leaf by the rule the tier ladder uses: a
+        # layer below the contract must be able to name it. Three of them do.
+        # A driver fills it in, core/agent puts it in an event and a durable
+        # record, and a record reader reads it back; none of them may drag in
+        # the provider contract to do so.
+        #
+        # The rule for the package's own contents is the same one: a type
+        # belongs here when a lower layer must name it. A finish reason does
+        # not — a record keeps it as a string — so it stays in the contract.
+        outcome-is-a-leaf:
+          files:
+            - "**/core/inference/outcome/**"
+          deny:
+            - pkg: "github.com/GizClaw/flowcraft/core/inference$"
+              desc: "core/inference/outcome must not import the contract"
+        # inference/usage forwards to outcome for one release cycle, because
+        # the driver module is built against two core versions at once. It is
+        # still a leaf, and still not allowed to reach for the contract.
         usage-is-a-leaf:
           files:
             - "**/core/inference/usage/**"

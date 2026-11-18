@@ -8,8 +8,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/inference/protocol"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 
@@ -52,15 +52,15 @@ func TestUnaryCallEmitsOneSpan(t *testing.T) {
 
 	driver := bindGenerateDriver(t, func() (inference.GenerateResponse, error) {
 		response := unaryResponse("ok")
-		response.Usage = usage.Usage{
+		response.Usage = outcome.Usage{
 			InputTokens:  10,
 			OutputTokens: 4,
-			Input:        usage.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
-			Billing: &usage.Billing{
-				Cost: &usage.Money{Currency: "USD", Units: 25, Scale: 6},
+			Input:        outcome.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
+			Billing: &outcome.Billing{
+				Cost: &outcome.Money{Currency: "USD", Units: 25, Scale: 6},
 			},
 		}
-		response.Metadata = inference.Metadata{
+		response.Metadata = outcome.Metadata{
 			Model:      model.ModelID{Provider: "fake", Name: "m1-resolved"},
 			RequestID:  "req-1",
 			ResponseID: "resp-1",
@@ -242,10 +242,10 @@ func TestTokenAndDurationMetrics(t *testing.T) {
 
 	driver := bindGenerateDriver(t, func() (inference.GenerateResponse, error) {
 		response := unaryResponse("ok")
-		response.Usage = usage.Usage{
+		response.Usage = outcome.Usage{
 			InputTokens:  10,
 			OutputTokens: 4,
-			Input:        usage.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
+			Input:        outcome.InputTokenUsage{CacheReadTokens: int64Ptr(6)},
 		}
 		return response, nil
 	})

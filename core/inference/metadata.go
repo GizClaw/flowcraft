@@ -1,18 +1,17 @@
 package inference
 
-import "github.com/GizClaw/flowcraft/core/inference/model"
+import "github.com/GizClaw/flowcraft/core/inference/outcome"
 
-// Metadata describes a completed call. It answers "what answered, and can I
-// correlate this with the provider's logs" without exposing the request or the
-// response payload.
-type Metadata struct {
-	// Model is the provider-qualified model that produced the response.
-	Model model.ModelID `json:"model"`
-	// RequestID is the provider-assigned request identifier when the wire
-	// carries one (DashScope request_id, an error envelope's request id).
-	// Empty when the provider exposes none.
-	RequestID string `json:"request_id,omitempty"`
-	// ResponseID is the provider-assigned identifier of the response object
-	// (OpenAI response.id, Anthropic message.id, a chat completion id).
-	ResponseID string `json:"response_id,omitempty"`
-}
+// Metadata describes a completed call: the resolved model and the provider's own
+// request and response ids.
+//
+// It is declared in core/inference/outcome, where it sits beside the accounting
+// of the same call. That package is a leaf: a durable record, an event or a
+// reader of either can name what answered without importing this contract —
+// provider interfaces, requests, streaming, the error vocabulary.
+//
+// This alias keeps the spelling `inference.Metadata` compiling for one release
+// cycle, because the driver module is built against two core versions at once.
+// It goes away with the release that moves the driver to `outcome`; nothing new
+// belongs behind it.
+type Metadata = outcome.Metadata
