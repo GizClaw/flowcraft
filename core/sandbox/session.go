@@ -135,9 +135,14 @@ const (
 	// CPUMillicores) killed the session; Wait also returns an errdefs
 	// BudgetExceeded error.
 	SessionBudgetExceeded
-	// SessionUnenforceable means the cap watcher lost its ability to
-	// sample and killed the session rather than run it unguarded; Wait
-	// also returns an errdefs NotAvailable error.
+	// SessionUnenforceable means the cap could no longer be measured, and
+	// the session was killed rather than left running unguarded; Wait also
+	// returns an errdefs NotAvailable error. It is distinct from
+	// SessionBudgetExceeded on purpose: nothing was shown to exceed a
+	// budget, the budget stopped being observable, and a host that retries
+	// a budget breach differently from a broken guarantee needs to tell
+	// them apart. Every backend that enforces a cap at runtime produces it
+	// — see core/sandbox/sessionkit.
 	SessionUnenforceable
 )
 
