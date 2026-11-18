@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/rs/xid"
+	"go.opentelemetry.io/otel/attribute"
 
 	xwin "golang.org/x/sys/windows"
 )
@@ -210,6 +211,11 @@ func StartSessionWithPolicy(
 		release: release,
 	}
 
+	// A cap that is exceeded ends the job here instead of waiting for the child
+	// to give up, which is what the unix watcher does by sampling. See
+	// job.enforceCaps.
+	j.enforceCaps(s.done)
+
 	if spec.Opts.Timeout > 0 {
 		timer := time.AfterFunc(spec.Opts.Timeout, s.timeoutKill)
 		go func() {
@@ -262,21 +268,39 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 	timedOut := s.timedOut
 	terminated := s.terminated
 	s.mu.Unlock()
-	// A cap-kill completion message can land a moment after the process exits;
-	// give the notifier a short grace window so a kernel-enforced limit is
-	// classified as BudgetExceeded rather than a plain exit.
+	// A reported cap can land a moment after the process exits, so a session with a
+	// notifier gets a short grace window before the verdict is read. The verdict
+	// itself is not conditional on the report: the memory sampler records the cap
+	// directly and there is no notifier in a memory-only session at all.
 	if j.notify != nil {
 		deadline := time.Now().Add(100 * time.Millisecond)
 		for j.budgetCap() == "" && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
-		if cap := j.budgetCap(); cap != "" {
-			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
-				errdefs.BudgetExceededf(
-					"windows: %s resource cap exceeded while running process", cap)
-		}
+	}
+	if cap := j.budgetCap(); cap != "" {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+			errdefs.BudgetExceededf(
+				"windows: %s resource cap exceeded while running process", cap)
 	}
 	if timedOut {
+		// An exceeded memory budget looks exactly like a slow child from here — the
+		// session ran to its deadline and the cap was never recorded. Record what the
+		// job actually used, so the next one of these is a diagnosable number rather
+		// than a timeout with no story.
+		if limit := j.limits.MemoryBytes; limit > 0 {
+			peak, err := j.peakMemory()
+			if err != nil {
+				telemetry.WarnErr(context.Background(), "windows: read job memory on timeout", err,
+					attribute.String("sandbox.session_id", s.id))
+			} else {
+				telemetry.Warn(context.Background(),
+					"windows: session exceeded its Timeout with a memory cap set",
+					attribute.String("sandbox.session_id", s.id),
+					attribute.Int64("sandbox.memory_limit_bytes", int64(limit)),
+					attribute.Int64("sandbox.peak_memory_bytes", int64(peak)))
+			}
+		}
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTimedOut},
 			errdefs.FromContext(fmt.Errorf(
 				"windows: process exceeded its Timeout: %w", context.DeadlineExceeded))
