@@ -218,7 +218,8 @@ func prepare(db *sql.DB, config []Option) error {
 	// cannot apply to it: the promise that ":memory:" works is older than this
 	// check, and the mode is moot on a database that cannot be reopened.
 	if !strings.EqualFold(mode, "wal") && !strings.EqualFold(mode, "memory") {
-		return fmt.Errorf("checkpoint: PRAGMA journal_mode=WAL: the database stayed in %q mode", mode)
+		return fmt.Errorf("checkpoint: PRAGMA journal_mode=WAL: the database stayed in %q mode "+
+			"(WAL needs a filesystem with shared memory, not a network or FUSE mount)", mode)
 	}
 	// Foreign keys are off by default in SQLite. This schema declares none, so
 	// the pragma is inert for these tables — on a shared handle it is not: it
