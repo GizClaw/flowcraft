@@ -50,7 +50,13 @@ func (s *textStream) events(event agent.Event) []a2a.Event {
 		return []a2a.Event{s.artifact(typed.Artifact)}
 	case agent.Status:
 		var out []a2a.Event
-		if typed.State.Terminal() {
+		// A round ends when the task stops working. A terminal state finishes it
+		// and a pause — input-required, auth-required — suspends it, and in both
+		// cases the buffered text belongs to that round and has to reach the
+		// client *before* the status event: a client stops reading at the pause,
+		// so text flushed after it is text nobody ever sees. Only submitted and
+		// working leave the round open.
+		if typed.State != agent.StateSubmitted && typed.State != agent.StateWorking {
 			out = s.close()
 		}
 		return append(out, a2a.NewStatusUpdateEvent(s.info, a2awire.State(typed.State), reasonMessage(typed.Reason)))

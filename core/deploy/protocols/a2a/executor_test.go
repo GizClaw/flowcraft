@@ -58,6 +58,32 @@ func TestTextBecomesArtifactChunksPerRound(t *testing.T) {
 	}
 }
 
+// A pause ends the round too. The buffered text has to reach the client before
+// the status that suspends the task, because a client stops reading at the pause:
+// text flushed afterwards is text nobody sees. A cross-adapter round trip caught
+// this once, which is why the rule is pinned here as well.
+func TestAPauseFlushesTheBufferedText(t *testing.T) {
+	stream := newTextStream(testInfo(), nil)
+	if events := stream.events(agent.Text{Text: "which seat?"}); len(events) != 0 {
+		t.Fatalf("a held chunk crossed early: %+v", events)
+	}
+	events := stream.events(agent.Status{State: agent.StateInputRequired, Reason: "which seat?"})
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want the text chunk and the status", len(events))
+	}
+	chunk, ok := events[0].(*a2a.TaskArtifactUpdateEvent)
+	if !ok || !chunk.LastChunk {
+		t.Fatalf("first event = %T, want the closing artifact chunk", events[0])
+	}
+	if text := chunk.Artifact.Parts[0].Text(); text != "which seat?" {
+		t.Errorf("chunk = %q, want the buffered text", text)
+	}
+	status, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	if !ok || status.Status.State != a2a.TaskStateInputRequired {
+		t.Errorf("second event = %T, want input-required", events[1])
+	}
+}
+
 // Each model round is its own artifact: a tool round that follows must not
 // append to the answer that already finished.
 func TestANewRoundClosesThePreviousArtifact(t *testing.T) {
