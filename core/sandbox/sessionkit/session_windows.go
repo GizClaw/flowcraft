@@ -268,19 +268,20 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 	timedOut := s.timedOut
 	terminated := s.terminated
 	s.mu.Unlock()
-	// A cap-kill report can land a moment after the process exits; give the
-	// notifier a short grace window so a kernel-enforced limit is classified as
-	// BudgetExceeded rather than a plain exit.
+	// A reported cap can land a moment after the process exits, so a session with a
+	// notifier gets a short grace window before the verdict is read. The verdict
+	// itself is not conditional on the report: the memory sampler records the cap
+	// directly and there is no notifier in a memory-only session at all.
 	if j.notify != nil {
 		deadline := time.Now().Add(100 * time.Millisecond)
 		for j.budgetCap() == "" && time.Now().Before(deadline) {
 			time.Sleep(5 * time.Millisecond)
 		}
-		if cap := j.budgetCap(); cap != "" {
-			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
-				errdefs.BudgetExceededf(
-					"windows: %s resource cap exceeded while running process", cap)
-		}
+	}
+	if cap := j.budgetCap(); cap != "" {
+		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+			errdefs.BudgetExceededf(
+				"windows: %s resource cap exceeded while running process", cap)
 	}
 	if timedOut {
 		// An exceeded memory budget looks exactly like a slow child from here — the
