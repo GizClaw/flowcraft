@@ -321,17 +321,24 @@ func classifyExit(s *session, j *job, waitErr error) (sandbox.SessionExit, error
 	// A cpu budget is attributed from the job's own accounting, not from the
 	// completion-port report: the kernel ends the job when the user-time limit is
 	// reached and the accounting survives that, so a missing report does not lose
-	// the verdict. The check runs before the clean-exit return because a leader can
-	// exit 0 while the job it leads exhausted the budget — the unix watcher reads
-	// its verdict at reap time for the same reason.
-	if breached, err := j.cpuBreach(); err != nil {
-		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
-			errdefs.NotAvailablef(
-				"windows: cpu budget verdict unavailable while running process: %w", err)
-	} else if breached {
-		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
-			errdefs.BudgetExceededf(
-				"windows: cpu resource cap exceeded while running process")
+	// the verdict. It runs before the clean-exit return because a leader can exit 0
+	// while the job it leads exhausted the budget, as unix's reap-time verdict does.
+	//
+	// A caller's own stop is excluded, and that is where this deliberately differs
+	// from the sampler's verdict above: an unenforceable *sampler* is the kit
+	// telling the caller it killed the tree for a broken guarantee, while an
+	// unreadable cpu attribution is only a refusal to explain an exit the caller
+	// already caused on purpose.
+	if !terminated {
+		if breached, err := j.cpuBreach(); err != nil {
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionUnenforceable},
+				errdefs.NotAvailablef(
+					"windows: cpu budget verdict unavailable while running process: %w", err)
+		} else if breached {
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+				errdefs.BudgetExceededf(
+					"windows: cpu resource cap exceeded while running process")
+		}
 	}
 	if waitErr == nil {
 		return sandbox.SessionExit{Code: 0, Reason: sandbox.SessionExited}, nil
