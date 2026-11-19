@@ -250,6 +250,11 @@ tools:
   far side is the one that runs the command, so only the name crosses. A pinned
   `path` is sent as written: pin a name the far side resolves, or the path it
   actually has.
+- **A host that gates commands by name must whitelist the resolved path.**
+  `engine.AllowCommands` matches the command string exactly, and on Windows that
+  string is now the absolute executable, so a gate that listed `pwsh` rejects it
+  (the decorator's own doc says to normalise before calling `Exec`). Pinning
+  `path: pwsh` sends the bare name again, with the alias risk back.
 - **A pin no tool would run is a build error.** `tools.exec.shell` with `exec`
   absent from `tools.enable` is refused rather than silently ignored.
 

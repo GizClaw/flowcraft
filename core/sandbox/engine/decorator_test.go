@@ -199,3 +199,30 @@ func TestWithDefaultsResourcesTakeTheStricter(t *testing.T) {
 		})
 	}
 }
+
+// TestAllowCommandsGatesTheResolvedShellPath pins the one externally visible cost
+// of resolving the Windows shell: DefaultShell reports an absolute executable, and
+// AllowCommands matches the command string exactly, so a host that whitelisted the
+// bare name has to whitelist the path (or normalise before calling Exec, which the
+// decorator's own doc names). Stating it here keeps the change from surfacing as an
+// unexplained PolicyDenied on upgrade, and names the deployment-level answer:
+// tools.exec.shell.path is sent exactly as written.
+func TestAllowCommandsGatesTheResolvedShellPath(t *testing.T) {
+	shell := sandbox.ShellSpec{
+		Name: "pwsh",
+		Path: `C:\Program Files\PowerShell\7\pwsh.exe`,
+		Args: []string{"-NoProfile", "-NonInteractive", "-Command"},
+	}
+	argv := shell.Argv("echo hi")
+
+	byName := engine.AllowCommands(stubRunner{}, []string{shell.Name})
+	_, err := engine.Exec(context.Background(), byName, shell.Path, argv, sandbox.ExecOptions{})
+	if !errdefs.IsPolicyDenied(err) {
+		t.Fatalf("bare-name gate: err = %v, want PolicyDenied for the resolved path", err)
+	}
+
+	byPath := engine.AllowCommands(stubRunner{}, []string{shell.Path})
+	if _, err := engine.Exec(context.Background(), byPath, shell.Path, argv, sandbox.ExecOptions{}); errdefs.IsPolicyDenied(err) {
+		t.Fatalf("path gate denied the command it lists: %v", err)
+	}
+}
