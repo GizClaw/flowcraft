@@ -73,9 +73,14 @@ func NewCommand(runner sandbox.Runner, opts ...Option) (*CommandTool, error) {
 	if runner == nil {
 		return nil, errdefs.Validationf("exec: a sandbox runner is required")
 	}
-	t := &CommandTool{runner: runner, shell: engine.DefaultShell(runtime.GOOS)}
+	t := &CommandTool{runner: runner}
 	for _, opt := range opts {
 		opt(t)
+	}
+	// The probe is the fallback, not the starting point: a deployment that pinned
+	// its shell must not pay for a host probe whose answer it then discards.
+	if t.shell.Name == "" {
+		t.shell = engine.DefaultShell(runtime.GOOS)
 	}
 	return t, nil
 }

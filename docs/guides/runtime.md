@@ -112,6 +112,7 @@ validation error that names what is registered.
 | `tools.dynamic`      | The projection: `default` (`always` / `direct` / `deferred` / `hidden`), plus `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`.                                                                                                                                           |
 | `tools.middleware`   | Named middleware with kind-owned settings, applied in order.                                                                                                                                                                                                                                          |
 | `tools.descriptions` | Per-tool and per-parameter replacement of the text the model reads, keyed by tool name. A configured name that matches no wired tool is a build error. Text is prompt surface only: the input schema's types and bounds are never overridden. See [tool.md](tool.md#configuring-a-tools-description). |
+| `tools.exec.shell` | Pins the shell the `exec` tool runs (`name`, `path`, `args`) instead of letting the platform probe the host. See [tool.md](tool.md#pinning-the-shell). |
 
 ### `inference`
 

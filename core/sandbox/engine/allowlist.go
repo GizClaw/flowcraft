@@ -213,7 +213,14 @@ type shellProfile struct {
 
 var shellProfiles = []shellProfile{
 	{ // sh -c <script> [name [args...]]
-		names: []string{"sh", "bash", "zsh", "dash", "ash", "ksh", "fish"},
+		names: []string{
+			"sh", "bash", "zsh", "dash", "ash", "ksh", "fish",
+			// A Windows install of one of these (Git for Windows, MSYS2) is
+			// reached by its real file name, and approval matches the
+			// executable's base name: without these spellings every command a
+			// pinned Windows bash runs would ask the approver.
+			"sh.exe", "bash.exe", "zsh.exe", "dash.exe", "ash.exe", "ksh.exe", "fish.exe",
+		},
 		scriptArg: func(args []string) (string, bool) {
 			// Only a bare "-c" is a script argument. Combined flags
 			// such as "-lc" (login shell) or "-ce" change semantics:
@@ -251,19 +258,27 @@ var shellProfiles = []shellProfile{
 		names:    []string{"powershell", "powershell.exe", "pwsh", "pwsh.exe"},
 		foldName: true,
 		scriptArg: func(args []string) (string, bool) {
-			// Only the exact, unabbreviated pair is claimed. Without
-			// -NoProfile the host runs user profiles before the
-			// script (the same reasoning that keeps "-lc" raw), and
-			// PowerShell accepts any unambiguous parameter prefix
-			// ("-c", "-nop", ...) plus -EncodedCommand, none of which
-			// this profile models. Anything else stays raw and needs
-			// approval.
-			if len(args) == 3 &&
-				strings.EqualFold(args[0], "-NoProfile") &&
-				strings.EqualFold(args[1], "-Command") {
-				return args[2], true
+			// Only the exact, unabbreviated form is claimed: -NoProfile, then an
+			// optional -NonInteractive, then -Command and exactly one script
+			// argument. Without -NoProfile the host runs user profiles before
+			// the script (the same reasoning that keeps "-lc" raw).
+			// -NonInteractive is accepted because the platform's own exec tool
+			// passes it (engine.DefaultShell), and it only suppresses prompts:
+			// it runs no profile and changes nothing about how the script is
+			// parsed. PowerShell accepts any unambiguous parameter prefix
+			// ("-c", "-nop", ...) plus -EncodedCommand, none of which this
+			// profile models. Anything else stays raw and needs approval.
+			rest := args
+			if len(rest) == 0 || !strings.EqualFold(rest[0], "-NoProfile") {
+				return "", false
 			}
-			return "", false
+			if rest = rest[1:]; len(rest) > 0 && strings.EqualFold(rest[0], "-NonInteractive") {
+				rest = rest[1:]
+			}
+			if len(rest) != 2 || !strings.EqualFold(rest[0], "-Command") {
+				return "", false
+			}
+			return rest[1], true
 		},
 		parse: tokenizePowerShellScript,
 	},
