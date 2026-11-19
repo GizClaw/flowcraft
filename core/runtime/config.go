@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/permission"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	sandboxengine "github.com/GizClaw/flowcraft/core/sandbox/engine"
 	"github.com/GizClaw/flowcraft/core/sandbox/journal"
 	toolmcp "github.com/GizClaw/flowcraft/core/tool-mcp"
 	"github.com/GizClaw/flowcraft/core/tool/engine"
@@ -264,6 +265,14 @@ type ToolsConfig struct {
 	Enable []string `json:"enable"`
 	// TTY publishes pseudo-terminal parameters on the session tool.
 	TTY bool `json:"tty"`
+	// Exec carries the exec tool's own settings. Omitted means the platform probes
+	// the host for the shell. It is a pointer so that an unconfigured deployment's
+	// digest stays the same across the release that introduced the field: without
+	// that, every stored checkpoint of every existing deployment would stop
+	// resuming, for no change. The block is the command tool's alone; `tty` stays
+	// flat on tools because it is published by the session tool, which never runs a
+	// shell.
+	Exec *ExecConfig `json:"exec,omitempty"`
 	// Dynamic defers tools instead of sending all of them every round. Omitted
 	// means static: every wired tool is visible to the model from the first
 	// round, which is the behaviour a small tool set wants.
@@ -296,6 +305,55 @@ type ToolsConfig struct {
 type MiddlewareConfig struct {
 	Name     string          `json:"name"`
 	Settings json.RawMessage `json:"settings"`
+}
+
+// ExecConfig carries the exec tool's own settings.
+type ExecConfig struct {
+	// Shell pins the shell the tool runs. Omitted means the platform probes the
+	// host, which is what a deployment that states nothing wants: on Windows that
+	// is PowerShell 7, then Windows PowerShell, then cmd. A host whose shell is
+	// off PATH, or not the one the probe would choose, says so here.
+	Shell *ShellConfig `json:"shell"`
+}
+
+// ShellConfig is the written form of one pinned shell.
+type ShellConfig struct {
+	// Name is the shell, and the tool name the model sees. Empty takes the base
+	// name of Path without any ".exe", so a pinned pwsh.exe is named pwsh. It
+	// must be a shell the sandbox engine knows (bash, sh, zsh, dash, ash, ksh,
+	// fish, pwsh, powershell, cmd): the name is what approval unwrapping and
+	// tools.descriptions key off, so an unknown one is refused rather than
+	// half-supported.
+	Name string `json:"name"`
+	// Path is the executable: an absolute path, or a bare name resolved through
+	// PATH on the host that runs commands. Required. It is not checked against
+	// this host's filesystem, because with sandbox.backend: remote the shell runs
+	// on the far side; a Microsoft Store alias is refused, since it cannot start
+	// anywhere.
+	Path string `json:"path"`
+	// Args are the flags that precede the command line. Omitted takes the prefix
+	// for Name. A deployment that writes its own is on its own: approval unwraps
+	// only the exact well-known form, so commands it would have auto-approved ask
+	// the approver instead.
+	Args []string `json:"args"`
+}
+
+// shell is the shell the deployment pins, or nil when it states none and the
+// platform probe decides.
+func (t ToolsConfig) shell() *ShellConfig {
+	if t.Exec == nil {
+		return nil
+	}
+	return t.Exec.Shell
+}
+
+// spec is the written form converted into what the tool runs.
+func (c ShellConfig) spec() (sandbox.ShellSpec, error) {
+	spec, err := sandboxengine.ShellFor(c.Name, c.Path, c.Args)
+	if err != nil {
+		return sandbox.ShellSpec{}, errdefs.Validationf("tools.exec.shell: %w", err)
+	}
+	return spec, nil
 }
 
 // DynamicConfig enables deferred tool exposure: the model sees a bounded set
@@ -653,6 +711,18 @@ func (f FilesConfig) validate() error {
 func (t ToolsConfig) validate() error {
 	if t.Dynamic != nil {
 		if err := t.Dynamic.validate(); err != nil {
+			return err
+		}
+	}
+	if pinned := t.shell(); pinned != nil {
+		// A shell no wired tool runs is configuration that reads as a decision and
+		// makes none: the exec tool would keep probing the host.
+		if !t.enabled(ToolExec) {
+			return errdefs.Validationf(
+				"tools.exec.shell: the %s tool is not in tools.enable, so the pinned shell would never run",
+				ToolExec)
+		}
+		if _, err := pinned.spec(); err != nil {
 			return err
 		}
 	}

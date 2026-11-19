@@ -160,6 +160,16 @@ func TestAllowlistMatchesWindowsShellInvocations(t *testing.T) {
 			true,
 		},
 		{
+			"pwsh with -NonInteractive, the form the platform's own tool runs",
+			sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-NonInteractive", "-Command", "git status"}},
+			true,
+		},
+		{
+			"a pinned Windows bash passes its own file name",
+			sandbox.ExecRequest{Command: `C:/Program Files/Git/bin/bash.exe`, Args: []string{"-c", "git status"}},
+			true,
+		},
+		{
 			"powershell.exe case-folded",
 			sandbox.ExecRequest{Command: "PowerShell.exe", Args: []string{"-nopROFILE", "-command", "go test ./..."}},
 			true,
@@ -219,6 +229,11 @@ func TestNormaliseExecUnwrapsWindowsShells(t *testing.T) {
 			[]string{"git", "status"},
 		},
 		{
+			"pwsh with -NonInteractive",
+			sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-NonInteractive", "-Command", "git status"}},
+			[]string{"git", "status"},
+		},
+		{
 			"powershell.exe case-folded",
 			sandbox.ExecRequest{Command: "PowerShell.exe", Args: []string{"-nopROFILE", "-command", "go test ./..."}},
 			[]string{"go", "test", "./..."},
@@ -260,6 +275,9 @@ func TestNormaliseExecKeepsUnprovableWrappersRaw(t *testing.T) {
 		{"cmd backslash path", sandbox.ExecRequest{Command: "cmd.exe", Args: []string{"/c", `dir C:\tmp\*.go`}}},
 		{"cmd newline", sandbox.ExecRequest{Command: "cmd.exe", Args: []string{"/c", "dir\ndel x"}}},
 		{"pwsh without -NoProfile", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-Command", "git status"}}},
+		{"pwsh -NonInteractive without -NoProfile", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NonInteractive", "-Command", "git status"}}},
+		{"pwsh -NonInteractive after -Command", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-Command", "-NonInteractive", "git status"}}},
+		{"pwsh extra switch before -Command", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-NonInteractive", "-NoLogo", "-Command", "git status"}}},
 		{"pwsh abbreviated params", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-nop", "-c", "git status"}}},
 		{"pwsh encoded command", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-EncodedCommand", "ZwBpAHQAIABzAHQAYQB0AHUAcwA="}}},
 		{"pwsh statement separator", sandbox.ExecRequest{Command: "pwsh", Args: []string{"-NoProfile", "-Command", "git status; Remove-Item x"}}},

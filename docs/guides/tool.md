@@ -200,6 +200,67 @@ Semantics, in full:
   listable at build time, so it is reported as unknown too: a typo that waits is a
   typo nobody finds.
 
+## Pinning the shell
+
+The `exec` tool runs one command line through a shell. Which shell is a platform
+fact, so by default the platform probes the host: PowerShell 7, then Windows
+PowerShell, then `cmd` on Windows; `bash`, then `sh`, elsewhere. On Windows the
+probe also refuses a Microsoft Store App Execution Alias (`…\WindowsApps\pwsh.exe`
+is a reparse point a confined token cannot follow, so it looks like a shell and
+starts nothing) and falls back to the well-known install locations when the
+shell's directory is not on `PATH`.
+
+A deployment that knows better says so under `tools.exec.shell`:
+
+```yaml
+tools:
+  exec:
+    shell:
+      name: pwsh # tool name the model sees; default: base name of path
+      path: 'C:\Program Files\PowerShell\7\pwsh.exe'
+      args: [-NoProfile, -NonInteractive, -Command] # default for pwsh
+```
+
+- **`path` is required.** An absolute path, or a bare name resolved through
+  `PATH` on the host that runs commands. It is not checked against this host's
+  filesystem, because with `sandbox.backend: remote` the shell runs on the far
+  side. A path under `WindowsApps` is refused: no token can start it.
+- **`name` is the tool name, and the name approval classifies.** It must be one
+  of the shells the platform knows — `bash`, `sh`, `zsh`, `dash`, `ash`, `ksh`,
+  `fish`, `pwsh`, `powershell`, `cmd` — because that name selects the argv
+  convention and the unwrapping the approval layer relies on. Empty takes the
+  base name of `path` without `.exe`, so a pinned `pwsh.exe` is named `pwsh`. A
+  stated name that disagrees with a known executable name is refused, because
+  `-c` handed to `cmd.exe` runs nothing. The same name is what
+  `tools.descriptions` keys off. A Windows install of a POSIX shell
+  (`C:\Program Files\Git\bin\bash.exe`) is classified under its real file
+  name, so pinning one keeps `bash.exe -c` on the approval path.
+- **`args` is the prefix that precedes the command line.** Omitted, it follows
+  from `name` (`-c`, `/c`, or `-NoProfile -NonInteractive -Command`). A
+  deployment that writes its own is on its own: approval unwraps only the exact
+  well-known form, so commands that would have been auto-approved ask the
+  approver instead — a slower prompt, not a wider boundary.
+- **It is part of the deployment's identity.** The shell enters the runtime
+  digest, so changing it makes sessions started under the previous shell
+  unresumable: the model was writing command lines for one grammar and would
+  otherwise continue under another. A `tools.exec` block that pins nothing is
+  omitted from the digest like an absent one, so `exec: {}` costs no checkpoints.
+- **With `sandbox.backend: remote`, the probed shell is sent as a name.** The
+  probe resolves an executable on the machine that builds the runtime, and the
+  far side is the one that runs the command, so only the name crosses. A pinned
+  `path` is sent as written: pin a name the far side resolves, or the path it
+  actually has.
+- **A host that gates commands by name must whitelist the resolved path.**
+  `engine.AllowCommands` matches the command string exactly, and on Windows that
+  string is now the absolute executable, so a gate that listed `pwsh` rejects it
+  (the decorator's own doc says to normalise before calling `Exec`). Pinning
+  `path: pwsh` sends the bare name again, with the alias risk back.
+- **A pin no tool would run is a build error.** `tools.exec.shell` with `exec`
+  absent from `tools.enable` is refused rather than silently ignored.
+
+The session tools (`exec_session`, `write_stdin`) are unaffected: they take an
+`argv` and start it directly, with no shell in between.
+
 ## Middleware chain
 
 `tools.middleware` is the list above, applied in written order — first written is

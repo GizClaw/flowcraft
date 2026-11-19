@@ -13,7 +13,11 @@ package sandbox
 type ShellSpec struct {
 	// Name is how the shell is described to a model ("sh", "pwsh").
 	Name string
-	// Path is the executable.
+	// Path is the executable. On Windows `engine.DefaultShell` resolves it to an
+	// absolute path, because a bare name would go back through PATH at spawn and
+	// could reach a Microsoft Store alias the choice had already rejected. A shell
+	// the host pins (`engine.ShellFor`) keeps the path the deployment wrote, so a
+	// bare name there is resolved on the host that runs commands.
 	Path string
 	// Args are the arguments that precede the command line, e.g. "-c".
 	Args []string

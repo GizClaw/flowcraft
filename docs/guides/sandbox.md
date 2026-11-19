@@ -245,11 +245,14 @@ would only move the refusal earlier and make it less accurate.
 read-only commands plus argument-aware checks for `find` / `rg` / `git` / `sed`
 / `sort`). It shares the allowlist's shell unwrapping: a script counts only when
 the wrapper is the exact supported form (`sh -c`, `cmd.exe /c`,
-`pwsh -NoProfile -Command`) and the script is a single plain command; combined
-and abbreviated forms such as `bash -lc`, `cmd /k` or a PowerShell command
-without `-NoProfile` are never unwrapped. `date` and `hostname` are deliberately
-not auto-approved: `date -s` changes the system clock and `hostname newname`
-changes the host name — non-file writes no OS sandbox can block.
+`pwsh -NoProfile [-NonInteractive] -Command`) and the script is a single plain
+command; combined and abbreviated forms such as `bash -lc`, `cmd /k` or a
+PowerShell command without `-NoProfile` are never unwrapped. `-NonInteractive` is
+accepted because the platform's own `exec` tool passes it and it only suppresses
+prompts: it runs no profile and does not change how the script is parsed. `date`
+and `hostname` are deliberately not auto-approved: `date -s` changes the system
+clock and `hostname newname` changes the host name — non-file writes no OS
+sandbox can block.
 
 It is a caller-side helper; the host's `ApprovalFunc` decides:
 

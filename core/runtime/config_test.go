@@ -58,6 +58,60 @@ func TestConfigValidateRejectsHostsWithoutAllowList(t *testing.T) {
 	}
 }
 
+// A pinned shell is a configuration value, so a spec that cannot run is refused
+// before a runtime is built rather than once per command.
+func TestConfigValidateRejectsPinnedShellThatCannotRun(t *testing.T) {
+	cases := map[string]struct {
+		shell ShellConfig
+		want  string
+	}{
+		"unknown shell name": {
+			shell: ShellConfig{Path: "/usr/local/bin/nu"},
+			want:  "unknown shell",
+		},
+		"no path": {
+			shell: ShellConfig{Name: "bash"},
+			want:  "path is required",
+		},
+		"Microsoft Store alias": {
+			shell: ShellConfig{Path: `C:\Users\dev\AppData\Local\Microsoft\WindowsApps\pwsh.exe`},
+			want:  "WindowsApps",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := validConfig(pathtest.Abs("tmp"))
+			cfg.Tools.Exec = &ExecConfig{Shell: &tc.shell}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("shell %+v was accepted", tc.shell)
+			}
+			for _, want := range []string{"tools.exec.shell", tc.want} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to contain %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// A shell no wired tool runs is configuration that reads as a decision and makes
+// none: the exec tool would keep probing the host.
+func TestConfigValidateRejectsPinnedShellWithoutTheExecTool(t *testing.T) {
+	cfg := validConfig(pathtest.Abs("tmp"))
+	cfg.Tools.Enable = []string{ToolFiles}
+	cfg.Tools.Exec = &ExecConfig{Shell: &ShellConfig{Name: "bash", Path: "/bin/bash"}}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("a pinned shell with the exec tool disabled was accepted")
+	}
+	for _, want := range []string{"tools.exec.shell", "tools.enable"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
 func TestNetModeNames(t *testing.T) {
 	for name, want := range map[string]permission.NetMode{
 		"":           permission.NetDefault,

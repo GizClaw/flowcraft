@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -193,6 +194,64 @@ func (r *Runtime) buildTools(ctx context.Context) error {
 	return nil
 }
 
+// buildExecSources wires the command and session tools.
+func (r *Runtime) buildExecSources() ([]tool.Source, error) {
+	policy, err := r.cfg.Sandbox.permission()
+	if err != nil {
+		return nil, err
+	}
+	shell, err := r.execShell()
+	if err != nil {
+		return nil, err
+	}
+	command, err := exec.NewCommand(r.runner,
+		exec.WithWorkDir(r.cfg.workDir()),
+		exec.WithNet(policy.Net),
+		exec.WithShell(shell))
+	if err != nil {
+		return nil, errdefs.Validationf("tools.exec: %w", err)
+	}
+	sessionGroup, err := exec.NewSession(r.runner,
+		exec.WithTTY(r.cfg.Tools.TTY),
+		exec.WithSessionNet(policy.Net),
+		exec.WithWorkdirHint(r.cfg.workDir()))
+	if err != nil {
+		return nil, errdefs.Validationf("tools.exec: %w", err)
+	}
+	r.sessions = sessionGroup
+	// The session group is closed before the assembly, so a tool never sees
+	// a group that is already shut.
+	r.closers = append(r.closers, sessionGroup)
+	return []tool.Source{singleSource{command}, sessionGroup}, nil
+}
+
+// execShell is the shell the command tool runs: the pinned one when the
+// deployment states it, else the platform's probe.
+//
+// A remote backend gets the name rather than the path the probe resolved. That
+// path is a fact about this machine — its %ProgramFiles%, its install layout —
+// and with backend: remote the command runs on the far side, which resolved the
+// bare name itself until the probe started returning one. Sending the local path
+// would turn a difference the far side handles into a failure on every call.
+func (r *Runtime) execShell() (sandbox.ShellSpec, error) {
+	if pinned := r.cfg.Tools.shell(); pinned != nil {
+		// Validate already refused a spec that cannot exist; converting here is
+		// what makes the shell the tool runs a single value instead of a
+		// question asked twice.
+		return pinned.spec()
+	}
+	return shellForTransport(sandboxengine.DefaultShell(runtime.GOOS), r.cfg.Sandbox.Backend), nil
+}
+
+// shellForTransport is execShell's one cross-boundary rule, split out because it
+// is the part a test can state without a second machine.
+func shellForTransport(shell sandbox.ShellSpec, backend string) sandbox.ShellSpec {
+	if backend == BackendRemote {
+		shell.Path = shell.Name
+	}
+	return shell
+}
+
 // buildSources wires each enabled tool set. Each set contributes a tool.Source,
 // so the assembly decides visibility and the sources only describe tools.
 func (r *Runtime) buildSources(ctx context.Context) ([]tool.Source, error) {
@@ -208,28 +267,11 @@ func (r *Runtime) buildSources(ctx context.Context) ([]tool.Source, error) {
 	}
 
 	if r.cfg.Tools.enabled(ToolExec) {
-		policy, err := r.cfg.Sandbox.permission()
+		wired, err := r.buildExecSources()
 		if err != nil {
 			return nil, err
 		}
-		command, err := exec.NewCommand(r.runner,
-			exec.WithWorkDir(r.cfg.workDir()),
-			exec.WithNet(policy.Net))
-		if err != nil {
-			return nil, errdefs.Validationf("tools.exec: %w", err)
-		}
-		sessionGroup, err := exec.NewSession(r.runner,
-			exec.WithTTY(r.cfg.Tools.TTY),
-			exec.WithSessionNet(policy.Net),
-			exec.WithWorkdirHint(r.cfg.workDir()))
-		if err != nil {
-			return nil, errdefs.Validationf("tools.exec: %w", err)
-		}
-		r.sessions = sessionGroup
-		// The session group is closed before the assembly, so a tool never sees
-		// a group that is already shut.
-		r.closers = append(r.closers, sessionGroup)
-		sources = append(sources, singleSource{command}, sessionGroup)
+		sources = append(sources, wired...)
 	}
 
 	if r.cfg.Tools.enabled(ToolSkills) && len(r.cfg.Skills.Roots) > 0 {

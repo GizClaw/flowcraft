@@ -59,6 +59,13 @@ func (c Config) redacted() Config {
 		middleware[i].Settings = redactMap(entry.Settings)
 	}
 	c.Tools.Middleware = middleware
+
+	// An exec block that pins no shell is the same configuration as no block at
+	// all: neither changes what runs, and a digest that moved would make every
+	// stored checkpoint unresumable for a redundant edit.
+	if c.Tools.Exec != nil && c.Tools.Exec.Shell == nil {
+		c.Tools.Exec = nil
+	}
 	return c
 }
 
