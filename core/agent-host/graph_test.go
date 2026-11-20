@@ -16,7 +16,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
 	"github.com/GizClaw/flowcraft/core/deploy/sources"
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/goccy/go-json"
 )
 
@@ -189,11 +188,7 @@ func turn(t *testing.T, manager *Manager, name string) string {
 		t.Fatalf("no session for %q", name)
 	}
 	var text string
-	for event, err := range session.Run(context.Background(),
-		message.NewTextMessage(message.RoleUser, "hi")) {
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
+	for _, event := range run(t, session) {
 		if typed, ok := event.(agent.Text); ok {
 			text += typed.Text
 		}
