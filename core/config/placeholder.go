@@ -28,6 +28,11 @@ const SchemeEnv = "env"
 // The resolver receives the load context: reading a secret store may need a
 // deadline and a cancellation path, and pretending otherwise would force every
 // host to hide I/O behind a package-level client.
+//
+// One document may be expanded more than once — a deployment validates a graph
+// document and then compiles it — so a resolver must answer the same reference
+// with the same value within one load. A resolver that mints a nonce would be
+// validated against one value and built with another.
 func WithResolver(scheme string, resolve ResolverFunc) Option {
 	return func(o *options) {
 		if o.resolvers == nil {

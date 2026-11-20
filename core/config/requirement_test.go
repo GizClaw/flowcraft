@@ -143,3 +143,21 @@ sandbox:
 		t.Errorf("sources = %v, want [deploy.yaml]", sources)
 	}
 }
+
+// A malformed reference is reported against the file it is in: the name is what
+// the reader is told to edit, and a checklist that cannot say where the mistake
+// is has answered half the question.
+func TestRequiredPlaceholdersNamesTheDocumentOnAMalformedReference(t *testing.T) {
+	layer := Layer{Name: "forge.yaml", Source: Bytes([]byte(`
+sandbox:
+  backend: ${BROKEN
+`))}
+	_, err := RequiredPlaceholders(context.Background(), layer)
+	if err == nil || !strings.Contains(err.Error(), "forge.yaml: unterminated ${") {
+		t.Errorf("layer err = %v, want the layer's name", err)
+	}
+	_, err = RequiredPlaceholdersDocument([]byte("name: ${BROKEN\n"), "deploy.yaml")
+	if err == nil || !strings.Contains(err.Error(), "deploy.yaml: unterminated ${") {
+		t.Errorf("document err = %v, want the document's name", err)
+	}
+}
