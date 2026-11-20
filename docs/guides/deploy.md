@@ -104,8 +104,14 @@ error. That is also why this entry exists rather than a host merging YAML and
 calling `Load` again: the second pass would expand a resolved value that happens
 to contain `${`.
 
-Every error names the layer it came from, and `Loader.RequiredPlaceholders` still
-asks one body: a startup checklist over a stack is not wired yet.
+The merge's own errors name the layer: a layer that will not parse, two layers at
+one priority, a source that will not read. An error the merged *document* raises —
+an unresolved placeholder, an unknown field, a check in `agent()` — names the
+document or the agent instead, because by then the value could have come from any
+layer.
+
+`Loader.RequiredPlaceholders` still asks one body: a startup checklist over a stack
+is not wired yet.
 
 ## Kinds
 
@@ -404,10 +410,11 @@ specs, err := loader.LoadSource(ctx, &deploy.SourceDocument{
     Settings: json.RawMessage(`{"name":"deploy.yaml"}`),
 })
 
-// The three entries, in order of how much the host has already done:
+// The four entries, in order of how much the host has already done:
 //   LoadSource  — the host names a source kind; the loader reads it.
 //   LoadFile    — LoadSource with the file source: {kind: file, settings: {path}}.
 //   Load        — the host already holds the bytes (HTTP, a database, a test).
+//   LoadLayers  — the host hands the stack; the merge runs before validation.
 ```
 
 A `deploy.Spec` is the validated form of one agent:

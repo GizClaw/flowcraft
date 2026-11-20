@@ -176,14 +176,27 @@ agents:
 	}
 }
 
-// The merged document is validated, not each layer: a higher layer that changes
-// the version is a document error, named the way Load names it.
+// The merged document is validated, not each layer. The first stack proves it the
+// hard way: neither layer is a valid document on its own — the lower one declares
+// no agents, the upper one no version — and the merge is what makes them one. The
+// second pins the message a merged document gets.
 func TestLoadLayersValidatesTheMergedDocument(t *testing.T) {
 	kinds := memoryLayers(map[string]string{"base": layerConfig("from-memory")})
-	document := layerDocument("- priority: 0\n  source: {kind: memory, settings: {name: base}}\n")
+	document := string(layerDocument("- priority: 0\n  source: {kind: memory, settings: {name: base}}\n"))
 
-	_, err := deploy.Loader{Kinds: kinds}.LoadLayers(context.Background(), []config.Layer{
-		deployLayer(0, "defaults.yaml", string(document)),
+	specs, err := deploy.Loader{Kinds: kinds}.LoadLayers(context.Background(), []config.Layer{
+		deployLayer(0, "defaults.yaml", "version: 1\n"),
+		deployLayer(10, "user.yaml", withoutVersion(t, document)),
+	})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != "local" {
+		t.Errorf("specs = %+v, want the agent the upper layer declares", specs)
+	}
+
+	_, err = deploy.Loader{Kinds: kinds}.LoadLayers(context.Background(), []config.Layer{
+		deployLayer(0, "defaults.yaml", document),
 		deployLayer(10, "user.yaml", "version: 2\n"),
 	})
 	if err == nil {
@@ -191,6 +204,34 @@ func TestLoadLayersValidatesTheMergedDocument(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "version 2 is not supported") {
 		t.Errorf("error = %v, want the version rule", err)
+	}
+}
+
+// withoutVersion is a deployment document that declares only its agents, so one
+// layer can supply the version and another the list.
+func withoutVersion(t *testing.T, document string) string {
+	t.Helper()
+	const prefix = "version: 1\n"
+	if !strings.HasPrefix(document, prefix) {
+		t.Fatalf("document does not start with %q", prefix)
+	}
+	return strings.TrimPrefix(document, prefix)
+}
+
+// A higher layer that writes an empty list deletes every agent, which is caught
+// where a single body would be: the merged document declares none.
+func TestLoadLayersRejectsAnEmptyMergedAgentList(t *testing.T) {
+	kinds := memoryLayers(map[string]string{"base": layerConfig("from-memory")})
+	document := string(layerDocument("- priority: 0\n  source: {kind: memory, settings: {name: base}}\n"))
+	_, err := deploy.Loader{Kinds: kinds}.LoadLayers(context.Background(), []config.Layer{
+		deployLayer(0, "defaults.yaml", document),
+		deployLayer(10, "user.yaml", "agents: []\n"),
+	})
+	if err == nil {
+		t.Fatal("LoadLayers accepted a merged document with no agents")
+	}
+	if !strings.Contains(err.Error(), "declares no agents") {
+		t.Errorf("error = %v, want the empty-agent-list rule", err)
 	}
 }
 
@@ -225,16 +266,35 @@ func TestLoadLayersRejectsDuplicatePriority(t *testing.T) {
 	}
 }
 
-// A layer that cannot be parsed is named: the stack, not the file, is what the
-// reader has to open.
+// A layer that cannot be parsed is named, and so is the document it belongs to:
+// the stack, not the file, is what the reader has to open.
 func TestLoadLayersNamesTheLayerThatFailed(t *testing.T) {
 	_, err := deploy.Loader{Kinds: memoryLayers(nil)}.LoadLayers(context.Background(),
 		[]config.Layer{deployLayer(0, "user.yaml", "agents: [\n")})
 	if err == nil {
 		t.Fatal("LoadLayers accepted an unparseable layer")
 	}
-	if !strings.Contains(err.Error(), "user.yaml") {
-		t.Errorf("error %q does not name the layer", err)
+	for _, want := range []string{"manage: deployment document", "user.yaml"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// A layer of comments contributes nothing: the rest of the stack still describes
+// the document, the same way config.Load treats a comment-only runtime layer.
+func TestLoadLayersSkipsACommentOnlyLayer(t *testing.T) {
+	kinds := memoryLayers(map[string]string{"base": layerConfig("from-memory")})
+	document := string(layerDocument("- priority: 0\n  source: {kind: memory, settings: {name: base}}\n"))
+	specs, err := deploy.Loader{Kinds: kinds}.LoadLayers(context.Background(), []config.Layer{
+		deployLayer(0, "defaults.yaml", document),
+		deployLayer(10, "notes.yaml", "# nothing here yet\n"),
+	})
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if len(specs) != 1 || specs[0].Name != "local" {
+		t.Errorf("specs = %+v, want the comment-only layer to be skipped", specs)
 	}
 }
 

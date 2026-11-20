@@ -138,9 +138,8 @@ type ProtocolDocument struct {
 // the engines and protocols an agent is made of and the sources its runtime
 // layers are read from.
 type Loader struct {
-	// LoadOptions are handed to [config.Load]: resolvers for placeholder
-	// schemes. They are not Spec fields because they are host wiring, not
-	// deployment data.
+	// LoadOptions are handed to core/config: resolvers for placeholder schemes.
+	// They are not Spec fields because they are host wiring, not deployment data.
 	LoadOptions []config.Option
 	// Kinds are the registered engines, protocols, hooks and layer sources.
 	// Decode and Open are invoked here, so a bad settings block fails at load
@@ -258,14 +257,22 @@ func (l Loader) LoadLayers(ctx context.Context, layers []config.Layer) ([]Spec, 
 }
 
 // settings are the options both entries hand to core/config: the host's
-// resolvers, then the label every error below this point is prefixed with.
+// resolvers, the label every error below this point is prefixed with, and no
+// provenance for the merge.
 //
 // Placeholders are expanded by the same code a configuration layer uses, on the
 // parsed values: peer, auth, card and settings can all name a secret, and a host
 // should not have to learn a second rule for the outer document.
+//
+// Provenance is off because no entry exposes the merged document: a layered load
+// builds specs, not a report, so recording which layer supplied each leaf would be
+// a walk nobody reads — the rule [runtime.LoadLayers] already follows. Decode
+// records nothing, so a single body pays nothing for this either way.
 func (l Loader) settings() []config.Option {
 	settings := append([]config.Option{}, l.LoadOptions...)
-	return append(settings, config.WithLabel("manage: deployment document"))
+	return append(settings,
+		config.WithLabel("manage: deployment document"),
+		config.WithoutProvenance())
 }
 
 // specs validates a document and builds one spec per agent. It is the half the
