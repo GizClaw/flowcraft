@@ -17,6 +17,25 @@ type options struct {
 	builders []func(Runtime) ([]graph.NodeKind, error)
 	decoders map[string]inference.ExtensionDecoder
 	blobs    graph.BlobStore
+	// configOptions are the host's placeholder resolvers: the ones it registered
+	// for the deployment's own documents, handed here so a node config names a
+	// scheme rather than carrying a value.
+	configOptions []config.Option
+}
+
+// WithConfigOptions hands the host's placeholder resolvers to the loader that
+// reads the graph document.
+//
+// A graph document is expanded by the same code a runtime layer is, so a node
+// config may name a reference the host knows how to resolve - a credential, a
+// row in a table, a path inside a workspace. The scheme itself is the host's:
+// only ${env:...} is built in, and an unregistered scheme is an error that lists
+// what is registered, not a literal handed to a node.
+//
+// A document that does not need a scheme costs nothing for its absence: the
+// resolvers are looked up only when a placeholder names one.
+func WithConfigOptions(opts ...config.Option) Option {
+	return func(target *options) { target.configOptions = append(target.configOptions, opts...) }
 }
 
 // WithRuntimeKinds adds node kinds built from the runtime this graph is opened
@@ -59,20 +78,16 @@ func WithBlobStore(store graph.BlobStore) Option {
 // Open reads, validates and compiles a graph document for a runtime.
 //
 // The document is YAML; placeholders are expanded the same way a deployment
-// document's are. name is what errors report, and body is where the bytes come
+// document's are, through the resolvers [WithConfigOptions] supplies. name is
+// what errors report, and body is where the bytes come
 // from — [config.File], [config.Bytes], [config.FS] or [config.Func]. The
 // registry is the built-in model, tool and condition kinds plus whatever the
 // options add.
 func Open(ctx context.Context, rt Runtime, name string, body config.Source, opts ...Option) (*graph.Graph, error) {
-	document, err := load(ctx, name, body)
+	settings := newOptions(opts)
+	document, err := load(ctx, name, body, settings)
 	if err != nil {
 		return nil, err
-	}
-	var settings options
-	for _, option := range opts {
-		if option != nil {
-			option(&settings)
-		}
 	}
 	kinds, err := registryKinds(rt, settings)
 	if err != nil {
@@ -87,21 +102,71 @@ func Open(ctx context.Context, rt Runtime, name string, body config.Source, opts
 
 // Validate checks a document without compiling it: a host reports a broken
 // graph before it builds any resource.
-func Validate(ctx context.Context, name string, body config.Source) error {
-	_, err := load(ctx, name, body)
+//
+// It takes the same options [Open] does, because a document that names a
+// placeholder has to be expanded before it can be checked: a scheme the host did
+// not register is a load error here, not something the first build discovers.
+func Validate(ctx context.Context, name string, body config.Source, opts ...Option) error {
+	_, err := load(ctx, name, body, newOptions(opts))
 	return err
 }
 
-// load reads and parses one document, without a registry.
-func load(ctx context.Context, name string, body config.Source) (graph.Document, error) {
+// RequiredPlaceholders reports what a graph document references, without
+// resolving any of it.
+//
+// Expansion fails at the first unset reference, so a host that wants to print a
+// startup checklist needs the whole list before a load: this is the graph
+// document's counterpart of [deploy.Loader.RequiredPlaceholdersFile], over the
+// same scanner. A reference that names a scheme other than env is reported as
+// "scheme:args", which is what the host registered the scheme under.
+func RequiredPlaceholders(ctx context.Context, name string, body config.Source) (config.Requirement, error) {
+	raw, err := readBody(ctx, name, body)
+	if err != nil {
+		return config.Requirement{}, err
+	}
+	requirement, err := config.RequiredPlaceholdersDocument(raw, name)
+	if err != nil {
+		return config.Requirement{}, errdefs.Validationf("graph: %w", err)
+	}
+	return requirement, nil
+}
+
+// newOptions applies the host's options in order, so a later one wins.
+func newOptions(opts []Option) options {
+	var settings options
+	for _, option := range opts {
+		if option != nil {
+			option(&settings)
+		}
+	}
+	return settings
+}
+
+// expandOptions is how the document is expanded: the label names what was read,
+// and the host's resolvers follow it, so a host that wants its own label wins.
+func (o options) expandOptions() []config.Option {
+	return append([]config.Option{config.WithLabel("document")}, o.configOptions...)
+}
+
+// readBody reads the document's bytes, naming it the way every error here does.
+func readBody(ctx context.Context, name string, body config.Source) ([]byte, error) {
 	if body == nil {
-		return graph.Document{}, errdefs.Validationf("graph: %s: no source", name)
+		return nil, errdefs.Validationf("graph: %s: no source", name)
 	}
 	raw, err := body.Body(ctx)
 	if err != nil {
-		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
+		return nil, errdefs.Validationf("graph: %s: %w", name, err)
 	}
-	expanded, err := config.ExpandDocument(ctx, raw)
+	return raw, nil
+}
+
+// load reads and parses one document, without a registry.
+func load(ctx context.Context, name string, body config.Source, settings options) (graph.Document, error) {
+	raw, err := readBody(ctx, name, body)
+	if err != nil {
+		return graph.Document{}, err
+	}
+	expanded, err := config.ExpandDocument(ctx, raw, settings.expandOptions()...)
 	if err != nil {
 		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
 	}

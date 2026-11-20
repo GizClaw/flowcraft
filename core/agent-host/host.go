@@ -44,8 +44,9 @@ type Bindings struct {
 	// RuntimeOptions entry already registered: name the set in one place, not
 	// both.
 	SandboxBackends map[string]runtime.SandboxFactory
-	// LoadOptions are handed to the layer loader: resolvers for placeholder
-	// schemes.
+	// LoadOptions are handed to every reader of a document: the layer loader, and
+	// an engine kind that reads a document of its own (a graph's node config).
+	// They are resolvers for placeholder schemes.
 	LoadOptions []config.Option
 	// OnEvent observes every event of every session, named by agent. The
 	// agent name is not decoration: one host usually serves many agents.
@@ -250,6 +251,10 @@ func (m *Manager) build(ctx context.Context, spec deploy.Spec) (*deployment, err
 		Trace:       trace,
 		Bodies:      bodies,
 		Sources:     sources,
+		// The same resolvers the deployment document and its layers were read
+		// with, so a document an engine reads of its own - a graph's node config -
+		// names a scheme once rather than per reader.
+		LoadOptions: m.bindings.LoadOptions,
 	})
 	if err != nil {
 		if rt != nil {

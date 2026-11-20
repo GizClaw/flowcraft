@@ -36,7 +36,7 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 		Name:  "graph",
 		Local: true,
 		Decode: func(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener) (any, error) {
-			decoded, _, err := openSettings(ctx, settings, sources, true)
+			decoded, _, err := openSettings(ctx, settings, sources, true, options)
 			if err != nil {
 				return nil, err
 			}
@@ -47,12 +47,20 @@ func Engine(options ...nodes.Option) deploy.EngineKind {
 			// The document was validated at load; the build parses it again on
 			// the way in, so reading it here would only cost a host source another
 			// load.
-			_, document, err := openSettings(ctx, deps.Spec.Settings, deps.Sources, false)
+			_, document, err := openSettings(
+				ctx, deps.Spec.Settings, deps.Sources, false, options)
 			if err != nil {
 				return nil, err
 			}
 			open := append([]nodes.Option{}, options...)
-			open = append(open, nodes.WithBlobStore(deps.Store))
+			open = append(open,
+				nodes.WithBlobStore(deps.Store),
+				// The load-time check resolved the document through the options
+				// this kind was built with; a Spec composed in code never goes
+				// through a loader at all, so the build's own expansion reads the
+				// schemes from the bindings instead.
+				nodes.WithConfigOptions(deps.LoadOptions...),
+			)
 			built, err := nodes.Open(ctx, deps.Runtime, document.Name, document.Body, open...)
 			if err != nil {
 				return nil, err
@@ -87,8 +95,16 @@ type graphSettings struct {
 
 // openSettings decodes the settings and opens the document they name, validating
 // it on the way: a wiring mistake fails at load, not when the first task starts.
-// Node kinds are still checked at build, when the registry is known.
-func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.SourceOpener, validate bool) (graphSettings, deploy.Source, error) {
+// Node kinds are still checked at build, when the registry is known, and so are
+// the placeholder schemes a node config names - validation expands the document,
+// so it needs the same resolvers the build will use.
+func openSettings(
+	ctx context.Context,
+	settings json.RawMessage,
+	sources deploy.SourceOpener,
+	validate bool,
+	options []nodes.Option,
+) (graphSettings, deploy.Source, error) {
 	const missing = "graph: settings.source is required"
 	if len(settings) == 0 || string(settings) == "null" {
 		return graphSettings{}, deploy.Source{}, errdefs.Validationf(missing)
@@ -114,7 +130,7 @@ func openSettings(ctx context.Context, settings json.RawMessage, sources deploy.
 		return graphSettings{}, deploy.Source{}, err
 	}
 	if validate {
-		if err := nodes.Validate(ctx, document.Name, document.Body); err != nil {
+		if err := nodes.Validate(ctx, document.Name, document.Body, options...); err != nil {
 			return graphSettings{}, deploy.Source{}, err
 		}
 	}

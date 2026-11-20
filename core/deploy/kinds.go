@@ -50,6 +50,16 @@ type EngineDeps struct {
 	// Sources opens the documents this engine's settings name, from the same table
 	// a runtime layer is read from.
 	Sources SourceOpener
+	// LoadOptions resolve placeholders for an engine that reads documents of its
+	// own: a node config in a graph, for one. They are the loader's options, so a
+	// host registers a scheme once and every document it reads agrees on it.
+	//
+	// A kind that must resolve the same scheme while the loader is still
+	// validating its settings cannot get it here: an [EngineKind.Decode] has no
+	// options to receive. Such a kind takes them at construction instead, which is
+	// why the graph engine takes nodes.Option and this field is the second half of
+	// the same decision rather than its replacement.
+	LoadOptions []config.Option
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment

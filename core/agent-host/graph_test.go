@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
+	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/deploy/builtin"
 	enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
@@ -27,6 +29,44 @@ func (k fixedKind) Invoke(context.Context, graph.Invoke) (graph.NodeStream, erro
 	return graph.Static(graph.Result{State: []graph.StateUpdate{
 		{Key: "text", Value: graph.Text(k.text)},
 	}}), nil
+}
+
+// configKind writes the text its config names, which is how a test observes a
+// value the document itself carries - a placeholder the loader expanded, as
+// opposed to one the test handed the graph.
+type configKind struct{}
+
+func (configKind) Name() string { return "configured" }
+
+func (configKind) Invoke(_ context.Context, in graph.Invoke) (graph.NodeStream, error) {
+	var config struct {
+		Text string `json:"text"`
+	}
+	if err := graph.DecodeConfig(in.Config, &config); err != nil {
+		return nil, err
+	}
+	return graph.Static(graph.Result{State: []graph.StateUpdate{
+		{Key: "text", Value: graph.Text(config.Text)},
+	}}), nil
+}
+
+// configuredGraph is fixedGraph with the value in the node's own config, so a
+// placeholder has to survive expansion to reach the state.
+const configuredGraph = `version: 1
+entry: a
+state:
+  text: {type: text}
+nodes:
+  - {id: a, kind: configured, config: {text: "${demo:greeting}"}}
+edges:
+  - {from: a, to: end}
+output: {key: text}
+`
+
+// demoResolvers is the host's registration for the scheme these tests read.
+func demoResolvers() []config.Option {
+	return []config.Option{config.WithResolver("demo",
+		func(context.Context, []string) (string, error) { return "from-the-host", nil })}
 }
 
 func writeGraphDocument(t *testing.T, body string) string {
@@ -61,18 +101,86 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"})))
 	manager := newManager(t, kinds, testHost(t))
 	spec := testSpec(t, "g", "graph")
-	spec.Engine.Settings = rawSettings(map[string]any{
-		"source": map[string]any{
-			"kind":     "file",
-			"settings": map[string]any{"path": writeGraphDocument(t, fixedGraph)},
-		},
-	})
+	spec.Engine.Settings = graphSettingsFor(t, writeGraphDocument(t, fixedGraph))
 	if err := manager.Add(context.Background(), spec); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, ok := manager.Session("g", "conv-1")
+	if got := turn(t, manager, "g"); got != "hello" {
+		t.Errorf("text = %q, want the graph's output", got)
+	}
+}
+
+// A node config is expanded by the same code a runtime layer is, so a document may
+// name a scheme the host registered. The options are the engine's, because the
+// loader validates the document through EngineKind.Decode before any EngineDeps
+// exist: this is the half of the wiring a host gets wrong first.
+func TestGraphDocumentResolvesAHostSchemeAtLoad(t *testing.T) {
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(
+		nodes.WithKinds(configKind{}),
+		nodes.WithConfigOptions(demoResolvers()...),
+	))
+	document := writeDeploymentDocument(t,
+		map[string]any{"kind": "file", "settings": map[string]any{
+			"path": writeGraphDocument(t, configuredGraph)}},
+		map[string]any{"kind": "file", "settings": map[string]any{"path": writeRuntimeLayer(t)}},
+	)
+	if got := runDeploymentDocument(t, kinds, document); got != "from-the-host" {
+		t.Errorf("text = %q, want the resolved value", got)
+	}
+}
+
+// The build half: a Spec composed in code never passes through the loader, so the
+// host's resolvers reach the graph as EngineDeps.LoadOptions instead.
+func TestGraphEngineUsesHostLoadOptionsAtBuild(t *testing.T) {
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(configKind{})))
+	bindings := testHost(t)
+	bindings.LoadOptions = demoResolvers()
+	manager := newManager(t, kinds, bindings)
+	spec := testSpec(t, "g", "graph")
+	spec.Engine.Settings = graphSettingsFor(t, writeGraphDocument(t, configuredGraph))
+	if err := manager.Add(context.Background(), spec); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if got := turn(t, manager, "g"); got != "from-the-host" {
+		t.Errorf("text = %q, want the resolved value", got)
+	}
+}
+
+// Without either half the scheme is unknown, and the failure names the document and
+// the schemes it could have used rather than handing a literal to a node.
+func TestGraphEngineRefusesAHostSchemeWithoutOptions(t *testing.T) {
+	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(configKind{})))
+	manager := newManager(t, kinds, testHost(t))
+	spec := testSpec(t, "g", "graph")
+	spec.Engine.Settings = graphSettingsFor(t, writeGraphDocument(t, configuredGraph))
+	err := manager.Add(context.Background(), spec)
+	if err == nil {
+		t.Fatal("a document naming an unregistered scheme was added")
+	}
+	for _, want := range []string{`unknown placeholder scheme "demo"`, "offered: env"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
+// graphSettingsFor is the engine settings a document on disk is named by.
+func graphSettingsFor(t *testing.T, path string) json.RawMessage {
+	t.Helper()
+	return rawSettings(map[string]any{
+		"source": map[string]any{
+			"kind":     "file",
+			"settings": map[string]any{"path": path},
+		},
+	})
+}
+
+// turn drives one turn of a deployed agent and returns the text it streamed.
+func turn(t *testing.T, manager *Manager, name string) string {
+	t.Helper()
+	session, ok := manager.Session(name, "conv-1")
 	if !ok {
-		t.Fatal("no session for the deployed graph")
+		t.Fatalf("no session for %q", name)
 	}
 	var text string
 	for event, err := range session.Run(context.Background(),
@@ -84,15 +192,9 @@ func TestGraphEngineRunsADocument(t *testing.T) {
 			text += typed.Text
 		}
 	}
-	if text != "hello" {
-		t.Errorf("text = %q, want the graph's output", text)
-	}
+	return text
 }
 
-// The whole path in one run: a deployment document on disk names a file source for
-// its runtime layer and another for the graph, the loader resolves both, and the
-// manager runs a turn. This is the only test that crosses document → source →
-// manager → graph, as opposed to proving the halves separately.
 // The whole path in one run, over both kinds of address: a document that names
 // the file source and one that names a source the host registered. The second is
 // the case the feature exists for, and the only test in which one host table
@@ -173,21 +275,7 @@ func runDeploymentDocument(t *testing.T, kinds deploy.Kinds, document string) st
 	if _, err := manager.Deploy(context.Background(), specs...); err != nil {
 		t.Fatalf("Deploy: %v", err)
 	}
-	session, ok := manager.Session("g", "conv-1")
-	if !ok {
-		t.Fatal("no session for the deployed agent")
-	}
-	var text string
-	for event, err := range session.Run(context.Background(),
-		message.NewTextMessage(message.RoleUser, "hi")) {
-		if err != nil {
-			t.Fatalf("run: %v", err)
-		}
-		if typed, ok := event.(agent.Text); ok {
-			text += typed.Text
-		}
-	}
-	return text
+	return turn(t, manager, "g")
 }
 
 // runtimeLayerBody is the substrate a document has to point at: a local boundary
@@ -207,7 +295,7 @@ func writeRuntimeLayer(t *testing.T) string {
 	return writeTempYAML(t, "runtime.yaml", runtimeLayerBody(t))
 }
 
-// A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.// A malformed document fails at load, before any resource is built.
+// A malformed document fails at load, before any resource is built.
 func TestGraphEngineValidatesTheDocumentAtLoad(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "x"})))
 	path := writeGraphDocument(t, `version: 1
