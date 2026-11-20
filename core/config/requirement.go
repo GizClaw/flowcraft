@@ -143,7 +143,15 @@ func collectEnv(
 		if node.Tag != "!!str" {
 			return nil
 		}
-		segments, err := scanPlaceholders(node.Value, defaultLabel, "")
+		// The layer's name is what the reader is told to edit, so a malformed
+		// reference is reported against the file it is in rather than against a
+		// constant: a checklist that cannot say where the mistake is has answered
+		// half the question.
+		name := layer.Name
+		if name == "" {
+			name = defaultLabel
+		}
+		segments, err := scanPlaceholders(node.Value, name, "")
 		if err != nil {
 			return err
 		}

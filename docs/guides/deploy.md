@@ -312,6 +312,44 @@ req, err := loader.RequiredPlaceholdersFile(ctx, "deploy.yaml")
 // req lists every unset reference in one pass; Load stops at the first.
 ```
 
+### A document an engine reads of its own
+
+An engine may name a document beside the deployment's settings, and the graph
+engine does: its node config. That document is expanded by the same code and the
+same resolvers, so `${secret:agent:prompt}` in a node config resolves like one in
+`settings`.
+
+The wiring takes two lines because the resolver is needed at two moments. The
+loader validates the graph document while decoding the deployment's settings, and
+`EngineKind.Decode` carries no `LoadOptions` — so the resolvers reach it at
+construction, on the engine kind. A `Spec` composed in code never goes through
+the loader at all, so the same slice is handed to the bindings for the build:
+
+```go
+resolvers := []config.Option{config.WithResolver("secret", vault.Resolve)}
+kinds := builtin.Kinds().WithEngines(
+    enginesgraph.Engine(nodes.WithConfigOptions(resolvers...)),
+)
+host.New(kinds, host.Bindings{LoadOptions: resolvers})
+```
+
+A host that only deploys documents can leave the bindings entry out; one that
+only composes specs can leave the engine option out. A graph document is expanded
+before it is decoded either way, so a node config never receives a literal
+`${...}` — an unregistered scheme is a load error listing the schemes that are
+registered.
+
+A load that cannot expand the graph document names every reference it makes, not
+just the one it stopped at, so the failure a host prints at startup is the whole
+checklist. `nodes.RequiredPlaceholders` answers the same question on demand, for
+a host that holds the document before it loads it:
+
+```go
+requirement, err := nodes.RequiredPlaceholders(ctx, path, config.File(path))
+// requirement.Required mixes environment variables with "scheme:args" names;
+// Requirement.Missing covers the environment variables only.
+```
+
 ## From document to spec
 
 ```go

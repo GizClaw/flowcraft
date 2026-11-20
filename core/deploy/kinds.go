@@ -50,6 +50,16 @@ type EngineDeps struct {
 	// Sources opens the documents this engine's settings name, from the same table
 	// a runtime layer is read from.
 	Sources SourceOpener
+	// LoadOptions resolve placeholders for the document this engine reads of its
+	// own: a graph's node config, for one.
+	//
+	// It is the build half. The loader validates the same document through
+	// [EngineKind.Decode], which receives no deps, so a kind that must expand it
+	// there takes the options at construction (the graph engine does, through
+	// nodes.WithConfigOptions) and this field is the other entrance rather than a
+	// replacement for it. A Spec composed in code never passes through a loader at
+	// all, which is why both exist.
+	LoadOptions []config.Option
 }
 
 // ProtocolDeps is what a protocol kind is built from. It carries no deployment

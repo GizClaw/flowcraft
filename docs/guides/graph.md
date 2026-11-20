@@ -131,6 +131,49 @@ output:
 YAML is the written form and JSON is accepted; both go through one strict
 decoding, so an unknown field is an error either way.
 
+### Placeholders
+
+Every string value in the document — a node config, the state block, an edge
+condition — is expanded before the document is decoded, by the same code a
+runtime layer uses:
+
+| Form                | Resolves through                               |
+| ------------------- | ---------------------------------------------- |
+| `${NAME}`           | the built-in `env` scheme (`config.SchemeEnv`) |
+| `${NAME:-fallback}` | `env`, with a default when unset               |
+| `${scheme:arg:arg}` | a resolver the host registered                 |
+
+A node config may therefore name a value it should not carry:
+
+```yaml
+- id: model
+  kind: model
+  config:
+    messages: messages
+    request:
+      system: "${secret:agent:prompt}"
+```
+
+Arguments after the scheme are split on `:` and handed to the resolver
+untouched; `$$` is a literal `$`. The schemes themselves are the host's: it hands
+its resolvers to the reader with `nodes.WithConfigOptions`, and to the engine
+when the graph is deployed — [deploy.md](deploy.md#placeholders) has the two
+lines. An unregistered scheme is a load error listing what is registered, never
+a literal handed to a node.
+
+`nodes.RequiredPlaceholders` reports every reference in a document without
+resolving it, so a host can print a checklist instead of discovering one missing
+value per restart. The load itself does this too: a document that cannot be
+expanded names every reference it makes, because the load fails at the first one
+and the reader needs the list rather than one value per restart.
+
+The report names an environment variable as itself and a host scheme as
+`scheme:args`, and `config.Requirement.Missing` answers for environment variables
+only — a scheme reference is the host's own to look up. A resolved value is not
+part of the deployment's identity either: the fingerprint is the document's bytes
+as written, so rotating what a reference resolves to does not invalidate the
+checkpoints taken under it.
+
 ## State
 
 | Field   | Values                                                                                                                                |

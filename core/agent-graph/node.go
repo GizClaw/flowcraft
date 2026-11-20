@@ -15,7 +15,10 @@ import (
 type Invoke struct {
 	// Node is the id the graph gave this instance.
 	Node string
-	// Config is the node's own settings as written.
+	// Config is the node's own settings after the document's placeholders were
+	// resolved: a ${...} reference has its value here, not its source text, and
+	// "$$" has already collapsed to "$". It is the settings, not the bytes in the
+	// file.
 	Config json.RawMessage
 	// Decoded is Config after the kind decoded it at Build. It is nil when the
 	// kind has no decoder, and when a caller invoked the kind without Build.

@@ -57,6 +57,13 @@ func newOptions(opts []Option) options {
 
 // WithLabel sets the name this document is reported under: it prefixes every
 // error the load produces. The default is "config".
+//
+// Options apply in order and the last label wins, which is the only rule there
+// is: a caller that wraps another's options decides which name survives. A
+// loader that wants its own name on the errors appends its label after the
+// caller's options; runtime.LoadLayers and agent-graph/nodes do the opposite, so
+// a host can rename what they read. Both are knowable from here, neither is
+// guessed at.
 func WithLabel(label string) Option {
 	return func(o *options) {
 		if label != "" {
