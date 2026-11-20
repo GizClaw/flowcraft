@@ -67,6 +67,46 @@ Unknown fields, duplicate agent names and unregistered kinds are load errors. A
 kind the document names but the host did not register fails with the registered
 names in the error — never by being skipped.
 
+### Layering the document
+
+A host that ships a default deployment a project and then a user refines does not
+have to merge YAML itself. `Loader.LoadLayers` is the same entry over a stack of
+documents, the way `runtime.LoadLayers` is over a stack of runtime documents:
+
+```go
+specs, err := loader.LoadLayers(ctx, []config.Layer{
+    {Priority: 0, Name: "defaults.yaml", Source: config.File("deploy/defaults.yaml")},
+    {Priority: 10, Name: "project.yaml", Source: config.File(projectPath)},
+    {Priority: 20, Name: userPath, Source: config.File(userPath)},
+})
+```
+
+`Loader.Load` is the one-layer case: both read the same document format, run the
+same validation (`version`, a non-empty agent list, unique names, every `agent()`
+check) and share the resolvers in `Loader.LoadOptions`. The stack merges before
+that validation, so a layered load is never looser than a single-body one.
+
+The merge is `core/config`'s, which means its rules are the document's rules:
+layers apply in ascending priority, priorities must be distinct, mappings merge
+key by key, and **a sequence is replaced whole**. Two consequences are worth
+stating because they are the ones a layered host trips on:
+
+- `agents` is a sequence, so a higher layer replaces the agent list instead of
+  patching one entry: an agent it wants to change has to be written out in full
+  there, and agents the higher layer does not repeat are gone. There is no
+  per-agent overlay.
+- `agent.runtime.layers` is a sequence too, so "defaults ship one layer and the
+  project appends another" restates the whole list rather than adding to it.
+
+Placeholders are expanded once, after the merge, so a value the winning layer
+overrides is never looked up — a dangling reference in a losing layer is not an
+error. That is also why this entry exists rather than a host merging YAML and
+calling `Load` again: the second pass would expand a resolved value that happens
+to contain `${`.
+
+Every error names the layer it came from, and `Loader.RequiredPlaceholders` still
+asks one body: a startup checklist over a stack is not wired yet.
+
 ## Kinds
 
 A kind is a name, a decoder and a builder. Four kinds exist, one per thing a

@@ -225,15 +225,52 @@ func (l Loader) RequiredPlaceholdersFile(ctx context.Context, path string) (conf
 
 // Load parses and validates a deployment document.
 func (l Loader) Load(ctx context.Context, body []byte) ([]Spec, error) {
-	// Placeholders are expanded by the same code a configuration layer uses, on
-	// the parsed values: peer, auth, card and settings can all name a secret, and
-	// a host should not have to learn a second rule for the outer document.
-	settings := append([]config.Option{}, l.LoadOptions...)
-	settings = append(settings, config.WithLabel("manage: deployment document"))
-	document, err := config.Decode[Document](ctx, body, config.Strict[Document], settings...)
+	document, err := config.Decode[Document](ctx, body, config.Strict[Document], l.settings()...)
 	if err != nil {
 		return nil, err
 	}
+	return l.specs(ctx, document)
+}
+
+// LoadLayers parses and validates a stack of deployment documents.
+//
+// It is [Loader.Load] over a merged stack rather than one body: the layers merge
+// in ascending priority, placeholders are expanded once after the merge, and the
+// merged document is validated exactly as a single one is. It lets a host ship
+// defaults that a project and then a user refine, mirroring the shape
+// [runtime.LoadLayers] gives a runtime configuration.
+//
+// The merge is core/config's, so its rules are the document's rules: a mapping
+// merges key by key, a sequence is replaced whole. `agents` is a sequence, so a
+// higher layer replaces the agent list instead of patching one entry's fields: an
+// agent a later layer wants to change has to be written out in full there, and the
+// same holds for an agent's own `runtime.layers`.
+//
+// [Loader.LoadOptions] carries the resolvers, which is why this entry takes no
+// options of its own: a stack and a body must not be able to disagree about what
+// a placeholder scheme means.
+func (l Loader) LoadLayers(ctx context.Context, layers []config.Layer) ([]Spec, error) {
+	document, _, err := config.Load[Document](ctx, layers, config.Strict[Document], l.settings()...)
+	if err != nil {
+		return nil, err
+	}
+	return l.specs(ctx, document)
+}
+
+// settings are the options both entries hand to core/config: the host's
+// resolvers, then the label every error below this point is prefixed with.
+//
+// Placeholders are expanded by the same code a configuration layer uses, on the
+// parsed values: peer, auth, card and settings can all name a secret, and a host
+// should not have to learn a second rule for the outer document.
+func (l Loader) settings() []config.Option {
+	settings := append([]config.Option{}, l.LoadOptions...)
+	return append(settings, config.WithLabel("manage: deployment document"))
+}
+
+// specs validates a document and builds one spec per agent. It is the half the
+// two entries share, so a layered load cannot be looser than a single-body one.
+func (l Loader) specs(ctx context.Context, document Document) ([]Spec, error) {
 	if document.Version != 1 {
 		return nil, errdefs.Validationf(
 			"manage: version %d is not supported; this build reads 1", document.Version)
