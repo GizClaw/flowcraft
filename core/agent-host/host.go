@@ -44,9 +44,16 @@ type Bindings struct {
 	// RuntimeOptions entry already registered: name the set in one place, not
 	// both.
 	SandboxBackends map[string]runtime.SandboxFactory
-	// LoadOptions are handed to every reader of a document: the layer loader, and
-	// an engine kind that reads a document of its own (a graph's node config).
-	// They are resolvers for placeholder schemes.
+	// LoadOptions resolve placeholders for the documents this host reads: the
+	// layer loader, a hook kind that reads one of its own, and an engine's
+	// [EngineDeps] at build.
+	//
+	// They do not reach [EngineKind.Decode]: the loader validates an agent's
+	// settings before any deps exist, so a kind that must expand its document
+	// there takes the same options at construction - see
+	// `deploy/engines/graph.Engine`. The guide in docs/guides/deploy.md shows both
+	// halves; setting only this field is enough for a kind that reads nothing
+	// until it builds.
 	LoadOptions []config.Option
 	// OnEvent observes every event of every session, named by agent. The
 	// agent name is not decoration: one host usually serves many agents.

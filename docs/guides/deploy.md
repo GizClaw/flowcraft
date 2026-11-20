@@ -339,8 +339,16 @@ before it is decoded either way, so a node config never receives a literal
 `${...}` — an unregistered scheme is a load error listing the schemes that are
 registered.
 
-`nodes.RequiredPlaceholders` is the graph document's checklist: read the file,
-ask it what the document references, then load.
+A load that cannot expand the graph document names every reference it makes, not
+just the one it stopped at, so the failure a host prints at startup is the whole
+checklist. `nodes.RequiredPlaceholders` answers the same question on demand, for
+a host that holds the document before it loads it:
+
+```go
+requirement, err := nodes.RequiredPlaceholders(ctx, path, config.File(path))
+// requirement.Required mixes environment variables with "scheme:args" names;
+// Requirement.Missing covers the environment variables only.
+```
 
 ## From document to spec
 

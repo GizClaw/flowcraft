@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/GizClaw/flowcraft/core/config"
@@ -114,11 +115,16 @@ func Validate(ctx context.Context, name string, body config.Source, opts ...Opti
 // RequiredPlaceholders reports what a graph document references, without
 // resolving any of it.
 //
-// Expansion fails at the first unset reference, so a host that wants to print a
-// startup checklist needs the whole list before a load: this is the graph
-// document's counterpart of [deploy.Loader.RequiredPlaceholdersFile], over the
-// same scanner. A reference that names a scheme other than env is reported as
-// "scheme:args", which is what the host registered the scheme under.
+// Expansion fails at the first unset reference, so a document with four of them
+// takes four restarts to describe itself; this answers the whole question in one
+// pass, which is what a host's startup message needs. The engine calls it too: a
+// load that cannot expand the document names every reference it makes, so the
+// failure reports the whole list rather than the one value it stopped at.
+//
+// A reference that names a scheme other than env is reported as "scheme:args",
+// which is what the host registered the scheme under; [config.Requirement.Missing]
+// answers for environment variables, so a scheme reference is the host's own to
+// look up.
 func RequiredPlaceholders(ctx context.Context, name string, body config.Source) (config.Requirement, error) {
 	raw, err := readBody(ctx, name, body)
 	if err != nil {
@@ -129,6 +135,21 @@ func RequiredPlaceholders(ctx context.Context, name string, body config.Source) 
 		return config.Requirement{}, errdefs.Validationf("graph: %w", err)
 	}
 	return requirement, nil
+}
+
+// referenceList renders that report for an expansion error: a document with four
+// references must not take four restarts to describe itself. Optional references
+// are marked, because the reader's next move differs.
+func referenceList(requirement config.Requirement) string {
+	names := make([]string, 0, len(requirement.Required)+len(requirement.Optional))
+	names = append(names, requirement.Required...)
+	for _, optional := range requirement.Optional {
+		names = append(names, optional+" (optional)")
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "; the document references: " + strings.Join(names, ", ")
 }
 
 // newOptions applies the host's options in order, so a later one wins.
@@ -168,7 +189,16 @@ func load(ctx context.Context, name string, body config.Source, settings options
 	}
 	expanded, err := config.ExpandDocument(ctx, raw, settings.expandOptions()...)
 	if err != nil {
-		return graph.Document{}, errdefs.Validationf("graph: %s: %w", name, err)
+		// The failure is the first value expansion could not resolve, and this is
+		// the moment a host's startup message is written: report every reference
+		// the document makes instead of one. The report is a second read of the
+		// source, which only the failure path pays for, and a report that fails
+		// itself is dropped rather than piled onto the error already in hand.
+		references := ""
+		if requirement, reportErr := RequiredPlaceholders(ctx, name, body); reportErr == nil {
+			references = referenceList(requirement)
+		}
+		return graph.Document{}, errdefs.Validationf("graph: %s: %w%s", name, err, references)
 	}
 	document, err := graph.Parse(expanded)
 	if err != nil {

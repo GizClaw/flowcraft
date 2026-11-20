@@ -30,7 +30,10 @@ import (
 //
 // Options extend the node registry the engine builds, which is how a host adds
 // its own node kinds — a script node, a provider-specific model wrapper — beside
-// the built-in model, tool and condition.
+// the built-in model, tool and condition. They also carry the host's placeholder
+// resolvers ([nodes.WithConfigOptions]): the loader validates the graph document
+// through Decode, which receives no deps, so the options a deployment document is
+// expanded with have to be here rather than in EngineDeps.LoadOptions.
 func Engine(options ...nodes.Option) deploy.EngineKind {
 	return deploy.EngineKind{
 		Name:  "graph",

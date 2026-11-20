@@ -163,8 +163,16 @@ a literal handed to a node.
 
 `nodes.RequiredPlaceholders` reports every reference in a document without
 resolving it, so a host can print a checklist instead of discovering one missing
-value per restart. It is the graph counterpart of the deploy loader's
-`RequiredPlaceholdersFile`.
+value per restart. The load itself does this too: a document that cannot be
+expanded names every reference it makes, because the load fails at the first one
+and the reader needs the list rather than one value per restart.
+
+The report names an environment variable as itself and a host scheme as
+`scheme:args`, and `config.Requirement.Missing` answers for environment variables
+only — a scheme reference is the host's own to look up. A resolved value is not
+part of the deployment's identity either: the fingerprint is the document's bytes
+as written, so rotating what a reference resolves to does not invalidate the
+checkpoints taken under it.
 
 ## State
 

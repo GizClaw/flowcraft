@@ -147,7 +147,9 @@ func TestGraphEngineUsesHostLoadOptionsAtBuild(t *testing.T) {
 }
 
 // Without either half the scheme is unknown, and the failure names the document and
-// the schemes it could have used rather than handing a literal to a node.
+// the schemes it could have used rather than handing a literal to a node. It also
+// names every reference the document makes, which is what a host's startup message
+// needs: one report, not one restart per reference.
 func TestGraphEngineRefusesAHostSchemeWithoutOptions(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(configKind{})))
 	manager := newManager(t, kinds, testHost(t))
@@ -157,7 +159,11 @@ func TestGraphEngineRefusesAHostSchemeWithoutOptions(t *testing.T) {
 	if err == nil {
 		t.Fatal("a document naming an unregistered scheme was added")
 	}
-	for _, want := range []string{`unknown placeholder scheme "demo"`, "offered: env"} {
+	for _, want := range []string{
+		`unknown placeholder scheme "demo"`,
+		"offered: env",
+		"the document references: demo:greeting",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
@@ -195,10 +201,10 @@ func turn(t *testing.T, manager *Manager, name string) string {
 	return text
 }
 
-// The whole path in one run, over both kinds of address: a document that names
-// the file source and one that names a source the host registered. The second is
-// the case the feature exists for, and the only test in which one host table
-// serves a runtime layer and a graph document at once.
+// The whole path in one run: a deployment document on disk names a file source for
+// its runtime layer and another for the graph, the loader resolves both, and the
+// manager runs a turn. This is the only test that crosses document → source →
+// manager → graph, as opposed to proving the halves separately.
 func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
 	kinds := builtin.Kinds().WithEngines(enginesgraph.Engine(nodes.WithKinds(fixedKind{text: "hello"})))
 	layer := writeRuntimeLayer(t)
@@ -214,6 +220,10 @@ func TestDeploymentDocumentRunsEndToEnd(t *testing.T) {
 
 // The host-value case: one registration serves both documents, which is what the
 // source table promises and no per-package test can show.
+// The host-value case: over both kinds of address at once - a document that names
+// the file source and one that names a source the host registered. The second is
+// the case the feature exists for, and the only test in which one host table
+// serves a runtime layer and a graph document at once.
 func TestHostSourceDeploymentRunsEndToEnd(t *testing.T) {
 	tree := fstest.MapFS{
 		"runtime.yaml": {Data: []byte(runtimeLayerBody(t))},

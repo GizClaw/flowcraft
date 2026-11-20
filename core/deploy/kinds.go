@@ -50,15 +50,15 @@ type EngineDeps struct {
 	// Sources opens the documents this engine's settings name, from the same table
 	// a runtime layer is read from.
 	Sources SourceOpener
-	// LoadOptions resolve placeholders for an engine that reads documents of its
-	// own: a node config in a graph, for one. They are the loader's options, so a
-	// host registers a scheme once and every document it reads agrees on it.
+	// LoadOptions resolve placeholders for the document this engine reads of its
+	// own: a graph's node config, for one.
 	//
-	// A kind that must resolve the same scheme while the loader is still
-	// validating its settings cannot get it here: an [EngineKind.Decode] has no
-	// options to receive. Such a kind takes them at construction instead, which is
-	// why the graph engine takes nodes.Option and this field is the second half of
-	// the same decision rather than its replacement.
+	// It is the build half. The loader validates the same document through
+	// [EngineKind.Decode], which receives no deps, so a kind that must expand it
+	// there takes the options at construction (the graph engine does, through
+	// nodes.WithConfigOptions) and this field is the other entrance rather than a
+	// replacement for it. A Spec composed in code never passes through a loader at
+	// all, which is why both exist.
 	LoadOptions []config.Option
 }
 

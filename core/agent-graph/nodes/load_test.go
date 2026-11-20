@@ -54,6 +54,29 @@ func TestGraphDocumentRefusesAnUnregisteredScheme(t *testing.T) {
 	}
 }
 
+// A load that cannot expand the document names every reference it makes, so a
+// host's startup message is the whole checklist - not one missing value per
+// restart. This is where the report above is used outside a host's own call.
+func TestGraphDocumentFailureListsEveryReference(t *testing.T) {
+	document := strings.ReplaceAll(schemeGraph, "${demo:greeting}",
+		"${GRAPH_FIRST} ${GRAPH_SECOND:-fallback} ${demo:greeting}")
+	err := nodes.Validate(context.Background(), "g", config.Bytes([]byte(document)))
+	if err == nil {
+		t.Fatal("a document naming unset references was accepted")
+	}
+	for _, want := range []string{
+		"${GRAPH_FIRST} is not set",
+		"the document references: ",
+		"GRAPH_FIRST",
+		"demo:greeting",
+		"GRAPH_SECOND (optional)",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
+	}
+}
+
 // The built-in scheme keeps working with no options at all: the option is
 // additive, not a new requirement.
 func TestGraphDocumentExpandsEnvWithoutOptions(t *testing.T) {
