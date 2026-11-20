@@ -105,7 +105,7 @@ calling `Load` again: the second pass would expand a resolved value that happens
 to contain `${`.
 
 The merge's own errors name the layer: a layer that will not parse, two layers at
-one priority, a source that will not read. An error the merged *document* raises —
+one priority, a source that will not read. An error the merged _document_ raises —
 an unresolved placeholder, an unknown field, a check in `agent()` — names the
 document or the agent instead, because by then the value could have come from any
 layer.
