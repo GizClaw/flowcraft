@@ -39,14 +39,14 @@ type configKind struct{}
 func (configKind) Name() string { return "configured" }
 
 func (configKind) Invoke(_ context.Context, in graph.Invoke) (graph.NodeStream, error) {
-	var config struct {
+	var nodeConfig struct {
 		Text string `json:"text"`
 	}
-	if err := graph.DecodeConfig(in.Config, &config); err != nil {
+	if err := graph.DecodeConfig(in.Config, &nodeConfig); err != nil {
 		return nil, err
 	}
 	return graph.Static(graph.Result{State: []graph.StateUpdate{
-		{Key: "text", Value: graph.Text(config.Text)},
+		{Key: "text", Value: graph.Text(nodeConfig.Text)},
 	}}), nil
 }
 

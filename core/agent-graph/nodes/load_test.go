@@ -26,7 +26,9 @@ edges:
 `
 
 func TestGraphDocumentUsesARegisteredScheme(t *testing.T) {
+	called := 0
 	resolve := func(_ context.Context, args []string) (string, error) {
+		called++
 		if len(args) != 1 || args[0] != "greeting" {
 			t.Errorf("resolver saw %v, want [greeting]", args)
 		}
@@ -36,6 +38,11 @@ func TestGraphDocumentUsesARegisteredScheme(t *testing.T) {
 		nodes.WithConfigOptions(config.WithResolver("demo", resolve)))
 	if err != nil {
 		t.Fatalf("a registered scheme was refused: %v", err)
+	}
+	// No error is not the same as no work: a loader that skipped expansion would
+	// pass the check above and never ask anything.
+	if called != 1 {
+		t.Errorf("resolver called %d times, want once", called)
 	}
 }
 
@@ -47,7 +54,13 @@ func TestGraphDocumentRefusesAnUnregisteredScheme(t *testing.T) {
 	if err == nil {
 		t.Fatal("an unregistered scheme was accepted")
 	}
-	for _, want := range []string{`unknown placeholder scheme "demo"`, "offered: env", "text", "g:"} {
+	for _, want := range []string{
+		`unknown placeholder scheme "demo"`,
+		"offered: env",
+		// The label and the path inside the document, so a reader finds the value.
+		"document: nodes.config.text",
+		"g:",
+	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name %q", err, want)
 		}
@@ -79,10 +92,28 @@ func TestGraphDocumentFailureListsEveryReference(t *testing.T) {
 
 // The built-in scheme keeps working with no options at all: the option is
 // additive, not a new requirement.
+//
+// The reference lands where Build can see it - a state key's type - so this fails
+// if expansion is skipped, rather than merely passing because nothing went wrong:
+// an unresolved ${...} is not a declared kind.
 func TestGraphDocumentExpandsEnvWithoutOptions(t *testing.T) {
-	t.Setenv("GRAPH_LOAD_TEST_TEXT", "from-the-environment")
-	document := strings.ReplaceAll(schemeGraph, "${demo:greeting}", "${GRAPH_LOAD_TEST_TEXT}")
-	if err := nodes.Validate(context.Background(), "g", config.Bytes([]byte(document))); err != nil {
+	const document = `version: 1
+name: g
+entry: step
+state:
+  text: {type: "${GRAPH_LOAD_TEST_KIND}"}
+nodes:
+  - {id: step, kind: condition, config: {key: text, when: "true", then: "yes"}}
+edges:
+  - {from: step, to: end}
+`
+	body := config.Bytes([]byte(document))
+	rt := newStubRuntime(t, nil)
+	if _, err := nodes.Open(context.Background(), rt, "g", body); err == nil {
+		t.Fatal("a document whose references were never set was built")
+	}
+	t.Setenv("GRAPH_LOAD_TEST_KIND", "text")
+	if _, err := nodes.Open(context.Background(), rt, "g", body); err != nil {
 		t.Fatalf("env placeholder: %v", err)
 	}
 }
@@ -99,6 +130,9 @@ func TestGraphRequiredPlaceholdersReportsEveryReference(t *testing.T) {
 	if got, want := strings.Join(requirement.Required, ","), "GRAPH_MISSING,demo:greeting"; got != want {
 		t.Errorf("required = %q, want %q", got, want)
 	}
+	if got := requirement.Sources["GRAPH_MISSING"]; len(got) != 1 || got[0] != "g" {
+		t.Errorf("sources = %v, want the document's name", got)
+	}
 	if missing := requirement.Missing(func(string) (string, bool) { return "", false }); len(missing) != 2 {
 		t.Errorf("missing = %v, want both references", missing)
 	}
@@ -113,9 +147,11 @@ func TestGraphRequiredPlaceholdersSeparatesFallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
-	if len(requirement.Required) != 0 || len(requirement.Optional) != 1 {
-		t.Errorf("required = %v, optional = %v; want only the fallback",
-			requirement.Required, requirement.Optional)
+	if len(requirement.Required) != 0 {
+		t.Errorf("required = %v, want none: the reference has a fallback", requirement.Required)
+	}
+	if len(requirement.Optional) != 1 || requirement.Optional[0] != "GRAPH_OPTIONAL" {
+		t.Errorf("optional = %v, want [GRAPH_OPTIONAL]", requirement.Optional)
 	}
 }
 
