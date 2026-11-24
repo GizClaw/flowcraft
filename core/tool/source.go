@@ -60,7 +60,12 @@ type RegistryDetacher interface {
 type LazyTool struct {
 	Name        string
 	Placeholder message.ToolDefinition
-	Load        func(ctx context.Context) (Tool, error)
+	// Needs is what the tool will require once loaded. It is declared here rather
+	// than read after loading because registration happens before the first call:
+	// a proxy that looked cheaper than its tool would be accepted by a process that
+	// cannot serve it.
+	Needs []Need
+	Load  func(ctx context.Context) (Tool, error)
 }
 
 // Validate checks the descriptor invariants.

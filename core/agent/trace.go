@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"context"
-	"errors"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 // RunRecord is one finished run as a trace exporter sees it.
@@ -48,20 +46,5 @@ func addUsage(total *outcome.Usage, add outcome.Usage) {
 	}
 	if sum, ok := total.Billing.Cost.Add(*add.Billing.Cost); ok {
 		total.Billing.Cost = &sum
-	}
-}
-
-// errorKind classifies a run failure for the record. The full error stays in
-// the event stream; the record carries a stable, low-cardinality label.
-func errorKind(err error) string {
-	switch {
-	case err == nil:
-		return ""
-	case errors.Is(err, context.Canceled):
-		return "canceled"
-	case errors.Is(err, context.DeadlineExceeded):
-		return "deadline"
-	default:
-		return "error"
 	}
 }

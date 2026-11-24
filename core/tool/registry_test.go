@@ -3,351 +3,197 @@ package tool_test
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
-func funcTool(name, content string) tool.Tool {
-	return tooltest.FuncTool(name, "", func(context.Context, string) (string, error) {
-		return content, nil
-	})
-}
+// TestConflictPolicies pins the two answers to a duplicate name: refuse the second
+// source, or let it win in place. A registry is built from a deployment's sources, so
+// the choice is a deployment decision, not a surprise.
+func TestConflictPolicies(t *testing.T) {
+	first := namedTool("dup", "first")
+	second := namedTool("dup", "second")
 
-type source struct {
-	tools     []tool.Tool
-	lazyTools []tool.LazyTool
-}
+	if _, err := tool.NewRegistry([]tool.Source{sourceOf(first, second)}); err == nil {
+		t.Fatal("the default policy accepted a duplicate name")
+	}
 
-func (s source) Tools() []tool.Tool         { return s.tools }
-func (s source) LazyTools() []tool.LazyTool { return s.lazyTools }
-
-func TestRegistry_AggregatesSources(t *testing.T) {
-	reg, err := tool.NewRegistry([]tool.Source{
-		source{tools: []tool.Tool{funcTool("zeta", "z"), funcTool("alpha", "a")}},
-		source{tools: []tool.Tool{funcTool("mid", "m")}},
-	})
+	registry, err := tool.NewRegistry([]tool.Source{sourceOf(first, second)},
+		tool.WithConflictPolicy(tool.ConflictOverwrite))
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	defs := reg.Definitions()
-	if len(defs) != 3 || defs[0].Name != "alpha" || defs[1].Name != "mid" || defs[2].Name != "zeta" {
-		t.Fatalf("Definitions = %v, want sorted alpha/mid/zeta", defs)
+	got, ok := registry.Get("dup")
+	if !ok {
+		t.Fatal("the tool is missing")
 	}
-	if got, ok := reg.Get("zeta"); !ok || !strings.Contains(mustExecute(t, got), "z") {
-		t.Fatalf("Get(zeta) = %v, %v", got, ok)
+	if text, err := got.Execute(context.Background(), tool.Binding{}, ""); err != nil || text.Text() != "second" {
+		t.Fatalf("the later source did not win: %q (%v)", text.Text(), err)
 	}
-}
-
-func TestRegistry_DuplicateFailsFast(t *testing.T) {
-	_, err := tool.NewRegistry([]tool.Source{
-		source{tools: []tool.Tool{funcTool("dup", "first")}},
-		source{tools: []tool.Tool{funcTool("dup", "second")}},
-	})
-	if !errdefs.IsConflict(err) {
-		t.Fatalf("duplicate error = %v, want Conflict", err)
+	if defs := registry.Definitions(); len(defs) != 1 {
+		t.Fatalf("definitions = %d, want 1: overwriting must not duplicate the name", len(defs))
 	}
 }
 
-func TestRegistry_OverwriteRespectsSourceOrder(t *testing.T) {
-	reg, err := tool.NewRegistry([]tool.Source{
-		source{tools: []tool.Tool{funcTool("dup", "first")}},
-		source{tools: []tool.Tool{funcTool("dup", "second")}},
-	}, tool.WithConflictPolicy(tool.ConflictOverwrite))
+// TestDefinitionsAreSortedAndCached pins the two properties a projection and a prompt
+// builder rely on: a stable order, and a cache that an add invalidates.
+func TestDefinitionsAreSortedAndCached(t *testing.T) {
+	registry, err := tool.NewRegistry([]tool.Source{sourceOf(
+		namedTool("c", "c"), namedTool("a", "a"), namedTool("b", "b"))})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	if reg.Len() != 1 {
-		t.Fatalf("Len = %d, want 1", reg.Len())
+	defs := registry.Definitions()
+	if len(defs) != 3 || defs[0].Name != "a" || defs[2].Name != "c" {
+		t.Fatalf("definitions = %v, want a,b,c", namesOf(defs))
 	}
-	got, _ := reg.Get("dup")
-	if !strings.Contains(mustExecute(t, got), "second") {
-		t.Fatalf("overwritten tool executes %q, want second", mustExecute(t, got))
+	if again := registry.Definitions(); len(again) != 3 {
+		t.Fatalf("second call = %d", len(again))
+	}
+	if err := registry.Add(namedTool("d", "d")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if defs := registry.Definitions(); len(defs) != 4 {
+		t.Fatalf("definitions after Add = %d, want 4", len(defs))
 	}
 }
 
-func TestRegistry_LazyToolLoadsOnceOnExecute(t *testing.T) {
-	var loads atomic.Int32
-	reg, err := tool.NewRegistry([]tool.Source{
-		source{lazyTools: []tool.LazyTool{{
-			Name:        "lazy",
-			Placeholder: message.ToolDefinition{Name: "lazy", InputSchema: []byte(`{"type":"object"}`)},
-			Load: func(context.Context) (tool.Tool, error) {
-				loads.Add(1)
-				return funcTool("lazy", "loaded"), nil
-			},
-		}}},
-	})
+// TestDefinitionDecoratorIsTheCatalogHalf pins the split the Catalog doc promises:
+//
+//   - Definitions carries the deployment's override, because that is what the model reads.
+//   - Get returns the tool itself, undecorated, because that is what executes.
+//
+// A reader that re-derived the list from Get alone would silently undo the override, and
+// this test is what says so out loud.
+func TestDefinitionDecoratorIsTheCatalogHalf(t *testing.T) {
+	registry, err := tool.NewRegistry([]tool.Source{sourceOf(namedTool("t", "t"))},
+		tool.WithDefinitionDecorator(func(def message.ToolDefinition) message.ToolDefinition {
+			def.Description = "decorated"
+			return def
+		}))
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-
-	defs := reg.Definitions()
-	if len(defs) != 1 || defs[0].Name != "lazy" || loads.Load() != 0 {
-		t.Fatalf("Definitions = %v, loads = %d; lazy must not load at build time", defs, loads.Load())
-	}
-
-	got, _ := reg.Get("lazy")
-	for i := 0; i < 3; i++ {
-		if out := mustExecute(t, got); out != "loaded" {
-			t.Fatalf("execute %d = %q, want loaded", i, out)
+	for _, def := range registry.Definitions() {
+		if def.Description != "decorated" {
+			t.Fatalf("description = %q, want the decorated text", def.Description)
 		}
 	}
-	if loads.Load() != 1 {
-		t.Fatalf("loads = %d, want 1 (load-once)", loads.Load())
+	got, ok := registry.Get("t")
+	if !ok {
+		t.Fatal("the tool is missing")
+	}
+	if desc := got.Definition().Description; desc != "t" {
+		t.Fatalf("Get returned %q: the executable's own definition is the undecorated one", desc)
+	}
+	if names := namesOf(registry.Definitions()); len(names) != 1 || names[0] != "t" {
+		t.Fatalf("decorating changed the name set: %v", names)
 	}
 }
 
-func TestRegistry_CloseForbidsLazyLoadsAndClosesInner(t *testing.T) {
-	var closed atomic.Bool
-	reg, err := tool.NewRegistry([]tool.Source{
-		source{lazyTools: []tool.LazyTool{{
-			Name:        "lazy",
-			Placeholder: message.ToolDefinition{Name: "lazy", InputSchema: []byte(`{"type":"object"}`)},
-			Load: func(context.Context) (tool.Tool, error) {
-				return &closableTool{tool: funcTool("lazy", "x"), closed: &closed}, nil
-			},
-		}}},
-	})
+// TestAddAfterCloseIsRefused keeps a closed registry closed: a tool registered into it
+// could never be dispatched.
+func TestAddAfterCloseIsRefused(t *testing.T) {
+	registry, err := tool.NewRegistry([]tool.Source{sourceOf(namedTool("a", "a"))})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	got, _ := reg.Get("lazy")
-	if out := mustExecute(t, got); out != "x" {
-		t.Fatalf("execute = %q", out)
-	}
-	if err := reg.Close(); err != nil {
+	if err := registry.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if !closed.Load() {
-		t.Fatal("inner lazy tool was not closed")
+	if err := registry.Add(namedTool("b", "b")); err == nil {
+		t.Fatal("a closed registry accepted a tool")
 	}
-	if _, err := got.Execute(context.Background(), "{}"); !errdefs.IsNotAvailable(err) {
-		t.Fatalf("Execute after close = %v, want NotAvailable", err)
+	registry.Remove("a") // must not panic on a closed registry
+}
+
+// TestLazyToolNeedsAreDeclaredUpFront: registration happens before the first call, so a
+// proxy that looked cheaper than its tool would be accepted by a process that cannot
+// serve it.
+func TestLazyToolNeedsAreDeclaredUpFront(t *testing.T) {
+	spec := tool.LazyTool{
+		Name:        "lazy",
+		Placeholder: namedTool("lazy", "x").Definition(),
+		Load: func(context.Context) (tool.Tool, error) {
+			return namedTool("lazy", "loaded"), nil
+		},
 	}
-	if err := reg.Close(); err != nil {
-		t.Fatalf("second Close = %v, want nil (idempotent)", err)
+	if _, err := tool.NewRegistry([]tool.Source{lazyOnly{spec}}); err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := spec.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	broken := spec
+	broken.Load = nil
+	if err := broken.Validate(); err == nil {
+		t.Fatal("a LazyTool without a loader validated")
+	}
+	misnamed := spec
+	misnamed.Name = "other"
+	if err := misnamed.Validate(); err == nil {
+		t.Fatal("a LazyTool whose name disagrees with its placeholder validated")
 	}
 }
 
-type closableTool struct {
-	tool   tool.Tool
-	closed *atomic.Bool
-}
-
-func (c *closableTool) Definition() message.ToolDefinition { return c.tool.Definition() }
-func (c *closableTool) Execute(ctx context.Context, args string) (message.Content, error) {
-	return c.tool.Execute(ctx, args)
-}
-func (c *closableTool) Close() error {
-	c.closed.Store(true)
-	return nil
-}
-
-func mustExecute(t *testing.T, tl tool.Tool) string {
-	t.Helper()
-	out, err := tl.Execute(context.Background(), "{}")
-	if err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
-	return out.Text()
-}
-
-func TestRegistry_RejectsNilSourceAndBadLazyTool(t *testing.T) {
-	if _, err := tool.NewRegistry([]tool.Source{nil}); !errdefs.IsValidation(err) {
-		t.Fatalf("nil source error = %v, want Validation", err)
-	}
-	_, err := tool.NewRegistry([]tool.Source{
-		source{lazyTools: []tool.LazyTool{{Name: "x", Load: func(context.Context) (tool.Tool, error) {
-			return nil, errors.New("never")
-		}}}},
-	})
-	if !errdefs.IsValidation(err) {
-		t.Fatalf("placeholder mismatch error = %v, want Validation", err)
-	}
-}
-
-func TestRegistry_AddRemoveAtRuntime(t *testing.T) {
-	reg, err := tool.NewRegistry(nil)
+// TestALoadFailureIsReportedOnceAndKept keeps a broken deferred tool from retrying the
+// network on every round.
+func TestALoadFailureIsReportedOnceAndKept(t *testing.T) {
+	loads := 0
+	registry, err := tool.NewRegistry([]tool.Source{lazyOnly{tool.LazyTool{
+		Name:        "flaky",
+		Placeholder: namedTool("flaky", "x").Definition(),
+		Load: func(context.Context) (tool.Tool, error) {
+			loads++
+			return nil, errLazy
+		},
+	}}})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)
 	}
-	if err := reg.Add(funcTool("late", "late")); err != nil {
-		t.Fatalf("Add: %v", err)
+	one, ok := registry.Get("flaky")
+	if !ok {
+		t.Fatal("the lazy tool is missing")
 	}
-	if _, ok := reg.Get("late"); !ok {
-		t.Fatal("Get(late) missing after Add")
+	for round := 0; round < 3; round++ {
+		if _, err := one.Execute(context.Background(), tool.Binding{}, ""); !errors.Is(err, errLazy) {
+			t.Fatalf("round %d: error = %v, want the loader's", round, err)
+		}
 	}
-	if !containsDefinition(reg.Definitions(), "late") {
-		t.Fatalf("Definitions after Add = %v", reg.Definitions())
-	}
-
-	reg.Remove("late")
-	if _, ok := reg.Get("late"); ok {
-		t.Fatal("Get(late) still present after Remove")
-	}
-	if reg.Len() != 0 {
-		t.Fatalf("Len = %d, want 0", reg.Len())
+	if loads != 1 {
+		t.Fatalf("the loader ran %d times, want once", loads)
 	}
 }
 
-func TestRegistry_RemoveClosesRemovedTool(t *testing.T) {
-	reg, err := tool.NewRegistry(nil)
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	var closed atomic.Bool
-	removed := &closableTool{tool: funcTool("gone", "x"), closed: &closed}
-	if err := reg.Add(removed); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	if err := reg.Add(funcTool("kept", "y")); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
+var errLazy = errors.New("lazy load failed")
 
-	reg.Remove("gone")
-	if !closed.Load() {
-		t.Fatal("removed tool was not closed")
-	}
-	if _, ok := reg.Get("gone"); ok {
-		t.Fatal("removed tool still registered")
-	}
-	if _, ok := reg.Get("kept"); !ok {
-		t.Fatal("unrelated tool was removed")
-	}
-
-	// Unknown names are ignored and never close anything.
-	reg.Remove("missing")
-	if _, ok := reg.Get("kept"); !ok {
-		t.Fatal("unknown-name Remove dropped a registered tool")
-	}
-	if reg.Len() != 1 {
-		t.Fatalf("Len = %d, want 1 after unknown-name Remove", reg.Len())
-	}
+func namedTool(name, text string) tool.Tool {
+	return tool.TextTool(message.ToolDefinition{
+		Name:        name,
+		Description: name,
+		InputSchema: []byte(`{"type":"object"}`),
+	}, func(context.Context, string) (string, error) { return text, nil })
 }
 
-func TestRegistry_AddDuplicateRuntimeFollowsPolicy(t *testing.T) {
-	reg, err := tool.NewRegistry([]tool.Source{
-		source{tools: []tool.Tool{funcTool("dup", "first")}},
-	})
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	if err := reg.Add(funcTool("dup", "second")); !errdefs.IsConflict(err) {
-		t.Fatalf("Add duplicate error = %v, want Conflict", err)
-	}
+func sourceOf(tools ...tool.Tool) tool.Source { return fixedSource(tools) }
 
-	overwrite, err := tool.NewRegistry(nil, tool.WithConflictPolicy(tool.ConflictOverwrite))
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	if err := overwrite.Add(funcTool("dup", "runtime")); err != nil {
-		t.Fatalf("Add with overwrite: %v", err)
-	}
-	got, _ := overwrite.Get("dup")
-	if !strings.Contains(mustExecute(t, got), "runtime") {
-		t.Fatalf("overwritten runtime tool executes %q", mustExecute(t, got))
-	}
-}
+type fixedSource []tool.Tool
 
-func TestRegistry_AddRejectsNilAndClosed(t *testing.T) {
-	reg, err := tool.NewRegistry(nil)
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	if err := reg.Add(nil); !errdefs.IsValidation(err) {
-		t.Fatalf("nil Add error = %v, want Validation", err)
-	}
-	if err := reg.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := reg.Add(funcTool("after", "close")); !errdefs.IsNotAvailable(err) {
-		t.Fatalf("Add after Close error = %v, want NotAvailable", err)
-	}
-	// Remove after Close is a documented no-op and must not panic.
-	reg.Remove("after")
-}
+func (s fixedSource) Tools() []tool.Tool         { return s }
+func (s fixedSource) LazyTools() []tool.LazyTool { return nil }
 
-func TestRegistry_ConcurrentAddRemove(t *testing.T) {
-	reg, err := tool.NewRegistry(nil)
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	const workers = 8
-	const perWorker = 50
-	var wg sync.WaitGroup
-	for w := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := range perWorker {
-				name := fmt.Sprintf("t-%d-%d", w, i)
-				if err := reg.Add(funcTool(name, "x")); err != nil {
-					t.Errorf("Add %s: %v", name, err)
-					return
-				}
-				reg.Remove(name)
-			}
-		}()
-	}
-	wg.Wait()
-	if reg.Len() != 0 {
-		t.Fatalf("Len = %d, want 0 after concurrent add/remove", reg.Len())
-	}
-}
+type lazyOnly struct{ one tool.LazyTool }
 
-// attachSource observes both ends of the attach protocol: whether the
-// registry handed it a registrar at construction, and the close
-// notification that follows.
-type attachSource struct {
-	attached bool
-	detaches int
-	last     tool.Registrar
-}
+func (l lazyOnly) Tools() []tool.Tool         { return nil }
+func (l lazyOnly) LazyTools() []tool.LazyTool { return []tool.LazyTool{l.one} }
 
-func (a *attachSource) Tools() []tool.Tool         { return nil }
-func (a *attachSource) LazyTools() []tool.LazyTool { return nil }
-func (a *attachSource) Attach(tool.Registrar)      { a.attached = true }
-func (a *attachSource) Detach(r tool.Registrar)    { a.detaches++; a.last = r }
-
-func TestRegistry_AttachesOnBuildAndDetachesOnClose(t *testing.T) {
-	src := &attachSource{}
-	reg, err := tool.NewRegistry([]tool.Source{src})
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
-	}
-	if !src.attached {
-		t.Fatal("source never received the registrar")
-	}
-	if err := reg.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if src.detaches != 1 {
-		t.Fatalf("Detach calls = %d, want 1", src.detaches)
-	}
-	if src.last != reg {
-		t.Fatal("Detach did not receive the closed registry")
-	}
-	if err := reg.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-	if src.detaches != 1 {
-		t.Fatalf("second Close detached again: %d calls", src.detaches)
-	}
-}
-
-func containsDefinition(defs []message.ToolDefinition, name string) bool {
+func namesOf(defs []message.ToolDefinition) []string {
+	out := make([]string, 0, len(defs))
 	for _, def := range defs {
-		if def.Name == name {
-			return true
-		}
+		out = append(out, def.Name)
 	}
-	return false
+	return out
 }

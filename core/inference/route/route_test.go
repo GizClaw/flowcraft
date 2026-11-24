@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 type fakeGenerator struct {

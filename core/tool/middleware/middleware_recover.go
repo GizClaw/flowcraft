@@ -24,7 +24,7 @@ import (
 // without Recover a panic costs attribution, not the process.
 func Recover() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) (res message.ToolResult) {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) (res message.ToolResult) {
 			defer func() {
 				if rv := recover(); rv != nil {
 					tool.RecordFailure(ctx, tool.FailurePanicked)
@@ -37,7 +37,7 @@ func Recover() tool.Middleware {
 						fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 				}
 			}()
-			return next(ctx, call)
+			return next(ctx, b, call)
 		}
 	}
 }

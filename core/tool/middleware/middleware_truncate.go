@@ -76,8 +76,8 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 		return nil
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			res := next(ctx, call)
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+			res := next(ctx, b, call)
 			if res.IsError {
 				return res
 			}

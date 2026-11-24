@@ -3,8 +3,8 @@ package inference
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // InputRole is deliberately narrower than [message.Role]: only a user turn or a

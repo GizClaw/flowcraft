@@ -10,11 +10,13 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 // terminalOK is a chain's innermost stage without a catalog lookup, so these
 // tests observe the middleware alone rather than the executor's own Get.
-func terminalOK(_ context.Context, call message.ToolCall) message.ToolResult {
+func terminalOK(_ context.Context, _ tool.Binding, call message.ToolCall) message.ToolResult {
 	return message.NewToolResult(call.ID, message.NewTextContent("ok"))
 }
 
@@ -74,12 +76,12 @@ func TestRateLimitCache_ResolvesEachToolOnce(t *testing.T) {
 		ratedTool{def: message.ToolDefinition{Name: "unpaced"}},
 	)
 	catalog := newCountingCatalog(registry)
-	dispatch := dispatchThrough([]tool.Middleware{RateLimit(catalog)}, terminalOK)
+	run := dispatchThrough([]tool.Middleware{RateLimit(catalog)}, terminalOK)
 	ctx := context.Background()
 
 	for i := 0; i < 3; i++ {
 		for _, name := range []string{"paced", "unpaced"} {
-			if res := dispatch(ctx, call(name)); res.IsError {
+			if res := run(ctx, tooltest.Binding(), call(name)); res.IsError {
 				t.Fatalf("%s call %d: %s", name, i, res.Content.Text())
 			}
 		}
@@ -106,15 +108,15 @@ func TestRateLimit_BlockedLookupDoesNotStallOtherTools(t *testing.T) {
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
 	}
-	dispatch := dispatchThrough([]tool.Middleware{RateLimit(catalog)}, terminalOK)
+	run := dispatchThrough([]tool.Middleware{RateLimit(catalog)}, terminalOK)
 	ctx := context.Background()
 
 	holding := make(chan message.ToolResult, 1)
-	go func() { holding <- dispatch(ctx, call("blocked")) }()
+	go func() { holding <- run(ctx, tooltest.Binding(), call("blocked")) }()
 	<-catalog.entered // "blocked" is now inside catalog.Get
 
 	resolved := make(chan message.ToolResult, 1)
-	go func() { resolved <- dispatch(ctx, call("free")) }()
+	go func() { resolved <- run(ctx, tooltest.Binding(), call("free")) }()
 	select {
 	case res := <-resolved:
 		if res.IsError {
@@ -137,15 +139,15 @@ func TestRateLimit_PerToolPacersDoNotQueue(t *testing.T) {
 		ratedTool{def: message.ToolDefinition{Name: "alpha"}, rate: 1}, // one call per second
 		ratedTool{def: message.ToolDefinition{Name: "beta"}, rate: 1},
 	)
-	dispatch := dispatchThrough([]tool.Middleware{RateLimit(registry)}, terminalOK)
+	run := dispatchThrough([]tool.Middleware{RateLimit(registry)}, terminalOK)
 
-	if res := dispatch(context.Background(), call("alpha")); res.IsError {
+	if res := run(context.Background(), tooltest.Binding(), call("alpha")); res.IsError {
 		t.Fatalf("alpha: %s", res.Content.Text())
 	}
 	// alpha's schedule is now a second out; beta has its own.
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
-	if res := dispatch(ctx, call("beta")); res.IsError {
+	if res := run(ctx, tooltest.Binding(), call("beta")); res.IsError {
 		t.Fatalf("beta queued behind alpha's pacer: %s", res.Content.Text())
 	}
 }
@@ -205,10 +207,10 @@ func TestTimeoutCache_CachesExemptionDecision(t *testing.T) {
 		selfTimingTool{name: "wrapped", selfTimeout: false, sleep: 20 * time.Millisecond},
 	)
 	catalog := newCountingCatalog(registry)
-	exec := tool.NewExecutor(registry, TimeoutWithCatalog(catalog, time.Millisecond, nil))
+	exec := dispatch.New(registry, TimeoutWithCatalog(catalog, time.Millisecond, nil))
 
 	for i := 0; i < 2; i++ {
-		if res := exec.Execute(context.Background(), call("self")); res.IsError {
+		if res := exec.Execute(context.Background(), tooltest.Binding(), call("self")); res.IsError {
 			t.Fatalf("self call %d was cut short: %s", i, res.Content.Text())
 		}
 	}
@@ -219,7 +221,7 @@ func TestTimeoutCache_CachesExemptionDecision(t *testing.T) {
 	// The cached answer for a tool with no claim has to stay "not exempt": were
 	// the entry lost or misread, these calls would run to completion instead.
 	for i := 0; i < 2; i++ {
-		if res := exec.Execute(context.Background(), call("wrapped")); !res.IsError {
+		if res := exec.Execute(context.Background(), tooltest.Binding(), call("wrapped")); !res.IsError {
 			t.Fatalf("wrapped call %d should have timed out, got %q", i, res.Content.Text())
 		}
 	}

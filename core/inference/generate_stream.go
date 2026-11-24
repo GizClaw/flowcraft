@@ -3,8 +3,8 @@ package inference
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 // StreamEventKind names one step of a streaming generation. A driver emits them

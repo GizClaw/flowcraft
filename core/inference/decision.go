@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/model"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 // Decider is the judgment seam: one input, a batch of typed questions, an answer

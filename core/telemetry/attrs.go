@@ -1,193 +1,176 @@
 package telemetry
 
-// This file collects the well-known OpenTelemetry attribute / log key
-// names that flowcraft components emit. Centralising them here means:
+// This file collects the well-known OpenTelemetry attribute / log key names that
+// flowcraft components emit. Centralising them means producers reference one
+// constant instead of re-typing a string literal, and a consumer has one place to
+// learn what to filter on.
 //
-//   - producers (core/graph, core/graph, core/tool, ...) can
-//     reference one constant instead of re-typing string literals,
-//     guaranteeing key parity across the codebase;
-//   - consumers (dashboards, alerting, log queries) have one place to
-//     learn what to filter on.
+// One family is deliberately not here: the identity a run carries (tenant.id,
+// agent.name, session.id, agent.grant.id, task.id, turn, chain.id, chain.depth).
+// It belongs to core/identity, beside the carrier that renders it, because every
+// layer below the assembly reads the identity to start a span and should not have
+// to depend on this package for eight strings. That package does not exist yet;
+// until it does, no producer emits an identity attribute.
 //
-// One family is deliberately not here: the identity a run carries
-// (agent.runtime.id, tenant.id, session.id, agent.name, turn,
-// agent.manifest.id, task.id) is declared in core/correlation, beside the carrier
-// that renders it. Those constants had to move because the carrier is a
-// contracts-tier package and could not depend on this one for seven strings —
-// every layer below the assembly reads the identity to start a span.
+// # One rule: a key exists when its emitter does
+//
+// A name declared ahead of its producer is a claim nothing verifies. After a few
+// months nobody can tell which of the declared keys are real, and the file stops
+// answering the only question it is for — what does this process emit? So each
+// batch adds its keys in the same change that adds the producer, together with the
+// test that exercises them.
+//
+// It also keeps names honest. A reserved key is written against the architecture
+// of the day it was reserved; when the architecture changes, the reservation
+// survives as advice that is now wrong, and the next author copies it.
+//
+// # Values
 //
 // The constants are deliberately *strings*, not typed wrappers around
-// attribute.Key / attribute.KeyValue. Producer call sites typically wrap
-// them inline (`attribute.String(telemetry.AttrRunID, id)`) — wrapping
-// at this layer would force an OTel SDK import on every consumer that
-// only wants the canonical name (e.g. an envelope header value).
+// attribute.Key / attribute.KeyValue, and values are built with this package's own
+// constructors — `telemetry.String(telemetry.AttrSandboxRunner, name)`. Together
+// they mean a component that logs does not import the OpenTelemetry SDK at all:
+// naming a key and building its value are both local. A consumer that only wants
+// the canonical name (an envelope header, a log field) imports nothing.
 //
-// Naming convention follows the OpenTelemetry semantic-conventions style
-// (lowercase, dot-separated namespace) so they coexist cleanly with the
-// upstream `service.*` / `host.*` / `process.*` keys that
-// buildResource() already populates.
+// Naming follows the OpenTelemetry semantic-conventions style (lowercase,
+// dot-separated namespace) so the keys coexist cleanly with the upstream
+// service.* / host.* / process.* set the resource already populates.
 //
-// # Tiers
+// # One namespace per fact
 //
-// The constants fall into three groups, and the split is mechanical where it can
-// be:
+// The inference layer decides the namespace once per fact, by the rule the
+// conventions state: a fact they define is emitted as gen_ai.*, and a fact they do
+// not define stays in llm.*. Only the emitted spelling is declared here, so the two
+// cannot both be emitted by accident — there is no second constant to reach for.
+// That is stricter than declaring a superseded key and asking producers not to use
+// it, and it is what the two namespaces were originally arbitrated in a table for.
 //
-//   - emitted: a producer exists or is part of the current instrumentation plan
-//     (tool.*, sandbox.*, policy.*, mcp.*, error.*, and the LLM keys that stay);
-//   - reserved: the vocabulary is fixed but the component that will emit it does
-//     not exist yet (agent.*, run.*, graph.*, node.id, delegation.*). Reserved
-//     keys are not dead weight — they are the names an upcoming component must
-//     use, so it cannot invent a second spelling;
-//   - superseded: an LLM fact the OpenTelemetry GenAI conventions now cover. The
-//     key stays declared for historical queries but must not be emitted;
-//     semconv.go records the replacement and TestAttrsHaveOneHome enforces it.
-//
-// What the tiers forbid is a second name for a fact that already has one.
+// The GenAI registry is still development-stability, so re-check these spellings
+// when the inference layer is tagged rather than assuming this snapshot still
+// matches.
+
+// SemconvGenAIVersion records the convention revision the gen_ai.* keys below were
+// aligned with. Bumping it is a deliberate, reviewable change.
+const SemconvGenAIVersion = "1.37.0"
 
 const (
-	// ----- Identity (who is doing the work) -----
-	//
-	// What a run carries lives in core/correlation: agent.runtime.id, tenant.id,
-	// session.id, agent.name, turn, agent.manifest.id and task.id are declared
-	// there, beside the carrier that renders them. What remains here is the one
-	// identity key no run carries.
-
-	// AttrAgentID identifies the agent (core/agent.Agent.ID) executing
-	// the operation. Stable across runs of the same logical agent. It has no
-	// producer today: a run carries agent.name.
-	AttrAgentID = "agent.id"
-
-	// ----- Execution (what unit of work) -----
-
-	// AttrRunID identifies one engine.Run execution
-	// (engine.Run.ID). Used as the routing key for engine event
-	// envelopes (engine.run.<run_id>.*).
-	AttrRunID = "run.id"
-
-	// AttrParentRunID identifies the parent run when one engine.Run
-	// dispatches another (multi-agent call chain). Empty for
-	// top-level runs.
-	AttrParentRunID = "parent.run.id"
-
-	// AttrEngineKind identifies the concrete engine.Engine
-	// implementation (graph runner, future script engine, remote
-	// A2A bridge, ...). Producers SHOULD use a stable short token
-	// like "graph", "script", "a2a-remote".
-	AttrEngineKind = "engine.kind"
-
-	// AttrRunStatus reports the terminal status of a run. Suggested
-	// values: "ok" (clean completion), "interrupted" (cooperative
-	// stop), "canceled" (ctx cancellation), "failed" (any other
-	// non-nil error). Consumers SHOULD treat unknown values as
-	// "failed".
-	AttrRunStatus = "run.status"
-
-	// ----- Graph engine specifics -----
-
-	// AttrGraphName identifies the graph definition (graph.GraphDefinition.Name)
-	// being executed. Emitted by core/graph/runner; absent for
-	// non-graph engines.
-	AttrGraphName = "graph.name"
-
-	// AttrNodeID identifies one graph node (graph.Node.ID) inside a
-	// graph run. Emitted on per-node spans, metrics and log records.
-	AttrNodeID = "node.id"
-
-	// AttrNodeKind is the node kind that ran ("model", "tool", "condition").
-	AttrNodeKind = "node.kind"
-
-	// AttrGraphStep is the 1-based step index within one graph run.
-	AttrGraphStep = "graph.step"
-
-	// AttrGraphFrontier is how many nodes the step's frontier held.
-	AttrGraphFrontier = "graph.frontier"
-
-	// AttrGraphRouted is how many node invocations the run has routed so far.
-	AttrGraphRouted = "graph.routed"
-
-	// ----- Tools -----
-
-	// AttrToolName identifies the dispatched tool (tool.Tool.Name).
-	// Emitted on tool dispatch spans / metrics.
-	AttrToolName = "tool.name"
-
-	// AttrToolCallID identifies a single tool invocation
-	// (model.ToolCall.ID assigned by the LLM). Use to correlate the
-	// tool_call event envelope with its tool_result.
-	AttrToolCallID = "tool.call_id"
-
-	// AttrToolSource identifies where a tool came from ("builtin", "mcp",
-	// "plugin").
-	AttrToolSource = "tool.source"
-
-	// AttrToolLazy marks a tool whose schema was materialised on first use
-	// rather than at assembly time.
-	AttrToolLazy = "tool.lazy"
-
-	// ----- Policy, sandbox, MCP -----
-	//
-	// These keys have named producers in the instrumentation plan but none yet;
-	// they are declared ahead of the emitters so the vocabulary cannot drift.
-
-	// AttrPolicyDecision is the outcome of a policy check: "allow" or "deny".
-	AttrPolicyDecision = "policy.decision"
-
-	// AttrPolicyReason is the stable, redacted reason for a decision
-	// ("write_path_outside_writable", "tool_not_approved", ...). Never a
-	// payload, never a path the user did not already supply.
-	AttrPolicyReason = "policy.reason"
-
-	// AttrRateLimitBlockedMs is how long the rate limiter made one call wait.
-	// It separates "the tool was slow" from "the fleet was saturated" on the
-	// same span, which a counter cannot do.
-	AttrRateLimitBlockedMs = "rate_limit.blocked_ms"
-
-	// AttrResultTruncated marks a result the middleware shortened before the
-	// model saw it.
-	AttrResultTruncated = "result.truncated"
-
-	// AttrResultDroppedRunes is how much text the limiter removed, so a
-	// degraded answer is traceable to a context budget rather than to a bad
-	// model.
-	AttrResultDroppedRunes = "result.truncated.runes"
-
-	// AttrResultSpilledBytes is the size of the payload persisted for the
-	// model to read back after truncation.
-	AttrResultSpilledBytes = "result.spilled.bytes"
+	// ----- Command execution -----
 
 	// AttrSandboxExitCode is the process exit status of an executed command.
 	AttrSandboxExitCode = "sandbox.exit_code"
 
-	// AttrSandboxRunner identifies the runner that executed a command
-	// (local, bwrap, seatbelt, windows, ...), so a latency or failure
-	// difference between backends is visible.
+	// AttrSandboxRunner identifies the runner that executed a command (local,
+	// bwrap, seatbelt, windows, ...), so a latency or failure difference between
+	// backends is visible. It is the concrete Go type, not a declared name: the
+	// attribute answers "who ran it", and a decorator chain would lie about the
+	// declared one.
 	AttrSandboxRunner = "sandbox.runner"
 
-	// AttrSandboxEndpoint is the server a remote sandbox backend talks to
-	// (scheme and host only, never a query string: the bearer token must not
-	// reach a log).
-	AttrSandboxEndpoint = "sandbox.endpoint"
-
-	// AttrSandboxTTY marks a pseudo-terminal session: it changes which
-	// streams exist and whether output is line-buffered.
-	AttrSandboxTTY = "sandbox.tty"
-
-	// AttrSandboxTimeoutMs is the deadline the caller imposed on one command.
-	// A zero value means none and is omitted.
+	// AttrSandboxTimeoutMs is the deadline the caller imposed on one command. A
+	// zero value means none and is omitted.
 	AttrSandboxTimeoutMs = "sandbox.timeout_ms"
 
-	// AttrMCPServer identifies the MCP server a connection belongs to.
-	AttrMCPServer = "mcp.server"
+	// ----- Turns -----
 
-	// AttrInferenceShape distinguishes a unary call from a streaming one
-	// ("unary" / "stream").
-	AttrInferenceShape = "inference.shape"
+	// AttrAgentRound is the 1-based position of a turn within its session. It is
+	// correlation, not identity: the renderer already emits "turn" from the run
+	// identity, and this one is what a producer that has not attached identity yet can
+	// still label its span with.
+	AttrAgentRound = "agent.round"
 
-	// AttrInferenceOperation names the seam a call belongs to
-	// ("generate" / "embed" / "decide"). It is the route/metric dimension,
-	// kept distinct from gen_ai.operation.name because a route span must not
-	// carry gen_ai.* (a failover would then look like two model calls).
-	AttrInferenceOperation = "inference.operation"
+	// AttrAgentTraceLevel is how much of this turn the deployment asked to record.
+	// Without it a reader cannot tell "nothing slow happened" from "this deployment
+	// recorded nothing".
+	AttrAgentTraceLevel = "agent.trace_level"
+
+	// AttrAgentState is the terminal task state a turn reached. Its producer is
+	// agent.RunTurn, which is the only layer that sees the whole event stream.
+	AttrAgentState = "agent.state"
+
+	// ----- Tools -----
+
+	// AttrToolName identifies the dispatched tool. It is the attribute that makes a
+	// "tool.execute" span name groupable instead of one span name per tool.
+	AttrToolName = "tool.name"
+
+	// AttrToolCallID identifies one invocation: the id the model issued, so a
+	// tool_call event and its tool_result correlate.
+	AttrToolCallID = "tool.call_id"
+
+	// AttrToolSource names where a tool came from ("builtin", "mcp", "plugin").
+	AttrToolSource = "tool.source"
+
+	// AttrToolLazy marks a tool whose schema was materialised on first use rather
+	// than at registration.
+	AttrToolLazy = "tool.lazy"
+
+	// AttrCodeStacktrace carries the stack captured where a panic was turned into an
+	// error result. The result a caller sees says what panicked, never where, so this
+	// is the only evidence a recovered panic leaves behind.
+	AttrCodeStacktrace = "code.stacktrace"
+
+	// ----- GenAI semantic conventions -----
+	//
+	// A fact the OpenTelemetry GenAI conventions define is emitted under gen_ai.*;
+	// a fact they do not define stays in llm.* (see the LLM section). Only the
+	// emitted spelling is declared, so one fact cannot acquire two names.
+
+	// AttrGenAIOperationName names the operation ("chat", "embeddings", ...).
+	// The conventions require it on every inference span.
+	AttrGenAIOperationName = "gen_ai.operation.name"
+
+	// AttrGenAIProviderName identifies the provider that served the call
+	// ("openai", "anthropic", "azure.ai.openai", ...). Renamed from
+	// gen_ai.system in v1.37; do not emit the old key.
+	AttrGenAIProviderName = "gen_ai.provider.name"
+
+	// AttrGenAIRequestModel is the model the request asked for.
+	AttrGenAIRequestModel = "gen_ai.request.model"
+
+	// AttrGenAIResponseFinishReasons is the finish reason array. It is an
+	// array in the conventions because one response may carry several.
+	AttrGenAIResponseFinishReasons = "gen_ai.response.finish_reasons"
+
+	// AttrGenAIResponseID is the provider-assigned response object id
+	// (OpenAI response.id, Anthropic message.id, a chat completion id).
+	AttrGenAIResponseID = "gen_ai.response.id"
+
+	// AttrGenAIResponseModel is the model that actually answered, when the
+	// provider reports one (routing may resolve an alias).
+	AttrGenAIResponseModel = "gen_ai.response.model"
+
+	// AttrGenAIUsageCacheReadInputTokens is the subset of the prompt served
+	// from the provider's prompt cache.
+	AttrGenAIUsageCacheReadInputTokens = "gen_ai.usage.cache_read.input_tokens"
+
+	// AttrGenAIUsageInputTokens is the prompt total. It includes cached
+	// tokens and every modality, which is exactly the inclusive semantics
+	// outcome.Usage.InputTokens already documents.
+	AttrGenAIUsageInputTokens = "gen_ai.usage.input_tokens"
+
+	// AttrGenAIUsageOutputTokens is the generated total.
+	AttrGenAIUsageOutputTokens = "gen_ai.usage.output_tokens"
+
+	// ----- GenAI operation values -----
+	//
+	// The conventions say a custom value MAY be used when none of the well-known
+	// ones applies, which is how the three inference seams map without pretending a
+	// judgment call is a chat.
+
+	// GenAIOperationChat is a chat-style generation.
+	GenAIOperationChat = "chat"
+	// GenAIOperationEmbeddings is an embeddings call.
+	GenAIOperationEmbeddings = "embeddings"
+	// GenAIOperationGenerateContent is generation of a non-text modality (image,
+	// audio, video).
+	GenAIOperationGenerateContent = "generate_content"
+	// GenAIOperationDecide is the judgment seam. The convention has no vocabulary
+	// for "answer these typed questions", and calling it chat would describe the
+	// wire format instead of the operation.
+	GenAIOperationDecide = "decide"
+
+	// ----- Inference (flowcraft's own seams) -----
 
 	// AttrInferenceErrorDetail is the stable, redacted stage label carried by
 	// inference.Error.Detail ("stream.finish.missing"). It never holds
@@ -195,23 +178,31 @@ const (
 	// while the wrapped cause is not.
 	AttrInferenceErrorDetail = "inference.error.detail"
 
+	// AttrInferenceOperation names the seam a call belongs to
+	// ("generate" / "embed" / "decide"). It is the route/metric dimension,
+	// kept distinct from gen_ai.operation.name because a route span must not
+	// carry gen_ai.* (a failover would then look like two model calls).
+	AttrInferenceOperation = "inference.operation"
+
+	// AttrInferenceShape distinguishes a unary call from a streaming one
+	// ("unary" / "stream").
+	AttrInferenceShape = "inference.shape"
+
 	// ----- Route (selection, retry, failover) -----
 
-	// AttrRouteTarget is the candidate a route attempt addressed.
-	AttrRouteTarget = "route.target"
-
-	// AttrRouteSelected is the first candidate the selector returned.
-	AttrRouteSelected = "route.selected"
-
-	// AttrRouteExecuted is the candidate that answered. Empty when every
-	// candidate failed.
-	AttrRouteExecuted = "route.executed"
+	// AttrRouteAttemptNumber is which attempt within one target this was, so a
+	// reader can order the route.attempt events.
+	AttrRouteAttemptNumber = "route.attempt.number"
 
 	// AttrRouteAttempts is how many provider attempts one routed call made.
 	AttrRouteAttempts = "route.attempts"
 
-	// AttrRouteRetries is how many of those attempts re-tried the same target.
-	AttrRouteRetries = "route.retries"
+	// AttrRouteBackoffMs is the delay a retry waited before its attempt.
+	AttrRouteBackoffMs = "route.backoff_ms"
+
+	// AttrRouteExecuted is the candidate that answered. Empty when every
+	// candidate failed.
+	AttrRouteExecuted = "route.executed"
 
 	// AttrRouteFallbacks is how many times the dispatcher moved to another
 	// target.
@@ -220,52 +211,16 @@ const (
 	// AttrRouteOutcome is one attempt's result: "success" or "error".
 	AttrRouteOutcome = "route.outcome"
 
-	// AttrRouteBackoffMs is the delay a retry waited before its attempt.
-	AttrRouteBackoffMs = "route.backoff_ms"
+	// AttrRouteRetries is how many of those attempts re-tried the same target.
+	AttrRouteRetries = "route.retries"
 
-	// AttrRouteAttemptNumber is which attempt within one target this was, so a
-	// reader can order the route.attempt events.
-	AttrRouteAttemptNumber = "route.attempt.number"
+	// AttrRouteSelected is the first candidate the selector returned.
+	AttrRouteSelected = "route.selected"
 
-	// AttrErrorRetryAfterMs is a server-provided backoff hint, so a consumer
-	// can tell "we chose to wait" from "the provider told us to".
-	AttrErrorRetryAfterMs = "error.retry_after_ms"
+	// AttrRouteTarget is the candidate a route attempt addressed.
+	AttrRouteTarget = "route.target"
 
-	// ----- LLM -----
-	//
-	// An LLM fact is emitted under exactly one namespace, and semconv.go records
-	// which: a fact the OpenTelemetry GenAI conventions define is emitted as
-	// gen_ai.* (the AttrGenAI* constants), a fact they do not define stays here.
-	// The superseded keys below MUST NOT be emitted by a producer — they remain
-	// declared because the constant names are part of the historical contract
-	// and existing queries still reference them.
-
-	// AttrLLMProvider is superseded by AttrGenAIProviderName. Use the lowercase
-	// provider token ("openai", "anthropic", "azure.ai.openai", ...): it is
-	// the dimension per-provider rate limits, circuit breakers and cost
-	// tracking bucket on.
-	AttrLLMProvider = "llm.provider"
-
-	// AttrLLMModel is superseded by AttrGenAIRequestModel. The resolved model
-	// that actually answered is AttrGenAIResponseModel, which can differ after
-	// routing.
-	AttrLLMModel = "llm.model"
-
-	// AttrLLMInputTokens and AttrLLMOutputTokens are superseded by
-	// AttrGenAIUsageInputTokens and AttrGenAIUsageOutputTokens. The input total
-	// is inclusive: cached tokens and every modality are inside it.
-	AttrLLMInputTokens  = "llm.tokens.input"
-	AttrLLMOutputTokens = "llm.tokens.output"
-
-	// AttrLLMTotalTokens is never emitted: it equals input+output, and the
-	// conventions define no total key.
-	AttrLLMTotalTokens = "llm.tokens.total"
-
-	// AttrLLMCachedInputTokens is superseded by
-	// AttrGenAIUsageCacheReadInputTokens. It is always a subset of the input
-	// total; omit it when zero rather than reporting a cache miss as a hit rate
-	// of zero.
-	AttrLLMCachedInputTokens = "llm.tokens.input.cached"
+	// ----- LLM facts the conventions do not define -----
 
 	// AttrLLMCostMicros stays authoritative: the conventions define no cost
 	// key, and the upstream naming is still contested, so squatting on
@@ -274,6 +229,10 @@ const (
 	// across cumulative budgets; zero when the host has no pricing catalog.
 	AttrLLMCostMicros = "llm.cost.micros"
 
+	// AttrLLMRequestID stays authoritative: gen_ai.response.id names the
+	// response object, not the request id a provider support ticket asks for.
+	AttrLLMRequestID = "llm.request.id"
+
 	// AttrLLMTimeToFirstTokenMs is the delay until the first visible text
 	// delta of a stream. The conventions define no such key, and it is not
 	// derivable from the span duration: it separates "the model is slow to
@@ -281,72 +240,46 @@ const (
 	// Reasoning deltas deliberately do not count.
 	AttrLLMTimeToFirstTokenMs = "llm.time_to_first_token.ms"
 
-	// AttrLLMLatencyMs is not a span attribute: the span duration already
-	// carries it. It survives for callers that read a RunRecord outside a span.
-	AttrLLMLatencyMs = "llm.latency.ms"
+	// ----- Policy, budgets and results -----
 
-	// AttrLLMRequestID stays authoritative: gen_ai.response.id names the
-	// response object, not the request id a provider support ticket asks for.
-	AttrLLMRequestID = "llm.request.id"
+	// AttrPolicyCheck names the rule that refused a call. It is the dimension a
+	// denial is counted by, so a new value is a deliberate vocabulary change.
+	AttrPolicyCheck = "policy.check"
 
-	// AttrLLMResponseID is superseded by AttrGenAIResponseID.
-	AttrLLMResponseID = "llm.response.id"
+	// AttrPolicyReason is the stable, redacted explanation for a denial. Never a
+	// payload, never a path the user did not already supply.
+	AttrPolicyReason = "policy.reason"
 
-	// ----- Conversation / data scope -----
+	// AttrPolicyID is the digest of the session's bind, so a denial names the
+	// permission that refused it.
+	AttrPolicyID = "policy.id"
 
-	// AttrConversationID identifies the conversation an operation
-	// belongs to. Shared by conversation history and long-term memory
-	// implementations, and
-	// the future core controller (multi-agent pods that share a
-	// conversation context). Producers MUST use this constant
-	// instead of legacy snake_case "conversation_id" string literals
-	// so dashboards can join across these packages by a single
-	// dimension.
-	AttrConversationID = "conversation.id"
+	// AttrRateLimitBlockedMs is how long the rate limiter made one call wait: it
+	// separates "the tool was slow" from "the fleet was saturated".
+	AttrRateLimitBlockedMs = "rate_limit.blocked_ms"
 
-	// ----- Delegation -----
+	// AttrResultTruncated marks a result the middleware shortened before the model
+	// saw it.
+	AttrResultTruncated = "result.truncated"
 
-	// AttrDelegationID identifies one delegation work item: the id
-	// Submit returns and Work.ID, Response.ID and delegation_status
-	// all carry. It is neither AttrRunID (the subagent turn that
-	// executes the work) nor a stream escrow ref — a delegation that
-	// inherits no sink has no ref, and a ref names a delivery
-	// attachment rather than the work item it belongs to.
-	AttrDelegationID = "delegation.id"
+	// AttrResultDroppedRunes is how much text the limiter removed.
+	AttrResultDroppedRunes = "result.truncated.runes"
 
-	// AttrDelegationTarget is the delegation target id as requested by
-	// the caller (delegation.Request.Target). It can differ from
-	// AttrAgentID when the directory normalizes the target to a
-	// different canonical agent id.
-	AttrDelegationTarget = "delegation.target"
-
-	// AttrDelegationMode is the requested execution mode
-	// (delegation.ModeSync or delegation.ModeAsync).
-	AttrDelegationMode = "delegation.mode"
-
-	// AttrDelegationDepth is the delegation nesting depth: 1 for a
-	// top-level delegation, incremented per subagent hop.
-	AttrDelegationDepth = "delegation.depth"
-
-	// AttrDelegationCaller identifies the delegating agent's id;
-	// empty for top-level delegations.
-	AttrDelegationCaller = "delegation.caller"
+	// AttrResultSpilledBytes is the size of the payload persisted for the model to
+	// read back after truncation.
+	AttrResultSpilledBytes = "result.spilled.bytes"
 
 	// ----- Errors -----
 
-	// AttrErrorMessage carries the human-readable error string on
-	// log records and span events. Aligned with OTel semantic-
-	// conventions `exception.message` semantically, but kept under
-	// the shorter `error.message` key because flowcraft logs do not
-	// otherwise emit the OTel exception-event shape (no
-	// `exception.type` / `exception.stacktrace`); a single canonical
-	// key for the message text is enough.
+	// AttrErrorMessage carries the human-readable error string on log records and
+	// span events. It is aligned with the OTel exception.message semantics but keeps
+	// the shorter key, because flowcraft logs do not emit the OTel exception-event
+	// shape (no exception.type / exception.stacktrace): one canonical key for the
+	// text is enough.
 	//
-	// Producers MUST use this constant rather than the legacy
-	// "error" key so dashboards can filter by "error.message exists"
-	// uniformly. The "error" key was used inconsistently across the
-	// SDK (sometimes the message, sometimes a code) — switching to
-	// a single canonical name makes the intent unambiguous.
+	// Producers must use this constant rather than the legacy "error" key, which was
+	// used inconsistently — sometimes the message, sometimes a code — so a dashboard
+	// could filter on it only by guessing.
 	AttrErrorMessage = "error.message"
 
 	// AttrErrorKind is the closed classification of a failure: an
@@ -356,19 +289,7 @@ const (
 	// value is a deliberate vocabulary change rather than a free-form string.
 	AttrErrorKind = "error.kind"
 
-	// AttrCodeStacktrace carries the stack captured where a panic was
-	// turned into an error result. The result a caller sees says what
-	// panicked, never where, so this is the only evidence a recovered
-	// panic leaves behind.
-	AttrCodeStacktrace = "code.stacktrace"
-
-	// AttrErrorCause carries the leaf cause message of a failure, attached
-	// only when the value is redacted by construction — flowcraft-generated
-	// text (our format strings and derived scalars) plus, at most, bounded
-	// identifier tokens such as tool names, tool-call ids, and media types,
-	// never provider wire payloads. Error chains are diagnostic data rather
-	// than redacted output, so a producer that cannot prove that property
-	// must not use this key; the inference route failure log is the
-	// canonical producer (see inference.CauseMessage).
-	AttrErrorCause = "error.cause"
+	// AttrErrorRetryAfterMs is a server-provided backoff hint, so a consumer
+	// can tell "we chose to wait" from "the provider told us to".
+	AttrErrorRetryAfterMs = "error.retry_after_ms"
 )

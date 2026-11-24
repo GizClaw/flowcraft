@@ -2,42 +2,44 @@ package telemetry
 
 import "testing"
 
-// TestAttrConstants_StableNames pins the public Attr* constants to
-// their on-the-wire string forms. Renaming any of these is a breaking
-// change for every dashboard / alert / log query that filters on the
-// key — bumping the test forces an explicit, reviewable acknowledgement.
+// TestAttrConstants_StableNames pins the public Attr* constants to their
+// on-the-wire string forms. Renaming one is a breaking change for every
+// dashboard, alert and log query that filters on the key, so the test forces an
+// explicit, reviewable acknowledgement.
 func TestAttrConstants_StableNames(t *testing.T) {
 	cases := []struct {
 		got, want string
 	}{
-		{AttrAgentID, "agent.id"},
-		{AttrRunID, "run.id"},
-		{AttrParentRunID, "parent.run.id"},
-		{AttrEngineKind, "engine.kind"},
-		{AttrRunStatus, "run.status"},
-		{AttrGraphName, "graph.name"},
-		{AttrGraphStep, "graph.step"},
-		{AttrNodeID, "node.id"},
-		{AttrToolName, "tool.name"},
-		{AttrToolCallID, "tool.call_id"},
-		{AttrLLMProvider, "llm.provider"},
-		{AttrLLMModel, "llm.model"},
-		{AttrLLMInputTokens, "llm.tokens.input"},
-		{AttrLLMOutputTokens, "llm.tokens.output"},
-		{AttrLLMTotalTokens, "llm.tokens.total"},
-		{AttrLLMCachedInputTokens, "llm.tokens.input.cached"},
-		{AttrLLMCostMicros, "llm.cost.micros"},
-		{AttrLLMLatencyMs, "llm.latency.ms"},
-		{AttrLLMRequestID, "llm.request.id"},
-		{AttrLLMResponseID, "llm.response.id"},
-		{AttrConversationID, "conversation.id"},
-		{AttrDelegationID, "delegation.id"},
-		{AttrDelegationTarget, "delegation.target"},
-		{AttrDelegationMode, "delegation.mode"},
-		{AttrDelegationDepth, "delegation.depth"},
-		{AttrDelegationCaller, "delegation.caller"},
+		{AttrSandboxExitCode, "sandbox.exit_code"},
+		{AttrSandboxRunner, "sandbox.runner"},
+		{AttrSandboxTimeoutMs, "sandbox.timeout_ms"},
 		{AttrErrorMessage, "error.message"},
-		{AttrErrorCause, "error.cause"},
+		{AttrErrorKind, "error.kind"},
+		{AttrErrorRetryAfterMs, "error.retry_after_ms"},
+		{AttrGenAIOperationName, "gen_ai.operation.name"},
+		{AttrGenAIProviderName, "gen_ai.provider.name"},
+		{AttrGenAIRequestModel, "gen_ai.request.model"},
+		{AttrGenAIResponseModel, "gen_ai.response.model"},
+		{AttrGenAIResponseID, "gen_ai.response.id"},
+		{AttrGenAIResponseFinishReasons, "gen_ai.response.finish_reasons"},
+		{AttrGenAIUsageInputTokens, "gen_ai.usage.input_tokens"},
+		{AttrGenAIUsageOutputTokens, "gen_ai.usage.output_tokens"},
+		{AttrGenAIUsageCacheReadInputTokens, "gen_ai.usage.cache_read.input_tokens"},
+		{AttrInferenceShape, "inference.shape"},
+		{AttrInferenceOperation, "inference.operation"},
+		{AttrInferenceErrorDetail, "inference.error.detail"},
+		{AttrRouteTarget, "route.target"},
+		{AttrRouteSelected, "route.selected"},
+		{AttrRouteExecuted, "route.executed"},
+		{AttrRouteAttempts, "route.attempts"},
+		{AttrRouteRetries, "route.retries"},
+		{AttrRouteFallbacks, "route.fallbacks"},
+		{AttrRouteOutcome, "route.outcome"},
+		{AttrRouteBackoffMs, "route.backoff_ms"},
+		{AttrRouteAttemptNumber, "route.attempt.number"},
+		{AttrLLMCostMicros, "llm.cost.micros"},
+		{AttrLLMRequestID, "llm.request.id"},
+		{AttrLLMTimeToFirstTokenMs, "llm.time_to_first_token.ms"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -46,21 +48,20 @@ func TestAttrConstants_StableNames(t *testing.T) {
 	}
 }
 
-// TestAttrConstants_Unique guards against accidental duplicates across
-// the Attr* set: producers expecting different semantics from two keys
-// would silently collide if the constants resolved to the same string.
+// TestAttrConstants_Unique guards against accidental duplicates: two keys that
+// resolve to the same string would make one fact look like two.
 func TestAttrConstants_Unique(t *testing.T) {
 	all := []string{
-		AttrAgentID, AttrRunID, AttrParentRunID, AttrEngineKind, AttrRunStatus,
-		AttrGraphName, AttrGraphStep, AttrNodeID,
-		AttrToolName, AttrToolCallID,
-		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
-		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
-		AttrLLMRequestID, AttrLLMResponseID,
-		AttrConversationID, AttrErrorMessage, AttrErrorCause,
-		AttrDelegationID,
-		AttrDelegationTarget, AttrDelegationMode,
-		AttrDelegationDepth, AttrDelegationCaller,
+		AttrSandboxExitCode, AttrSandboxRunner, AttrSandboxTimeoutMs,
+		AttrErrorMessage, AttrErrorKind, AttrErrorRetryAfterMs,
+		AttrGenAIOperationName, AttrGenAIProviderName, AttrGenAIRequestModel,
+		AttrGenAIResponseModel, AttrGenAIResponseID, AttrGenAIResponseFinishReasons,
+		AttrGenAIUsageInputTokens, AttrGenAIUsageOutputTokens, AttrGenAIUsageCacheReadInputTokens,
+		AttrInferenceShape, AttrInferenceOperation, AttrInferenceErrorDetail,
+		AttrRouteTarget, AttrRouteSelected, AttrRouteExecuted, AttrRouteAttempts,
+		AttrRouteRetries, AttrRouteFallbacks, AttrRouteOutcome, AttrRouteBackoffMs,
+		AttrRouteAttemptNumber,
+		AttrLLMCostMicros, AttrLLMRequestID, AttrLLMTimeToFirstTokenMs,
 	}
 	seen := make(map[string]struct{}, len(all))
 	for _, k := range all {

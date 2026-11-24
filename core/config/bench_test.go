@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -108,7 +109,7 @@ extra:
   c: literal
 `
 	b.Setenv("BENCH_NAME", "bench")
-	b.Setenv("BENCH_ROOT", "/work")
+	b.Setenv("BENCH_ROOT", pathtest.Abs("work"))
 	b.Setenv("BENCH_VALUE", "resolved")
 	layers := []Layer{{Priority: 0, Name: "a.yaml", Source: Bytes([]byte(body))}}
 	b.ReportAllocs()

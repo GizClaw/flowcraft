@@ -11,6 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 func TestFromSettings_ResultLimitTruncatesText(t *testing.T) {
@@ -19,8 +21,8 @@ func TestFromSettings_ResultLimitTruncatesText(t *testing.T) {
 		t.Fatalf("FromSettings: %v", err)
 	}
 
-	exec := tool.NewExecutor(catalogWith(longTool(500)), mws...)
-	res := exec.Execute(context.Background(), call("long"))
+	exec := dispatch.New(catalogWith(longTool(500)), mws...)
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("long"))
 	if got := len([]rune(res.Content.Text())); got != 40 {
 		t.Fatalf("limited text = %d runes, want 40", got)
 	}
@@ -40,8 +42,8 @@ func TestFromSettings_ResultLimitPartBudget(t *testing.T) {
 		t.Fatalf("FromSettings: %v", err)
 	}
 
-	exec := tool.NewExecutor(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 2048)+`"}`)), mws...)
-	res := exec.Execute(context.Background(), call("data"))
+	exec := dispatch.New(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 2048)+`"}`)), mws...)
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("data"))
 	if len(res.Content.Parts) != 1 {
 		t.Fatalf("parts = %d, want the note alone", len(res.Content.Parts))
 	}
@@ -62,8 +64,8 @@ func TestFromSettings_ResultLimitLiftsPartBudget(t *testing.T) {
 		t.Fatalf("FromSettings: %v", err)
 	}
 
-	exec := tool.NewExecutor(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 8192)+`"}`)), mws...)
-	res := exec.Execute(context.Background(), call("data"))
+	exec := dispatch.New(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 8192)+`"}`)), mws...)
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("data"))
 	if len(res.Content.Parts) != 1 {
 		t.Fatalf("parts = %d, want the data part kept", len(res.Content.Parts))
 	}
@@ -91,8 +93,8 @@ func TestFromSettings_NonTextPartsBoundedByDefault(t *testing.T) {
 		t.Fatalf("FromSettings: %v", err)
 	}
 	oversized := `{"blob":"` + strings.Repeat("x", DefaultResultStructuredBudget+1) + `"}`
-	exec := tool.NewExecutor(catalogWith(dataTool("data", oversized)), mws...)
-	res := exec.Execute(context.Background(), call("data"))
+	exec := dispatch.New(catalogWith(dataTool("data", oversized)), mws...)
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("data"))
 	if len(res.Content.Parts) != 1 {
 		t.Fatalf("parts = %d, want the note alone", len(res.Content.Parts))
 	}
@@ -101,8 +103,8 @@ func TestFromSettings_NonTextPartsBoundedByDefault(t *testing.T) {
 	}
 
 	// Text is still unbounded by default: a large text result passes intact.
-	textExec := tool.NewExecutor(catalogWith(longTool(DefaultResultPartBudget+1)), mws...)
-	if got := textExec.Execute(context.Background(), call("long")).Content.Text(); len(got) != DefaultResultPartBudget+1 {
+	textExec := dispatch.New(catalogWith(longTool(DefaultResultPartBudget+1)), mws...)
+	if got := textExec.Execute(context.Background(), tooltest.Binding(), call("long")).Content.Text(); len(got) != DefaultResultPartBudget+1 {
 		t.Fatalf("text result was shortened to %d bytes without a declared budget", len(got))
 	}
 }
@@ -115,9 +117,9 @@ func TestFromSettings_PartBudgetOverrideAndLift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	exec := tool.NewExecutor(catalogWith(
+	exec := dispatch.New(catalogWith(
 		dataTool("data", `{"blob":"`+strings.Repeat("x", 512)+`"}`)), mws...)
-	if parts := exec.Execute(context.Background(), call("data")).Content.Parts; len(parts) != 1 {
+	if parts := exec.Execute(context.Background(), tooltest.Binding(), call("data")).Content.Parts; len(parts) != 1 {
 		t.Fatalf("parts = %d, want the marker alone under the smaller budget", len(parts))
 	}
 
@@ -126,11 +128,11 @@ func TestFromSettings_PartBudgetOverrideAndLift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	exec = tool.NewExecutor(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 512)+`"}`)), mws...)
-	if parts := exec.Execute(context.Background(), call("data")).Content.Parts; len(parts) != 1 {
+	exec = dispatch.New(catalogWith(dataTool("data", `{"blob":"`+strings.Repeat("x", 512)+`"}`)), mws...)
+	if parts := exec.Execute(context.Background(), tooltest.Binding(), call("data")).Content.Parts; len(parts) != 1 {
 		t.Fatalf("parts = %d, want the untouched data part", len(parts))
 	}
-	if _, ok := exec.Execute(context.Background(), call("data")).Content.Parts[0].(message.DataPart); !ok {
+	if _, ok := exec.Execute(context.Background(), tooltest.Binding(), call("data")).Content.Parts[0].(message.DataPart); !ok {
 		t.Fatal("lifted budget must leave the data part untouched")
 	}
 
@@ -142,9 +144,9 @@ func TestFromSettings_PartBudgetOverrideAndLift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FromSettings: %v", err)
 	}
-	exec = tool.NewExecutor(catalogWith(
+	exec = dispatch.New(catalogWith(
 		dataTool("data", `{"blob":"`+strings.Repeat("x", 512)+`"}`)), mws...)
-	parts := exec.Execute(context.Background(), call("data")).Content.Parts
+	parts := exec.Execute(context.Background(), tooltest.Binding(), call("data")).Content.Parts
 	if len(parts) != 1 {
 		t.Fatalf("parts = %d, want the data part alone", len(parts))
 	}
@@ -172,8 +174,8 @@ func TestFromSettings_ResultLimitWrapsTimeout(t *testing.T) {
 			<-ctx.Done()
 			return "", ctx.Err()
 		})
-	exec := tool.NewExecutor(catalogWith(hang), mws...)
-	res := exec.Execute(context.Background(), call("hang"))
+	exec := dispatch.New(catalogWith(hang), mws...)
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("hang"))
 	if !res.IsError {
 		t.Fatalf("result = %+v, want the timeout error result", res)
 	}
@@ -374,14 +376,14 @@ func TestFromSettings_RecoverDefaultsOn(t *testing.T) {
 // panicThrough dispatches one call through mws and reports the panic that
 // escaped, if any.
 func panicThrough(mws []tool.Middleware) (escaped any) {
-	dispatch := tool.Dispatch(func(context.Context, message.ToolCall) message.ToolResult {
+	dispatch := tool.Dispatch(func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		panic("tool is broken")
 	})
 	for _, mw := range slices.Backward(mws) {
 		dispatch = mw(dispatch)
 	}
 	defer func() { escaped = recover() }()
-	dispatch(context.Background(), message.ToolCall{ID: "call", Name: "boom"})
+	dispatch(context.Background(), tooltest.Binding(), message.ToolCall{ID: "call", Name: "boom"})
 	return escaped
 }
 
@@ -432,9 +434,9 @@ func TestFromSettingsOrder(t *testing.T) {
 	ctx := context.Background()
 
 	// Recover is outermost: a panic in the innermost stage becomes a result.
-	res := dispatchThrough(chain, func(context.Context, message.ToolCall) message.ToolResult {
+	res := dispatchThrough(chain, func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		panic("boom")
-	})(ctx, message.ToolCall{ID: "call", Name: "boom"})
+	})(ctx, tooltest.Binding(), message.ToolCall{ID: "call", Name: "boom"})
 	if !res.IsError {
 		t.Fatalf("a panic escaped the chain: %#v", res)
 	}
@@ -444,9 +446,9 @@ func TestFromSettingsOrder(t *testing.T) {
 	// keep that pointer. With the two reversed the limiter would cut the pointer
 	// away and the spill file would hold the excerpt instead of the whole result.
 	full := strings.Repeat("x", 1000)
-	res = dispatchThrough(chain, func(_ context.Context, call message.ToolCall) message.ToolResult {
+	res = dispatchThrough(chain, func(_ context.Context, _ tool.Binding, call message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: call.ID, Content: message.NewTextContent(full)}
-	})(ctx, message.ToolCall{ID: "call", Name: "big"})
+	})(ctx, tooltest.Binding(), message.ToolCall{ID: "call", Name: "big"})
 	if got := len([]rune(res.Content.Text())); got > 128 {
 		t.Fatalf("content = %d runes, want the limiter's 128 bound", got)
 	}

@@ -1,6 +1,6 @@
 package inference
 
-import "github.com/GizClaw/flowcraft/core/inference/model"
+import "github.com/GizClaw/flowcraft/core/model"
 
 // Catalog exposes the model facts an application declared for this provider:
 // which models exist, what they accept and emit, and their limits. A driver that

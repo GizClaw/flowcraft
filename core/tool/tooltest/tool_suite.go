@@ -21,6 +21,7 @@ func ToolSuite(t *testing.T, f ToolFactory) {
 	t.Run("CancelledContextPrompt", func(t *testing.T) { toolCancelledContextPrompt(t, f) })
 	t.Run("MetadataZeroSafe", func(t *testing.T) { toolMetadataZeroSafe(t, f) })
 	t.Run("ConcurrentSafe", func(t *testing.T) { toolConcurrentSafe(t, f) })
+	t.Run("NeedsStable", func(t *testing.T) { toolNeedsStable(t, f) })
 }
 
 func toolDefinitionStableAndValid(t *testing.T, f ToolFactory) {
@@ -43,7 +44,7 @@ func toolEmptyArgumentsNoPanic(t *testing.T, f ToolFactory) {
 	t.Helper()
 	impl := f()
 	defer recoverPanicAs(t, "Execute(context.Background(), \"\")")
-	_, _ = impl.Execute(context.Background(), "")
+	_, _ = impl.Execute(context.Background(), tool.Binding{}, "")
 }
 
 func toolCancelledContextPrompt(t *testing.T, f ToolFactory) {
@@ -56,7 +57,7 @@ func toolCancelledContextPrompt(t *testing.T, f ToolFactory) {
 	go func() {
 		defer close(done)
 		defer recoverPanicAs(t, "Execute(cancelled context)")
-		_, _ = impl.Execute(ctx, "")
+		_, _ = impl.Execute(ctx, tool.Binding{}, "")
 	}()
 	select {
 	case <-done:
@@ -72,6 +73,27 @@ func toolMetadataZeroSafe(t *testing.T, f ToolFactory) {
 	_ = tool.MetadataOf(impl)
 }
 
+// toolNeedsStable pins the property dispatch depends on: a tool's declared needs are read
+// once and cached, so a tool whose answer changes between calls would be handed a
+// different allowance than the one it was validated with.
+func toolNeedsStable(t *testing.T, f ToolFactory) {
+	t.Helper()
+	impl := f()
+	first := impl.Needs()
+	second := impl.Needs()
+	if len(first) != len(second) {
+		t.Fatalf("Needs() changed between calls: %d then %d slots", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] == nil {
+			t.Fatalf("Needs()[%d] is nil", i)
+		}
+		if first[i].SlotName() != second[i].SlotName() {
+			t.Fatalf("Needs()[%d] = %q then %q", i, first[i].SlotName(), second[i].SlotName())
+		}
+	}
+}
+
 func toolConcurrentSafe(t *testing.T, f ToolFactory) {
 	t.Helper()
 	impl := f()
@@ -81,7 +103,7 @@ func toolConcurrentSafe(t *testing.T, f ToolFactory) {
 		go func() {
 			defer wg.Done()
 			defer recoverPanicAs(t, "concurrent Execute")
-			_, _ = impl.Execute(context.Background(), `{"x":1}`)
+			_, _ = impl.Execute(context.Background(), tool.Binding{}, `{"x":1}`)
 			_ = impl.Definition()
 			_ = tool.MetadataOf(impl)
 		}()

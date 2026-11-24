@@ -22,7 +22,7 @@ func Concurrency(limit int) (tool.Middleware, error) {
 	}
 	sem := make(chan struct{}, limit)
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			select {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
@@ -30,7 +30,7 @@ func Concurrency(limit int) (tool.Middleware, error) {
 				return message.NewErrorToolResult(call.ID,
 					fmt.Sprintf("tool %q failed to acquire execution slot: %v", call.Name, ctx.Err()))
 			}
-			return next(ctx, call)
+			return next(ctx, b, call)
 		}
 	}, nil
 }

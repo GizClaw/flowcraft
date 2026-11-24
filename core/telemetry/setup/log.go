@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	otellog "go.opentelemetry.io/otel/log"
-	logglobal "go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
@@ -96,7 +96,7 @@ func InitLog(ctx context.Context, opts ...LogOption) (func(context.Context) erro
 		lpOpts = append(lpOpts, sdklog.WithProcessor(p))
 	}
 	lp := sdklog.NewLoggerProvider(lpOpts...)
-	logglobal.SetLoggerProvider(lp)
+	otel.SetLoggerProvider(lp)
 
 	return lp.Shutdown, nil
 }

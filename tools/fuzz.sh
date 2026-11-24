@@ -7,14 +7,16 @@ cd "$(dirname "$0")/../core"
 
 time="${FUZZTIME:-15s}"
 
+# Core only: the targets whose packages moved out with the core rebuild run in
+# their own modules — `./internal/a2awire` in agent, `./agent-graph` in agent,
+# `./sandbox-remote/wire` in sandbox — and they rejoin this script there.
 targets=(
 	"./internal/decode FuzzToJSON"
 	"./config FuzzLoad"
-	"./internal/a2awire FuzzFromMessage"
-	"./agent-graph FuzzStateEvent"
-	"./sandbox-remote/wire FuzzSpecRoundTrip"
-	"./sandbox-remote/wire FuzzErrorRoundTrip"
-	"./sandbox-remote/wire FuzzDecodeReadResponse"
+	"./internal/search FuzzSearch"
+	"./policy FuzzFilesNormalized"
+	"./sandbox FuzzNarrowIsMonotoneAndIdempotent"
+	"./tool/middleware FuzzTruncateJSONResult"
 )
 
 for entry in "${targets[@]}"; do

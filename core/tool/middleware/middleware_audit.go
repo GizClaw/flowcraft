@@ -41,9 +41,9 @@ func Audit(sink AuditSink) tool.Middleware {
 		panic("middleware.Audit: sink is nil")
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			start := time.Now()
-			res := next(ctx, call)
+			res := next(ctx, b, call)
 			sink.Record(ctx, AuditRecord{
 				Call:     call,
 				Result:   res,

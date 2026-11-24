@@ -6,7 +6,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 	"github.com/goccy/go-json"
 )
@@ -17,7 +19,9 @@ type benchNoopTool struct{ def message.ToolDefinition }
 
 func (t benchNoopTool) Definition() message.ToolDefinition { return t.def }
 
-func (benchNoopTool) Execute(context.Context, string) (message.Content, error) {
+func (benchNoopTool) Needs() []tool.Need { return nil }
+
+func (benchNoopTool) Execute(ctx context.Context, _ tool.Binding, arguments string) (message.Content, error) {
 	return message.NewTextContent("ok"), nil
 }
 
@@ -26,7 +30,7 @@ func (benchNoopTool) Execute(context.Context, string) (message.Content, error) {
 // The tool declares no rate limit, so the benchmark covers the steady state
 // every call pays — a cache hit, not a timer wait — and the timeout is long
 // enough that only its context wrapper is measured.
-func benchChain(b *testing.B) (*tool.Executor, message.ToolCall) {
+func benchChain(b *testing.B) (*dispatch.Executor, tool.Binding, message.ToolCall) {
 	b.Helper()
 	registry, err := tool.NewRegistry([]tool.Source{tooltest.Source(benchNoopTool{
 		def: message.ToolDefinition{Name: "noop", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -34,13 +38,13 @@ func benchChain(b *testing.B) (*tool.Executor, message.ToolCall) {
 	if err != nil {
 		b.Fatalf("NewRegistry: %v", err)
 	}
-	exec := tool.NewExecutor(registry,
+	exec := dispatch.New(registry,
 		Recover(),
 		Telemetry(),
 		TimeoutWithCatalog(registry, 30*time.Second, nil),
 		RateLimit(registry),
 	)
-	return exec, message.ToolCall{
+	return exec, tool.Binding{Grant: policy.Grant{}, Session: tooltest.Session("bench")}, message.ToolCall{
 		ID:        "call-1",
 		Name:      "noop",
 		Arguments: message.NewArguments(json.RawMessage(`{"x":1}`)),
@@ -51,13 +55,13 @@ func benchChain(b *testing.B) (*tool.Executor, message.ToolCall) {
 // any work of its own: one pass through recover, telemetry, the timeout wrapper
 // and the two catalog caches.
 func BenchmarkChainExecute(b *testing.B) {
-	exec, call := benchChain(b)
+	exec, caps, call := benchChain(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		if res := exec.Execute(ctx, call); res.IsError {
+		if res := exec.Execute(ctx, caps, call); res.IsError {
 			b.Fatalf("execute: %s", res.Content.Text())
 		}
 	}
@@ -67,14 +71,14 @@ func BenchmarkChainExecute(b *testing.B) {
 // calls concurrently through ExecuteAll, and several sessions run them all the
 // time, so the caches on the per-call path are read by every goroutine at once.
 func BenchmarkChainExecuteParallel(b *testing.B) {
-	exec, call := benchChain(b)
+	exec, caps, call := benchChain(b)
 	ctx := context.Background()
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			if res := exec.Execute(ctx, call); res.IsError {
+			if res := exec.Execute(ctx, caps, call); res.IsError {
 				// FailNow is not allowed off the benchmark goroutine.
 				b.Errorf("execute: %s", res.Content.Text())
 				return

@@ -45,18 +45,19 @@ func Approval(approver Approver, tools ...string) tool.Middleware {
 		gated[name] = struct{}{}
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			if _, ok := gated[call.Name]; !ok {
-				return next(ctx, call)
+				return next(ctx, b, call)
 			}
 			if err := approver.Approve(ctx, call); err != nil {
 				tool.RecordFailure(ctx, tool.FailurePolicyDenied)
-				annotate(ctx, attribute.String(telemetry.AttrPolicyDecision, "deny"))
+				annotate(ctx, attribute.String(telemetry.AttrPolicyCheck, "approval"))
 				return message.NewErrorToolResult(call.ID,
 					errdefs.PolicyDeniedf("tool %q call denied: %w", call.Name, err).Error())
 			}
-			annotate(ctx, attribute.String(telemetry.AttrPolicyDecision, "allow"))
-			return next(ctx, call)
+			// An allowed call carries no policy annotation: policy.check names the rule
+			// that refused, and there was no refusal.
+			return next(ctx, b, call)
 		}
 	}
 }

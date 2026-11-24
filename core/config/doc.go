@@ -5,6 +5,11 @@
 // deployment or a graph is. A caller supplies the layer sources and a decoder,
 // and gets back the decoded value plus the merged document it came from.
 //
+// It sits in the vocabulary layer because every document layer uses it — the
+// deployment documents in core/deploy and their agent list, and the graph
+// documents in core/agent-graph — and a document layer may not import the
+// assembly layer above it.
+//
 // # The three seams
 //
 // Where a layer's bytes come from is a [Source]: [File], [Bytes], [FS] for any

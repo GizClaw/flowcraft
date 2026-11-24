@@ -3,11 +3,11 @@ package agent
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
-// EventKind names one event of a running Task.
+// EventKind names one event of a running turn.
 type EventKind string
 
 const (
@@ -27,16 +27,20 @@ const (
 	KindUsage EventKind = "usage"
 	// KindStatus reports a lifecycle transition.
 	KindStatus EventKind = "status"
-	// KindInterrupted reports an applied (or accepted) interruption.
+	// KindInterrupted reports an operator input the driver applied at a boundary.
 	KindInterrupted EventKind = "interrupted"
 )
 
-// Event is one step of a running Task.
+// Event is one step of a running turn.
 //
-// The interface is sealed by an unexported method: only this package can
-// implement it, so a Kind always names one of the types below and a consumer's
-// type switch covers everything it can receive. Adding an event kind is an
-// `agent` change on purpose — the wire vocabulary stays closed.
+// The interface is sealed by an unexported method: only this package can implement it,
+// so a Kind always names one of the types below and a consumer's type switch covers
+// everything it can receive. Adding an event kind is an `agent` change on purpose —
+// the wire vocabulary stays closed.
+//
+// An event is the product surface, not a trace record. Streamed text and reasoning
+// never become spans, and a span never carries their content; see the observability
+// section of docs/plans/agent-turn.md.
 type Event interface {
 	Kind() EventKind
 	event()
@@ -57,8 +61,8 @@ type Reasoning struct{ Text string }
 // ToolCallStart announces one tool call.
 type ToolCallStart struct {
 	Call message.ToolCall
-	// ArgsHash is the call's canonical argument hash: the trace keeps the
-	// identity, not the payload.
+	// ArgsHash is the call's canonical argument hash: the stream keeps the identity,
+	// not the payload.
 	ArgsHash string
 }
 
@@ -85,7 +89,7 @@ type Status struct {
 	Reason string
 }
 
-// Interrupted reports an interruption the engine applied at a boundary.
+// Interrupted reports an operator input the driver applied at a boundary.
 type Interrupted struct{ Interruption }
 
 func (StreamStart) Kind() EventKind     { return KindStreamStart }
@@ -98,8 +102,8 @@ func (UsageEvent) Kind() EventKind      { return KindUsage }
 func (Status) Kind() EventKind          { return KindStatus }
 func (Interrupted) Kind() EventKind     { return KindInterrupted }
 
-// The seal. Every event kind is one of these types and nothing outside this
-// package can add another.
+// The seal. Every event kind is one of these types and nothing outside this package
+// can add another.
 func (StreamStart) event()     {}
 func (Text) event()            {}
 func (Reasoning) event()       {}

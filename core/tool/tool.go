@@ -21,8 +21,16 @@ import (
 // result is stored. Content that fails [message.Content.Validate] is a
 // contract violation and comes back as an error result naming the tool.
 type Tool interface {
+	// Definition is what the model sees.
 	Definition() message.ToolDefinition
-	Execute(ctx context.Context, arguments string) (message.Content, error)
+	// Needs is what this tool must be handed, declared as the capability slots it
+	// will read. Dispatch narrows the session's pocket to exactly that set and
+	// nothing else, and registration refuses a tool whose needs this process cannot
+	// satisfy. A tool that needs nothing returns nil, which is what makes it
+	// testable with no scaffolding at all.
+	Needs() []Need
+	// Execute runs one call under the binding dispatch narrowed for this tool.
+	Execute(ctx context.Context, b Binding, arguments string) (message.Content, error)
 }
 
 // ToolMeta carries optional, execution-relevant metadata about a Tool.
@@ -68,20 +76,33 @@ func MetadataOf(t Tool) ToolMeta {
 	return ToolMeta{}
 }
 
-// FuncTool wraps a plain function as a Tool.
+// FuncTool wraps a plain function as a Tool that needs nothing.
+//
+// It is the form a tool with no authority takes: registration, testing and dispatch
+// all treat it as requiring zero capabilities.
 func FuncTool(def message.ToolDefinition, fn func(ctx context.Context, args string) (message.Content, error)) Tool {
-	return &funcTool{def: def, fn: fn}
+	return CapFunc(nil, def, func(ctx context.Context, _ Binding, args string) (message.Content, error) {
+		return fn(ctx, args)
+	})
+}
+
+// CapFunc wraps a function that receives the binding as a Tool declaring needs.
+func CapFunc(needs []Need, def message.ToolDefinition, fn func(ctx context.Context, b Binding, args string) (message.Content, error)) Tool {
+	return &funcTool{def: def, needs: needs, fn: fn}
 }
 
 type funcTool struct {
-	def message.ToolDefinition
-	fn  func(ctx context.Context, args string) (message.Content, error)
+	def   message.ToolDefinition
+	needs []Need
+	fn    func(ctx context.Context, b Binding, args string) (message.Content, error)
 }
 
 func (f *funcTool) Definition() message.ToolDefinition { return f.def }
 
-func (f *funcTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
-	return f.fn(ctx, arguments)
+func (f *funcTool) Needs() []Need { return f.needs }
+
+func (f *funcTool) Execute(ctx context.Context, b Binding, arguments string) (message.Content, error) {
+	return f.fn(ctx, b, arguments)
 }
 
 // TextTool wraps a plain string-returning function as a Tool. It is the

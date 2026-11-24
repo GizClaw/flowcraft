@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // Target is one routable candidate: a provider and the label that identifies it

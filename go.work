@@ -1,8 +1,13 @@
 go 1.26.0
 
+// Only core is a workspace member while core is rebuilt.
+//
+// driver/ and examples/ pin the core they shipped against, and they import
+// packages this checkout has moved or removed — so they are built the way a
+// reader builds them, with GOWORK=off (CI's matrix carries the flag), instead
+// of inside the workspace, where the go command would compile them against a
+// core that no longer answers them. driver/'s providers move to the `inference`
+// module; the examples rejoin the workspace once they are ported.
 use (
 	./core
-	./driver
-	./examples/forge
 )
-

@@ -11,6 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 	"github.com/goccy/go-json"
 )
 
@@ -21,11 +23,11 @@ func TestRedact_RedactsResultKeepsArguments(t *testing.T) {
 			sawArgs = json.RawMessage(args)
 			return "token=abc123 and keep=ok", nil
 		}))
-	exec := tool.NewExecutor(reg, Redact(RedactRule{
+	exec := dispatch.New(reg, Redact(RedactRule{
 		Pattern: regexp.MustCompile(`abc123`),
 	}))
 
-	res := exec.Execute(context.Background(), message.ToolCall{
+	res := exec.Execute(context.Background(), tooltest.Binding(), message.ToolCall{
 		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	})
 	if res.IsError {
@@ -47,11 +49,11 @@ func TestRedact_CustomReplacement(t *testing.T) {
 		func(_ context.Context, _ string) (string, error) {
 			return "card 4111-1111-1111-1111 ok", nil
 		}))
-	exec := tool.NewExecutor(reg, Redact(RedactRule{
+	exec := dispatch.New(reg, Redact(RedactRule{
 		Pattern:     regexp.MustCompile(`\d{4}-\d{4}-\d{4}-\d{4}`),
 		Replacement: "<card>",
 	}))
-	res := exec.Execute(context.Background(), call("card"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("card"))
 	if strings.Contains(res.Content.Text(), "4111") {
 		t.Errorf("content still contains card number: %q", res.Content.Text())
 	}
@@ -72,7 +74,7 @@ func TestRedact_WithAuditRedactedRecord(t *testing.T) {
 		func(_ context.Context, args string) (string, error) {
 			return "token=abc123", nil
 		}))
-	exec := tool.NewExecutor(reg,
+	exec := dispatch.New(reg,
 		Redact(RedactRule{Pattern: regexp.MustCompile(`abc123`)}),
 		AuditRedacted(sink, RedactRule{Pattern: regexp.MustCompile(`abc123`)}),
 	)
@@ -80,7 +82,7 @@ func TestRedact_WithAuditRedactedRecord(t *testing.T) {
 	call := message.ToolCall{
 		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	}
-	if res := exec.Execute(context.Background(), call); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call); res.IsError {
 		t.Fatalf("unexpected error: %q", res.Content.Text())
 	}
 	mu.Lock()
@@ -106,13 +108,13 @@ func TestAuditRedacted_ModelSeesOriginalAuditRedacted(t *testing.T) {
 		func(_ context.Context, _ string) (string, error) {
 			return "token=abc123", nil
 		}))
-	exec := tool.NewExecutor(reg,
+	exec := dispatch.New(reg,
 		AuditRedacted(sink, RedactRule{
 			Pattern: regexp.MustCompile(`abc123`),
 		}),
 	)
 
-	res := exec.Execute(context.Background(), message.ToolCall{
+	res := exec.Execute(context.Background(), tooltest.Binding(), message.ToolCall{
 		ID: "c1", Name: "secret", Arguments: message.NewArguments(json.RawMessage(`{"token":"abc123"}`)),
 	})
 	if !strings.Contains(res.Content.Text(), "abc123") {
@@ -164,10 +166,10 @@ func TestRedact_CoversTextDataFileAndMediaURLParts(t *testing.T) {
 				message.ImagePart{Source: linked},
 			}}, nil
 		})
-	exec := tool.NewExecutor(catalogWith(secret),
+	exec := dispatch.New(catalogWith(secret),
 		Redact(RedactRule{Pattern: regexp.MustCompile(`abc123`), Replacement: "redacted"}))
 
-	res := exec.Execute(context.Background(), call("secret"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("secret"))
 	if res.IsError {
 		t.Fatalf("unexpected error result: %s", res.Content.Text())
 	}
@@ -218,10 +220,10 @@ func TestRedact_CoversToolCallResultAndReasoningParts(t *testing.T) {
 				message.ReasoningPart{Text: "token=abc123", Signature: "sig-abc123"},
 			}}, nil
 		})
-	exec := tool.NewExecutor(catalogWith(secret),
+	exec := dispatch.New(catalogWith(secret),
 		Redact(RedactRule{Pattern: regexp.MustCompile(`abc123`), Replacement: "redacted"}))
 
-	res := exec.Execute(context.Background(), call("secret"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("secret"))
 	if res.IsError {
 		t.Fatalf("unexpected error result: %s", res.Content.Text())
 	}

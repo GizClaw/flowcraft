@@ -1,43 +1,49 @@
-// Package fsx is where file I/O happens: reads go through this process
-// unrestricted, writes go through an OS handle that cannot leave its root.
+// Package fsx is the file boundary of one session: the set of subtrees it may
+// read, the set it may write, and the OS handles that enforce both.
 //
-// # Why the split
+// # Two sides, enforced the same way
 //
-// Reads are not restricted by this package, by decision. The boundary a read
-// rule would draw is not the boundary a write rule draws: it would have to
-// cover what a tool opens here and what every sandboxed command opens there,
-// and a secret is better kept outside the tree than fenced inside it. So reads
-// are unrestricted: any absolute path this process can open, fsx can read. That
-// is a decision with a consequence — the model can read a secret and copy it
-// into the workspace — and it is stated here rather than left to be discovered.
+// A Tree carries up to two root sets. Reads are confined to the read roots;
+// writes are confined to the write roots. A path outside its side is refused
+// before anything is opened, and once a handle is chosen the kernel — not this
+// package — decides whether the relative path it is given stays inside.
 //
-// Writes are the opposite. A write is the one file operation where a mistake
-// becomes persistent, so each declared writable root is opened with
-// [os.OpenRoot] and every write is performed relative to that handle. The
-// kernel resolves the path inside the root (openat2 on Linux, a relative NT
-// open on Windows), so nothing here has to prove a path is safe: a spelling
-// this package does not understand cannot widen anything, because the handle
-// decides at open time. There is also no resolve-then-open window to lose: the
-// resolution happens as part of the open.
+// Each side is optional, and the two have deliberately different zero values:
 //
-// # What a root has to be
+//   - no read roots means "no restriction": an absolute path is handed to the
+//     os package as-is.
+//   - no write roots and [WithAllWrites] absent means "no write at all".
 //
-// A writable root must exist when Open is called and must be a directory. An
-// entry that cannot be opened cannot be enforced, and a writable set nothing
-// enforces is a comment. Paths are resolved through symlinks at Open, so the
-// handle and the selector that picks it compare the same spelling.
+// The asymmetry is not an oversight. Reading is recoverable and auditable, and
+// the common deployment is "let the agent look around"; writing is neither, so
+// the zero value refuses it. A caller that wants unrestricted writes must say
+// so with [WithAllWrites].
 //
-// # Absolute paths only
+// # Why handles rather than a policy check
 //
-// There is no single base for a relative path when several roots are declared,
-// so every path is absolute. Selecting the root for a target is a string
-// comparison and only a selector: picking wrongly costs a denied operation,
-// never a wider one, because the handle refuses the relative path it is handed.
+// A permission check on a string is a race: the path can be replaced with a
+// symlink between the check and the open. An [os.Root] handle cannot be talked
+// out of its subtree, so the boundary survives that race. A Tree therefore opens
+// one handle per declared root and keeps it for the session's lifetime; Close
+// releases them, and a host that opens Trees per session must Close them.
 //
-// # What is not here
+// # Reported paths are canonical
 //
-// Command confinement. Commands run under sandbox.Runner with the same
-// permission.Writes projected onto the kernel; that projection and these
-// handles are two expressions of one value, which is why the fs side and the
-// shell side cannot confine to different roots.
+// Roots are resolved through symlinks once, when the Tree is opened, and every
+// path the Tree reports back — readable roots, walk results, error messages —
+// uses that resolved spelling. A caller that searches for its own unresolved
+// spelling in a walk result will not find it; that is deliberate, because the
+// resolved path is the one the boundary actually enforces.
+//
+// # What this package does not do
+//
+// It has no opinion about permissions. It takes root lists, not a policy type,
+// because a boundary that imported the policy algebra would drag the model
+// vocabulary and the digest rules into the layer that only needs to open files.
+// The mapping from a policy (empty means unrestricted, readonly means no writes)
+// lives one layer up.
+//
+// It also does not audit. Every operation here is one call; a session's audit
+// ledger is emitted by the tools that make the calls, because only they know
+// which conversation and which intent the call belongs to.
 package fsx

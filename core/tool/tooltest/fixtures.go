@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/goccy/go-json"
 )
 
@@ -81,8 +82,8 @@ func Execute(
 	name, arguments string,
 ) (string, error) {
 	t.Helper()
-	executor := tool.NewExecutor(catalog)
-	result := executor.Execute(context.Background(), message.ToolCall{
+	executor := dispatch.New(catalog)
+	result := executor.Execute(context.Background(), Binding(), message.ToolCall{
 		ID:        "tooltest-call",
 		Name:      name,
 		Arguments: message.NewArguments(json.RawMessage(arguments)),

@@ -3,63 +3,46 @@ package sandbox
 import (
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/permission"
+	"github.com/GizClaw/flowcraft/core/policy"
 )
 
-// ExecOptions configures one one-shot call — [Executor.Exec] when the runner
-// implements that capability, otherwise the derivation over Start.
+// ExecOptions is one call: what to run, where, with what input, and how much of
+// the instance's budget it may spend.
+//
+// It carries no permission. The egress posture and the environment allow-list are
+// fixed when the backend instance is built — see [Confine] — because a backend
+// serves exactly one session, so a per-call permission would only be a second
+// channel for something already decided and verified. What a call may still do is
+// ask for *less*: [policy.Resources] here is a narrowing of the instance's
+// ceiling, and [Confine.Narrow] is the only place that resolves the two.
 //
 // Field semantics:
 //
-//   - WorkDir: directory the command runs in. Relative paths are resolved
-//     against the runner's root (e.g. local.Runner.rootDir); absolute paths
-//     must stay inside the root or the call is rejected with
-//     ErrPathTraversal. Empty means "use the runner's root".
-//   - Stdin: bytes piped to the command's stdin. nil or empty means no
-//     stdin: the child's fd 0 stays the OS default (/dev/null), so a
-//     program that branches on stdin reads its operands instead of an
-//     empty pipe. An empty slice is not "a pipe with nothing in it".
-//   - Timeout: per-call deadline. Zero means "no sandbox-imposed timeout"
-//     (the caller's ctx still applies).
-//   - Env: see EnvPolicy. Replaces the historical "inherit everything"
-//     behaviour while staying back-compat when EnvPolicy.Allow is nil.
-//   - Net: see NetPolicy. The local runner only accepts NetDefault.
-//   - Permission: the file boundary for this call. Nil keeps the runner's
-//     construction-time boundary (root plus explicit writable paths); a
-//     supplied policy replaces it, so an empty writable list means
-//     read-only for that call. There is deliberately no wider value: a
-//     call can narrow the boundary, never widen it.
-//   - Resources: see ResourceLimits. The local runner enforces MemoryBytes,
-//     CPUMillicores (with Timeout), and MaxOutputBytes; DiskBytes is
-//     still errdefs.NotAvailable.
+//   - WorkDir: the absolute directory the command runs in. It is required: the
+//     platform has no notion of a session directory, and a backend with no path of
+//     its own cannot invent a default. A backend that could read outside its
+//     mounts would refuse the call anyway; a backend that cannot confine anything
+//     must not pretend a default is a boundary.
+//   - Stdin: bytes piped to the command's stdin. nil or empty means no stdin: the
+//     child's fd 0 stays the OS default (/dev/null), so a program that branches on
+//     stdin reads its operands instead of an empty pipe. An empty slice is not "a
+//     pipe with nothing in it".
+//   - Timeout: per-call deadline. Zero means "no sandbox-imposed timeout" (the
+//     caller's ctx still applies). The ceiling for it lives in the grant, one
+//     layer up: the sandbox applies what it is given.
+//   - Resources: what to spend, at most the instance's ceiling. Zero fields
+//     inherit it.
 type ExecOptions struct {
-	WorkDir    string
-	Stdin      []byte
-	Timeout    time.Duration
-	Env        EnvPolicy
-	Net        permission.NetPolicy
-	Permission *permission.Policy
-	Resources  ResourceLimits
+	WorkDir   string
+	Stdin     []byte
+	Timeout   time.Duration
+	Resources policy.Resources
 }
 
-// Writable returns the absolute paths this call may write, given the runner's
-// construction-time defaults.
-//
-// A supplied Permission replaces the defaults rather than adding to them: the
-// caller stated the boundary, so the backend must not quietly widen it back to
-// the runner root. An empty writable list therefore means read-only, which is
-// how a call asks for it without needing a second enum.
-func (o ExecOptions) Writable(defaults []string) []string {
-	if o.Permission != nil {
-		return o.Permission.Writes.Writable()
-	}
-	return defaults
-}
-
-// ExecResult captures the outcome of a Runner.Exec call. ExitCode is the
-// command's exit status (0 on success, non-zero on failure that the OS
-// surfaced via *exec.ExitError or equivalent). Stdout / Stderr are the
-// captured output, possibly truncated to Resources.MaxOutputBytes.
+// ExecResult captures the outcome of one command. ExitCode is the command's exit
+// status (0 on success, non-zero on failure the OS surfaced). Stdout and Stderr
+// are the captured output, truncated per stream to the call's
+// Resources.MaxOutputBytes.
 type ExecResult struct {
 	ExitCode int    `json:"exit_code"`
 	Stdout   string `json:"stdout"`

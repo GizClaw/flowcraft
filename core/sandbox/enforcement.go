@@ -1,6 +1,8 @@
 package sandbox
 
-import "github.com/GizClaw/flowcraft/core/permission"
+import (
+	"github.com/GizClaw/flowcraft/core/policy"
+)
 
 // Enforcement reports which policy dimensions a Runner can actually
 // enforce on the current platform, so callers and UIs never have to
@@ -12,7 +14,7 @@ import "github.com/GizClaw/flowcraft/core/permission"
 //
 // Field semantics:
 //
-//   - EnvAllowList: the runner honours EnvPolicy.Allow (drops host
+//   - EnvAllowList: the runner honours policy.EnvPolicy.Allow (drops host
 //     variables not on the list) rather than ignoring the field.
 //   - NetModes: the set of NetMode values the backend can enforce at
 //     the OS level. NetDefault is never listed — it is the absence of
@@ -31,18 +33,16 @@ import "github.com/GizClaw/flowcraft/core/permission"
 //   - CPUCap: CPUMillicores (with Timeout) is likewise enforced.
 //   - DiskCap: DiskBytes is enforced. No local backend reports this
 //     today.
-//   - FilesystemBounds: writes are confined to the runner root at the
-//     OS level (Seatbelt profile, namespace mounts). sandbox-local's
-//     WorkDir check is call-time validation only — once the child is
-//     running it can chdir anywhere — so it does not qualify.
-//   - WriteConfinement: the backend can enforce a per-call file boundary,
-//     i.e. it can make exactly ExecOptions.Permission's writable paths
-//     writable and everything else read-only. sandbox-local reports false:
-//     it has no OS boundary, so it refuses such a call instead of running
-//     it unconfined.
+//   - FilesystemBounds: writes are confined to the write set of
+//     [Confine.Files] at the OS level (a Seatbelt profile, namespace
+//     mounts). A backend with no OS boundary of its own reports false, and
+//     then a confine that restricts writes is refused at construction: its
+//     WorkDir check is call-time validation only, and once the child runs it
+//     can chdir anywhere. An unrestricted write set needs no enforcement and
+//     is accepted by either kind.
 type Enforcement struct {
 	EnvAllowList     bool
-	NetModes         []permission.NetMode
+	NetModes         []policy.NetMode
 	Socks5           bool
 	MITM             bool
 	UnixSocketPolicy bool
@@ -50,5 +50,4 @@ type Enforcement struct {
 	CPUCap           bool
 	DiskCap          bool
 	FilesystemBounds bool
-	WriteConfinement bool
 }
