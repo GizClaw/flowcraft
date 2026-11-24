@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -39,6 +40,8 @@ type Agents struct {
 	order    []string
 	sessions map[string]*Session
 	byAge    []*Session
+	// edges numbers delegation edges so two children of one parent get distinct session ids.
+	edges atomic.Int64
 	// retiring holds the deployments a reload replaced while their sessions are still open. They
 	// are out of the table but not out of the process, so Close has to know about them.
 	retiring []*deployment

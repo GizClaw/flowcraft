@@ -1,0 +1,223 @@
+package host
+
+import (
+	"context"
+	"slices"
+	"strconv"
+	"strings"
+
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/identity"
+	"github.com/GizClaw/flowcraft/core/identity/inject"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/policy"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
+	"go.opentelemetry.io/otel/trace"
+)
+
+// delegator is one session's delegation capability: the closure a tool calls when the model asks for
+// another agent.
+//
+// It holds the parent session's identity rather than the session itself, because what a delegation
+// needs from its parent is the grant that permits it and the lineage it extends — not the parent's
+// driver, its cell or its binding.
+type delegator struct {
+	agents *Agents
+	parent *Session
+}
+
+var _ platform.Delegation = (*delegator)(nil)
+
+// Delegate runs one child agent under the parent's delegation policy.
+//
+// The policy is the parent session's, not the target's: delegation is the one capability that can
+// manufacture a run with a new grant, so "may this session hand work to that agent, that way, this
+// deep" is answered from the caller's side and nowhere else.
+func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest) (platform.DelegationOutcome, error) {
+	parent := d.parent.lineage()
+	target := strings.TrimSpace(req.Target)
+	if err := admitDelegation(parent.policy, target, req.Mode, parent.chain); err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+
+	// One child per delegation edge: the id is derived so two edges of one chain are distinguishable,
+	// and so a resumed parent's next edge does not collide with the one before it.
+	child := d.parent.id + "/" + target + "-" + strconv.FormatInt(d.agents.nextEdge(), 36)
+	if _, err := d.agents.Open(ctx, child, target); err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	defer func() { _ = d.agents.CloseSession(ctx, child) }()
+
+	chain := identity.Chain{ID: parent.chain.ID, Depth: parent.chain.Depth + 1}
+	outcome := platform.DelegationOutcome{
+		Session: child,
+		Chain:   chain.ID,
+		Depth:   chain.Depth,
+	}
+	if req.Mode == "async" {
+		// An async edge is a hand-off: the child is started and the caller gets its address. The run
+		// outlives the turn that asked for it, so it gets a root span of its own linked to the asking
+		// turn — a child of a span that has already ended would be a trace nobody can read.
+		parent := trace.SpanContextFromContext(ctx)
+		bgCtx, span := telemetry.TracerWithSuffix("host").Start(
+			withChain(context.WithoutCancel(ctx), chain), "host.delegate.async",
+			trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: parent}))
+		go func() {
+			defer span.End()
+			for range d.agents.Run(bgCtx, child, userMessage(req.Input)) {
+			}
+		}()
+		outcome.Status = string(agent.StateSubmitted)
+		return outcome, nil
+	}
+
+	for event, runErr := range d.agents.Run(withChain(ctx, chain), child, userMessage(req.Input)) {
+		if runErr != nil {
+			return outcome, runErr
+		}
+		foldDelegated(&outcome, event)
+	}
+	return outcome, nil
+}
+
+// lineageView is what a delegation needs from its parent: the policy that permits it and the chain it
+// extends. It is a value, so the child cannot reach the parent's driver or cell through it.
+type lineageView struct {
+	policy *policy.Delegation
+	chain  identity.Chain
+}
+
+// lineage is the parent's delegation view. The chain is read from the identity the turn attached, so a
+// resumed process continues the chain it recorded rather than starting a new one at depth zero.
+func (s *Session) lineage() lineageView {
+	return lineageView{policy: s.deploy.grant.Delegation, chain: s.chain}
+}
+
+// admitDelegation answers the three questions the grant asks: which agent, which mode, how deep.
+func admitDelegation(d *policy.Delegation, target, mode string, chain identity.Chain) error {
+	switch {
+	case d == nil || len(d.Targets) == 0:
+		return errdefs.Forbiddenf("host: this session may not delegate")
+	case target == "":
+		return errdefs.Validationf("host: delegation needs a target agent")
+	case !slices.Contains(d.Targets, target):
+		return errdefs.Forbiddenf(
+			"host: delegation to %q is not in this session's policy (it may reach %s)",
+			target, strings.Join(d.Targets, ", "))
+	}
+	if d.MaxDepth > 0 && chain.Depth+1 > d.MaxDepth {
+		return errdefs.Forbiddenf(
+			"host: delegation would be %d edges deep, and the policy allows %d", chain.Depth+1, d.MaxDepth)
+	}
+	allowed := make([]string, 0, len(d.Modes))
+	for _, permitted := range d.Modes {
+		allowed = append(allowed, string(permitted))
+	}
+	if len(allowed) > 0 && !slices.Contains(allowed, mode) {
+		return errdefs.Forbiddenf(
+			"host: delegation mode %q is not in this session's policy (it allows %s)",
+			mode, strings.Join(allowed, ", "))
+	}
+	return nil
+}
+
+// appendText adds one delta to a delegation's answer, keeping the content a single text part.
+func appendText(content message.Content, text string) message.Content {
+	if text == "" {
+		return content
+	}
+	if existing := content.Text(); existing != "" {
+		return message.NewTextContent(existing + text)
+	}
+	return message.NewTextContent(text)
+}
+
+// foldDelegated keeps what the caller of a delegation needs from the child's stream: its answer, the
+// question it paused on, and the terminal state. Everything else belongs to the child's own trace.
+func foldDelegated(outcome *platform.DelegationOutcome, event agent.Event) {
+	switch typed := event.(type) {
+	case agent.Text:
+		outcome.Content = appendText(outcome.Content, typed.Text)
+	case agent.Status:
+		if typed.State.Terminal() || typed.State == agent.StateInputRequired {
+			outcome.Status = string(typed.State)
+		}
+		if typed.State == agent.StateInputRequired && typed.Reason != "" {
+			question := message.NewTextContent(typed.Reason)
+			outcome.Question = &question
+		}
+	}
+}
+
+// nextEdge numbers delegation edges within this process, so two children of one parent get distinct
+// session ids without a clock or a random source in the identity.
+func (a *Agents) nextEdge() int64 { return a.edges.Add(1) }
+
+// withChain attaches the child's lineage to the context it runs under, which is what a span and a
+// checkpoint fingerprint read.
+func withChain(ctx context.Context, chain identity.Chain) context.Context {
+	attached, err := inject.Chain(ctx, chain)
+	if err != nil {
+		return ctx
+	}
+	return attached
+}
+
+func userMessage(text string) message.Message {
+	return message.NewTextMessage(message.RoleUser, text)
+}
+
+// child checks that session names a child of this parent.
+//
+// The id a delegation mints is derived from the parent, so "may I address this" is a prefix test — and a
+// session may address only the edges it opened, never another conversation's child or its own parent.
+func (d *delegator) child(session string) error {
+	if session == "" {
+		return errdefs.Validationf("host: delegation needs a session id")
+	}
+	if !strings.HasPrefix(session, d.parent.id+"/") {
+		return errdefs.Forbiddenf("host: session %q is not a delegation of this session", session)
+	}
+	return nil
+}
+
+// Status reports where a child stands: the state its checkpoint recorded. The answer and question are
+// not here — a process that did not run the child reads its state, not its transcript.
+func (d *delegator) Status(ctx context.Context, session string) (platform.DelegationOutcome, error) {
+	if err := d.child(session); err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	checkpoint, err := d.agents.store.Load(ctx, session)
+	if err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	return platform.DelegationOutcome{
+		Status:  string(checkpoint.Task.State),
+		Session: session,
+	}, nil
+}
+
+// Answer continues a paused child and folds what it produced next.
+func (d *delegator) Answer(ctx context.Context, session, answer string) (platform.DelegationOutcome, error) {
+	if err := d.child(session); err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	outcome := platform.DelegationOutcome{Session: session}
+	for event, err := range d.agents.Run(ctx, session, userMessage(answer)) {
+		if err != nil {
+			return outcome, err
+		}
+		foldDelegated(&outcome, event)
+	}
+	return outcome, nil
+}
+
+// Cancel stops a child.
+func (d *delegator) Cancel(ctx context.Context, session, reason string) error {
+	if err := d.child(session); err != nil {
+		return err
+	}
+	return d.agents.Cancel(ctx, session, reason)
+}

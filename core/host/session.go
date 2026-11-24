@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
 	"go.opentelemetry.io/otel/trace"
@@ -34,6 +35,9 @@ type Session struct {
 	touch atomic.Int64
 	// ordinal counts turns, which is what a turn's identity is derived from.
 	ordinal int
+	// chain is the delegation lineage this session runs under: empty for a session a caller opened,
+	// one deeper for every edge below a delegate call.
+	chain identity.Chain
 	// running is true while a turn is in flight. One session has at most one, which is the rule
 	// that lets Steer and Cancel address a turn without an id.
 	running atomic.Bool
@@ -197,6 +201,12 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		driver:    driver,
 	}
 	session.touchNow(time.Now())
+	// Delegation is filled only where the grant permits it: a session that may not delegate gets no
+	// capability, and a delegate tool registered in the process is then refused at registration
+	// instead of failing at the first call.
+	if deploy.grant.Delegation != nil {
+		platform.DelegationSlot.Provide(capabilities, &delegator{agents: a, parent: session})
+	}
 	span.End()
 	return session, span, nil
 }
