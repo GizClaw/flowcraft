@@ -62,7 +62,7 @@ func Exec(
 	// Who the command belongs to comes from the context, which the host filled at
 	// session open; what this layer knows — the runner, the deadline — is added
 	// beside it. Capability attributes (the boundary id) arrive with Call.
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	defer span.End()
 	if opts.Timeout > 0 {
 		span.SetAttributes(telemetry.Int64(

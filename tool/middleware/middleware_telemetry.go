@@ -51,7 +51,7 @@ func Telemetry() tool.Middleware {
 			// The runtime identity the host attached: every span below a runtime
 			// carries it, so a trace can be filtered by instance without the
 			// middleware knowing what a runtime is.
-			span.SetAttributes(telemetry.Attrs(ctx)...)
+			span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 			defer span.End()
 
 			start := time.Now()

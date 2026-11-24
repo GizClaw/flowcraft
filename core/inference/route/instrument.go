@@ -63,7 +63,7 @@ func startRoute(ctx context.Context, operation string) (context.Context, *routeC
 		))
 	// Who the call belongs to comes from the context; this span is where the
 	// attempt's target is decided, so every attempt below inherits it.
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	return ctx, &routeCall{
 		ctx:       ctx,
 		span:      span,

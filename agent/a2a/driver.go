@@ -113,7 +113,7 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 				attribute.String(telemetry.AttrA2APeerTaskID, peerTask),
 				attribute.String(telemetry.AttrA2AContextID, peerContext),
 			))
-		span.SetAttributes(telemetry.Attrs(ctx)...)
+		span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 		started := time.Now()
 		// failure is what the round trip ended on, so the deferred recorder, the span and the
 		// record agree about the outcome instead of each re-reading the driver's state.
