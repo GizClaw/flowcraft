@@ -234,7 +234,7 @@ test-shuffle:
 
 .PHONY: fuzz
 fuzz:
-	@tools/fuzz.sh
+	@scripts/fuzz.sh
 
 .PHONY: stress
 stress:
@@ -242,33 +242,33 @@ stress:
 		echo "usage: make stress PKG=./agent RUN=TestAgentRun COUNT=200" >&2; \
 		exit 2; \
 	fi
-	@tools/stress.sh "$(PKG)" "$(RUN)" "$(COUNT)"
+	@scripts/stress.sh "$(PKG)" "$(RUN)" "$(COUNT)"
 
 .PHONY: ci
 ci: vet test
 
 .PHONY: release-check
 release-check:
-	@cd tools/releasegate && GOWORK=off go test -count=1 ./...
+	@cd scripts/releasegate && GOWORK=off go test -count=1 ./...
 	@if [[ -n "$(BASE)" ]]; then \
-		cd tools/releasegate && GOWORK=off go run . validate --repo ../.. --base "$(BASE)"; \
+		cd scripts/releasegate && GOWORK=off go run . validate --repo ../.. --base "$(BASE)"; \
 	else \
-		cd tools/releasegate && GOWORK=off go run . validate --repo ../..; \
+		cd scripts/releasegate && GOWORK=off go run . validate --repo ../..; \
 	fi
-	@cd tools/releasegate && GOWORK=off go run . plan --repo ../..
+	@cd scripts/releasegate && GOWORK=off go run . plan --repo ../..
 
 .PHONY: release-plan
 release-plan:
-	@cd tools/releasegate && GOWORK=off go run . plan --repo ../.. --json
+	@cd scripts/releasegate && GOWORK=off go run . plan --repo ../.. --json
 
 .PHONY: release-preflight
 release-preflight:
-	@cd tools/releasegate && GOWORK=off go run . preflight --repo ../..
+	@cd scripts/releasegate && GOWORK=off go run . preflight --repo ../..
 
 .PHONY: release-preflight-write
 release-preflight-write:
-	@cd tools/releasegate && GOWORK=off go run . preflight --repo ../.. --write
+	@cd scripts/releasegate && GOWORK=off go run . preflight --repo ../.. --write
 
 .PHONY: release-changelog
 release-changelog:
-	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
+	@cd scripts/releasegate && GOWORK=off go run . changelog --repo ../.. --write

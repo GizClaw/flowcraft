@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Stress one test until it fails or the iteration count is exhausted.
 #
-#	 tools/stress.sh ./agent TestAgentRun 200
+#	 scripts/stress.sh ./agent TestAgentRun 200
 set -euo pipefail
 if [[ $# -lt 2 ]]; then
-	echo "usage: tools/stress.sh <package> <test regex> [iterations]" >&2
+	echo "usage: scripts/stress.sh <package> <test regex> [iterations]" >&2
 	exit 2
 fi
 

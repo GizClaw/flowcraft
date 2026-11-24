@@ -153,33 +153,33 @@ jobs:
           go-version: "1.26"
 
       - name: Test release gate tooling
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go test -count=1 -race ./...
 
       - name: Validate immutable changesets
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
         run: go run . validate --repo ../.. --base "$BASE_SHA"
 
       - name: Validate pending release plan
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go run . plan --repo ../..
 
       - name: Validate planned module pins and tidiness
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go run . preflight --repo ../..
 
       - name: Validate generated release changelog
         if: github.event_name == 'workflow_dispatch' || github.head_ref == 'automation/release-changelog'
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go run . changelog --repo ../.. --check
@@ -311,7 +311,7 @@ jobs:
           go-version: "1.26"
       # A short fixed budget per target: enough to catch a panic on an edge
       # input, not a real hunt (FUZZTIME extends it locally).
-      - run: FUZZTIME=15s tools/fuzz.sh
+      - run: FUZZTIME=15s scripts/fuzz.sh
 
   bench:
     name: Benchmarks

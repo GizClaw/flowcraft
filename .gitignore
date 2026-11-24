@@ -44,12 +44,14 @@
 !examples/**
 !sandbox/
 !sandbox/**
+!scripts/
+!scripts/**
+# A `go build` in the release gate drops a binary beside its package.
+/scripts/releasegate/releasegate
 !skills/
 !skills/**
 !tool/
 !tool/**
-!tools/
-!tools/**
 !.release/
 !.release/**
 
