@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/goccy/go-json"
 )
 
 // Agents is the deployment table: one entry per agent this process serves.
@@ -76,6 +77,11 @@ type deployment struct {
 	// has spent — belongs to the conversation, and two sessions sharing one view would interfere
 	// with each other. It is a closure so the host names no projection implementation.
 	newView tool.ViewFactory
+	// narrowed builds a view for a tool set other than the deployment's, which is what a session
+	// opened under a narrower grant needs. Nil when the process cannot build one, in which case a
+	// narrowed session runs with the deployment's exposure — that is refused at open instead
+	// (see viewFor), because showing more than the bind allows is the one direction that matters.
+	narrowed func(allowed policy.ToolSet) (tool.ViewFactory, error)
 	// live counts the open sessions, which is what the grant's limit is measured against.
 	live int
 	// retired marks a deployment that a reload replaced: its program is closed when the last
@@ -295,6 +301,10 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
 	}
+	catalog := a.res.tools
+	narrowed := func(allowed policy.ToolSet) (tool.ViewFactory, error) {
+		return a.res.newView(catalog, allowed)
+	}
 	if newView == nil {
 		return nil, errors.Join(
 			fmt.Errorf("host: agent %q: tool exposure: the projection built nothing", dep.Name), program.Close())
@@ -311,7 +321,40 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 		manifest:      manifest,
 		hooks:         hooks,
 		newView:       newView,
+		narrowed:      narrowed,
 	}, nil
+}
+
+// viewFor builds one session's view for the tool set its bind allows.
+//
+// A session that was not narrowed asks for the deployment's own set, which is the factory built at
+// install: that is the common case and it shares the deployment's projection. A narrowed session
+// gets its own projection over the narrowed set — the exposure is part of the view's policy, so it
+// cannot be re-filtered afterwards — which costs a second search index lazily, only if that
+// session searches.
+func (d *deployment) viewFor(allowed policy.ToolSet, res *Resource) (tool.View, error) {
+	if sameToolSet(allowed, d.grant.Tools) || d.narrowed == nil {
+		return d.newView(), nil
+	}
+	factory, err := d.narrowed(allowed)
+	if err != nil {
+		return nil, err
+	}
+	if factory == nil {
+		return nil, errdefs.NotAvailablef("host: the tool projection built nothing")
+	}
+	return factory(), nil
+}
+
+// sameToolSet reports whether two sets ask for the same exposure, which is what decides whether a
+// session can share the deployment's projection.
+func sameToolSet(left, right policy.ToolSet) bool {
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return string(leftJSON) == string(rightJSON)
 }
 
 // drop removes one entry from the table. The caller holds the lock.

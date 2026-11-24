@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
 	"go.opentelemetry.io/otel/trace"
@@ -23,6 +24,19 @@ type OpenOption func(*openOptions)
 
 type openOptions struct {
 	chain identity.Chain
+	// request is what the caller asks the session to be narrowed to. Nil means "the whole
+	// deployment grant", which is what a caller that has nothing to narrow keeps getting.
+	request *policy.Request
+}
+
+// WithRequest narrows the session under the deployment's grant.
+//
+// The deployment grant is the ceiling; this is the fact. It is the only way a host learns that a
+// caller may run with less — a protocol adapter that maps an untrusted peer's request, a UI that
+// offers a subset — and it is the reason [policy.Request] has no path field: what cannot be
+// expressed cannot be smuggled. A request outside the ceiling is refused at open, not truncated.
+func WithRequest(request policy.Request) OpenOption {
+	return func(o *openOptions) { o.request = &request }
 }
 
 // WithChain records the delegation lineage the session runs under.
@@ -47,6 +61,11 @@ type Session struct {
 	cell      *cell
 	binding   tool.Binding
 	driver    agent.Driver
+	// grant is the authority in force for this session: the deployment's grant, narrowed by
+	// whatever the caller asked for at open. bindID is its digest, computed once — the identity
+	// every span carries, and [policy.Grant.Digest] is not free.
+	grant  policy.Grant
+	bindID string
 	// touch is when this session last did anything, in Unix nanos: idle eviction reads it from the
 	// table's goroutine while a turn writes it from its own, so it is atomic rather than guarded.
 	touch atomic.Int64
@@ -249,7 +268,20 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		failSessionSpan(ctx, span, err)
 		return nil, span, err
 	}
-	built, err := openCell(ctx, factory, deploy.grant)
+	// The session's grant is the deployment's ceiling narrowed by what the caller asked for. It is
+	// the same type and the same validator, so the bind digest and the authority digest have one
+	// source; what changes is the value in force for this conversation.
+	bind := deploy.grant
+	if opening.request != nil {
+		narrowed, err := deploy.grant.Narrow(*opening.request)
+		if err != nil {
+			openErr := fmt.Errorf("host: session %q: %w", sessionID, err)
+			failSessionSpan(ctx, span, openErr)
+			return nil, span, openErr
+		}
+		bind = narrowed
+	}
+	built, err := openCell(ctx, factory, bind)
 	if err != nil {
 		failSessionSpan(ctx, span, err)
 		return nil, span, err
@@ -268,7 +300,12 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// session has discovered, how recently it used it and how much of its per-round budget it has
 	// spent are facts of this conversation. One view per session is cheap because the index behind
 	// it belongs to the deployment's factory and is shared.
-	view := deploy.newView()
+	view, viewErr := deploy.viewFor(bind.Tools, a.res)
+	if viewErr != nil {
+		openErr := errors.Join(fmt.Errorf("host: session %q: tool exposure: %w", sessionID, viewErr), built.Close())
+		failSessionSpan(ctx, span, openErr)
+		return nil, span, openErr
+	}
 	if view == nil {
 		openErr := errors.Join(
 			errdefs.NotAvailablef("host: agent %q: the tool projection built nothing", agentName),
@@ -277,7 +314,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		return nil, span, openErr
 	}
 	binding := tool.Bind(&sessionScratch{id: sessionID, values: map[string]any{}},
-		deploy.grant).WithView(view).WithCaps(capabilities)
+		bind).WithView(view).WithCaps(capabilities)
 
 	driver, err := deploy.program.Open(agent.SessionInfo{
 		Agent:     agentName,
@@ -297,6 +334,8 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		cell:      built,
 		binding:   binding,
 		driver:    driver,
+		grant:     bind,
+		bindID:    bind.Digest(),
 		chain:     opening.chain,
 	}
 	if err := a.announceSession(ctx, session); err != nil {
@@ -308,9 +347,9 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// Delegation is filled only where the grant permits it: a session that may not delegate gets no
 	// capability, and a delegate tool registered in the process is then refused at registration
 	// instead of failing at the first call.
-	if deploy.grant.Delegation != nil {
+	if bind.Delegation != nil {
 		head := &delegator{agents: a, parent: session}
-		if limit := deploy.grant.Delegation.MaxConcurrent; limit > 0 {
+		if limit := bind.Delegation.MaxConcurrent; limit > 0 {
 			head.gate = make(chan struct{}, limit)
 		}
 		platform.DelegationSlot.Provide(capabilities, head)
