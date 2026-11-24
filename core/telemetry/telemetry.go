@@ -5,7 +5,6 @@ import (
 
 	"go.opentelemetry.io/otel"
 	otellog "go.opentelemetry.io/otel/log"
-	logglobal "go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -52,5 +51,5 @@ func Logger(name string) otellog.Logger {
 	if name == "" {
 		name = InstrumentationName + "/logs"
 	}
-	return logglobal.Logger(name)
+	return otel.Logger(name)
 }

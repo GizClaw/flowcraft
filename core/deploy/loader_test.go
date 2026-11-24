@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy/sources"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -127,7 +128,7 @@ func TestProcessResolvesWithoutBuilding(t *testing.T) {
 	if len(plan.Providers) != 1 || plan.Providers[0].Name != "gpt" {
 		t.Fatalf("providers = %+v", plan.Providers)
 	}
-	if len(plan.SkillRoots) != 1 || plan.SkillRoots[0] != "/srv/skills" {
+	if len(plan.SkillRoots) != 1 || plan.SkillRoots[0] != pathtest.Abs("srv/skills") {
 		t.Fatalf("skill roots = %v", plan.SkillRoots)
 	}
 

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -54,7 +55,7 @@ func TestRequirementMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RequiredPlaceholders: %v", err)
 	}
-	env := map[string]string{"ROOT": "/work"}
+	env := map[string]string{"ROOT": pathtest.Abs("work")}
 	missing := requirement.Missing(func(name string) (string, bool) {
 		value, ok := env[name]
 		return value, ok

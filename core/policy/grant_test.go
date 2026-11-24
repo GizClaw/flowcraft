@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 )
@@ -17,7 +18,7 @@ func ref(provider, name string) model.ModelRef {
 func ceiling() policy.Grant {
 	return policy.Grant{
 		Sandbox: "locked",
-		Files:   policy.Files{Read: []string{"/srv/w"}, Write: []string{"/srv/w/out"}},
+		Files:   policy.Files{Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("srv/w/out")}},
 		Models:  []model.ModelRef{ref("openai", "gpt-4o"), ref("openai", "gpt-4o-mini")},
 		Tools: policy.ToolSet{
 			Allow:    []string{"read_file", "write_file", "exec"},
@@ -40,7 +41,7 @@ func TestNarrowOfNothingKeepsTheCeiling(t *testing.T) {
 	if got.Tools.Allow == nil {
 		t.Fatal("tool allow-list was widened to unrestricted")
 	}
-	if got.Files.Read[0] != "/srv/w" {
+	if got.Files.Read[0] != pathtest.Abs("srv/w") {
 		t.Fatalf("files = %+v, want the ceiling's", got.Files)
 	}
 	if !got.Limits.IsZero() {
@@ -175,7 +176,7 @@ func TestNarrowOnlyNarrows(t *testing.T) {
 
 func TestNarrowRejectsAnInvalidCeiling(t *testing.T) {
 	base := ceiling()
-	base.Files = policy.Files{Read: []string{"/srv"}, Write: []string{"/tmp"}}
+	base.Files = policy.Files{Read: []string{pathtest.Abs("srv")}, Write: []string{pathtest.Abs("tmp")}}
 	if _, err := base.Narrow(policy.Request{}); err == nil {
 		t.Fatal("Narrow accepted a ceiling whose write set is outside its read set")
 	}
@@ -184,12 +185,12 @@ func TestNarrowRejectsAnInvalidCeiling(t *testing.T) {
 // TestDigestIsTheSameForTheSamePermission pins the property the resume check and
 // the span attributes depend on: one permission, one id.
 func TestDigestIsTheSameForTheSamePermission(t *testing.T) {
-	a := policy.Grant{Files: policy.Files{Read: []string{"/srv", "/srv/work"}, ReadOnly: true}}
-	b := policy.Grant{Files: policy.Files{Read: []string{"/srv/work", "/srv", "/srv"}, ReadOnly: true}}
+	a := policy.Grant{Files: policy.Files{Read: []string{pathtest.Abs("srv"), pathtest.Abs("srv/work")}, ReadOnly: true}}
+	b := policy.Grant{Files: policy.Files{Read: []string{pathtest.Abs("srv/work"), pathtest.Abs("srv"), pathtest.Abs("srv")}, ReadOnly: true}}
 	if a.Digest() != b.Digest() {
 		t.Fatalf("nested and duplicated roots produced different digests: %s vs %s", a.Digest(), b.Digest())
 	}
-	open := policy.Grant{Files: policy.Files{Read: []string{"/"}}}
+	open := policy.Grant{Files: policy.Files{Read: []string{pathtest.Roots()}}}
 	if open.Digest() != (policy.Grant{}).Digest() {
 		t.Fatalf("a filesystem root and an omitted list differ: %s vs %s", open.Digest(), (policy.Grant{}).Digest())
 	}

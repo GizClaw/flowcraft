@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 )
@@ -13,7 +14,7 @@ import (
 // session, so a regression here costs a session's first byte rather than every call.
 func BenchmarkGrantNarrow(b *testing.B) {
 	authority := policy.Grant{
-		Files:  policy.Files{Read: []string{"/srv/work"}, Write: []string{"/srv/work/out"}},
+		Files:  policy.Files{Read: []string{pathtest.Abs("srv/work")}, Write: []string{pathtest.Abs("srv/work/out")}},
 		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}, {ID: model.ModelID{Provider: "openai", Name: "gpt-4o-mini"}}},
 		Tools: policy.ToolSet{
 			Allow:  []string{"read_file", "write_file", "exec", "grep"},

@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
@@ -82,7 +83,7 @@ func approvalHost(t *testing.T, approval Approval) (sandbox.SessionStarter, *gat
 }
 
 func spec(argv ...string) sandbox.SessionSpec {
-	return sandbox.SessionSpec{ID: "cmd", Argv: argv, Opts: sandbox.ExecOptions{WorkDir: "/srv"}}
+	return sandbox.SessionSpec{ID: "cmd", Argv: argv, Opts: sandbox.ExecOptions{WorkDir: pathtest.Abs("srv")}}
 }
 
 // TestAWhitelistedCommandRunsWithoutAsking is the ordinary case: the commands an operator already
@@ -105,7 +106,7 @@ func TestTheApproverDecidesEverythingElse(t *testing.T) {
 	reviewer := &reviewer{err: errors.New("not this one")}
 	starter, backend := approvalHost(t, Approval{Approver: reviewer, Whitelist: Whitelist{{"git", "status"}}})
 
-	_ = start(t, starter, spec("rm", "-rf", "/srv"))
+	_ = start(t, starter, spec("rm", "-rf", pathtest.Abs("srv")))
 	if len(backend.started) != 0 {
 		t.Fatal("a refused command reached the backend")
 	}
@@ -116,7 +117,7 @@ func TestTheApproverDecidesEverythingElse(t *testing.T) {
 	if got.Agent != "referee" || got.SessionID != "s1" {
 		t.Fatalf("request = %+v, want the session's identity", got)
 	}
-	if strings.Join(got.Argv, " ") != "rm -rf /srv" || got.WorkDir != "/srv" {
+	if strings.Join(got.Argv, " ") != "rm -rf /srv" || got.WorkDir != pathtest.Abs("srv") {
 		t.Fatalf("request = %+v, want the command as written", got)
 	}
 }
@@ -140,7 +141,7 @@ func TestARefusalIsAPolicyDenial(t *testing.T) {
 	reviewer := &reviewer{err: errors.New("operator said no")}
 	starter, _ := approvalHost(t, Approval{Approver: reviewer})
 
-	err := start(t, starter, spec("rm", "-rf", "/"))
+	err := start(t, starter, spec("rm", "-rf", pathtest.Roots()))
 	if !errdefs.IsPolicyDenied(err) {
 		t.Fatalf("err = %v, want a policy denial", err)
 	}
@@ -212,7 +213,7 @@ func TestWhitelistCovers(t *testing.T) {
 		"prefix":         {[]string{"git", "status", "-s"}, true},
 		"different verb": {[]string{"git", "push"}, false},
 		"shorter":        {[]string{"git"}, false},
-		"unrelated":      {[]string{"rm", "-rf", "/"}, false},
+		"unrelated":      {[]string{"rm", "-rf", pathtest.Roots()}, false},
 		"empty argv":     {nil, false},
 	} {
 		if got := list.Covers(tc.argv); got != tc.want {

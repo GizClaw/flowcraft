@@ -58,10 +58,13 @@ func recordTurnMetrics(ctx context.Context, req Request, outcome TurnOutcome) {
 }
 
 // recordTurnDuration emits how long the turn took. It is separate from the counter
-// because a duration is only meaningful for a turn that finished.
+// because a duration is only meaningful for a turn that finished — which is the caller's
+// condition, not this one: only finish() records, so a zero here is a turn the clock could
+// not resolve. Windows quantizes time.Since to the timer tick, which makes an instant turn
+// exactly zero, and dropping that observation made the series platform-dependent.
 func recordTurnDuration(ctx context.Context, req Request, elapsed time.Duration) {
-	if elapsed <= 0 {
-		return
+	if elapsed < 0 {
+		elapsed = 0
 	}
 	meter := telemetry.MeterWithSuffix("agent")
 	if histogram, err := meter.Float64Histogram("agent.turn.duration",

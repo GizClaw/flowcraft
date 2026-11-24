@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 )
@@ -118,14 +119,14 @@ func TestUnknownEnumValuesAreRefused(t *testing.T) {
 func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 	grant := policy.Grant{
 		Sandbox: "locked",
-		Files:   policy.Files{Read: []string{"/srv/w"}, Write: []string{"/srv/w/out"}},
+		Files:   policy.Files{Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("srv/w/out")}},
 		Net: policy.NetPolicy{
 			Mode:       policy.NetAllowList,
 			AllowHosts: []string{"api.example.com:443"},
 			Rules:      []policy.NetRule{{Action: policy.NetAllow, Host: "api.example.com", Port: 443}},
 			MITM:       &policy.MITMPolicy{Enabled: true, MaxBodyBytes: 1024},
 		},
-		Exec:      policy.ExecPolicy{Timeout: policy.Duration(10 * time.Second), Env: policy.EnvPolicy{Allow: []string{"PATH"}}, Shell: "/bin/sh"},
+		Exec:      policy.ExecPolicy{Timeout: policy.Duration(10 * time.Second), Env: policy.EnvPolicy{Allow: []string{"PATH"}}, Shell: pathtest.Abs("bin/sh")},
 		Resources: policy.Resources{CPUMillicores: 500, MemoryBytes: 1 << 20, MaxOutputBytes: 1 << 16},
 		Models:    []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
 		Tools: policy.ToolSet{
@@ -191,7 +192,7 @@ func TestDigestCoversTheWholeDocument(t *testing.T) {
 		"unix":        func(g *policy.Grant) { g.Net.UnixSockets = []string{"/run/x.sock"} },
 		"proxy":       func(g *policy.Grant) { g.Net = policy.NetPolicy{Mode: policy.NetProxy, Proxy: "http://p:8080"} },
 		"env":         func(g *policy.Grant) { g.Exec.Env.Inject = map[string]string{"A": "1"} },
-		"shell":       func(g *policy.Grant) { g.Exec.Shell = "/bin/zsh" },
+		"shell":       func(g *policy.Grant) { g.Exec.Shell = pathtest.Abs("bin/zsh") },
 		"max_output":  func(g *policy.Grant) { g.Resources.MaxOutputBytes = 1 },
 	} {
 		t.Run(name, func(t *testing.T) {

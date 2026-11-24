@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
@@ -229,7 +230,7 @@ func TestValidateConfineRefusesWritesItCannotBound(t *testing.T) {
 	unbounding := sandbox.Enforcement{FilesystemBounds: false}
 	for name, files := range map[string]policy.Files{
 		"read only":      {ReadOnly: true},
-		"narrowed write": {Read: []string{"/srv"}, Write: []string{"/srv/work"}},
+		"narrowed write": {Read: []string{pathtest.Abs("srv")}, Write: []string{pathtest.Abs("srv/work")}},
 	} {
 		confine := sandbox.Confine{Files: files}
 		if err := sandbox.ValidateConfine(confine, unbounding); err == nil {
@@ -246,7 +247,7 @@ func TestValidateConfineAcceptsAnUnrestrictedWriteSet(t *testing.T) {
 	if err := sandbox.ValidateConfine(sandbox.Confine{}, sandbox.Enforcement{FilesystemBounds: false}); err != nil {
 		t.Fatalf("an empty confine was refused: %v", err)
 	}
-	if err := sandbox.ValidateConfine(sandbox.Confine{Files: policy.Files{Read: []string{"/srv"}, Write: []string{"/srv"}}},
+	if err := sandbox.ValidateConfine(sandbox.Confine{Files: policy.Files{Read: []string{pathtest.Abs("srv")}, Write: []string{pathtest.Abs("srv")}}},
 		sandbox.Enforcement{FilesystemBounds: true}); err != nil {
 		t.Fatalf("a bounding backend refused a write set: %v", err)
 	}

@@ -2,12 +2,14 @@ package deploy_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/deploy/sources"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -19,6 +21,16 @@ import (
 // Settings decode into a map because the test is about the document's shape, not about any
 // one implementation's settings — a real implementation declares its own struct and gets strict
 // decoding from that.
+// onPlatformRoot rewrites the documented roots onto this platform's absolute spelling, by
+// prefixing the synthetic root the way pathtest does. Nothing is created and nothing else in
+// the document changes.
+func onPlatformRoot(document string) string {
+	for _, root := range []string{"/srv/", "/opt/", "/tmp/"} {
+		document = strings.ReplaceAll(document, root, pathtest.Roots()+strings.TrimPrefix(root, "/"))
+	}
+	return document
+}
+
 const documentedProcess = `
 version: 1
 
@@ -168,8 +180,14 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 		Program(deploy.Impl("graph", func(map[string]any) (agent.Program, error) {
 			return nil, nil
 		}))
+	// The documents below are printed with unix paths because that is what they document.
+	// What this test checks is the schema, not that /srv exists, so the roots are rebased
+	// onto the platform's own spelling: a Windows path needs a volume, and policy.Files
+	// judges absoluteness with filepath.IsAbs.
+	process := onPlatformRoot(documentedProcess)
+	agents := onPlatformRoot(documentedAgents)
 	loader := deploy.NewLoader(impls)
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(documentedProcess)))
+	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(process)))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -181,7 +199,7 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 		Backends: plan.BackendNames(),
 		Models:   []string{"openai/gpt-5"},
 	}
-	deployments, err := loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(documentedAgents)))
+	deployments, err := loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(agents)))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}

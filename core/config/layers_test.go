@@ -61,12 +61,12 @@ func mustLoad(t *testing.T, layers ...Layer) (testConfig, *Doc) {
 }
 
 // platformPaths rewrites the unix placeholders a fixture is written with, so the
-// same document is absolute on both platforms: "/work" is not absolute on
+// same document is absolute on both platforms: pathtest.Abs("work") is not absolute on
 // Windows, where a path needs a volume.
 func platformPaths(text string) string {
 	return strings.NewReplacer(
-		"/work", pathtest.Abs("work"),
-		"/tmp", pathtest.Abs("tmp"),
+		pathtest.Abs("work"), pathtest.Abs("work"),
+		pathtest.Abs("tmp"), pathtest.Abs("tmp"),
 		"/expanded", pathtest.Abs("expanded"),
 		"/fallback", pathtest.Abs("fallback"),
 	).Replace(text)
@@ -358,7 +358,7 @@ func TestLoadToleratesACommentOnlyLayer(t *testing.T) {
 // expands and decodes through the same path.
 func TestLoadAcceptsAJSONLayer(t *testing.T) {
 	cfg, _ := mustLoad(t, Layer{Priority: 0, Name: "a.json", Source: Bytes([]byte(
-		`{"version":1,"name":"json","sandbox":{"backend":"local"},"files":{"roots":["/work"]}}`))})
+		`{"version":1,"name":"json","sandbox":{"backend":"local"},"files":{"roots":[pathtest.Abs("work")]}}`))})
 	if cfg.Name != "json" || cfg.Sandbox.Backend != "local" {
 		t.Errorf("cfg = %+v", cfg)
 	}

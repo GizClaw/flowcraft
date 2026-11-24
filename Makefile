@@ -168,10 +168,11 @@ check-skill-pin:
 # different questions (statistical benchmark matches, ordering-dependent bugs,
 # parser inputs, nil paths), and a developer chooses when to pay for them.
 
-# Every module that carries benchmarks. `driver` is here because its request
-# compilation is on the model-call path and had no measurement at all; a module
-# omitted from this list is a module whose benchmarks never run.
-BENCH_MODULES ?= core driver
+# Every module in the workspace that carries benchmarks; a module omitted from
+# this list is a module whose benchmarks never run. `driver` left the workspace
+# with the core rebuild — it is built as a consumer, and its benchmarks (request
+# compilation, on the model-call path) return with the `inference` module.
+BENCH_MODULES ?= core
 BENCH_LABEL ?= run
 
 .PHONY: bench

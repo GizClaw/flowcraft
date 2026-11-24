@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 )
@@ -14,7 +15,7 @@ func TestFilesNormalizedFoldsUnrestricted(t *testing.T) {
 	// A filesystem root and an omitted list are the same permission, so they
 	// must have one spelling; otherwise two configs that mean the same thing
 	// produce two digests.
-	for _, read := range [][]string{nil, {}, {"/"}, {"/", "/srv"}} {
+	for _, read := range [][]string{nil, {}, {pathtest.Roots()}, {pathtest.Roots(), pathtest.Abs("srv")}} {
 		got, err := policy.Files{Read: read}.Normalized()
 		if err != nil {
 			t.Fatalf("Files{Read: %v}.Normalized(): %v", read, err)
@@ -27,26 +28,26 @@ func TestFilesNormalizedFoldsUnrestricted(t *testing.T) {
 
 func TestFilesNormalizedPrunesNestedRoots(t *testing.T) {
 	got, err := policy.Files{
-		Read:  []string{"/srv/work/sub", "/srv/work", "/srv/work"},
-		Write: []string{"/srv/work/out", "/srv/work/out"},
+		Read:  []string{pathtest.Abs("srv/work/sub"), pathtest.Abs("srv/work"), pathtest.Abs("srv/work")},
+		Write: []string{pathtest.Abs("srv/work/out"), pathtest.Abs("srv/work/out")},
 	}.Normalized()
 	if err != nil {
 		t.Fatalf("Normalized: %v", err)
 	}
-	if want := []string{"/srv/work"}; !reflect.DeepEqual(got.Read, want) {
+	if want := []string{pathtest.Abs("srv/work")}; !reflect.DeepEqual(got.Read, want) {
 		t.Fatalf("Read = %v, want %v", got.Read, want)
 	}
-	if want := []string{"/srv/work/out"}; !reflect.DeepEqual(got.Write, want) {
+	if want := []string{pathtest.Abs("srv/work/out")}; !reflect.DeepEqual(got.Write, want) {
 		t.Fatalf("Write = %v, want %v", got.Write, want)
 	}
 }
 
 func TestFilesNormalizedSortsForOneSpelling(t *testing.T) {
-	a, err := policy.Files{Read: []string{"/b", "/a"}, Write: []string{"/a/b", "/a/x"}}.Normalized()
+	a, err := policy.Files{Read: []string{pathtest.Abs("b"), pathtest.Abs("a")}, Write: []string{pathtest.Abs("a/b"), pathtest.Abs("a/x")}}.Normalized()
 	if err != nil {
 		t.Fatalf("Normalized: %v", err)
 	}
-	b, err := policy.Files{Read: []string{"/a", "/b"}, Write: []string{"/a/x", "/a/b"}}.Normalized()
+	b, err := policy.Files{Read: []string{pathtest.Abs("a"), pathtest.Abs("b")}, Write: []string{pathtest.Abs("a/x"), pathtest.Abs("a/b")}}.Normalized()
 	if err != nil {
 		t.Fatalf("Normalized: %v", err)
 	}
@@ -60,9 +61,9 @@ func TestFilesNormalizedSortsForOneSpelling(t *testing.T) {
 // rather than a best effort.
 func TestFilesRejectsUnenforceable(t *testing.T) {
 	for name, files := range map[string]policy.Files{
-		"readonly with write":       {ReadOnly: true, Write: []string{"/srv/out"}},
-		"narrowed read, open write": {Read: []string{"/srv/w"}},
-		"write outside read":        {Read: []string{"/srv/w"}, Write: []string{"/tmp"}},
+		"readonly with write":       {ReadOnly: true, Write: []string{pathtest.Abs("srv/out")}},
+		"narrowed read, open write": {Read: []string{pathtest.Abs("srv/w")}},
+		"write outside read":        {Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("tmp")}},
 		"relative root":             {Read: []string{"srv/w"}, Write: []string{"srv/w"}},
 		"glob root":                 {Read: []string{"/srv/*"}},
 		"empty root":                {Read: []string{""}},
@@ -80,9 +81,9 @@ func TestFilesAcceptsTheDocumentedCombinations(t *testing.T) {
 	for name, files := range map[string]policy.Files{
 		"fully open":           {},
 		"read only everywhere": {ReadOnly: true},
-		"work directory pair":  {Read: []string{"/srv/w"}, Write: []string{"/srv/w"}},
-		"write only a subtree": {Read: []string{"/srv/w"}, Write: []string{"/srv/w/out"}},
-		"read only a subtree":  {Read: []string{"/srv/w"}, ReadOnly: true},
+		"work directory pair":  {Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("srv/w")}},
+		"write only a subtree": {Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("srv/w/out")}},
+		"read only a subtree":  {Read: []string{pathtest.Abs("srv/w")}, ReadOnly: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := files.Normalized(); err != nil {
@@ -103,10 +104,10 @@ func TestFilesUnrestrictedHandsTheBoundaryItsShape(t *testing.T) {
 // refuses the input or returns a form that is already normal (idempotent), which
 // is what makes the digest stable.
 func FuzzFilesNormalized(f *testing.F) {
-	f.Add("/a", "/a/b", "", "")
-	f.Add("/", "/srv", "", "")
-	f.Add("rel", "/srv", "*", "")
-	f.Add("/a/b", "/a", "", "")
+	f.Add(pathtest.Abs("a"), pathtest.Abs("a/b"), "", "")
+	f.Add(pathtest.Roots(), pathtest.Abs("srv"), "", "")
+	f.Add("rel", pathtest.Abs("srv"), "*", "")
+	f.Add(pathtest.Abs("a/b"), pathtest.Abs("a"), "", "")
 
 	f.Fuzz(func(t *testing.T, read, write, extra, _ string) {
 		files := policy.Files{
@@ -171,8 +172,8 @@ func TestRestrictsWrites(t *testing.T) {
 	}{
 		"nothing stated":  {policy.Files{}, false},
 		"read only":       {policy.Files{ReadOnly: true}, true},
-		"write set":       {policy.Files{Read: []string{"/srv"}, Write: []string{"/srv"}}, true},
-		"read, unlimited": {policy.Files{Read: []string{"/srv"}}, false},
+		"write set":       {policy.Files{Read: []string{pathtest.Abs("srv")}, Write: []string{pathtest.Abs("srv")}}, true},
+		"read, unlimited": {policy.Files{Read: []string{pathtest.Abs("srv")}}, false},
 	} {
 		if got := tc.files.RestrictsWrites(); got != tc.want {
 			t.Fatalf("%s: RestrictsWrites = %v, want %v", name, got, tc.want)
