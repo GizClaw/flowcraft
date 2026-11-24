@@ -1,10 +1,9 @@
 // Package simtools contributes the demo's application-owned simulated tools.
 //
-// The tool implementations are Go values by design: the native deployment
-// document declares policy (which built-in sets are wired, which tools the model
-// may call), and a host adds its own tools as a [tool.Source]. There is no
-// factory, no resource registry and no deployment name to keep in sync — the
-// source is handed to the runtime the host builds.
+// The tool implementations are Go values by design: the process document declares which sources are
+// wired, the agent document declares which tools the model may call, and the application registers
+// this source with `deploy.Impls.ToolSource`. There is no factory and no deployment name to keep in
+// sync — the source is registered once, in the binary's table.
 package simtools
 
 import (
@@ -104,7 +103,11 @@ type simulatedTool struct {
 
 func (t *simulatedTool) Definition() message.ToolDefinition { return t.definition }
 
-func (t *simulatedTool) Execute(_ context.Context, arguments string) (message.Content, error) {
+// Needs declares nothing: a simulated tool reads no session capability. It is the smallest possible
+// example of an application-owned source, which is what this package is here to be.
+func (*simulatedTool) Needs() []tool.Need { return nil }
+
+func (t *simulatedTool) Execute(_ context.Context, _ tool.Binding, arguments string) (message.Content, error) {
 	if t.count != nil {
 		t.count.Add(1)
 	}

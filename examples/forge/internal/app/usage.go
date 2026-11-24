@@ -1,6 +1,6 @@
 package app
 
-import "github.com/GizClaw/flowcraft/core/inference/usage"
+import "github.com/GizClaw/flowcraft/core/outcome"
 
 // Usage is the token accounting of one turn.
 //
@@ -18,7 +18,7 @@ type Usage struct {
 }
 
 // Add folds one round's report in.
-func (u *Usage) Add(report usage.Usage) {
+func (u *Usage) Add(report outcome.Usage) {
 	u.InputTokens += report.InputTokens
 	u.OutputTokens += report.OutputTokens
 	u.Calls++

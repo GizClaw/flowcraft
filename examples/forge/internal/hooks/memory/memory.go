@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"strings"
 
@@ -36,42 +37,16 @@ type Settings struct {
 	Keep int `json:"keep"`
 }
 
-// Kind returns the hook kind: one seat's memory, read before a turn and written
-// after it.
-func Kind() deploy.HookKind {
-	return deploy.HookKind{
-		Name: KindName,
-		Decode: func(settings json.RawMessage) (any, error) {
-			return decode(settings)
-		},
-		Build: build,
-	}
+// Impl is the hook's registration: one seat's memory, read before a turn and written after it.
+//
+// It is a factory like every other implementation: the settings are the document's, the turn facts
+// arrive per turn, and nothing about the deployment is captured here.
+func Impl() deploy.Factory {
+	return deploy.Impl(KindName, build)
 }
 
-// Defaults the settings fill in.
-const (
-	defaultDir  = ".forge/memory"
-	defaultKeep = 12
-)
-
-func decode(raw json.RawMessage) (Settings, error) {
-	var settings Settings
-	if len(strings.TrimSpace(string(raw))) > 0 {
-		if err := json.Unmarshal(raw, &settings); err != nil {
-			return Settings{}, err
-		}
-	}
-	if settings.Dir == "" {
-		settings.Dir = defaultDir
-	}
-	if settings.Keep <= 0 {
-		settings.Keep = defaultKeep
-	}
-	if path.IsAbs(settings.Dir) || strings.HasPrefix(settings.Dir, "..") {
-		return Settings{}, fmt.Errorf("dir %q must be a workspace-relative path", settings.Dir)
-	}
-	return settings, nil
-}
+// defaultKeep is how many past lines are replayed when the document names no number.
+const defaultKeep = 12
 
 // entry is one remembered exchange: what the seat was asked and what it said.
 type entry struct {
@@ -79,21 +54,21 @@ type entry struct {
 	Said  string `json:"said"`
 }
 
-func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
-	settings, err := decode(deps.Spec.Settings)
-	if err != nil {
-		return agent.Hooks{}, errdefs.Validationf("seat-memory: %v", err)
-	}
-	if deps.Runtime == nil || len(deps.Runtime.Files().Writable()) == 0 {
+func build(settings Settings) (agent.Hooks, error) {
+	if !path.IsAbs(settings.Dir) {
 		return agent.Hooks{}, errdefs.Validationf(
-			"seat-memory: agent %q has no writable runtime, so there is nowhere to keep a memory",
-			deps.Agent)
+			"seat-memory: dir %q must be absolute (the document resolves ${workspace:root})", settings.Dir)
 	}
-	seat := seatOf(deps.Agent)
+	// The defaults are filled here rather than in a decoder of their own: the registration's Plan already
+	// turned the document into this struct, so this is the only place that sees the written form.
+	if settings.Keep <= 0 {
+		settings.Keep = defaultKeep
+	}
 	return agent.Hooks{
-		BeforeTurn: func(ctx context.Context, turn *agent.Turn) error {
+		BeforeTurn: func(ctx context.Context, turn *agent.TurnInfo) error {
 			game := rootSession(turn.SessionID)
-			if gameOf(turn.Message) == "" || game == "" {
+			seat := seatOf(turn.Agent)
+			if gameOf(turn.Message) == "" || game == "" || seat == "" {
 				// A brief without a game id is not this hook's business: better to
 				// answer without memory than to read another game's page.
 				return nil
@@ -104,7 +79,7 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 				// "who were the wolves?" into "who do we knife?".
 				return nil
 			}
-			kept, err := load(ctx, deps, settings, game, seat)
+			kept, err := load(settings, game, seat)
 			if err != nil {
 				return fmt.Errorf("seat-memory: %s: %w", turn.Agent, err)
 			}
@@ -114,16 +89,20 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 			turn.Message = withRecap(turn.Message, kept)
 			return nil
 		},
-		AfterTurn: func(ctx context.Context, turn agent.Turn, result agent.Result) error {
+		AfterTurn: func(ctx context.Context, turn agent.TurnInfo, result agent.TurnOutcome) error {
 			game := rootSession(turn.SessionID)
 			if gameOf(turn.Message) == "" || game == "" || kindOf(turn.Message) == kindPostgame {
 				return nil
 			}
-			said := strings.TrimSpace(result.Content.Text())
+			said := strings.TrimSpace(turnSaid(result))
 			if said == "" {
 				return nil
 			}
-			kept, err := load(ctx, deps, settings, game, seat)
+			seat := seatOf(turn.Agent)
+			if seat == "" {
+				return nil
+			}
+			kept, err := load(settings, game, seat)
 			if err != nil {
 				return err
 			}
@@ -131,7 +110,7 @@ func build(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
 			if len(kept) > settings.Keep {
 				kept = kept[len(kept)-settings.Keep:]
 			}
-			return save(ctx, deps, settings, game, seat, kept)
+			return save(settings, game, seat, kept)
 		},
 	}, nil
 }
@@ -216,8 +195,8 @@ func withRecap(msg message.Message, kept []entry) message.Message {
 // recapHeader marks the injected section, so it can be told apart from the brief.
 const recapHeader = "你的记忆（你之前在这个座位上说过的话）："
 
-func load(ctx context.Context, deps deploy.HookDeps, settings Settings, game, seat string) ([]entry, error) {
-	body, err := deps.Runtime.Files().Read(ctx, file(settings, game, seat, deps))
+func load(settings Settings, game, seat string) ([]entry, error) {
+	body, err := os.ReadFile(file(settings, game, seat))
 	if err != nil {
 		// Nothing remembered yet is the ordinary first turn, not a failure. fsx
 		// reports the missing file as the OS does, so the check is the OS one.
@@ -233,20 +212,22 @@ func load(ctx context.Context, deps deploy.HookDeps, settings Settings, game, se
 	return kept, nil
 }
 
-func save(ctx context.Context, deps deploy.HookDeps, settings Settings, game, seat string, kept []entry) error {
+func save(settings Settings, game, seat string, kept []entry) error {
 	body, err := json.Marshal(kept)
 	if err != nil {
 		return fmt.Errorf("encode: %w", err)
 	}
-	dir := path.Join(deps.Runtime.Files().Writable()[0], settings.Dir, game)
-	// MkdirAll semantics: an existing directory is the ordinary case.
-	if err := deps.Runtime.Files().Mkdir(ctx, dir); err != nil {
+	if err := os.MkdirAll(path.Join(settings.Dir, game), 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
-	return deps.Runtime.Files().Write(ctx, file(settings, game, seat, deps), body)
+	return os.WriteFile(file(settings, game, seat), body, 0o644)
 }
 
 // file is the absolute path of one seat's page in one game.
-func file(settings Settings, game, seat string, deps deploy.HookDeps) string {
-	return path.Join(deps.Runtime.Files().Writable()[0], settings.Dir, game, "seat_"+seat+".json")
+func file(settings Settings, game, seat string) string {
+	return path.Join(settings.Dir, game, "seat_"+seat+".json")
 }
+
+// turnSaid is what the seat answered, as the outcome carries it: a hook sees the decision, not the
+// transcript, so the answer is read from the events the turn emitted.
+func turnSaid(outcome agent.TurnOutcome) string { return outcome.Content.Text() }

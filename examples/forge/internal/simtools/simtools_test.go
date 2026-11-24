@@ -32,7 +32,7 @@ func TestExecuteCountsAndEchoesArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("play_music is not contributed")
 	}
-	content, err := item.Execute(context.Background(), `{"title":"海阔天空"}`)
+	content, err := item.Execute(context.Background(), tool.Binding{}, `{"title":"海阔天空"}`)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestExecuteToleratesMalformedArguments(t *testing.T) {
 	if !ok {
 		t.Fatal("stop_playback is not contributed")
 	}
-	content, err := item.Execute(context.Background(), "{not json")
+	content, err := item.Execute(context.Background(), tool.Binding{}, "{not json")
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
