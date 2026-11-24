@@ -35,7 +35,8 @@ func startConnect(
 	transport any,
 ) (context.Context, trace.Span, string) {
 	label := fmt.Sprintf("%T", transport)
-	ctx, span := telemetry.TracerWithSuffix("mcp").Start(ctx, "mcp.connect",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("mcp"), "mcp.connect",
+		telemetry.TraceCall,
 		trace.WithAttributes(
 			attribute.String(attrMCPServer, server),
 			attribute.String(attrMCPTransport, label),

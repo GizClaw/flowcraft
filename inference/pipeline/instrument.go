@@ -180,7 +180,11 @@ func startCall[Req, Res any](
 	}
 	operation := obs.operation(request)
 	ref := obs.model(request)
-	ctx, span := telemetry.TracerWithSuffix("inference").Start(ctx, obs.spanName,
+	// The floor is the level's own promise: "call" is the least level at which a per-call
+	// span exists at all. Below it the call still runs, still logs and still feeds the
+	// metrics; only the span is withheld.
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("inference"), obs.spanName,
+		telemetry.TraceCall,
 		trace.WithAttributes(
 			attribute.String(telemetry.AttrGenAIOperationName, operation),
 			attribute.String(telemetry.AttrGenAIProviderName, providerID),

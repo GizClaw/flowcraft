@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
@@ -58,7 +59,7 @@ func hostFor(t *testing.T, program func() (agent.Program, error), opts ...Agents
 		Backends: []deploy.PlannedBackend{
 			boundBackend("local", backend),
 		},
-		Observability: deploy.Observability{Trace: agent.TraceCall},
+		Observability: deploy.Observability{Trace: telemetry.TraceCall},
 	}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -293,5 +294,31 @@ func TestBothSpansOfATurnReadOneClassification(t *testing.T) {
 		if got := attrs["error.kind"].String(); got != string(agent.FailureModel) {
 			t.Fatalf("%s: error.kind = %q, want %q", name, got, agent.FailureModel)
 		}
+	}
+}
+
+// TestTheRunSinkIsWiredFromTheHostOption is the seam a host uses to feed a dataset, a billing line or
+// an evaluation corpus: the option reaches every turn, and the record it receives is the one the turn
+// decorator built from the same fold the span and the metrics read.
+func TestTheRunSinkIsWiredFromTheHostOption(t *testing.T) {
+	var got []agent.RunRecord
+	agents, _ := seenHost(t, WithIdentity("acme", "authority-1"),
+		WithRunSink(func(record agent.RunRecord) { got = append(got, record) }))
+
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("run records = %d, want 1", len(got))
+	}
+	record := got[0]
+	if record.Agent != "referee" || record.SessionID != "s1" || record.TaskID != "s1" {
+		t.Fatalf("record identity = %+v", record)
+	}
+	if record.TenantID != "acme" {
+		t.Fatalf("tenant = %q, want the host's", record.TenantID)
+	}
+	if record.State != agent.StateCompleted {
+		t.Fatalf("state = %q, want completed", record.State)
 	}
 }

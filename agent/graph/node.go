@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
@@ -49,7 +50,7 @@ type Invoke struct {
 	// Trace is how much of the run is traced. A node that computes input
 	// digests for the checkpoint only does so when this allows TraceNode or
 	// Replay is on.
-	Trace agent.TraceLevel
+	Trace telemetry.TraceLevel
 	// Bodies keeps the bytes of a recorded response. It is a retention decision,
 	// not a level: a recorded call without them is a call that can be attributed
 	// but not replayed.

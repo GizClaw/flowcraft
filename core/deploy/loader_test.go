@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -85,7 +86,7 @@ func impls(b *builds) *deploy.Impls {
 		Middleware(deploy.MiddlewareImpl("telemetry", func(_ middlewareSettings, _ tool.Catalog) (tool.Middleware, error) {
 			b.middleware++
 			return func(next tool.Dispatch) tool.Dispatch { return next }, nil
-		}).AtTrace(agent.TraceCall)).
+		}).AtTrace(telemetry.TraceCall)).
 		Hook(deploy.Impl("audit", func(s hookSettings) (agent.Hooks, error) {
 			b.hooks++
 			b.seenHook = s
@@ -271,7 +272,7 @@ func TestDeploymentResolvesAgainstCapabilities(t *testing.T) {
 	if deployment.Name != "helper" {
 		t.Fatalf("name = %q", deployment.Name)
 	}
-	if plan.Observability.Trace != agent.TraceCall || plan.Observability.Bodies {
+	if plan.Observability.Trace != telemetry.TraceCall || plan.Observability.Bodies {
 		t.Fatalf("observability = %+v, want the process document's", plan.Observability)
 	}
 	if deployment.Grant.Sandbox != "local" {
@@ -829,7 +830,7 @@ observability: { trace: node, bodies: true }
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	if plan.Observability.Trace != agent.TraceNode || !plan.Observability.Bodies {
+	if plan.Observability.Trace != telemetry.TraceNode || !plan.Observability.Bodies {
 		t.Fatalf("observability = %+v, want the document's", plan.Observability)
 	}
 }

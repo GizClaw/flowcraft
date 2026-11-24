@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -72,6 +73,20 @@ type Steerer interface {
 	Unsteer(id SteerID) error
 }
 
+// Rounder is the optional capability of a driver that can say how far a task has got.
+//
+// The turn decorator writes the final checkpoint, and the projection's Round is the one
+// column a reader uses to compare two deployments. A driver that steps (the graph) already
+// writes its own projection and reports the same number; a driver that only observes a peer
+// (a proxy) has nothing else to report, and leaving the field at zero made "how far did this
+// task get" unanswerable for it.
+type Rounder interface {
+	// Round returns how far the task has got: the driver's own step count, or the number
+	// of progress reports it has folded. A driver with nothing to say returns zero, which
+	// leaves the projection's value alone.
+	Round() int
+}
+
 // Canceller is the optional capability of a driver that must tell someone else about a
 // cancellation.
 //
@@ -121,8 +136,22 @@ type Request struct {
 	// Hooks are the host's policy at the turn boundaries.
 	Hooks Hooks
 	// Trace is how much of this turn to record.
-	Trace TraceLevel
+	Trace telemetry.TraceLevel
 	// Bodies keeps the bytes of each model response, which is what a replay answers from. It is a
 	// retention decision rather than a level: the answer is the user's content.
 	Bodies bool
+	// Manifest is the version combination this deployment runs, assembled by the host at
+	// install time.
+	//
+	// It is a value rather than a string so the two consumers agree: the turn writes its id
+	// into the run record, and a driver writes the same manifest into its checkpoint. A host
+	// that computed an id for the record and let the driver name the manifest itself would be
+	// recording two answers to one question.
+	Manifest Manifest
+	// OnRun receives one finished run, when the host installed a sink.
+	//
+	// It is called once per turn, after the terminal checkpoint is durable and before the
+	// after-turn hooks, so a sink and a hook see the same answer. Nil keeps the run
+	// in-process only, which is what an embedded caller that reads its own metrics wants.
+	OnRun func(RunRecord)
 }

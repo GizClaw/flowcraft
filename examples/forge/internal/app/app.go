@@ -7,8 +7,6 @@ package app
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -179,7 +177,10 @@ func open(ctx context.Context, dir string, impls *deploy.Impls, sim *simtools.So
 	// The store is the host's, not a decoration around it: the turns it writes are what the next turn
 	// continues from, and the fingerprint is what stops a checkpoint written by a different deployment
 	// set from being resumed as if it were this one.
-	agents := host.NewAgents(res, host.WithStore(store), host.WithFingerprint(fingerprintOf(specs)))
+	agents := host.NewAgents(res,
+		host.WithStore(store),
+		host.WithFingerprint(deploy.Fingerprint(specs)),
+		host.WithHarness(forgeHarness))
 	if err := agents.Add(specs...); err != nil {
 		_ = res.Close()
 		_ = store.Close()
@@ -607,20 +608,4 @@ func describe(dir string, spec deploy.Deployment, sim *simtools.Source, models [
 		info.Tools = append(info.Tools, sim.Names()...)
 	}
 	return info
-}
-
-// fingerprintOf names the deployment set this workspace was opened from, so a checkpoint written under
-// one set of documents is not resumed as if it were another: the same agents, in the same order, over
-// the same programmes and grants.
-func fingerprintOf(specs []deploy.Deployment) agent.Fingerprint {
-	hash := sha256.New()
-	for _, spec := range specs {
-		hash.Write([]byte(spec.Name))
-		hash.Write([]byte(spec.Program.Impl))
-		hash.Write([]byte(spec.Grant.Digest()))
-		for _, hook := range spec.Hooks {
-			hash.Write([]byte(hook.Impl))
-		}
-	}
-	return agent.Fingerprint(hex.EncodeToString(hash.Sum(nil)))
 }

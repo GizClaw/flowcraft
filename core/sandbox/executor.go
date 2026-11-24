@@ -54,7 +54,8 @@ func Exec(
 		return nil, errdefs.Validationf("sandbox: nil starter")
 	}
 
-	ctx, span := telemetry.TracerWithSuffix("sandbox").Start(ctx, "sandbox.exec",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("sandbox"), "sandbox.exec",
+		telemetry.TraceCall,
 		trace.WithAttributes(
 			telemetry.String(telemetry.AttrSandboxRunner, fmt.Sprintf("%T", starter)),
 		))

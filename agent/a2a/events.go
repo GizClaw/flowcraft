@@ -52,7 +52,10 @@ func (d *driver) handle(event a2a.Event, yield func(agent.Event, error) bool) (b
 // adopt keeps the peer's identity as the stream reports it.
 func (d *driver) adopt(taskID, contextID string) {
 	d.mu.Lock()
-	if taskID != "" {
+	if taskID != "" && taskID != d.remote.TaskID {
+		// A new peer task for the same conversation: progress belongs to the task, not the
+		// session, so the counter restarts.
+		d.round = 0
 		d.remote.TaskID = taskID
 		d.remote.LastTaskID = taskID
 	}

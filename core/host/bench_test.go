@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
@@ -40,7 +41,7 @@ func benchPlan() deploy.ProcessPlan {
 	backend := &boundary{log: &journal{}, filesystemBounds: true}
 	plan.Backends = []deploy.PlannedBackend{boundBackend("local", backend)}
 	plan.Tools = []deploy.PlannedToolSource{plannedSource("workspace")}
-	plan.Observability = deploy.Observability{Trace: agent.TraceNone}
+	plan.Observability = deploy.Observability{Trace: telemetry.TraceNone}
 	return plan
 }
 

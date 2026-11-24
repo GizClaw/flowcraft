@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // benchKind writes one boolean, so a benchmark measures the engine rather than a
@@ -143,11 +144,11 @@ func BenchmarkRunFanOut(b *testing.B) {
 func BenchmarkRunOneStepTrace(b *testing.B) {
 	for _, level := range []struct {
 		name  string
-		level agent.TraceLevel
+		level telemetry.TraceLevel
 	}{
-		{"off", agent.TraceNone},
-		{"run", agent.TraceRun},
-		{"node", agent.TraceNode},
+		{"off", telemetry.TraceNone},
+		{"run", telemetry.TraceRun},
+		{"node", telemetry.TraceNode},
 	} {
 		b.Run(level.name, func(b *testing.B) {
 			g := benchmarkGraph(b, benchDoc, benchKind{})

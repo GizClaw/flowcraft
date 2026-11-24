@@ -80,6 +80,38 @@ func recordDenial(ctx context.Context, check policy.Check, agentName string) {
 	}
 }
 
+// Cancel outcomes, as the host.cancels series labels them.
+const (
+	// cancelForwarded is a cancel the driver's peer was also told about.
+	cancelForwarded = "forwarded"
+	// cancelContext is a cancel that only stopped the local turn.
+	cancelContext = "context"
+	// cancelIdle is a cancel that found no turn in flight.
+	cancelIdle = "idle"
+	// cancelNotFound is a cancel addressed to a session that is not open.
+	cancelNotFound = "not_found"
+	// cancelRefused is a cancel the driver reported as failed.
+	cancelRefused = "refused"
+)
+
+// recordCancel counts one operator cancellation by what it reached.
+//
+// It is a metric rather than only a span because the interesting signal is a rate: a
+// deployment whose cancels keep arriving idle is racing its own turn loop, and a
+// deployment that cancels often is one whose limits are wrong. A span answers "what
+// happened to this one".
+func recordCancel(ctx context.Context, agentName, outcome string) {
+	meter := telemetry.MeterWithSuffix("host")
+	if counter, err := meter.Int64Counter("host.cancels",
+		metric.WithDescription("Operator cancellations by outcome")); err == nil {
+		attrs := []attribute.KeyValue{attribute.String("outcome", outcome)}
+		if agentName != "" {
+			attrs = append(attrs, attribute.String(identity.AttrAgentName, agentName))
+		}
+		counter.Add(ctx, 1, metric.WithAttributes(attrs...))
+	}
+}
+
 // recordEvicted counts the sessions a limit closed rather than a caller.
 func recordEvicted(ctx context.Context, agentName string, count int) {
 	if count <= 0 {

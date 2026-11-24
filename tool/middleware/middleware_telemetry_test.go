@@ -53,6 +53,42 @@ func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 	}
 }
 
+// TestTelemetry_FollowsTheTraceLevel is the level's promise at the tool layer: below "call" the
+// dispatch still runs and still feeds the metrics, and only the span is withheld. The level is
+// read from the context the turn attached — the middleware is built once for the process, so it
+// cannot hold one turn's answer itself.
+func TestTelemetry_FollowsTheTraceLevel(t *testing.T) {
+	for _, tc := range []struct {
+		level telemetry.TraceLevel
+		want  int
+	}{
+		{telemetry.TraceNone, 0},
+		{telemetry.TraceRun, 0},
+		{telemetry.TraceCall, 1},
+		{telemetry.TraceNode, 1},
+	} {
+		t.Run(tc.level.String(), func(t *testing.T) {
+			rec := installTelemetryTestTracer(t)
+			meter := telemetrytest.Meters(t)
+			exec := dispatch.New(catalogWith(echoTool("echo")), Telemetry())
+			ctx := telemetry.WithTrace(context.Background(), tc.level)
+			res := exec.Execute(ctx, tooltest.Binding(), call("echo"))
+			if res.IsError {
+				t.Fatalf("execute = %q, want success", res.Content.Text())
+			}
+			if got := len(rec.Ended()); got != tc.want {
+				t.Fatalf("ended spans = %d, want %d", got, tc.want)
+			}
+			// The call is counted either way: a level decides how much evidence a run
+			// leaves, not whether the run is measured.
+			count, ok := meter.Collect(t).Sum("executions.total")
+			if !ok || count != 1 {
+				t.Fatalf("executions.total = %v, %v at level %s; want 1", count, ok, tc.level)
+			}
+		})
+	}
+}
+
 // TestTelemetry_CarriesRuntimeIdentity pins the correlation channel: an identity
 // that travels in the context reaches the span, so a trace can be filtered by the
 // runtime instance that produced it. The middleware never learns what a runtime

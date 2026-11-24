@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
@@ -385,7 +386,7 @@ func (l *Loader) planProgram(entry programDocument) (PlannedProgram, error) {
 // planned is the family-neutral result of one resolution.
 type planned struct {
 	impl  string
-	trace agent.TraceLevel
+	trace telemetry.TraceLevel
 	make  func() (any, error)
 }
 

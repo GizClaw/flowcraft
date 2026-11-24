@@ -166,27 +166,6 @@ func TestMemStoreTruncateKeepsTheNewest(t *testing.T) {
 	}
 }
 
-func TestParseTraceLevel(t *testing.T) {
-	for name, want := range map[string]agent.TraceLevel{
-		"":     agent.TraceNone,
-		"none": agent.TraceNone,
-		"run":  agent.TraceRun,
-		"call": agent.TraceCall,
-		"node": agent.TraceNode,
-	} {
-		got, err := agent.ParseTraceLevel(name)
-		if err != nil || got != want {
-			t.Fatalf("ParseTraceLevel(%q) = %v, %v", name, got, err)
-		}
-	}
-	if _, err := agent.ParseTraceLevel("everything"); err == nil {
-		t.Fatal("an unknown level was accepted")
-	}
-	if agent.TraceCall.String() != "call" {
-		t.Fatalf("String = %q", agent.TraceCall.String())
-	}
-}
-
 // TestFailureBoxIsFirstWins mirrors the tool layer's rule: the innermost stage is closest
 // to the cause, so an outer wrapper must not rewrite it.
 func TestFailureBoxIsFirstWins(t *testing.T) {

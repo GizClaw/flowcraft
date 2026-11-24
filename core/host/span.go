@@ -17,6 +17,9 @@ import (
 const (
 	spanSessionOpen = "host.session.open"
 	spanRun         = "host.run"
+	// spanCancel is the operator's footprint: the cancel runs on the caller's goroutine, so
+	// it cannot be an event on the turn span it stops.
+	spanCancel = "host.cancel"
 )
 
 // startSessionSpan opens the span for one conversation's boundary.

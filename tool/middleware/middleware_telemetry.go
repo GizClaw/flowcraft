@@ -42,7 +42,8 @@ const (
 func Telemetry() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
-			ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, spanToolExecute,
+			ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("tool"), spanToolExecute,
+				telemetry.TraceCall,
 				trace.WithAttributes(
 					attribute.String(telemetry.AttrToolName, call.Name),
 					attribute.String(telemetry.AttrToolCallID, call.ID),

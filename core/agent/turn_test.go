@@ -11,9 +11,13 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/identity/inject"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -469,12 +473,12 @@ func TestRunTurnDeliversADriverErrorOnce(t *testing.T) {
 // span for it — and one that records a run gets exactly one.
 func TestTheSaveSpanFollowsTheTraceLevel(t *testing.T) {
 	for _, tc := range []struct {
-		level agent.TraceLevel
+		level telemetry.TraceLevel
 		want  int
 	}{
-		{agent.TraceNone, 0},
-		{agent.TraceRun, 1},
-		{agent.TraceCall, 1},
+		{telemetry.TraceNone, 0},
+		{telemetry.TraceRun, 1},
+		{telemetry.TraceCall, 1},
 	} {
 		t.Run(tc.level.String(), func(t *testing.T) {
 			recorder := telemetrytest.New(t)
@@ -517,5 +521,236 @@ func TestAnAppliedInterruptionIsASpanEvent(t *testing.T) {
 	}
 	if got := attrs["agent.boundary"].AsInt64(); got != 2 {
 		t.Fatalf("boundary = %d, want 2", got)
+	}
+}
+
+// TestTheTranscriptAndArtifactsReachTheLog is what makes the event log readable without the
+// driver: the two messages every turn has, and the artifacts it produced, are written by the
+// decorator, so a proxy that keeps no transcript of its own still leaves one.
+func TestTheTranscriptAndArtifactsReachTheLog(t *testing.T) {
+	store := agenttest.NewMemStore()
+	req := request(store)
+	req.Bodies = true
+	driver := agenttest.NewScripted(
+		agent.Text{Text: "here it is"},
+		agent.ArtifactWritten{Artifact: agent.Artifact{ID: "a1", Blob: "sha256:aa", MediaType: "image/png"}},
+		agenttest.Completed(),
+	).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	kinds := map[string]int{}
+	events, err := store.Events(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		kinds[event.Kind]++
+	}
+	if kinds["message"] != 2 {
+		t.Fatalf("message records = %d, want the input and the answer; kinds = %v", kinds["message"], kinds)
+	}
+	if kinds["artifact"] != 1 {
+		t.Fatalf("artifact records = %d, want 1", kinds["artifact"])
+	}
+
+	saved, err := store.Load(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(saved.Task.Artifacts) != 1 || saved.Task.Artifacts[0].Blob != "sha256:aa" {
+		t.Fatalf("projection artifacts = %+v, want the produced blob", saved.Task.Artifacts)
+	}
+}
+
+// TestTheAnswerIsKeptOnlyWhenBodiesAre keeps one retention decision in one place: the flag that
+// says "we keep the model's answer" governs the answer's record too, instead of a second, quieter
+// switch deciding it again.
+func TestTheAnswerIsKeptOnlyWhenBodiesAre(t *testing.T) {
+	store := agenttest.NewMemStore()
+	driver := agenttest.NewScripted(
+		agent.Text{Text: "an answer"},
+		agenttest.Completed(),
+	).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), request(store), driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	events, err := store.Events(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	for _, event := range events {
+		if event.Kind != "message" {
+			continue
+		}
+		var msg message.Message
+		if err := json.Unmarshal(event.Payload, &msg); err != nil {
+			t.Fatalf("decode message record: %v", err)
+		}
+		if msg.Role != message.RoleUser {
+			t.Fatalf("recorded a %q message with bodies off; only the input belongs there", msg.Role)
+		}
+	}
+}
+
+// TestTheSinkSeesTheFinishedRun is the join key's producer: one record per turn, carrying the ids
+// that name the span, the state, the classification and the usage totals from the same fold the
+// span and the metrics read.
+func TestTheSinkSeesTheFinishedRun(t *testing.T) {
+	recorder := telemetrytest.New(t)
+	var got []agent.RunRecord
+	req := request(agenttest.NewMemStore())
+	req.Trace = telemetry.TraceCall
+	req.OnRun = func(record agent.RunRecord) { got = append(got, record) }
+	driver := agenttest.NewScripted(
+		agent.UsageEvent{Usage: outcome.Usage{InputTokens: 11, OutputTokens: 5}},
+		agenttest.Completed(),
+	).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("sink calls = %d, want 1", len(got))
+	}
+	record := got[0]
+	// The session id comes from the binding, which is what the host bound the tools to.
+	if record.Agent != "helper" || record.SessionID != req.Binding.Session.ID() || record.TaskID != "t1" {
+		t.Fatalf("record identity = %+v", record)
+	}
+	if record.TenantID != "acme" {
+		t.Fatalf("tenant = %q, want the attached identity's", record.TenantID)
+	}
+	if record.State != agent.StateCompleted || record.ErrorKind != "" {
+		t.Fatalf("state = %q, kind = %q", record.State, record.ErrorKind)
+	}
+	if record.Usage.InputTokens != 11 || record.Usage.OutputTokens != 5 {
+		t.Fatalf("usage = %+v, want the folded totals", record.Usage)
+	}
+	if record.StartedAt.IsZero() || record.LatencyMs < 0 {
+		t.Fatalf("window = %v + %dms", record.StartedAt, record.LatencyMs)
+	}
+	turn := recorder.RequireNamed(t, "agent.turn")
+	if record.TraceID != turn.SpanContext().TraceID().String() {
+		t.Fatalf("trace id = %q, want the turn's", record.TraceID)
+	}
+	if record.SpanID != turn.SpanContext().SpanID().String() {
+		t.Fatalf("span id = %q, want the turn's", record.SpanID)
+	}
+}
+
+// TestTheSinkSeesAFailedRun keeps the sink on every path: a turn that failed is exactly the run a
+// dataset wants, and "no record" would make the failures the one thing missing from the corpus.
+func TestTheSinkSeesAFailedRun(t *testing.T) {
+	var got []agent.RunRecord
+	req := request(agenttest.NewMemStore())
+	req.OnRun = func(record agent.RunRecord) { got = append(got, record) }
+	driver := agenttest.NewScripted(agenttest.Completed()).FailAt(context.DeadlineExceeded).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err == nil {
+		t.Fatal("the turn did not fail")
+	}
+	if len(got) != 1 {
+		t.Fatalf("sink calls = %d, want 1", len(got))
+	}
+	if got[0].ErrorKind != string(agent.FailureTimeout) {
+		t.Fatalf("kind = %q, want %q", got[0].ErrorKind, agent.FailureTimeout)
+	}
+}
+
+// TestTheRoundComesFromTheDriver is why Rounder exists: a driver that does not step has no other
+// way to say how far its task got, and a projection stuck at zero makes two deployments
+// incomparable on the one column a list view shows.
+func TestTheRoundComesFromTheDriver(t *testing.T) {
+	store := agenttest.NewMemStore()
+	req := request(store)
+	driver := &roundingDriver{ScriptedDriver: agenttest.NewScripted(agenttest.Completed()).OpenDriver(), round: 7}
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	saved, err := store.Load(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if saved.Task.Round != 7 {
+		t.Fatalf("round = %d, want the driver's 7", saved.Task.Round)
+	}
+}
+
+// roundingDriver is a driver that reports progress it did not take itself, which is the shape a
+// proxy has.
+type roundingDriver struct {
+	*agenttest.ScriptedDriver
+	round int
+}
+
+func (d *roundingDriver) Round() int { return d.round }
+
+// TestAStoppedTurnSaysSoOnItsSpan is the turn's half of a cancellation: the operator's action has
+// a span of its own (the host's), and the span that was stopped records why it ended.
+func TestAStoppedTurnSaysSoOnItsSpan(t *testing.T) {
+	recorder := telemetrytest.New(t)
+	driver := agenttest.NewScripted(
+		agent.Text{Text: "partial"},
+		agent.Text{Text: "more"},
+		agenttest.Completed(),
+	).OpenDriver()
+	seq := agent.RunTurn(sessionCtx(t), request(nil), driver)
+	// One event, then stop: the consumer's decision is a cancellation, not a failure.
+	seq(func(agent.Event, error) bool { return false })
+
+	turn := recorder.RequireNamed(t, "agent.turn")
+	var found bool
+	for _, event := range turn.Events() {
+		if event.Name == "agent.canceled" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the turn span recorded no cancellation; events = %+v", turn.Events())
+	}
+}
+
+// TestAnInlinePayloadStaysOutOfTheLog is the record's budget: an image the user pasted is bytes,
+// not a fact, and a log that inlined it on every turn would be a transcript dump. A URL-referenced
+// message is a reference and is written like any other.
+func TestAnInlinePayloadStaysOutOfTheLog(t *testing.T) {
+	image, err := media.NewImageBytes([]byte("not-really-a-png"), "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	inline := message.NewTextMessage(message.RoleUser, "look")
+	inline.Content.Parts = append(inline.Content.Parts, message.ImagePart{Source: image})
+
+	for _, tc := range []struct {
+		name    string
+		message message.Message
+		want    int
+	}{
+		{"text", agenttest.UserMessage("hello"), 1},
+		{"inline media", inline, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := agenttest.NewMemStore()
+			req := request(store)
+			req.Input = tc.message
+			driver := agenttest.NewScripted(agenttest.Completed()).OpenDriver()
+			if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+				t.Fatalf("RunTurn: %v", err)
+			}
+			events, err := store.Events(context.Background(), "t1")
+			if err != nil {
+				t.Fatalf("Events: %v", err)
+			}
+			count := 0
+			for _, event := range events {
+				if event.Kind == "message" {
+					count++
+				}
+			}
+			if count != tc.want {
+				t.Fatalf("message records = %d, want %d", count, tc.want)
+			}
+		})
 	}
 }

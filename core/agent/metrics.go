@@ -57,6 +57,33 @@ func recordTurnMetrics(ctx context.Context, req Request, outcome TurnOutcome) {
 	}
 }
 
+// recordCheckpointSave emits the store's half of a turn: one save, and whether it landed.
+//
+// It is a metric and not only a span because the save span is gated at TraceRun: a
+// deployment that records nothing inside its turns would otherwise have no signal at all
+// for the one failure that costs it the record of the turn. "We could not write down what
+// happened" is the incident nobody may learn about from a log line alone.
+func recordCheckpointSave(ctx context.Context, agentName string, events int, err error) {
+	outcome := "ok"
+	if err != nil {
+		outcome = "failed"
+	}
+	meter := telemetry.MeterWithSuffix("agent")
+	if counter, err := meter.Int64Counter("agent.checkpoints",
+		metric.WithDescription("Terminal checkpoint saves by outcome")); err == nil {
+		counter.Add(ctx, 1, metric.WithAttributes(
+			attribute.String(identity.AttrAgentName, agentName),
+			attribute.String("outcome", outcome)))
+	}
+	if events > 0 {
+		if histogram, err := meter.Int64Histogram("agent.checkpoint.events",
+			metric.WithDescription("Records appended by one terminal save")); err == nil {
+			histogram.Record(ctx, int64(events),
+				metric.WithAttributes(attribute.String(identity.AttrAgentName, agentName)))
+		}
+	}
+}
+
 // recordTurnDuration emits how long the turn took. It is separate from the counter
 // because a duration is only meaningful for a turn that finished — which is the caller's
 // condition, not this one: only finish() records, so a zero here is a turn the clock could

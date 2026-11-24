@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
@@ -339,7 +340,7 @@ func TestReadAgreesWithALiveRun(t *testing.T) {
 	run, err := g.Start(context.Background(), nil,
 		WithStore(store, "task-1"),
 		WithFingerprint("sha256:x"),
-		WithTrace(agent.TraceRun),
+		WithTrace(telemetry.TraceRun),
 	)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -409,5 +410,35 @@ func TestWriteTextUsesTheCallersFormat(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "host.fact") {
 		t.Errorf("a declined record disappeared:\n%s", out.String())
+	}
+}
+
+// TestSummarizeRendersTheDecoratorsVocabulary keeps the reader level with the writer: the turn
+// decorator writes "state", "message", "artifact" and "interrupted" for every driver, and a
+// timeline that could only explain the graph's own kinds would say nothing about a proxied run.
+func TestSummarizeRendersTheDecoratorsVocabulary(t *testing.T) {
+	cases := []struct {
+		kind    string
+		payload any
+		want    string
+	}{
+		{"state", agent.Status{State: agent.StateCompleted}, "completed"},
+		{"message", message.NewTextMessage(message.RoleUser, "hello there"), "hello there"},
+		{"artifact", agent.Artifact{MediaType: "image/png", Blob: "sha256:abcdef0123"}, "image/png"},
+		{"interrupted", agent.Interruption{Intent: agent.SteerRedirect, Boundary: 3}, "boundary 3"},
+	}
+	for _, tc := range cases {
+		body, err := json.Marshal(tc.payload)
+		if err != nil {
+			t.Fatalf("encode %s: %v", tc.kind, err)
+		}
+		line := summarizeRecord(agent.EventRecord{Kind: tc.kind, Payload: body},
+			renderConfig{width: 100})
+		if !strings.Contains(line, tc.want) {
+			t.Errorf("%s rendered as %q, want it to mention %q", tc.kind, line, tc.want)
+		}
+		if !strings.HasPrefix(line, tc.kind) {
+			t.Errorf("%s rendered as %q, want the kind first", tc.kind, line)
+		}
 	}
 }

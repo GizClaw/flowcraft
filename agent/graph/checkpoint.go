@@ -192,7 +192,7 @@ type runOptions struct {
 	sessionID   string
 	fingerprint agent.Fingerprint
 	manifest    agent.Manifest
-	trace       agent.TraceLevel
+	trace       telemetry.TraceLevel
 	bodies      bool
 	replay      bool
 	// The tool surface of the session: what may be called, and the authority the call runs
@@ -244,12 +244,16 @@ func WithFingerprint(fingerprint agent.Fingerprint) RunOption {
 
 // WithManifest records the version combination the run executed under. The
 // first save writes it into the checkpoint, where a badcase report can read it.
+//
+// A host fills it from the request on every turn, so the section and the run record carry
+// the same value; this option exists for a caller that drives a graph with no host — a test,
+// a command line — where there is no request to take it from.
 func WithManifest(manifest agent.Manifest) RunOption {
 	return func(o *runOptions) { o.manifest = manifest }
 }
 
 // WithTrace sets how much of the run is traced.
-func WithTrace(trace agent.TraceLevel) RunOption {
+func WithTrace(trace telemetry.TraceLevel) RunOption {
 	return func(o *runOptions) { o.trace = trace }
 }
 
@@ -364,7 +368,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	// The projection's identity is evidence, so it follows the trace level: a
 	// deployment that keeps no per-call records has no use for a hash of a
 	// decision point nobody can look up.
-	if r.trace != agent.TraceNone {
+	if r.trace != telemetry.TraceNone {
 		sum := sha256.Sum256(body)
 		proj.ContextHash = "sha256:" + hex.EncodeToString(sum[:])
 		body, err = json.Marshal(proj)
@@ -390,6 +394,10 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			SessionID: r.sessionID,
 			State:     r.State(),
 			Round:     r.step,
+			// The projection answers "what is true now", and the artifacts a task has
+			// produced are part of that answer: a save that omitted them would erase
+			// what an earlier turn established.
+			Artifacts: r.published,
 		},
 		Sections: sections,
 	}
@@ -544,6 +552,7 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 	}
 	run := &Run{
 		g:               g,
+		published:       checkpoint.Task.Artifacts,
 		store:           opts.store,
 		taskID:          opts.taskID,
 		sessionID:       opts.sessionID,

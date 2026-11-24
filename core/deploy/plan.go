@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -47,8 +48,8 @@ type ProcessPlan struct {
 // something, and there is nothing to inherit: "we record nothing" and "nobody said" are
 // different facts, and the second one is how a deployment ends up with no trace at all.
 type Observability struct {
-	// Trace is how much of every turn is recorded. See [agent.TraceLevel].
-	Trace agent.TraceLevel
+	// Trace is how much of every turn is recorded. See [telemetry.TraceLevel].
+	Trace telemetry.TraceLevel
 	// Bodies keeps the bytes of each model response, which is what a replay answers from. It
 	// is a retention decision rather than a level: the answer is the user's content.
 	Bodies bool
@@ -67,7 +68,7 @@ type PlannedMiddleware struct {
 	// Trace is the least level this link is worth installing at, declared by its registration.
 	// The loader leaves a link out of the plan when the process records less than this, so the
 	// assembly never builds one that would only turn itself off per call.
-	Trace agent.TraceLevel
+	Trace telemetry.TraceLevel
 }
 
 // PlannedHook is one lifecycle policy, resolved but not built.

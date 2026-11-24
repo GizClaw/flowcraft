@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -217,7 +218,7 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	}
 	// How much of a turn is recorded is the process's, not an agent's: everything it controls is
 	// built once for the process.
-	if plan.Observability.Trace != agent.TraceCall || plan.Observability.Bodies {
+	if plan.Observability.Trace != telemetry.TraceCall || plan.Observability.Bodies {
 		t.Fatalf("observability = %+v, want the documented trace level", plan.Observability)
 	}
 	caps := deploy.Capabilities{

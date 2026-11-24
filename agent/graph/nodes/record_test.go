@@ -12,6 +12,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
 )
 
@@ -22,7 +24,7 @@ const recordLLMCall = "llm.call"
 
 // modelInvoke is the Invoke the engine would pass to a model node, with the two
 // policies set to what the case under test asks for.
-func modelInvoke(rt *graphtest.Fixture, level agent.TraceLevel, bodies bool) graph.Invoke {
+func modelInvoke(rt *graphtest.Fixture, level telemetry.TraceLevel, bodies bool) graph.Invoke {
 	state := map[string]graph.Value{
 		"messages": graph.MessagesValue(graph.MessagesFromSlice([]message.Message{
 			message.NewTextMessage(message.RoleUser, "hi"),
@@ -73,7 +75,7 @@ func TestModelRecordsAtNodeLevel(t *testing.T) {
 	kind := nodes.Model()
 
 	stream, err := kind.Invoke(context.Background(),
-		modelInvoke(rt, agent.TraceNode, false))
+		modelInvoke(rt, telemetry.TraceNode, false))
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -108,7 +110,7 @@ func TestModelRecordsAtNodeLevel(t *testing.T) {
 // Below node level a run keeps no per-call evidence: the tier is a resolution,
 // and a step-level trace is a run nobody asked to inspect call by call.
 func TestModelKeepsNoEvidenceBelowNodeLevel(t *testing.T) {
-	for _, level := range []agent.TraceLevel{agent.TraceNone, agent.TraceRun, agent.TraceRun} {
+	for _, level := range []telemetry.TraceLevel{telemetry.TraceNone, telemetry.TraceRun, telemetry.TraceRun} {
 		rt := testRuntime(t, &stubProvider{response: textResponse("ok")})
 		kind := nodes.Model()
 		stream, err := kind.Invoke(context.Background(), modelInvoke(rt, level, true))
@@ -129,7 +131,7 @@ func TestModelBodiesKeepsTheResponse(t *testing.T) {
 	kind := nodes.Model()
 
 	stream, err := kind.Invoke(context.Background(),
-		modelInvoke(rt, agent.TraceNode, true))
+		modelInvoke(rt, telemetry.TraceNode, true))
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -189,5 +191,53 @@ func TestModelReplayWithoutTheBodySaysSo(t *testing.T) {
 	}
 	if !strings.Contains(nextErr.Error(), "bodies is off") {
 		t.Errorf("error %v does not name the switch that left the body out", nextErr)
+	}
+}
+
+// TestAWholeResponseStillReportsItsUsage is the accounting gap the streaming path hid: a provider
+// that answers in one piece sends no usage delta, so the totals exist only in the response. A turn
+// that never hears them reports zero tokens, zero cost and a billing line that says the call was
+// free — for every non-streaming deployment.
+func TestAWholeResponseStillReportsItsUsage(t *testing.T) {
+	for _, stream := range []bool{true, false} {
+		name := "streaming"
+		if !stream {
+			name = "unary"
+		}
+		t.Run(name, func(t *testing.T) {
+			response := textResponse("ok")
+			response.Usage = outcome.Usage{InputTokens: 9, OutputTokens: 4}
+			provider := &stubProvider{response: response}
+			rt := testRuntime(t, provider)
+
+			config := `{"messages":"messages","output":"text"}`
+			if !stream {
+				config = `{"messages":"messages","output":"text","request":{"stream":false}}`
+			}
+			stream_, err := nodes.Model().Invoke(context.Background(),
+				invokeFor(rt, map[string]graph.Value{
+					"messages": graph.MessagesValue(graph.MessagesFromSlice([]message.Message{
+						message.NewTextMessage(message.RoleUser, "hi"),
+					})),
+					"text": graph.Text(""),
+				}, config))
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			_, events := drainNode(t, stream_)
+
+			var usage *outcome.Usage
+			for _, event := range events {
+				if reported, ok := event.(agent.UsageEvent); ok {
+					usage = &reported.Usage
+				}
+			}
+			if usage == nil {
+				t.Fatalf("no usage event among %d events; a caller would bill this call as free", len(events))
+			}
+			if usage.InputTokens != 9 || usage.OutputTokens != 4 {
+				t.Fatalf("usage = %+v, want the response's totals", *usage)
+			}
+		})
 	}
 }

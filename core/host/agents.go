@@ -34,6 +34,10 @@ type Agents struct {
 	// tenant and authority are the process facts a session's identity is made of.
 	tenant    string
 	authority string
+	// runSink receives one record per finished turn; nil keeps runs in-process only.
+	runSink func(agent.RunRecord)
+	// harness names the build this process is, so a manifest can say which binary ran it.
+	harness string
 
 	mu       sync.Mutex
 	entries  map[string]*deployment
@@ -58,6 +62,11 @@ type deployment struct {
 	// through the deployment. It is not a per-agent setting: the chain and the model access it
 	// controls are built once for the process.
 	observability deploy.Observability
+	// manifest is the version combination this deployment runs, assembled at install; the
+	// turn copies it into every run record and the driver writes it into its checkpoint.
+	// Its identity is [agent.Manifest.ID], hashed by the two consumers rather than stored
+	// here: a cached copy would be a second answer to one question.
+	manifest agent.Manifest
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
@@ -285,11 +294,13 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
 	}
+	manifest := a.manifestOf(dep.Program.Impl, dep.Grant.Models, proj)
 	return &deployment{
 		name:          dep.Name,
 		program:       program,
 		grant:         dep.Grant,
 		observability: a.res.observability,
+		manifest:      manifest,
 		hooks:         hooks,
 		newView:       func() tool.View { return proj },
 	}, nil
