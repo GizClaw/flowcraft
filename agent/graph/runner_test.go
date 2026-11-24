@@ -299,3 +299,33 @@ edges:
 		t.Fatalf("error.kind = %q, want %q", got, agent.FailureModel)
 	}
 }
+
+// A task is one turn: the message after a finished run opens a new run under its own task id, and the
+// keys the document marks `carry` are what the conversation keeps. A driver that refused would report
+// every second turn as an error, which is what a chat surface would then show the user.
+func TestATurnAfterAFinishedTaskStartsANewRun(t *testing.T) {
+	store := agenttest.NewMemStore()
+	g := build(t, `
+version: 1
+entry: a
+input: messages
+nodes:
+  - {id: a, kind: count}
+edges:
+  - {from: a, to: end}
+state:
+  messages: {type: messages, merge: append, carry: true}
+`, &countKind{})
+	driver, err := NewProgram(g).Open(agent.SessionInfo{SessionID: "conv-1", TaskID: "conv-1"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = driver.Close() }()
+
+	if _, err := turn(t, driver, requestFor(store, "conv-1", "first")); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+	if _, err := turn(t, driver, requestFor(store, "conv-1/2", "second")); err != nil {
+		t.Fatalf("second turn: %v", err)
+	}
+}
