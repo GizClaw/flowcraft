@@ -6,7 +6,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/goccy/go-json"
 )
 
@@ -78,11 +77,10 @@ func Registry(t *testing.T, tools ...tool.Tool) *tool.Registry {
 // the text-only tools this helper builds.
 func Execute(
 	t *testing.T,
-	catalog tool.Catalog,
+	executor tool.Dispatcher,
 	name, arguments string,
 ) (string, error) {
 	t.Helper()
-	executor := dispatch.New(catalog)
 	result := executor.Execute(context.Background(), Binding(), message.ToolCall{
 		ID:        "tooltest-call",
 		Name:      name,

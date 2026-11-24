@@ -6,7 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/tool/dispatch"
 )
 
 // nestedRecorder is the host's session-bound dispatcher: it records what it was asked to

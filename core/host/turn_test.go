@@ -59,7 +59,7 @@ func hostFor(t *testing.T, program func() (agent.Program, error), opts ...Agents
 			boundBackend("local", backend),
 		},
 		Observability: deploy.Observability{Trace: agent.TraceCall},
-	})
+	}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

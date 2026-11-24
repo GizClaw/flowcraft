@@ -49,7 +49,7 @@ func BenchmarkOpenProcess(b *testing.B) {
 	plan := benchPlan()
 	b.ReportAllocs()
 	for b.Loop() {
-		res, err := Open(context.Background(), plan)
+		res, err := Open(context.Background(), plan, benchOptions())
 		if err != nil {
 			b.Fatalf("Open: %v", err)
 		}
@@ -70,7 +70,7 @@ func benchDeployment(b *testing.B, name string, grant policy.Grant, log *journal
 
 func benchAgents(b *testing.B) *Agents {
 	b.Helper()
-	res, err := Open(context.Background(), benchPlan())
+	res, err := Open(context.Background(), benchPlan(), benchOptions())
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -136,7 +136,7 @@ func BenchmarkRunTurn(b *testing.B) {
 
 func benchRunAgents(b *testing.B) *Agents {
 	b.Helper()
-	res, err := Open(context.Background(), benchPlan())
+	res, err := Open(context.Background(), benchPlan(), benchOptions())
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -191,4 +191,17 @@ observability: {trace: none, bodies: false}
 			b.Fatalf("Process: %v", err)
 		}
 	}
+}
+
+// benchOptions opens a process the way a benchmark wants: no chain, and the stub engine, so the number
+// measures the process build rather than an executor.
+func benchOptions() Options {
+	o := Options{}
+	o.Dispatcher = func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
+		return stubDispatch{catalog: catalog, chain: chain}
+	}
+	o.View = func(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
+		return stubView{catalog: catalog}
+	}
+	return o
 }

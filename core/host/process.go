@@ -18,13 +18,14 @@ import (
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 )
 
 // Resources is a built process. Its fields are unexported because there is exactly one thing a
@@ -44,7 +45,10 @@ type Resource struct {
 	// is built once here, and a level two agents could disagree about would be a knob with no
 	// effect.
 	observability deploy.Observability
-	closers       []closer
+	// newView builds a deployment's projection; nil means this process has none, which a deployment
+	// with tools cannot run without.
+	newView func(catalog tool.Catalog, allowed policy.ToolSet) tool.View
+	closers []closer
 }
 
 // BackendFactory builds one session's backend instance from that session's confine.
@@ -69,6 +73,14 @@ type Options struct {
 	// Nil means "declare nothing": every tool that needs a capability is refused, which is the
 	// honest default for a caller that did not say what it can provide.
 	Capabilities *tool.CapSet
+	// Dispatcher builds one session's executor over the process tool table and the middleware chain
+	// the document asked for. The application supplies it: which executor runs a call is a decision
+	// about this binary, not about a deployment document.
+	Dispatcher func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher
+	// View builds one deployment's projection over the tool table, from the tool set its grant allows.
+	// It is per deployment rather than per session because what may be shown is a property of the
+	// authority, and one projection serves every session under the same one.
+	View func(catalog tool.Catalog, allowed policy.ToolSet) tool.View
 }
 
 // Open builds the process described by plan.
@@ -89,6 +101,7 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 	r := &Resource{
 		backends:      make(map[string]BackendFactory, len(plan.Backends)),
 		observability: plan.Observability,
+		newView:       o.View,
 	}
 	// unwind releases what was built so far, keeping the original error as the cause.
 	unwind := func(err error) (*Resource, error) {
@@ -143,7 +156,10 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 	if err != nil {
 		return unwind(err)
 	}
-	r.dispatch = dispatch.New(registry, chain...)
+	if o.Dispatcher == nil {
+		return unwind(errdefs.NotAvailablef("host: this process has no dispatcher configured"))
+	}
+	r.dispatch = o.Dispatcher(registry, chain)
 	return r, nil
 }
 

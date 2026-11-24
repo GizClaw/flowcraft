@@ -122,7 +122,7 @@ func hostWith(t *testing.T, backend *boundary) *Agents {
 	t.Helper()
 	res, err := Open(t.Context(), deploy.ProcessPlan{
 		Backends: []deploy.PlannedBackend{boundBackend("local", backend)},
-	})
+	}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

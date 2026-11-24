@@ -16,8 +16,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/GizClaw/flowcraft/tool/dispatch"
 )
 
 func TestTelemetry_EmitsExecutionSpan(t *testing.T) {

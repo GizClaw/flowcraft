@@ -8,9 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/projection"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/GizClaw/flowcraft/tool/dispatch"
 )
 
 // TestADispatchedCallFeedsTheProjection is the join between the two packages that only

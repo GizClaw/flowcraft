@@ -56,7 +56,7 @@ func approvalHost(t *testing.T, approval Approval) (sandbox.SessionStarter, *gat
 	backend := &gate{log: log}
 	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
 		boundBackend("local", &boundary{log: log, filesystemBounds: true}),
-	}})
+	}}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestNoPolicyInstallsTheBackendUndecorated(t *testing.T) {
 	g := &gate{log: log}
 	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
 		boundBackend("local", &boundary{log: log, filesystemBounds: true}),
-	}})
+	}}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -177,7 +177,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 
 	// The projection carries the deployment's exposure policy: what the model may see is a property
 	// of the deployment, so one view per session is cheap and the index behind it is shared.
-	view := deploy.projection.NewView()
+	view := deploy.newView()
 	binding := tool.Bind(&sessionScratch{id: sessionID, values: map[string]any{}},
 		deploy.grant).WithView(view).WithCaps(capabilities)
 

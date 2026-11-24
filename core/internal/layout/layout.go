@@ -103,7 +103,6 @@ var Table = map[string]int{
 
 	// L2 — the tool contract and its gate.
 	"tool":            L2,
-	"tool/dispatch":   L2,
 	"tool/platform":   L2,
 	"tool/projection": L2,
 	"tool/tooltest":   L2,

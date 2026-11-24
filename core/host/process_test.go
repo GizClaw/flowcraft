@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
@@ -141,7 +140,7 @@ func TestOpenBuildsWhatThePlanDescribed(t *testing.T) {
 		Backends: []deploy.PlannedBackend{plannedBackend(runner{name: "local", journal: log})},
 		Tools:    []deploy.PlannedToolSource{plannedSource("workspace")},
 	}
-	res, err := Open(context.Background(), plan)
+	res, err := Open(context.Background(), plan, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -180,7 +179,7 @@ func TestOpenBuildsWhatThePlanDescribed(t *testing.T) {
 func TestBackendFactoryTakesTheSessionsConfine(t *testing.T) {
 	log := &journal{}
 	plan := deploy.ProcessPlan{Backends: []deploy.PlannedBackend{plannedBackend(runner{name: "local", journal: log})}}
-	res, err := Open(context.Background(), plan)
+	res, err := Open(context.Background(), plan, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -221,7 +220,7 @@ func TestOpenUnwindsWhatItBuilt(t *testing.T) {
 			}),
 		},
 	}
-	if _, err := Open(context.Background(), plan); err == nil {
+	if _, err := Open(context.Background(), plan, testOptions(t)); err == nil {
 		t.Fatal("Open accepted a failing link")
 	} else if !strings.Contains(err.Error(), "broken") {
 		t.Fatalf("error %q does not name the failing link", err)
@@ -290,7 +289,7 @@ func TestOpenJoinsCleanupFailures(t *testing.T) {
 			}),
 		},
 	}
-	_, err := Open(context.Background(), plan)
+	_, err := Open(context.Background(), plan, testOptions(t))
 	if err == nil {
 		t.Fatal("Open accepted a failing link")
 	}
@@ -304,13 +303,7 @@ func TestOpenJoinsCleanupFailures(t *testing.T) {
 // TestADisabledLinkIsSkipped: a middleware that decides at construction that it is off returns
 // nil, and the chain does not carry it.
 func TestADisabledLinkIsSkipped(t *testing.T) {
-	called := false
-	active := func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
-			called = true
-			return next(ctx, b, call)
-		}
-	}
+	active := func(next tool.Dispatch) tool.Dispatch { return next }
 	plan := deploy.ProcessPlan{
 		Tools: []deploy.PlannedToolSource{plannedSource("workspace")},
 		Middleware: []deploy.PlannedMiddleware{
@@ -318,7 +311,7 @@ func TestADisabledLinkIsSkipped(t *testing.T) {
 			plannedMiddleware("on", func(tool.Catalog) (tool.Middleware, error) { return active, nil }),
 		},
 	}
-	res, err := Open(context.Background(), plan)
+	res, err := Open(context.Background(), plan, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -331,18 +324,19 @@ func TestADisabledLinkIsSkipped(t *testing.T) {
 	if res.tools == nil {
 		t.Fatal("the tool table is missing")
 	}
-	// Run one call through the chain: the enabled link must be reached, and the nil one must have been
-	// dropped here rather than tolerated there.
-	registry, err := tool.NewRegistry([]tool.Source{tooltest.Source(
-		tool.TextTool(message.ToolDefinition{Name: "noop", InputSchema: []byte(`{"type":"object"}`)},
-			func(context.Context, string) (string, error) { return "ok", nil }))})
-	if err != nil {
-		t.Fatalf("NewRegistry: %v", err)
+	// What the host owes the engine is the chain it built: the enabled link present, the nil one dropped
+	// here rather than tolerated there. Running the chain is the engine's own test.
+	var handed []tool.Middleware
+	opts := testOptions(t)
+	opts.Dispatcher = func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
+		handed = chain
+		return stubDispatch{catalog: catalog, chain: chain}
 	}
-	exec := dispatch.New(registry, active, nil)
-	_ = exec.Execute(context.Background(), tooltest.Binding(), message.ToolCall{ID: "c1", Name: "noop"})
-	if !called {
-		t.Fatal("the enabled link was never reached")
+	if _, err := Open(context.Background(), plan, opts); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if len(handed) != 1 || handed[0] == nil {
+		t.Fatalf("chain handed to the dispatcher = %v, want the one enabled link", handed)
 	}
 }
 
@@ -365,7 +359,7 @@ func TestRegistrationRefusesAnUndeclaredCapability(t *testing.T) {
 		Tools: []deploy.PlannedToolSource{{Name: "needy", Impl: "fake",
 			New: func() (tool.Source, error) { return tooltest.Source(needy), nil }}},
 	}
-	if _, err := Open(context.Background(), plan); err == nil {
+	if _, err := Open(context.Background(), plan, testOptions(t)); err == nil {
 		t.Fatal("a tool whose declared capability nothing provides was registered")
 	}
 }
@@ -396,7 +390,7 @@ func TestOpenUnwindsAFailedBackendAndSource(t *testing.T) {
 				return nil, errors.New("middleware failed")
 			}}}},
 	} {
-		if _, err := Open(context.Background(), plan); err == nil {
+		if _, err := Open(context.Background(), plan, testOptions(t)); err == nil {
 			t.Fatalf("%s: Open accepted a failing build", name)
 		}
 	}
@@ -414,7 +408,7 @@ func TestOpenClosesTheRegistryWhenTheChainFails(t *testing.T) {
 				return nil, errors.New("chain failed")
 			}}},
 	}
-	if _, err := Open(context.Background(), plan); err == nil {
+	if _, err := Open(context.Background(), plan, testOptions(t)); err == nil {
 		t.Fatal("Open accepted a failing link")
 	}
 	if got := log.joined(); got != "close:tool" {
@@ -431,13 +425,62 @@ func TestNilCapabilitiesRefusesCapabilityTools(t *testing.T) {
 		})
 	plan := deploy.ProcessPlan{Tools: []deploy.PlannedToolSource{{Name: "needy", Impl: "fake",
 		New: func() (tool.Source, error) { return tooltest.Source(needy), nil }}}}
-	if _, err := Open(context.Background(), plan); err == nil {
+	if _, err := Open(context.Background(), plan, testOptions(t)); err == nil {
 		t.Fatal("a tool that needs a capability was registered without one")
 	}
 	// With the capability declared, the same plan is accepted.
 	declared := tool.NewCapSet()
 	missingSlot.Provide(declared, nil)
-	if _, err := Open(context.Background(), plan, Options{Capabilities: declared}); err != nil {
+	if _, err := Open(context.Background(), plan, Options{Capabilities: declared, Dispatcher: testOptions(t).Dispatcher, View: testOptions(t).View}); err != nil {
 		t.Fatalf("Open with the capability declared: %v", err)
 	}
 }
+
+// testOptions is the process an application would open: a dispatcher and a projection from outside the
+// host. The stub is deliberate — core cannot reach for the real ones, and a host that needed them would
+// depend on the engine it is supposed to run.
+func testOptions(t *testing.T) Options {
+	t.Helper()
+	return Options{
+		Dispatcher: func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
+			return stubDispatch{catalog: catalog, chain: chain}
+		},
+		View: func(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
+			return stubView{catalog: catalog}
+		},
+	}
+}
+
+// stubDispatch runs a call straight through the catalog, recording nothing: what a host test asserts is
+// what the host passed in, not how an engine executes.
+type stubDispatch struct {
+	catalog tool.Catalog
+	chain   []tool.Middleware
+}
+
+func (d stubDispatch) Execute(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+	target, ok := d.catalog.Get(call.Name)
+	if !ok {
+		return message.NewErrorToolResult(call.ID, "no such tool")
+	}
+	content, err := target.Execute(ctx, b, call.Arguments.String())
+	if err != nil {
+		return message.NewErrorToolResult(call.ID, err.Error())
+	}
+	return message.NewToolResult(call.ID, content)
+}
+
+func (d stubDispatch) ExecuteAll(ctx context.Context, b tool.Binding, calls []message.ToolCall) []message.ToolResult {
+	out := make([]message.ToolResult, len(calls))
+	for i, call := range calls {
+		out[i] = d.Execute(ctx, b, call)
+	}
+	return out
+}
+
+// stubView shows every tool the catalog holds.
+type stubView struct{ catalog tool.Catalog }
+
+func (v stubView) Definitions() []message.ToolDefinition { return v.catalog.Definitions() }
+func (stubView) Visible(string) bool                     { return true }
+func (stubView) RecordCall(message.ToolCall)             {}

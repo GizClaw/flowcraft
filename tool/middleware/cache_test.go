@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"github.com/GizClaw/flowcraft/tool/dispatch"
 )
 
 // terminalOK is a chain's innermost stage without a catalog lookup, so these
