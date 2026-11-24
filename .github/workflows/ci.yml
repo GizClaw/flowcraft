@@ -194,7 +194,9 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core sandbox inference agent tool examples/forge tools)
+          # The last entry is the release tooling's own module: `scripts/` is where the
+          # repository's own commands live, and it is a Go module like any other.
+          diff=$(gofmt -s -l core sandbox inference agent tool examples/forge scripts)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
