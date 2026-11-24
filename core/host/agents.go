@@ -44,7 +44,15 @@ type Agents struct {
 	entries  map[string]*deployment
 	order    []string
 	sessions map[string]*Session
-	byAge    []*Session
+	// byAge holds the open sessions in insertion order, which is age order. A forgotten session
+	// leaves a nil tombstone behind rather than shifting the rest of the slice: shifting is what
+	// made closing one session cost a scan of every session. slots maps an id back to its slot so
+	// the tombstone is a lookup instead of a scan.
+	byAge []*Session
+	slots map[string]int
+	// tombstones counts the nil slots in byAge. Once they outnumber the live ones the slice is
+	// compacted, which makes the amortized cost of a removal constant.
+	tombstones int
 	// edges numbers delegation edges so two children of one parent get distinct session ids.
 	edges atomic.Int64
 	// retiring holds the deployments a reload replaced while their sessions are still open. They
@@ -100,6 +108,7 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		res:      res,
 		entries:  map[string]*deployment{},
 		sessions: map[string]*Session{},
+		slots:    map[string]int{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -246,7 +255,9 @@ func (a *Agents) Close(ctx context.Context) error {
 	a.entries = map[string]*deployment{}
 	a.order = nil
 	a.sessions = map[string]*Session{}
+	a.slots = map[string]int{}
 	a.byAge = nil
+	a.tombstones = 0
 	a.retiring = nil
 	a.mu.Unlock()
 
@@ -255,6 +266,9 @@ func (a *Agents) Close(ctx context.Context) error {
 	errs := make([]error, 0, len(sessions)+len(deployments)+len(retiring))
 	perAgent := make(map[string]int, len(deployments))
 	for _, session := range sessions {
+		if session == nil {
+			continue
+		}
 		perAgent[session.agent]++
 		if err := session.close(); err != nil {
 			errs = append(errs, err)
