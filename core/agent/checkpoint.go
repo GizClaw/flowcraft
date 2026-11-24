@@ -162,11 +162,12 @@ type TaskSummary struct {
 }
 
 // Fingerprint is the identity a checkpoint records: the deployment that produced it.
-// A resume compares it, so a task cannot continue under a runtime, driver or protocol
-// different from the one it was written under.
+// A resume compares it, so a task cannot continue under a runtime or driver different
+// from the one it was written under.
 //
-// It is opaque here: deploy composes it from the runtime's own digest and the driver
-// and protocol identities, and a store only persists the string.
+// It is opaque here: the host composes it from the deployment set it was given — agent
+// names, program kinds, grant digests and hook kinds — and a store only persists the
+// string.
 type Fingerprint string
 
 // SaveOption configures one Save.
@@ -258,25 +259,41 @@ type Saver interface {
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
 }
 
+// ManifestSchema versions the manifest's shape and digest inputs.
+//
+// A manifest id is written into a checkpoint and into every run record, so two runs are
+// comparable exactly when their ids match. Changing how an id is computed without
+// changing this string would silently make old and new ids incomparable under one name;
+// with it, a new algorithm is a new schema, and a reader can tell the two apart.
+const ManifestSchema = "manifest/1"
+
 // Manifest is the version combination a run executed under.
 //
-// It answers "which deployment, driver, model catalog, tool schema and prompt bundle
-// produced this trace" without joining every configuration store. The values are
-// opaque hashes: two runs under the same manifest are comparable, and the per-call
-// record still names the model that actually answered.
+// It answers "which deployment, driver, model catalog and tool schema produced this
+// trace" without joining every configuration store. The values are opaque hashes: two
+// runs under the same manifest are comparable, and the per-call record still names the
+// model that actually answered.
+//
+// Every field names its producer, and a field nobody fills is not a field: the host
+// assembles this once per deployment, at install, and states which facts it can answer
+// instead of leaving a reader to guess that an empty one means "not applicable".
+//
+// What is deliberately absent is a prompt: this framework has no prompt bundle to
+// identify. A driver's framing is a message in the transcript, and the identity that
+// matters — which messages entered which call — is recorded per call, in
+// [LLMCallRecord.Messages].
 type Manifest struct {
-	// Deployment is the checkpoint fingerprint: runtime + driver + protocol.
+	// Schema versions the shape and the digest inputs. See [ManifestSchema].
+	Schema string `json:"schema,omitempty"`
+	// Deployment is the checkpoint fingerprint of the deployment set.
 	Deployment Fingerprint `json:"deployment,omitempty"`
 	// Driver is the kind the deployment selected ("graph", "a2a").
 	Driver string `json:"driver,omitempty"`
-	// Protocol is the exposure kind, empty when the agent is not exposed.
-	Protocol string `json:"protocol,omitempty"`
-	// Models is the model catalog the deployment declared.
+	// Models is the model catalog this deployment may call, as it was declared.
 	Models string `json:"models,omitempty"`
-	// Tools is the tool schema the deployment wired.
+	// Tools is the tool schema the deployment exposes: the definitions the model reads,
+	// after the grant's exposure and any decorator.
 	Tools string `json:"tools,omitempty"`
-	// Prompt is the prompt bundle the driver compiled, when it has one.
-	Prompt string `json:"prompt,omitempty"`
 	// Harness is the host-supplied build identity.
 	Harness string `json:"harness,omitempty"`
 }

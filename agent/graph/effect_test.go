@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
 )
 
@@ -62,7 +63,7 @@ func TestEffectsAreRecordedAroundTheCall(t *testing.T) {
 	run, err := g.Start(context.Background(), nil,
 		WithStore(store, "task-1"),
 		WithFingerprint("sha256:x"),
-		WithTrace(agent.TraceRun),
+		WithTrace(telemetry.TraceRun),
 	)
 	if err != nil {
 		t.Fatalf("Start: %v", err)

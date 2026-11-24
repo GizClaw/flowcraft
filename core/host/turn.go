@@ -12,6 +12,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/identity/inject"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // AgentsOption configures [NewAgents].
@@ -45,6 +49,30 @@ func WithIdentity(tenant, authority string) AgentsOption {
 // process that has not configured it has not said "yes" to anything it should not have.
 func WithApproval(approval Approval) AgentsOption {
 	return func(a *Agents) { a.approval = &approval }
+}
+
+// WithHarness names the build this process is.
+//
+// It is what makes a run record say *which binary* produced it — the one fact a deployment
+// document cannot know, and the one a regression is most often attributable to. Empty leaves
+// the manifest field out rather than inventing "unknown", so a reader can tell a build that
+// did not say from a build that said nothing.
+func WithHarness(harness string) AgentsOption {
+	return func(a *Agents) { a.harness = harness }
+}
+
+// WithRunSink hands every finished turn to a sink.
+//
+// The record is the join key between a trace and whatever a host keeps beside it — a dataset
+// row, a billing line, an evaluation harness — and it is built by the turn decorator, which is
+// the only layer that sees the whole stream: the state, the classification and the usage totals
+// are read from one fold, so a row cannot disagree with the span it names.
+//
+// The sink is called on the turn's goroutine, after the terminal checkpoint is durable and
+// before the after-turn hooks. It must be cheap and must not fail the turn: the work it
+// describes is already done, and a sink that blocked would delay the caller's last event.
+func WithRunSink(sink func(agent.RunRecord)) AgentsOption {
+	return func(a *Agents) { a.runSink = sink }
 }
 
 // WithFingerprint names the deployment set this process was built from.
@@ -176,6 +204,8 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Hooks:       session.deploy.hooks,
 		Trace:       session.deploy.observability.Trace,
 		Bodies:      session.deploy.observability.Bodies,
+		Manifest:    session.deploy.manifest,
+		OnRun:       a.runSink,
 	}, nil
 }
 
@@ -212,18 +242,43 @@ func (a *Agents) Steer(ctx context.Context, sessionID string, in agent.SteerInpu
 //
 // The context is cancelled here, which is what stops a local driver's steps; a driver that talks to a
 // peer also gets told, because dropping the context leaves the peer running.
+//
+// It opens a span of its own: the cancel happens on the caller's goroutine, in the trace of
+// whoever asked, while the turn span it stops belongs to another goroutine. One trace then says
+// who stopped the run and the other says what the run did with that — the turn adds an
+// "agent.canceled" event beside its terminal status, and neither has to see the other's context.
 func (a *Agents) Cancel(ctx context.Context, sessionID, reason string) error {
 	session, ok := a.Session(sessionID)
 	if !ok {
+		recordCancel(ctx, "", cancelNotFound)
 		return errdefs.NotFoundf("host: session %q is not open", sessionID)
 	}
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("host"), spanCancel, telemetry.TraceNone,
+		trace.WithAttributes(attribute.String(identity.AttrAgentName, session.agent)))
+	span.SetAttributes(telemetry.Attrs(ctx)...)
+	defer span.End()
+
 	cancel := session.takeCancel()
 	if cancel == nil {
+		// Idle is not a failure of the caller's intent: the run it wanted to stop had
+		// already finished. It is still worth counting, because a deployment whose operators
+		// keep cancelling finished runs is a deployment racing its own turn loop.
+		span.SetStatus(codes.Ok, "idle")
+		recordCancel(ctx, session.agent, cancelIdle)
 		return agent.ErrSessionIdle
 	}
 	cancel()
+	outcome := cancelContext
 	if canceller, ok := session.driver.(agent.Canceller); ok {
-		return canceller.Cancel(ctx, reason)
+		if err := canceller.Cancel(ctx, reason); err != nil {
+			span.SetAttributes(attribute.String(telemetry.AttrErrorKind, string(agent.FailureUnclassified)))
+			span.SetStatus(codes.Error, "peer_refused")
+			recordCancel(ctx, session.agent, cancelRefused)
+			return err
+		}
+		outcome = cancelForwarded
 	}
+	span.SetStatus(codes.Ok, "")
+	recordCancel(ctx, session.agent, outcome)
 	return nil
 }

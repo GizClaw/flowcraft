@@ -5,11 +5,14 @@ import (
 	"errors"
 	"iter"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/agent/a2a/wire"
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -22,6 +25,12 @@ import (
 // merge across saves, so a section written here survives that write, and the peer's identity is
 // read back from the same place it was put.
 const section = "a2a"
+
+// spanSend is one round trip with the peer. It is the only span this side can open: the model call
+// and the tool calls happen on the peer, where its own trace records them, and this span is what
+// links this run's trace to that one — the trace context is injected into the request headers, so
+// the peer's spans hang under this one when it honours the propagation.
+const spanSend = "a2a.send"
 
 // remote is the peer's identity for one session, as the store remembers it.
 type remote struct {
@@ -55,12 +64,24 @@ type driver struct {
 	// without repeating the request.
 	task  agent.Task
 	store agent.Store
+	// round counts the lifecycle transitions the peer reported for its current task: it is the
+	// projection's answer to "how far did this get" for a task nobody on this side steps through.
+	round int
 }
 
 var (
 	_ agent.Driver    = (*driver)(nil)
 	_ agent.Canceller = (*driver)(nil)
+	_ agent.Rounder   = (*driver)(nil)
 )
+
+// Round reports how far the peer's task has got, as the number of lifecycle transitions it
+// reported. The turn decorator writes it into the projection because a proxy has no other answer.
+func (d *driver) Round() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.round
+}
 
 // Run forwards one message and streams the peer's events back as core events.
 //
@@ -80,10 +101,33 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 		outgoing.TaskID = a2a.TaskID(d.remote.TaskID)
 		outgoing.ContextID = d.remote.ContextID
 		d.remote.State = agent.StateWorking
+		peerTask, peerContext := d.remote.TaskID, d.remote.ContextID
 		d.mu.Unlock()
 
-		// The peer's identity must outlive this call however the stream ends.
-		defer d.persist(ctx, req)
+		// One span per round trip: it is the boundary only this side can see, and the trace
+		// context injected into the request headers is what makes the peer's own spans its
+		// children when the peer honours the propagation.
+		ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("a2a"), spanSend,
+			telemetry.TraceCall,
+			trace.WithAttributes(
+				attribute.String(telemetry.AttrA2APeerTaskID, peerTask),
+				attribute.String(telemetry.AttrA2AContextID, peerContext),
+			))
+		span.SetAttributes(telemetry.Attrs(ctx)...)
+		started := time.Now()
+		// failure is what the round trip ended on, so the deferred recorder, the span and the
+		// record agree about the outcome instead of each re-reading the driver's state.
+		var failure error
+
+		// The peer's identity must outlive this call however the stream ends, and so must the
+		// record of the call: both are written on a context that ignores the cancellation that
+		// stopped the stream.
+		defer func() {
+			d.persist(ctx, req)
+			d.recordCall(ctx, req, started, failure)
+			finishSendSpan(span, d.State(), failure)
+			span.End()
+		}()
 
 		if !yield(agent.StreamStart{Model: "a2a"}, nil) {
 			return
@@ -92,6 +136,7 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 			Message: outgoing,
 		}) {
 			if streamErr != nil {
+				failure = streamErr
 				if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
 					d.setState(agent.StateCanceled)
 					yield(agent.Status{State: agent.StateCanceled, Reason: streamErr.Error()}, nil)
@@ -106,6 +151,7 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 			}
 			done, handleErr := d.handle(event, yield)
 			if handleErr != nil {
+				failure = handleErr
 				yield(nil, handleErr)
 				return
 			}
@@ -213,6 +259,9 @@ func (d *driver) State() agent.TaskState {
 
 func (d *driver) setState(state agent.TaskState) {
 	d.mu.Lock()
+	if state != d.remote.State {
+		d.round++
+	}
 	d.remote.State = state
 	d.mu.Unlock()
 }

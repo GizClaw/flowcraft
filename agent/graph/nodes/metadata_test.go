@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/goccy/go-json"
 )
 
@@ -85,7 +86,7 @@ func TestModelEmitsStreamStartOnce(t *testing.T) {
 	provider := &announcingProvider{metadata: resolved(), text: "ok"}
 	rt := testRuntime(t, provider)
 	kind := nodes.Model()
-	invoke := modelInvoke(rt, agent.TraceNode, false)
+	invoke := modelInvoke(rt, telemetry.TraceNode, false)
 	invoke.Step = 2
 
 	stream, err := kind.Invoke(context.Background(), invoke)
@@ -122,7 +123,7 @@ func TestModelRecordCarriesMetadata(t *testing.T) {
 	rt := testRuntime(t, provider)
 	kind := nodes.Model()
 
-	stream, err := kind.Invoke(context.Background(), modelInvoke(rt, agent.TraceNode, false))
+	stream, err := kind.Invoke(context.Background(), modelInvoke(rt, telemetry.TraceNode, false))
 	if err != nil {
 		t.Fatalf("Invoke: %v", err)
 	}
@@ -157,7 +158,7 @@ func TestModelReplayKeepsMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal response: %v", err)
 	}
-	invoke := modelInvoke(rt, agent.TraceNode, true)
+	invoke := modelInvoke(rt, telemetry.TraceNode, true)
 	invoke.Replay = true
 	invoke.Lookup = func(string) (agent.LLMCallRecord, bool) {
 		return agent.LLMCallRecord{Response: response, Metadata: resolved()}, true

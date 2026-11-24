@@ -12,11 +12,18 @@ import (
 // run, the manifest identifies the version combination, and the usage totals
 // make the cost comparable across runs.
 type RunRecord struct {
-	TraceID   string    `json:"trace_id,omitempty"`
-	SpanID    string    `json:"span_id,omitempty"`
-	SessionID string    `json:"session_id"`
-	TaskID    string    `json:"task_id"`
-	TenantID  string    `json:"tenant_id,omitempty"`
+	TraceID string `json:"trace_id,omitempty"`
+	SpanID  string `json:"span_id,omitempty"`
+	// Agent is the deployment the run belongs to. It is what a dataset row groups by
+	// before it joins anything, so it is written here rather than recovered from the
+	// span: a sink that only stores rows still has to say which agent produced one.
+	Agent     string `json:"agent"`
+	SessionID string `json:"session_id"`
+	TaskID    string `json:"task_id"`
+	TenantID  string `json:"tenant_id,omitempty"`
+	// Manifest is [Manifest.ID] of the version combination the run executed under: the
+	// join key between two runs that can meaningfully be compared. Empty when the host
+	// assembled none.
 	Manifest  string    `json:"manifest,omitempty"`
 	State     TaskState `json:"state"`
 	ErrorKind string    `json:"error_kind,omitempty"`

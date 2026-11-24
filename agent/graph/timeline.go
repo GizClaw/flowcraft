@@ -300,6 +300,23 @@ func summarizeRecord(record agent.EventRecord, settings renderConfig) string {
 		if json.Unmarshal(record.Payload, &msg) == nil {
 			return fmt.Sprintf("%-12s %-9s %s", "message", msg.Role, clip(oneLine(msg.Content.Text()), width/2))
 		}
+	case "state":
+		// The decorator's lifecycle record, as opposed to the graph's per-key write
+		// above: it is written by every driver, so a timeline can show a proxied run.
+		var status agent.Status
+		if json.Unmarshal(record.Payload, &status) == nil {
+			return fmt.Sprintf("%-12s %-18s %s", "state", status.State, clip(status.Reason, width/3))
+		}
+	case "interrupted":
+		var interruption agent.Interruption
+		if json.Unmarshal(record.Payload, &interruption) == nil {
+			return fmt.Sprintf("%-12s %-8s boundary %d", "interrupted", interruption.Intent, interruption.Boundary)
+		}
+	case "artifact":
+		var artifact agent.Artifact
+		if json.Unmarshal(record.Payload, &artifact) == nil {
+			return fmt.Sprintf("%-12s %-10s %s", "artifact", clip(artifact.MediaType, 10), clip(artifact.Blob, 16))
+		}
 	}
 	if settings.format != nil {
 		if line, ok := settings.format(record); ok {

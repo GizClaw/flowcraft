@@ -76,9 +76,14 @@ type Run struct {
 	// save writes it into the checkpoint.
 	manifest        agent.Manifest
 	manifestWritten bool
+	// published is what this task has produced, carried forward from the
+	// checkpoint it was restored from. The projection writes it on every step so a
+	// later save cannot erase an artifact an earlier turn recorded, and the turn
+	// decorator's terminal write is the same list.
+	published []agent.Artifact
 	// trace is how much of the run is traced: spans, and the per-call evidence
 	// the tier carries.
-	trace agent.TraceLevel
+	trace telemetry.TraceLevel
 	// bodies keeps each recorded model response's bytes, which is what a replay
 	// answers from.
 	bodies bool
@@ -247,6 +252,10 @@ func (r *Run) Answer(ctx context.Context, content message.Content) iter.Seq2[age
 // advance drives the frontier loop.
 func (r *Run) advance(ctx context.Context, yield func(agent.Event, error) bool) {
 	defer r.reportDropped(yield)
+	// The run's own level is authoritative for its subtree. Inside a turn this is the same
+	// value the decorator attached; a caller that drives a graph directly — a test, a CLI —
+	// gets its WithTrace honoured instead of falling back to "record everything".
+	ctx = telemetry.WithTrace(ctx, r.trace)
 	switch r.state {
 	case agent.StateInputRequired:
 		yield(nil, fmt.Errorf("graph: run is waiting for input; call Answer"))
@@ -391,16 +400,11 @@ func (r *Run) frontier(ctx context.Context, yield func(agent.Event, error) bool)
 	return frontierContinue, nil
 }
 
-// startStepSpan opens the step span. With tracing off it returns the context
-// unchanged and a no-op end, so the loop pays one branch.
+// startStepSpan opens the step span. The floor is the level's own promise, and the loop
+// pays one comparison when the deployment records less.
 func (r *Run) startStepSpan(ctx context.Context) (context.Context, func(error)) {
-	if r.trace == agent.TraceNone {
-		return ctx, func(error) {}
-	}
-	if !r.trace.AtLeast(agent.TraceRun) {
-		return ctx, func(error) {}
-	}
-	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.step",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("graph"), "graph.step",
+		telemetry.TraceRun,
 		trace.WithAttributes(telemetry.Attrs(ctx)...),
 		trace.WithAttributes(
 			attribute.Int("graph.step", r.step+1),
@@ -408,20 +412,15 @@ func (r *Run) startStepSpan(ctx context.Context) (context.Context, func(error)) 
 			attribute.Int("graph.routed", r.routed),
 		))
 	return ctx, func(err error) {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "")
-		}
+		failSpan(ctx, span, err)
 		span.End()
 	}
 }
 
 // startNodeSpan opens one node's span, a child of the step span.
 func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (context.Context, func(error)) {
-	if !r.trace.AtLeast(agent.TraceNode) {
-		return ctx, func(error) {}
-	}
-	ctx, span := telemetry.TracerWithSuffix("graph").Start(ctx, "graph.node",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("graph"), "graph.node",
+		telemetry.TraceNode,
 		trace.WithAttributes(telemetry.Attrs(ctx)...),
 		trace.WithAttributes(
 			attribute.Int("graph.step", r.step+1),
@@ -429,12 +428,27 @@ func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (cont
 			attribute.String("graph.node.kind", kind.Name()),
 		))
 	return ctx, func(err error) {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "")
-		}
+		failSpan(ctx, span, err)
 		span.End()
 	}
+}
+
+// failSpan marks a driver span failed without writing the error's text onto it.
+//
+// The message carries paths, ids and provider wording, which is the one thing the
+// observability rules keep off a span; the classification is what a reader groups by, and
+// the log record beside it keeps the detail.
+func failSpan(ctx context.Context, span trace.Span, err error) {
+	if err == nil {
+		return
+	}
+	kind := agent.FailureUnclassified
+	if recorded, ok := agent.FailureKindFrom(ctx); ok {
+		kind = recorded
+	}
+	span.SetAttributes(attribute.String(telemetry.AttrErrorKind, string(kind)))
+	span.SetStatus(codes.Error, string(kind))
+	telemetry.WarnErr(ctx, "graph: a step failed", err)
 }
 
 // classify records why a node failed, in the turn's closed vocabulary.
@@ -1122,14 +1136,27 @@ func (r *Run) publish(ctx context.Context, value Value, yield func(agent.Event, 
 				return false
 			}
 		}
-		return yield(agent.ArtifactWritten{Artifact: agent.Artifact{
+		artifact := agent.Artifact{
 			ID:        blob,
 			MediaType: media.MediaType,
 			Blob:      blob,
-		}}, nil)
+		}
+		r.published = appendUniqueArtifact(r.published, artifact)
+		return yield(agent.ArtifactWritten{Artifact: artifact}, nil)
 	}
 	yield(nil, fmt.Errorf("graph: output %q is %q, which cannot be reported", r.g.output, value.Kind()))
 	return false
+}
+
+// appendUniqueArtifact keeps the projection's artifact list free of a blob it already names.
+func appendUniqueArtifact(into []agent.Artifact, artifact agent.Artifact) []agent.Artifact {
+	for i := range into {
+		if into[i].Blob == artifact.Blob {
+			into[i] = artifact
+			return into
+		}
+	}
+	return append(into, artifact)
 }
 
 // lastMedia returns the first media part of the newest message that has one.

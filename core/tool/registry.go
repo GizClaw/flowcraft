@@ -576,7 +576,8 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 // measures real work — an MCP handshake, a process spawn, a schema fetch —
 // instead of adding a span to every executed call.
 func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
-	ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, "tool.load",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("tool"), "tool.load",
+		telemetry.TraceCall,
 		trace.WithAttributes(attribute.String(telemetry.AttrToolName, p.spec.Name)))
 	// The runtime identity the host attached, so a lazy load is attributable to
 	// the runtime that triggered it.

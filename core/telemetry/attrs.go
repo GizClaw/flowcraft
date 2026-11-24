@@ -103,6 +103,20 @@ const (
 	// slow save asks.
 	AttrCheckpointEvents = "checkpoint.events"
 
+	// ----- A2A peers -----
+
+	// AttrA2APeerTaskID identifies the task at the far end of a proxied run. The local
+	// task id names the row on this side; this is what a reader quotes when asking the
+	// peer what it did.
+	AttrA2APeerTaskID = "a2a.peer_task_id"
+
+	// AttrA2AContextID identifies the peer's conversation. It outlives the peer's task,
+	// which is why it is a separate key rather than part of the task id.
+	AttrA2AContextID = "a2a.context_id"
+
+	// AttrA2AState is the lifecycle the peer last reported.
+	AttrA2AState = "a2a.state"
+
 	// ----- Tools -----
 
 	// AttrToolName identifies the dispatched tool. It is the attribute that makes a

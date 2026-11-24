@@ -56,7 +56,8 @@ type routeCall struct {
 
 // startRoute opens the route span.
 func startRoute(ctx context.Context, operation string) (context.Context, *routeCall) {
-	ctx, span := telemetry.TracerWithSuffix("inference/route").Start(ctx, "llm.route",
+	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("inference/route"), "llm.route",
+		telemetry.TraceCall,
 		trace.WithAttributes(
 			attribute.String(telemetry.AttrInferenceOperation, operation),
 		))

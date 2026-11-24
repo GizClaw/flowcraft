@@ -93,6 +93,41 @@ func TestUnaryCallEmitsOneSpan(t *testing.T) {
 	}
 }
 
+// TestTheTraceLevelDecidesTheCallSpan is the level's promise at the model layer: below "call"
+// the round trip still runs, still reports usage and still logs, and only the span is withheld.
+func TestTheTraceLevelDecidesTheCallSpan(t *testing.T) {
+	for _, tc := range []struct {
+		level telemetry.TraceLevel
+		want  int
+	}{
+		{telemetry.TraceNone, 0},
+		{telemetry.TraceRun, 0},
+		{telemetry.TraceCall, 1},
+		{telemetry.TraceNode, 1},
+	} {
+		t.Run(tc.level.String(), func(t *testing.T) {
+			recorder := telemetrytest.New(t)
+			driver := bindGenerateDriver(t, func() (inference.GenerateResponse, error) {
+				response := unaryResponse("ok")
+				response.Usage = outcome.Usage{InputTokens: 3, OutputTokens: 1}
+				return response, nil
+			})
+			ctx := telemetry.WithTrace(context.Background(), tc.level)
+			response, err := driver.Execute(ctx, request(t))
+			if err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			// The call is measured whether or not it is traced.
+			if response.Usage.InputTokens != 3 {
+				t.Fatalf("usage = %+v, want the provider's", response.Usage)
+			}
+			if got := len(recorder.Named("llm.generate")); got != tc.want {
+				t.Fatalf("llm.generate spans = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestUnaryCallRecordsErrorKind pins that a failure is classified on the span and
 // that the payload-bearing message is not copied onto it.
 func TestUnaryCallRecordsErrorKind(t *testing.T) {

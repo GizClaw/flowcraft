@@ -20,24 +20,36 @@
 // implementation must pass through. The names below are a fixed enumeration, and
 // the dimension that varies (tool, model, exit code) is an attribute:
 //
-//	span name                    emitted by
-//	sandbox.exec                 core/sandbox           (one executed command)
-//	tool.execute                 tool/middleware        (one dispatched call)
-//	tool.load                    core/tool/projection   (lazy tool materialisation)
-//	mcp.connect                  core/tool-mcp          (server connect / reconnect)
-//	llm.route                    core/inference/route   (selection, retry, failover)
-//	llm.generate|embed|decide    core/inference/pipeline (transport, decode, usage)
+//	span name                    emitted by                  floor
+//	host.session.open            core/host                   none
+//	host.run                     core/host                   none
+//	host.cancel                  core/host                   none
+//	host.delegate.async          core/host                   none
+//	agent.turn                   core/agent                  none
+//	checkpoint.save              core/agent                  run
+//	graph.step                   agent/graph                 run
+//	graph.node                   agent/graph                 node
+//	sandbox.exec                 core/sandbox                call
+//	tool.execute                 tool/middleware             call
+//	tool.load                    core/tool                   call
+//	mcp.connect                  tool/mcp                    call
+//	llm.route                    core/inference/route        call
+//	llm.generate|embed|decide    inference/pipeline          call
+//	a2a.send                     agent/a2a                   call
 //
-// Only the first is implemented today; the others arrive with the batches that
-// add the packages beside them.
+// The floor is the trace level a span is worth at, and every producer states it
+// where it opens the span: [Start] compares it against the level the turn attached
+// with [WithTrace]. A deployment that records less gets no span, and still gets the
+// metric and the log record beside it — the level decides how much *evidence* a run
+// leaves, not whether it is measured.
+//
+// The root of a tree — a run, a turn — belongs to the host. Core does not know
+// where a turn starts, and a guessed boundary is worse than none.
 //
 // A span named "bash.execute" is what this rule forbids: it makes the name's
 // cardinality equal to the tool count, so every dashboard has to filter by name
 // instead of grouping by it: emit "tool.execute" and put the tool's name in an
 // attribute.
-//
-// The root of a tree — a run, a turn — belongs to the host. Core does not know
-// where a turn starts, and a guessed boundary is worse than none.
 //
 // # Three rules for producers
 //
@@ -53,8 +65,18 @@
 // # Degradation
 //
 // Every producer must work with no provider installed, no parent span in the
-// context, and no run identity attached: a missing parent makes a root span, and
-// a missing identity omits the attributes rather than writing empty strings. This
-// is what lets core ship instrumentation before the agent layer that will own the
-// root span exists.
+// context, no run identity attached and no level attached: a missing parent makes a
+// root span, a missing identity omits the attributes rather than writing empty
+// strings, and a missing level records everything — a producer does not stop
+// emitting because nobody told it how much to keep.
+//
+// # Where the level lives
+//
+// [TraceLevel] is declared here, not in the agent contract, because the layers that
+// open spans cannot import it: the tool registry, the inference pipeline and a
+// sandbox backend all sit below `core/agent`, and `core/agent` already depends on two
+// of them. The vocabulary therefore lives with the instrumentation that enforces it,
+// and the deployment layers import this package for it. Nothing about the decision
+// moved: a document still writes `none|run|call|node`, `deploy` still parses it, and
+// the turn is still the layer that attaches the answer.
 package telemetry

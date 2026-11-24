@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
@@ -187,7 +188,7 @@ func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStre
 	if err != nil {
 		return nil, fmt.Errorf("model: %w", err)
 	}
-	record := in.Trace.AtLeast(agent.TraceNode) || in.Replay
+	record := in.Trace.AtLeast(telemetry.TraceNode) || in.Replay
 	bodies := in.Bodies || in.Replay
 	var digests []agent.MessageDigest
 	var segments []agent.PromptSegment
@@ -479,8 +480,16 @@ type modelStream struct {
 	// finished is a call that arrived whole: a non-streaming request results in one
 	// response, not a sequence of deltas.
 	finished *inference.GenerateResponse
-	result   graph.Result
-	done     bool
+	// reportedUsage says the round's accounting already went out on the stream. A
+	// provider that sends usage deltas reports it before the terminal event; one that
+	// sends the whole response at the end never sends one at all, and the turn would
+	// then believe the call cost nothing.
+	reportedUsage bool
+	// pendingUsage carries the accounting the response held when the stream did not
+	// report it. It goes out after the answer, so a consumer sees text before totals.
+	pendingUsage *outcome.Usage
+	result       graph.Result
+	done         bool
 }
 
 func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
@@ -490,6 +499,11 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 		event := s.pending
 		s.pending = nil
 		return event, nil
+	}
+	if s.pendingUsage != nil {
+		usage := *s.pendingUsage
+		s.pendingUsage = nil
+		return s.report(agent.UsageEvent{Usage: usage}), nil
 	}
 	if s.done {
 		return nil, io.EOF
@@ -501,7 +515,7 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 		// A call asked for a finished response still advances the discovery pool:
 		// it is a live call, it just did not arrive in pieces.
 		s.advanceRound()
-		return s.answer(*s.finished)
+		return s.answered(*s.finished)
 	}
 	if s.replay != nil {
 		if !s.announced {
@@ -517,7 +531,7 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 		if err := json.Unmarshal(s.replay.Response, &msg); err != nil {
 			return nil, fmt.Errorf("model: replay response: %w", err)
 		}
-		return s.answer(inference.GenerateResponse{
+		return s.answered(inference.GenerateResponse{
 			Message:      msg,
 			Usage:        s.replay.Usage,
 			FinishReason: inference.FinishReason(s.replay.StopReason),
@@ -541,10 +555,14 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 			// call that used it.
 			s.advanceRound()
 			s.done = true
+			s.queueUsage(response.Usage)
 			// An answer with no text still opened a round; the opening is all a
 			// caller gets for it.
 			if !s.announced {
 				return s.open(), nil
+			}
+			if s.pendingUsage != nil {
+				return s.Next(ctx)
 			}
 			return nil, io.EOF
 		}
@@ -564,6 +582,7 @@ func (s *modelStream) Next(ctx context.Context) (agent.Event, error) {
 			return s.report(agent.Reasoning{Text: event.Text}), nil
 		case inference.StreamUsage:
 			if event.Usage != nil {
+				s.reportedUsage = true
 				return s.report(agent.UsageEvent{Usage: *event.Usage}), nil
 			}
 		}
@@ -687,10 +706,50 @@ func (s *modelStream) answer(response inference.GenerateResponse) (agent.Event, 
 	}
 	s.result = result
 	s.done = true
+	s.queueUsage(response.Usage)
 	if text := response.Message.Content.Text(); text != "" {
 		return agent.Text{Text: text}, nil
 	}
 	return nil, io.EOF
+}
+
+// answered forwards a response that arrived whole, and makes sure its accounting is not lost.
+//
+// A stream reports usage in its own delta; a response that arrives whole has no such event,
+// so the totals exist only in the response. Returning io.EOF here would end the round without
+// ever telling the caller what it cost, which is what made a non-streaming provider look free
+// in every aggregate downstream.
+func (s *modelStream) answered(response inference.GenerateResponse) (agent.Event, error) {
+	event, err := s.answer(response)
+	switch {
+	case errors.Is(err, io.EOF):
+		// The answer carried no text; the accounting may still be news.
+		if s.pendingUsage != nil {
+			usage := *s.pendingUsage
+			s.pendingUsage = nil
+			return s.report(agent.UsageEvent{Usage: usage}), nil
+		}
+		return nil, io.EOF
+	case err != nil:
+		return nil, err
+	}
+	return event, nil
+}
+
+// queueUsage keeps the response's accounting for the next event when the stream did not
+// report it itself. Text goes first: a consumer that shows totals before the answer would be
+// reporting a call it has not finished reading.
+func (s *modelStream) queueUsage(usage outcome.Usage) {
+	if s.reportedUsage || !usageWorthReporting(usage) {
+		return
+	}
+	s.pendingUsage = &usage
+}
+
+// usageWorthReporting reports whether a response carried accounting a caller can use.
+func usageWorthReporting(usage outcome.Usage) bool {
+	return usage.InputTokens > 0 || usage.OutputTokens > 0 ||
+		usage.Billing != nil || len(usage.Work) > 0
 }
 
 // generate performs one non-streaming call through the process's model access.

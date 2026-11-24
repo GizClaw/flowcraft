@@ -4,9 +4,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // parseRoute turns the written retry policy into the value the router takes.
@@ -52,7 +52,7 @@ func observability(doc observabilityDocument) (Observability, error) {
 		return Observability{}, errdefs.Validationf(
 			"deploy: observability.trace is required (none, run, call or node)")
 	}
-	trace, err := agent.ParseTraceLevel(doc.Trace)
+	trace, err := telemetry.ParseTraceLevel(doc.Trace)
 	if err != nil {
 		return Observability{}, errdefs.Validationf("deploy: observability.trace: %v", err)
 	}

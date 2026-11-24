@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
@@ -81,5 +82,52 @@ func TestEvictionIsCounted(t *testing.T) {
 	got := recorder.Collect(t)
 	if value, ok := got.SumWhere("host.evicted", map[string]string{"agent.name": "referee"}); !ok || value != 1 {
 		t.Fatalf("evicted = %v (ok=%v); emitted: %v", value, ok, got.Names())
+	}
+}
+
+// TestCancelIsCountedAndSpanned is the operator's footprint: the cancel runs on the caller's
+// goroutine and in the caller's trace, so it gets a span of its own — and a series, because the
+// interesting signal is the rate of cancels that found nothing to stop.
+func TestCancelIsCountedAndSpanned(t *testing.T) {
+	recorder := telemetrytest.Meters(t)
+	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
+	agents, _ := runnableHost(t, driver)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+		}
+	}()
+	// Wait until the turn is in flight: Cancel addresses the running one.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		session, _ := agents.Session("s1")
+		if session != nil && session.running.Load() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the turn never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := agents.Cancel(t.Context(), "s1", "operator changed their mind"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	// A second cancel finds no turn: counted as idle rather than failing the test's intent.
+	if err := agents.Cancel(t.Context(), "s1", "again"); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Fatalf("second Cancel = %v, want ErrSessionIdle", err)
+	}
+	close(driver.block)
+	<-done
+
+	got := recorder.Collect(t)
+	// This driver forwards to a peer, so the first cancel is counted as forwarded and the
+	// second as idle: one reached a turn, the other found none.
+	for _, want := range []string{"forwarded", "idle"} {
+		value, ok := got.SumWhere("host.cancels", map[string]string{"outcome": want})
+		if !ok || value != 1 {
+			t.Fatalf("cancels[%s] = %v (ok=%v); emitted: %v", want, value, ok, got.Names())
+		}
 	}
 }
