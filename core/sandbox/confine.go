@@ -63,13 +63,23 @@ func ValidateConfine(confine Confine, caps Enforcement) error {
 			"sandbox: the backend cannot honour an environment allow-list; it would forward the whole host environment")
 	}
 
-	limits := confine.Resources
+	return ValidateBudgets(confine.Resources, caps)
+}
+
+// ValidateBudgets reports whether the backend can enforce the budgets a session asks for.
+//
+// It is the per-call half of [ValidateConfine], and it exists because [Confine.Narrow] cannot answer
+// the question: a ceiling of zero means "unbounded", so a call may name a budget the instance never
+// claimed. A backend calls this after narrowing and refuses what it cannot enforce, instead of running
+// the command uncapped and reporting success — a budget that quietly lost its value is
+// indistinguishable from one that never had it.
+func ValidateBudgets(res policy.Resources, caps Enforcement) error {
 	switch {
-	case limits.DiskBytes > 0 && !caps.DiskCap:
+	case res.DiskBytes > 0 && !caps.DiskCap:
 		return errdefs.NotAvailablef("sandbox: disk limits are not enforced by this backend")
-	case limits.MemoryBytes > 0 && !caps.MemoryCap:
+	case res.MemoryBytes > 0 && !caps.MemoryCap:
 		return errdefs.NotAvailablef("sandbox: memory limits are not enforced by this backend")
-	case limits.CPUMillicores > 0 && !caps.CPUCap:
+	case res.CPUMillicores > 0 && !caps.CPUCap:
 		return errdefs.NotAvailablef("sandbox: cpu limits are not enforced by this backend")
 	}
 	return nil

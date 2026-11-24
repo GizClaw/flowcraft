@@ -31,6 +31,24 @@ type ProcessPlan struct {
 	// Route is the retry and fan-out policy for model calls. Selectors are the host's, so
 	// only the value-configured half is here.
 	Route route.RetryPolicy
+	// Observability is how much of a turn this process records. It is a process fact because
+	// everything it controls — the tool chain, the model access, the backends — is built once
+	// for the process, so a level two agents could disagree about would be a knob with no effect.
+	Observability Observability
+}
+
+// Observability is how much of a turn the process records: the trace level and whether a
+// model response's bytes are kept.
+//
+// Both fields are required by the document. A process that left one out would inherit
+// something, and there is nothing to inherit: "we record nothing" and "nobody said" are
+// different facts, and the second one is how a deployment ends up with no trace at all.
+type Observability struct {
+	// Trace is how much of every turn is recorded. See [agent.TraceLevel].
+	Trace agent.TraceLevel
+	// Bodies keeps the bytes of each model response, which is what a replay answers from. It
+	// is a retention decision rather than a level: the answer is the user's content.
+	Bodies bool
 }
 
 // PlannedMiddleware is one link of the tool chain, resolved but not built.
@@ -96,10 +114,6 @@ type Deployment struct {
 	Program PlannedProgram
 	// Grant is the authority its sessions run under, already validated.
 	Grant policy.Grant
-	// Trace is how much of a turn this agent records.
-	Trace agent.TraceLevel
-	// Bodies keeps the bytes of this agent's model responses.
-	Bodies bool
 	// Hooks are the lifecycle policies attached to it, in declaration order. Each one carries
 	// its own settings because a hook without them cannot do anything: forge's seat memory
 	// needs a directory and a retention count.

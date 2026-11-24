@@ -22,6 +22,12 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	if err != nil {
 		return nil, err
 	}
+	// Narrow is arithmetic: it resolves a request against the ceiling, but a ceiling of zero means
+	// "unbounded", so the call may name a budget this backend never claimed. Refusing it here is the
+	// per-call half of the construction-time confine check.
+	if err := sandbox.ValidateBudgets(opts.Resources, r.caps.Policy); err != nil {
+		return nil, err
+	}
 	workDir, err := resolveWorkDir(opts.WorkDir)
 	if err != nil {
 		return nil, err

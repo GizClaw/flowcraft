@@ -33,6 +33,10 @@ type processDocument struct {
 	Inference inferenceDocument `json:"inference,omitempty"`
 	Tools     toolsDocument     `json:"tools,omitempty"`
 	Skills    skillsDocument    `json:"skills,omitempty"`
+	// Observability is how much of a turn this process records. It belongs to the process and
+	// not to an agent because everything it controls is built once for the process: the tool
+	// chain, the model access, the backends. See [Observability].
+	Observability observabilityDocument `json:"observability,omitempty"`
 }
 
 // inferenceDocument is the model half: the targets this process serves, and how a call fails
@@ -67,6 +71,10 @@ type routeDocument struct {
 }
 
 // observabilityDocument is how much of a turn to record.
+//
+// Both fields are pointers, so "absent" is distinguishable from the value that happens to be
+// the zero one: a process that wrote nothing gets a validation error instead of a silent
+// "record nothing".
 type observabilityDocument struct {
 	Trace  string `json:"trace,omitempty"`
 	Bodies *bool  `json:"bodies,omitempty"`
@@ -99,11 +107,10 @@ type agentDocument struct {
 type agentEntry struct {
 	// Name is the agent's identity: what a host addresses it by, and what layer merging uses
 	// to decide which entry an overlay is rewriting.
-	Name          string                `json:"name"`
-	Program       programDocument       `json:"program"`
-	Grant         policy.Grant          `json:"grant,omitempty"`
-	Observability observabilityDocument `json:"observability,omitempty"`
-	Hooks         []hookDocument        `json:"hooks,omitempty"`
+	Name    string          `json:"name"`
+	Program programDocument `json:"program"`
+	Grant   policy.Grant    `json:"grant,omitempty"`
+	Hooks   []hookDocument  `json:"hooks,omitempty"`
 }
 
 // hookDocument is one lifecycle policy: an implementation and its settings.
