@@ -9,3 +9,5 @@ require (
 	go.opentelemetry.io/otel/metric v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
 )
+
+require github.com/modelcontextprotocol/go-sdk v1.8.0 // indirect
