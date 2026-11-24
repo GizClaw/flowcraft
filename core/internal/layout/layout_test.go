@@ -1,6 +1,11 @@
 package layout_test
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"io/fs"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -198,17 +203,103 @@ func TestInjectIsCalledFromTheAssembly(t *testing.T) {
 	}
 }
 
-// TestOnlyTheHostHoldsTheRuntime is L-ASSEMBLY: "the assembly layer owns the runtime" is
-// only true if nothing else can reach it, which is a property of the import graph.
-func TestOnlyTheHostHoldsTheRuntime(t *testing.T) {
-	allowed := map[string]bool{"host": true}
+// TestDeployKnowsNoHost is L-DEPLOY: the document layer must not know that a session layer
+// exists. It is the arrow the retirement of L-ASSEMBLY traded for, and like every guard here it
+// has to be a test — `deploy` and `host` share a layer, so TestImportsPointDown permits it.
+func TestDeployKnowsNoHost(t *testing.T) {
+	// Package.Imports carries paths relative to the module, because that is what the layer
+	// table speaks.
+	const host = "host"
 	for _, pkg := range packages(t) {
+		if !strings.HasPrefix(pkg.Dir, "deploy") {
+			continue
+		}
 		for _, imported := range append(append([]string{}, pkg.Imports...), pkg.TestImports...) {
-			if imported == "runtime" && !allowed[pkg.Dir] {
-				t.Errorf("%s imports runtime: only host may hold the assembled process", pkg.Dir)
+			if imported == host {
+				t.Errorf("%s imports host: a document describes a deployment, it does not know one is running",
+					pkg.Dir)
 			}
 		}
 	}
+}
+
+// TestOnlyTheHostNamesTheProcess is the property L-ASSEMBLY was retired for: the process is
+// something only `host` can hold, so no other package may name its type. An exported type makes
+// that a guard rather than a type fact — `Open` has to return something — and the guard is what
+// keeps a second layer from storing one in a struct of its own.
+func TestOnlyTheHostNamesTheProcess(t *testing.T) {
+	for dir, reference := range hostTypeReferences(t) {
+		t.Errorf("%s names host.%s: only host may hold the assembled process", dir, reference)
+	}
+}
+
+// hostTypeReferences finds every non-test core file outside package host that names an
+// exported type of it, which is what "the process cannot be held by another layer" means now
+// that the type has to be exported for Open to return it.
+func hostTypeReferences(t *testing.T) map[string]string {
+	t.Helper()
+	root, err := layout.Root()
+	if err != nil {
+		t.Fatalf("layout.Root: %v", err)
+	}
+	found := map[string]string{}
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			base := entry.Name()
+			if path != root && (strings.HasPrefix(base, ".") || strings.HasPrefix(base, "_") || base == "testdata") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+		if err != nil {
+			return err
+		}
+		alias := ""
+		for _, spec := range file.Imports {
+			if strings.Trim(spec.Path.Value, `"`) != "github.com/GizClaw/flowcraft/core/host" {
+				continue
+			}
+			alias = "host"
+			if spec.Name != nil {
+				alias = spec.Name.Name
+			}
+		}
+		if alias == "" || alias == "_" {
+			return nil
+		}
+		dir, relErr := filepath.Rel(root, filepath.Dir(path))
+		if relErr != nil {
+			return relErr
+		}
+		dir = filepath.ToSlash(dir)
+		if dir == "host" || strings.HasPrefix(dir, "host/") {
+			return nil
+		}
+		ast.Inspect(file, func(node ast.Node) bool {
+			selector, ok := node.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := selector.X.(*ast.Ident)
+			if !ok || ident.Name != alias {
+				return true
+			}
+			found[dir] = selector.Sel.Name
+			return false
+		})
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scan for host type references: %v", err)
+	}
+	return found
 }
 
 // TestOptionalImplementationsAreNotImported is L-OPTIONAL: the contract may not reach for

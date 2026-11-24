@@ -39,6 +39,5 @@
 // [Turn] is what a host calls: it attaches turn identity, opens the span, forwards the
 // driver's events unchanged, saves the terminal checkpoint and classifies the failure.
 // Putting that in one place is what keeps every driver from re-deriving it — and what
-// makes the observability rules in docs/plans/agent-turn.md hold for drivers written
-// later.
+// makes the observability rules hold for drivers written later.
 package agent
