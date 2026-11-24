@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,22 @@ import (
 
 // The capability slots a session fills.
 //
+// OpenOption configures one session's open.
+type OpenOption func(*openOptions)
+
+type openOptions struct {
+	chain identity.Chain
+}
+
+// WithChain records the delegation lineage the session runs under.
+//
+// It is the only way a session learns it is somebody's child: a caller-opened session has no
+// chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
+// grant's max_depth counts was always zero, so the limit never fired.
+func WithChain(chain identity.Chain) OpenOption {
+	return func(o *openOptions) { o.chain = chain }
+}
+
 // Session is one open conversation under one deployment.
 //
 // It is where the four nouns meet: the agent it belongs to, the cell that isolates it, the binding
@@ -146,16 +163,22 @@ func (s *Session) Binding() tool.Binding { return s.binding }
 //
 // Everything expensive — the backend instance, the file handles, the driver — happens outside the
 // table's lock, so opening one session never delays a turn in another.
-func (a *Agents) Open(ctx context.Context, sessionID, agentName string) (*Session, error) {
+func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...OpenOption) (*Session, error) {
 	if sessionID == "" {
 		return nil, errdefs.Validationf("host: a session needs an id")
+	}
+	var opening openOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&opening)
+		}
 	}
 	deploy, err := a.admit(agentName, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy)
+	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy, opening)
 	if err != nil {
 		return nil, err
 	}
@@ -214,7 +237,7 @@ func (a *Agents) admit(agentName, sessionID string) (*deployment, error) {
 }
 
 // buildSession builds one session's cell, binding and driver. It holds no lock.
-func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, deploy *deployment) (*Session, trace.Span, error) {
+func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, deploy *deployment, opening openOptions) (*Session, trace.Span, error) {
 	// The span starts before the boundary is built, so a failure to build one is inside the session's
 	// own trace rather than a span of its own.
 	probe := &Session{id: sessionID, agent: agentName, tenant: a.tenant, authority: a.authority, deploy: deploy}
@@ -274,6 +297,12 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		cell:      built,
 		binding:   binding,
 		driver:    driver,
+		chain:     opening.chain,
+	}
+	if err := a.announceSession(ctx, session); err != nil {
+		openErr := errors.Join(err, session.close())
+		failSessionSpan(ctx, span, openErr)
+		return nil, span, openErr
 	}
 	session.touchNow(time.Now())
 	// Delegation is filled only where the grant permits it: a session that may not delegate gets no
@@ -288,6 +317,38 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	}
 	span.End()
 	return session, span, nil
+}
+
+// announceSession runs the deployment's OnSession hook for the conversation that is about to
+// exist.
+//
+// It is the boundary the hook is documented on — "after a session is opened or restored, before
+// its turn" — and the only place that knows both: the store read that says whether this is a
+// resume happens here, once, rather than on every turn. An error refuses the open: a host that
+// cannot prepare its memory should not run a turn blind.
+func (a *Agents) announceSession(ctx context.Context, session *Session) error {
+	hooks := session.deploy.hooks
+	if hooks.OnSession == nil {
+		return nil
+	}
+	info := agent.SessionInfo{Agent: session.agent, SessionID: session.id, State: agent.StateSubmitted}
+	if a.store != nil {
+		loaded, err := a.store.LatestForSession(ctx, session.id)
+		switch {
+		case err == nil && !loaded.Task.State.Terminal():
+			info.State = loaded.Task.State
+			info.TaskID = loaded.Task.ID
+			info.Resumed = true
+		case err == nil, errors.Is(err, agent.ErrNoCheckpoint):
+			// A finished task is history, not a resume point; a missing one is a new conversation.
+		default:
+			return fmt.Errorf("host: session %q: reading its checkpoint: %w", session.id, err)
+		}
+	}
+	if err := hooks.OnSession(ctx, info); err != nil {
+		return fmt.Errorf("host: agent %q: on-session hook: %w", session.agent, err)
+	}
+	return nil
 }
 
 // Sessions lists the open session ids under one agent, oldest first.

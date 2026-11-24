@@ -166,7 +166,19 @@ func (s *Session) identity(ctx context.Context) context.Context {
 		// A host that already attached an identity owns the trace; the turn runs under it.
 		return ctx
 	}
-	return attached
+	if s.chain.ID == "" {
+		return attached
+	}
+	// The chain goes on after the session, because that is the order the injection points
+	// allow: a lineage is a fact about a run that already has a conversation. Failing here is a
+	// programming error rather than a deployment one — the session either has a chain at open or
+	// it does not — so the turn keeps the session identity and the loss is logged.
+	withChain, chainErr := inject.Chain(attached, s.chain)
+	if chainErr != nil {
+		telemetry.WarnErr(ctx, "host: attaching the delegation lineage failed", chainErr)
+		return attached
+	}
+	return withChain
 }
 
 // request assembles one turn's request.

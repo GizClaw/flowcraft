@@ -148,6 +148,20 @@ func Lookup(ctx context.Context) (Run, bool) {
 	return run, ok
 }
 
+// Detach returns ctx without a run identity.
+//
+// It exists for one case: a run started from inside another run — a delegated child — must
+// attach its own identity, and the injection points refuse to overwrite one that is already
+// there. Stripping the outer identity is the caller saying "this context is now mine", which is
+// exactly what a nested run needs and what nothing else may do.
+func Detach(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runKey{}, detachMarker{})
+}
+
+// detachMarker is what a detached context carries: a value of another type, so [Lookup]'s type
+// assertion fails and no producer can mistake it for an identity.
+type detachMarker struct{}
+
 // Attach returns ctx carrying run.
 //
 // It is the only way to put identity on a context, and it is exported for
