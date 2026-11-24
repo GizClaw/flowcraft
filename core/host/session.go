@@ -38,29 +38,95 @@ type Session struct {
 	// chain is the delegation lineage this session runs under: empty for a session a caller opened,
 	// one deeper for every edge below a delegate call.
 	chain identity.Chain
-	// running is true while a turn is in flight. One session has at most one, which is the rule
-	// that lets Steer and Cancel address a turn without an id.
-	running atomic.Bool
-	// cancelMu guards the running turn's cancellation, which is set while it streams.
-	cancelMu sync.Mutex
-	cancel   context.CancelFunc
+	// turnMu guards the turn slot: whether one is in flight, how to stop it, and whether the
+	// session is closing. One session has at most one turn, which is the rule that lets Steer and
+	// Cancel address a turn without an id — and the reason a close has to coordinate with it
+	// instead of just closing the driver underneath.
+	turnMu sync.Mutex
+	// running is true while a turn is in flight.
+	running bool
+	// cancel stops the running turn; nil when none is.
+	cancel context.CancelFunc
+	// closing is set by close before it stops the turn, so a turn that has not registered its
+	// cancellation yet cannot start after the close decision.
+	closing bool
+	// turnDone is closed when the turn in flight ends. A close waits on it before releasing the
+	// driver and the boundary the turn is using.
+	turnDone chan struct{}
+}
+
+// beginTurn claims the session's turn slot, or reports why it cannot.
+func (s *Session) beginTurn() error {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	switch {
+	case s.closing:
+		return errdefs.NotAvailablef("host: session %q is closing", s.id)
+	case s.running:
+		return errdefs.Conflictf("host: session %q already has a turn in flight", s.id)
+	}
+	s.running = true
+	s.turnDone = make(chan struct{})
+	return nil
+}
+
+// endTurn releases the slot and wakes a close that is waiting for the turn.
+func (s *Session) endTurn() {
+	s.turnMu.Lock()
+	s.running = false
+	done := s.turnDone
+	s.turnDone = nil
+	s.turnMu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+// isRunning reports whether a turn is in flight.
+func (s *Session) isRunning() bool {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.running
 }
 
 // setCancel records the running turn's cancellation, or clears it when the turn ends.
+//
+// A cancellation installed after a close has already decided to stop the session is applied
+// immediately: otherwise a close that arrived between beginTurn and this call would wait for a
+// turn nobody had told to stop.
 func (s *Session) setCancel(cancel context.CancelFunc) {
-	s.cancelMu.Lock()
-	defer s.cancelMu.Unlock()
+	s.turnMu.Lock()
 	s.cancel = cancel
+	closing := s.closing
+	s.turnMu.Unlock()
+	if closing && cancel != nil {
+		cancel()
+	}
 }
 
 // takeCancel hands back the running turn's cancellation and forgets it, so a second Cancel is a
 // no-op rather than a nil dereference.
 func (s *Session) takeCancel() context.CancelFunc {
-	s.cancelMu.Lock()
-	defer s.cancelMu.Unlock()
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
 	cancel := s.cancel
 	s.cancel = nil
 	return cancel
+}
+
+// beginClose marks the session closing, stops the turn in flight and returns the channel that
+// reports it ended (nil when nothing is running). The caller waits on it before releasing the
+// driver and the boundary: a turn that is still streaming tools must not have them closed under it.
+func (s *Session) beginClose() <-chan struct{} {
+	s.turnMu.Lock()
+	s.closing = true
+	cancel := s.cancel
+	done := s.turnDone
+	s.turnMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return done
 }
 
 // ID is the session's address.
@@ -288,6 +354,12 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		if session.agent != agentName || now.Sub(session.lastTouch()) < idle {
 			continue
 		}
+		// A turn in flight is not idle, however long it has been running: its session's last
+		// touch is the previous turn's, so a slow model call would otherwise look like an
+		// abandoned conversation and have its boundary torn out mid-command.
+		if session.isRunning() {
+			continue
+		}
 		expired = append(expired, session)
 		if retired := a.forgetLocked(session); retired != nil {
 			drained = append(drained, retired)
@@ -347,8 +419,12 @@ func (s *Session) touchNow(now time.Time) { s.touch.Store(now.UnixNano()) }
 // lastTouch is the last recorded activity.
 func (s *Session) lastTouch() time.Time { return time.Unix(0, s.touch.Load()) }
 
-// close releases the session's driver and its boundary.
+// close releases the session's driver and its boundary, after stopping and waiting out the turn
+// that may be using them.
 func (s *Session) close() error {
+	if done := s.beginClose(); done != nil {
+		<-done
+	}
 	var errs []error
 	if s.driver != nil {
 		if err := s.driver.Close(); err != nil {

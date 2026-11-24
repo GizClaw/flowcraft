@@ -71,7 +71,6 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	if _, err := d.agents.Open(ctx, child, target); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
-	defer func() { _ = d.agents.CloseSession(ctx, child) }()
 
 	chain := identity.Chain{ID: parent.chain.ID, Depth: parent.chain.Depth + 1}
 	outcome := platform.DelegationOutcome{
@@ -83,18 +82,33 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		// An async edge is a hand-off: the child is started and the caller gets its address. The run
 		// outlives the turn that asked for it, so it gets a root span of its own linked to the asking
 		// turn — a child of a span that has already ended would be a trace nobody can read.
-		parent := trace.SpanContextFromContext(ctx)
+		//
+		// The goroutine owns the child from here, including closing it: a close registered by the
+		// caller would run as this function returned and erase the session before the run it just
+		// started, which is what made every async edge a no-op with a "submitted" answer.
+		parentSpan := trace.SpanContextFromContext(ctx)
 		bgCtx, span := telemetry.TracerWithSuffix("host").Start(
 			withChain(context.WithoutCancel(ctx), chain), "host.delegate.async",
-			trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: parent}))
+			trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: parentSpan}))
+		outcome.Status = string(agent.StateSubmitted)
 		go func() {
 			defer span.End()
-			for range d.agents.Run(bgCtx, child, userMessage(req.Input)) {
+			// WithoutCancel: the close must land even when the asking turn has ended, and the
+			// session id is the only thing it needs.
+			defer func() { _ = d.agents.CloseSession(context.WithoutCancel(bgCtx), child) }()
+			for _, runErr := range d.agents.Run(bgCtx, child, userMessage(req.Input)) {
+				if runErr != nil {
+					// Nobody is waiting for this run: the log and the span are what a reader has.
+					telemetry.WarnErr(bgCtx, "host: an async delegation failed", runErr)
+				}
 			}
 		}()
-		outcome.Status = string(agent.StateSubmitted)
 		return outcome, nil
 	}
+
+	// A sync edge is a request: the child exists for as long as this call, and the caller's
+	// context is the one that bounds it.
+	defer func() { _ = d.agents.CloseSession(ctx, child) }()
 
 	release, err := d.acquire(ctx)
 	if err != nil {
@@ -231,6 +245,12 @@ func (d *delegator) child(session string) error {
 func (d *delegator) Status(ctx context.Context, session string) (platform.DelegationOutcome, error) {
 	if err := d.child(session); err != nil {
 		return platform.DelegationOutcome{}, err
+	}
+	if d.agents.store == nil {
+		// A host without a store keeps nothing to ask about: the child's state exists only in
+		// its driver, which this process does not hold.
+		return platform.DelegationOutcome{}, errdefs.NotAvailablef(
+			"host: delegation status needs a checkpoint store")
 	}
 	checkpoint, err := d.agents.store.Load(ctx, session)
 	if err != nil {

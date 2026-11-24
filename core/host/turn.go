@@ -101,11 +101,11 @@ func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message)
 			yield(nil, errdefs.NotFoundf("host: session %q is not open", sessionID))
 			return
 		}
-		if !session.running.CompareAndSwap(false, true) {
-			yield(nil, errdefs.Conflictf("host: session %q already has a turn in flight", sessionID))
+		if err := session.beginTurn(); err != nil {
+			yield(nil, err)
 			return
 		}
-		defer session.running.Store(false)
+		defer session.endTurn()
 
 		runCtx, cancel := context.WithCancel(session.identity(ctx))
 		session.setCancel(cancel)
@@ -242,7 +242,7 @@ func (a *Agents) Steer(ctx context.Context, sessionID string, in agent.SteerInpu
 		recordSteer(ctx, in, steerIdle)
 		return "", errdefs.NotFoundf("host: session %q is not open", sessionID)
 	}
-	if !session.running.Load() {
+	if !session.isRunning() {
 		recordSteer(ctx, in, steerIdle)
 		return "", agent.ErrSessionIdle
 	}
