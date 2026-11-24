@@ -1,6 +1,7 @@
 package host
 
 import (
+	"context"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -41,5 +42,37 @@ func TestAdmitDelegationChecksTargetModeAndDepth(t *testing.T) {
 				t.Fatalf("admitDelegation = %v, want a refusal", err)
 			}
 		})
+	}
+}
+
+// The three limits the policy gained: an input cap that is a permission, a timeout that stops a child
+// from taking its parent's turn with it, and a fan-out gate. The first and the third are checked
+// without running anything, which is what makes them testable before a child deployment exists.
+func TestDelegationLimitsAreThePolicys(t *testing.T) {
+	limited := policy.Delegation{
+		Targets:       []string{"seat_1"},
+		Modes:         []policy.DelegationMode{policy.DelegationSync},
+		MaxInputBytes: 8,
+	}
+	if limit := limited.InputLimit(); limit != 8 {
+		t.Fatalf("InputLimit = %d, want the policy's 8", limit)
+	}
+	if limit := (&policy.Delegation{}).InputLimit(); limit != policy.DefaultMaxInputBytes {
+		t.Fatalf("InputLimit = %d, want the default", limit)
+	}
+
+	gate := &delegator{gate: make(chan struct{}, 1)}
+	release, err := gate.acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	blocked, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := gate.acquire(blocked); !errdefs.IsInterrupted(err) && err == nil {
+		t.Fatal("a full gate admitted a second edge")
+	}
+	release()
+	if _, err := gate.acquire(context.Background()); err != nil {
+		t.Fatalf("acquire after release: %v", err)
 	}
 }

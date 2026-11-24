@@ -205,7 +205,11 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// capability, and a delegate tool registered in the process is then refused at registration
 	// instead of failing at the first call.
 	if deploy.grant.Delegation != nil {
-		platform.DelegationSlot.Provide(capabilities, &delegator{agents: a, parent: session})
+		head := &delegator{agents: a, parent: session}
+		if limit := deploy.grant.Delegation.MaxConcurrent; limit > 0 {
+			head.gate = make(chan struct{}, limit)
+		}
+		platform.DelegationSlot.Provide(capabilities, head)
 	}
 	span.End()
 	return session, span, nil

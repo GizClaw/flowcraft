@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,6 +27,22 @@ import (
 type delegator struct {
 	agents *Agents
 	parent *Session
+	// gate bounds in-flight synchronous edges. It is built from the policy that permits them, so a
+	// grant that names no limit gets an unbounded (nil) gate rather than an arbitrary one.
+	gate chan struct{}
+}
+
+// acquire takes one of the policy's concurrent-edge slots, or refuses.
+func (d *delegator) acquire(ctx context.Context) (func(), error) {
+	if d.gate == nil {
+		return func() {}, nil
+	}
+	select {
+	case d.gate <- struct{}{}:
+		return func() { <-d.gate }, nil
+	case <-ctx.Done():
+		return nil, errdefs.FromContext(ctx.Err())
+	}
 }
 
 var _ platform.Delegation = (*delegator)(nil)
@@ -40,6 +57,12 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	target := strings.TrimSpace(req.Target)
 	if err := admitDelegation(parent.policy, target, req.Mode, parent.chain); err != nil {
 		return platform.DelegationOutcome{}, err
+	}
+	// The input is the model's text, and a delegation is how a session moves it somewhere its own
+	// grant does not reach. The cap is the policy's, because how much may be moved is a permission.
+	if limit := parent.policy.InputLimit(); len(req.Input) > limit {
+		return platform.DelegationOutcome{}, errdefs.Validationf(
+			"host: delegation input is %d bytes, and the policy allows %d", len(req.Input), limit)
 	}
 
 	// One child per delegation edge: the id is derived so two edges of one chain are distinguishable,
@@ -73,8 +96,28 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		return outcome, nil
 	}
 
-	for event, runErr := range d.agents.Run(withChain(ctx, chain), child, userMessage(req.Input)) {
+	release, err := d.acquire(ctx)
+	if err != nil {
+		return outcome, err
+	}
+	defer release()
+
+	// A sync edge can outlive its parent's patience: the timeout is what stops a child that never
+	// finishes from taking the parent's turn with it, and cancelling the child is what stops the
+	// child from continuing to run unobserved after the answer was given up on.
+	runCtx := ctx
+	if timeout := parent.policy.Timeout.Std(); timeout > 0 {
+		var cancel context.CancelFunc
+		runCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+	for event, runErr := range d.agents.Run(withChain(runCtx, chain), child, userMessage(req.Input)) {
 		if runErr != nil {
+			if errors.Is(runErr, context.DeadlineExceeded) {
+				_ = d.agents.Cancel(context.WithoutCancel(ctx), child, "delegation timed out")
+				return outcome, errdefs.Timeoutf(
+					"host: delegation to %q exceeded %s", target, parent.policy.Timeout)
+			}
 			return outcome, runErr
 		}
 		foldDelegated(&outcome, event)
