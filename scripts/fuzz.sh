@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 
 time="${FUZZTIME:-15s}"
 
-# One entry per target, as "module:package function": the checkout is four
+# One entry per target, as "module:package function": the checkout is five
 # modules and a target runs in the module that owns its package.
 targets=(
 	"core:./internal/decode FuzzToJSON"
@@ -15,7 +15,7 @@ targets=(
 	"core:./internal/search FuzzSearch"
 	"core:./policy FuzzFilesNormalized"
 	"core:./sandbox FuzzNarrowIsMonotoneAndIdempotent"
-	"core:./tool/middleware FuzzTruncateJSONResult"
+	"tool:./middleware FuzzTruncateJSONResult"
 	"agent:./graph FuzzStateEvent"
 	"agent:./graph/script FuzzDecodeConfig"
 	"agent:./a2a/wire FuzzFromMessage"
