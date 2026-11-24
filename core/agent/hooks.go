@@ -64,11 +64,15 @@ type TurnInfo struct {
 
 // TurnOutcome is what a finished turn reached, as a hook sees it.
 //
-// It is deliberately not the host's Result: the terminal content and the artifact list
-// are a projection of the checkpoint, which the host owns. A hook gets the decision
-// (state) and the failure, which is what a policy is written against.
+// It is deliberately not the host's Result: the artifact list and the question a paused run asked are
+// a projection of the checkpoint, which the host owns, and a hook that needs them reads them from
+// there. What is here is what a policy is written against — the decision, the failure — plus the words
+// the turn produced, because that is the one thing a lifecycle policy (a seat's memory, an audit sink)
+// cannot recover from the checkpoint without replaying it.
 type TurnOutcome struct {
 	State TaskState
+	// Content is what the turn said: the assistant text its events accumulated.
+	Content message.Content
 	// Err is the failure that ended the turn, nil when it completed.
 	Err error
 	// Usage is the turn's accounting, so a hook can bill without reading the stream.

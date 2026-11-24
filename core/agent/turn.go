@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/identity/inject"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -143,6 +144,8 @@ func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Dr
 			outcome.State = typed.State
 			completed = typed.State.Terminal()
 			records = append(records, recordOf(recordState, typed))
+		case Text:
+			outcome.Content = appendContent(outcome.Content, typed.Text)
 		case UsageEvent:
 			addUsage(&outcome.Usage, typed.Usage)
 		case Interrupted:
@@ -183,6 +186,17 @@ func annotateInterruption(ctx context.Context, interruption Interruption) {
 		attribute.String(telemetry.AttrAgentInterrupted, string(interruption.Intent)),
 		attribute.Int(telemetry.AttrAgentBoundary, interruption.Boundary),
 	))
+}
+
+// appendContent adds one delta to the turn's answer.
+func appendContent(content message.Content, text string) message.Content {
+	if text == "" {
+		return content
+	}
+	if said := content.Text(); said != "" {
+		return message.NewTextContent(said + text)
+	}
+	return message.NewTextContent(text)
 }
 
 // recordOf renders one fact for the event log. A payload that cannot encode is dropped
