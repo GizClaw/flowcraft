@@ -72,6 +72,13 @@ nodes:
       messages: plan_messages
       output: choice
       request:
+        # Per-call options belong to the request, not to the deployment: what one turn asks for is the
+        # node's decision. `store: false` keeps the provider from holding the prompt, the answer and the
+        # tool arguments for thirty days — the driver's default for a call that says nothing is to store.
+        extensions:
+          - provider: openai
+            id: generation
+            fields: {store: false}
         # The answer is a control line, not speech: one response is all
         # this call needs, and deltas would only wake the reader per token.
         stream: false
@@ -103,6 +110,13 @@ nodes:
       messages: narrate_messages
       output: narrated
       request:
+        # Per-call options belong to the request, not to the deployment: what one turn asks for is the
+        # node's decision. `store: false` keeps the provider from holding the prompt, the answer and the
+        # tool arguments for thirty days — the driver's default for a call that says nothing is to store.
+        extensions:
+          - provider: openai
+            id: generation
+            fields: {store: false}
         system: |
           你是这个故事的旁白。只写镜头、环境、动作和声音，不替任何角色说话，
           不引用角色的台词，不总结刚才发生了什么。

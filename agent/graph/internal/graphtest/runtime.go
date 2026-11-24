@@ -17,7 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+
 	"github.com/GizClaw/flowcraft/core/tool/projection"
 )
 
@@ -94,7 +94,7 @@ func New(t testing.TB, cfg Config) *Fixture {
 		Projection: projected,
 		View:       view,
 		binding:    tool.Bind(session{}, policy.Grant{}).WithView(view),
-		tools:      dispatch.New(registry),
+		tools:      known{registry},
 		models:     &inference.Provider{Generator: cfg.Generator},
 		def:        cfg.Model,
 	}
@@ -143,3 +143,27 @@ func Failing(name, text string) tool.Tool {
 type complaint string
 
 func (c complaint) Error() string { return string(c) }
+
+// known is the smallest dispatcher a fixture needs: resolve the tool and call it. A node test asserts
+// what a kind does with a call, not how an engine routes one, so the engine stays out of the fixture.
+type known struct{ catalog tool.Catalog }
+
+func (d known) Execute(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+	target, ok := d.catalog.Get(call.Name)
+	if !ok {
+		return message.NewErrorToolResult(call.ID, "no such tool")
+	}
+	content, err := target.Execute(ctx, b, call.Arguments.String())
+	if err != nil {
+		return message.NewErrorToolResult(call.ID, err.Error())
+	}
+	return message.NewToolResult(call.ID, content)
+}
+
+func (d known) ExecuteAll(ctx context.Context, b tool.Binding, calls []message.ToolCall) []message.ToolResult {
+	out := make([]message.ToolResult, len(calls))
+	for i, call := range calls {
+		out[i] = d.Execute(ctx, b, call)
+	}
+	return out
+}

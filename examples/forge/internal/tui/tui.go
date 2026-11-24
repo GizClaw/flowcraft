@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/agent/graph"
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-graph"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"

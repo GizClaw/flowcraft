@@ -19,6 +19,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
 )
 
 // boundary is a backend instance: it records its own closure and whether it claims to bound writes.
@@ -103,7 +104,6 @@ func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journ
 	return deploy.Deployment{
 		Name:    name,
 		Grant:   grant,
-		Trace:   agent.TraceNone,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
 	}, program
 }
@@ -122,7 +122,7 @@ func hostWith(t *testing.T, backend *boundary) *Agents {
 	t.Helper()
 	res, err := Open(t.Context(), deploy.ProcessPlan{
 		Backends: []deploy.PlannedBackend{boundBackend("local", backend)},
-	})
+	}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -182,11 +182,11 @@ func TestTheBindingCarriesTheSessionsCapabilities(t *testing.T) {
 	}
 	defer func() { _ = agents.CloseSession(t.Context(), "s1") }()
 
-	tree, ok := filesSlot.Get(session.Binding().Caps)
+	tree, ok := platform.TreeSlot.Get(session.Binding().Caps)
 	if !ok || tree == nil {
 		t.Fatal("the file boundary is not in the binding")
 	}
-	if _, ok := processSlot.Get(session.Binding().Caps); !ok {
+	if _, ok := platform.ProcessSlot.Get(session.Binding().Caps); !ok {
 		t.Fatal("the process starter is not in the binding")
 	}
 }
@@ -340,7 +340,7 @@ func TestOpenWithAFileGrantOpensTheTree(t *testing.T) {
 	}
 	defer func() { _ = agents.CloseSession(t.Context(), "s1") }()
 
-	tree, ok := filesSlot.Get(session.Binding().Caps)
+	tree, ok := platform.TreeSlot.Get(session.Binding().Caps)
 	if !ok {
 		t.Fatal("no file boundary in the binding")
 	}
@@ -424,7 +424,6 @@ func runnableHost(t *testing.T, driver *turnDriver) (*Agents, *turnProgram) {
 	dep := deploy.Deployment{
 		Name:    "referee",
 		Grant:   permissiveGrant("local"),
-		Trace:   agent.TraceNone,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
 	}
 	if err := agents.Add(dep); err != nil {

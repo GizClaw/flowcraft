@@ -23,10 +23,25 @@ import (
 // this process does not carry" a single error message instead of two spellings.
 type Loader struct {
 	impls *Impls
+	// configOptions are the placeholder resolvers the application registered. A document writes
+	// `${scheme:args}` where a value cannot be written down, and only the binary knows which schemes it
+	// can resolve — so they travel with the loader, not with a layer.
+	configOptions []config.Option
 }
 
 // NewLoader returns a loader over the application's registration table.
 func NewLoader(impls *Impls) *Loader { return &Loader{impls: impls} }
+
+// WithConfigOptions returns a loader that expands the placeholders these resolvers answer.
+//
+// It returns a copy rather than mutating: a loader is a value an application may keep and refine per
+// load, and a method that changed its receiver would make the second load of a workspace depend on what
+// the first one registered. Only ${env:...} is built in; anything else is the application's to name.
+func (l *Loader) WithConfigOptions(opts ...config.Option) *Loader {
+	refined := *l
+	refined.configOptions = append(append([]config.Option(nil), l.configOptions...), opts...)
+	return &refined
+}
 
 // Process resolves the process document into a plan.
 //
@@ -36,13 +51,21 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 	if err := l.ready(); err != nil {
 		return ProcessPlan{}, err
 	}
-	doc, err := loadDocument[processDocument](ctx, layers, "runtime")
+	doc, err := loadDocument[processDocument](ctx, layers, "runtime", l.configOptions)
 	if err != nil {
 		return ProcessPlan{}, err
 	}
 
 	plan := ProcessPlan{SkillRoots: append([]string(nil), doc.Skills.Roots...)}
 	seen := map[string]struct{}{}
+
+	// The record level is read first: the chain below is filtered by it, so a document whose
+	// observability block is wrong reports that before it reports anything about a middleware.
+	level, err := observability(doc.Observability)
+	if err != nil {
+		return ProcessPlan{}, err
+	}
+	plan.Observability = level
 
 	for _, entry := range doc.Inference.Providers {
 		planned, err := l.planProvider(entry)
@@ -82,6 +105,11 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 		if err := takeName(seen, "middleware", planned.Name); err != nil {
 			return ProcessPlan{}, err
 		}
+		// A link whose registration says it is only worth installing above this level is left
+		// out here rather than built and disabled: the plan is what the chain will be.
+		if planned.Trace > level.Trace {
+			continue
+		}
 		plan.Middleware = append(plan.Middleware, planned)
 	}
 
@@ -108,7 +136,7 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	if err := l.ready(); err != nil {
 		return nil, err
 	}
-	doc, err := loadDocument[agentDocument](ctx, layers, "agent")
+	doc, err := loadDocument[agentDocument](ctx, layers, "agent", l.configOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +162,9 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	return out, nil
 }
 
-// resolveAgent is one agent's resolution: its program, its authority, its record of what to
-// trace, and the hook names the host must resolve.
+// resolveAgent is one agent's resolution: its program, its authority, and the hook names the
+// host must resolve. How much of a turn is recorded is not here: it is the process's, and the
+// process document states it.
 func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, error) {
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
@@ -162,10 +191,6 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 	if err := checkGrant(name, entry.Grant, caps); err != nil {
 		return Deployment{}, err
 	}
-	trace, bodies, err := observability(entry.Observability, name)
-	if err != nil {
-		return Deployment{}, err
-	}
 	hooks, err := l.planHooks(name, entry.Hooks)
 	if err != nil {
 		return Deployment{}, err
@@ -175,8 +200,6 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 		Name:    name,
 		Program: program,
 		Grant:   entry.Grant,
-		Trace:   trace,
-		Bodies:  bodies,
 		Hooks:   hooks,
 	}, nil
 }
@@ -318,8 +341,9 @@ func (l *Loader) planMiddleware(entry entryDocument) (PlannedMiddleware, error) 
 	}
 	build := planned.make
 	return PlannedMiddleware{
-		Name: entry.Name,
-		Impl: planned.impl,
+		Name:  entry.Name,
+		Impl:  planned.impl,
+		Trace: planned.trace,
 		New: func() (func(tool.Catalog) (tool.Middleware, error), error) {
 			built, err := build()
 			if err != nil {
@@ -360,8 +384,9 @@ func (l *Loader) planProgram(entry programDocument) (PlannedProgram, error) {
 
 // planned is the family-neutral result of one resolution.
 type planned struct {
-	impl string
-	make func() (any, error)
+	impl  string
+	trace agent.TraceLevel
+	make  func() (any, error)
 }
 
 // plan is the one path every family takes: find the implementation, then decode the settings
@@ -386,8 +411,9 @@ func (l *Loader) plan(group Group, label, impl string, raw json.RawMessage) (pla
 		return planned{}, err
 	}
 	return planned{
-		impl: impl,
-		make: func() (any, error) { return factory.Make(settings) },
+		impl:  impl,
+		trace: factory.Trace,
+		make:  func() (any, error) { return factory.Make(settings) },
 	}, nil
 }
 

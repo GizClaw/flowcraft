@@ -18,9 +18,9 @@ import (
 // every resource the runner owns — active sessions, forked daemons,
 // sockets, backend state. Decorators MUST forward Close to their inner
 // runner so wrapping never hides the backend's cleanup, and they MUST
-// forward the optional capabilities — [JournalProvider.OpenJournal] and
-// [SessionAttacher.Attach] — the same way: a decorator that swallows one
-// while [Capabilities] keeps advertising it makes the declaration a lie.
+// forward an optional capability — [SessionAttacher.Attach] — the same way: a
+// decorator that swallows one while [Capabilities] keeps advertising it makes
+// the declaration a lie.
 // Embedding sandbox.Runner does not promote those methods; approval.Forwarder is
 // the base that forwards them for you. It deliberately does not promote
 // [Executor] either: a decorator that re-runs the command must be the outermost
@@ -62,12 +62,6 @@ type SessionStarter interface {
 type Capabilities struct {
 	Policy   Enforcement
 	Features SessionFeatures
-	// Journal is the file-journal surface of this runner instance.
-	// The zero value means "no journal": OpenJournal fails with
-	// errdefs.NotAvailable. It travels with the rest of Capabilities,
-	// and the decorators forward the journal itself so the two never
-	// disagree.
-	Journal JournalCapabilities
 }
 
 // SessionFeatures lists the session capabilities a backend can provide.

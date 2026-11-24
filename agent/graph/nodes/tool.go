@@ -71,6 +71,10 @@ func Tool() graph.NodeKind { return &toolKind{} }
 
 func (*toolKind) Name() string { return "tool" }
 
+// FailureKind reports a tool call as the turn's diagnosis: a side effect that did not happen is
+// not a model failure, and a reader who grouped them together could not tell which to retry.
+func (*toolKind) FailureKind() agent.FailureKind { return agent.FailureTool }
+
 func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, error) {
 	config, err := graph.ConfigOf(in, decodeToolConfig)
 	if err != nil {

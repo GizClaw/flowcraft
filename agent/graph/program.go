@@ -111,6 +111,13 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 	return func(yield func(agent.Event, error) bool) {
 		d.mu.Lock()
 		run := d.run
+		if run != nil && (run.State().Terminal() || run.taskID != req.Task.ID) {
+			// A task is one turn. A finished run is history, and a run under another task id is a
+			// different turn of the same conversation: either way this message opens a new run, and the
+			// keys the document marks `carry` are what cross the boundary.
+			run = nil
+			d.run = nil
+		}
 		if run == nil {
 			// A document that declares no input slot takes the message as the trigger only: there is
 			// nowhere to seed it, and inventing a slot would change what the document said.

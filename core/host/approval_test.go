@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
 )
 
 // gate is a backend that records every command it is asked to start, so a test can assert whether
@@ -55,7 +56,7 @@ func approvalHost(t *testing.T, approval Approval) (sandbox.SessionStarter, *gat
 	backend := &gate{log: log}
 	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
 		boundBackend("local", &boundary{log: log, filesystemBounds: true}),
-	}})
+	}}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -75,7 +76,7 @@ func approvalHost(t *testing.T, approval Approval) (sandbox.SessionStarter, *gat
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
-	starter, ok := processSlot.Get(session.Binding().Caps)
+	starter, ok := platform.ProcessSlot.Get(session.Binding().Caps)
 	if !ok || starter == nil {
 		t.Fatal("the session has no process capability")
 	}
@@ -173,7 +174,7 @@ func TestNoPolicyInstallsTheBackendUndecorated(t *testing.T) {
 	g := &gate{log: log}
 	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
 		boundBackend("local", &boundary{log: log, filesystemBounds: true}),
-	}})
+	}}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -191,7 +192,7 @@ func TestNoPolicyInstallsTheBackendUndecorated(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
-	starter, ok := processSlot.Get(session.Binding().Caps)
+	starter, ok := platform.ProcessSlot.Get(session.Binding().Caps)
 	if !ok {
 		t.Fatal("the session has no process capability")
 	}

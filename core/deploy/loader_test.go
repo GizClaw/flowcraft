@@ -80,6 +80,12 @@ func impls(b *builds) *deploy.Impls {
 			b.seenMiddleware = s
 			return func(next tool.Dispatch) tool.Dispatch { return next }, nil
 		})).
+		// The telemetry link is only worth building when the process records tool calls: below
+		// that level it would emit the very spans the level promised to skip.
+		Middleware(deploy.MiddlewareImpl("telemetry", func(_ middlewareSettings, _ tool.Catalog) (tool.Middleware, error) {
+			b.middleware++
+			return func(next tool.Dispatch) tool.Dispatch { return next }, nil
+		}).AtTrace(agent.TraceCall)).
 		Hook(deploy.Impl("audit", func(s hookSettings) (agent.Hooks, error) {
 			b.hooks++
 			b.seenHook = s
@@ -110,6 +116,7 @@ tools:
       settings: { root: "/srv" }
 skills:
   roots: ["/srv/skills"]
+observability: { trace: call, bodies: false }
 `
 
 // TestProcessResolvesWithoutBuilding is the package's central promise: a plan holds settings
@@ -227,7 +234,6 @@ agents:
       models: [{ id: { provider: "openai", name: "gpt-5" } }]
       limits: { idle: 30m, max_sessions: 64 }
     hooks: [{ impl: audit }]
-    observability: { trace: call, bodies: false }
 `
 
 // capabilities is what a built process reports: the backend instances its plan configured and
@@ -265,8 +271,8 @@ func TestDeploymentResolvesAgainstCapabilities(t *testing.T) {
 	if deployment.Name != "helper" {
 		t.Fatalf("name = %q", deployment.Name)
 	}
-	if deployment.Trace != agent.TraceCall {
-		t.Fatalf("trace = %v", deployment.Trace)
+	if plan.Observability.Trace != agent.TraceCall || plan.Observability.Bodies {
+		t.Fatalf("observability = %+v, want the process document's", plan.Observability)
 	}
 	if deployment.Grant.Sandbox != "local" {
 		t.Fatalf("grant sandbox = %q", deployment.Grant.Sandbox)
@@ -367,6 +373,7 @@ func TestLayersMergeByPriority(t *testing.T) {
 	loader := deploy.NewLoader(impls(built))
 	base := sources.Bytes("base.yaml", []byte(`
 version: 1
+observability: { trace: call, bodies: false }
 inference:
   providers:
     - name: gpt
@@ -415,15 +422,12 @@ agents:
   - name: referee
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
   - name: seat_1
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
   - name: seat_2
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
 `
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err != nil {
@@ -467,11 +471,9 @@ agents:
   - name: twin
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
   - name: twin
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
 `
 	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "twin") {
@@ -498,13 +500,11 @@ agents:
   - name: referee
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
   - name: seat_1
     program: { impl: graph }
     grant:
       models: [{ id: { provider: "openai", name: "gpt-5" } }]
       limits: { idle: 30m }
-    observability: { trace: none, bodies: false }
 `
 	_, err = loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsNotAvailable(err) {
@@ -534,18 +534,15 @@ agents:
   - name: seat_1
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
   - name: seat_2
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: node, bodies: false }
 `)), 10)
 
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
@@ -555,8 +552,8 @@ agents:
 	if len(deployments) != 1 || deployments[0].Name != "seat_2" {
 		t.Fatalf("deployments = %d %v, want the overlay's list only", len(deployments), deployments)
 	}
-	if deployments[0].Trace.String() != "node" {
-		t.Fatalf("trace = %q", deployments[0].Trace.String())
+	if deployments[0].Program.Impl != "graph" {
+		t.Fatalf("program = %q, want the overlay's entry", deployments[0].Program.Impl)
 	}
 }
 
@@ -577,23 +574,24 @@ version: 1
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
-    observability: { trace: call, bodies: false }
+    grant: { limits: { idle: 30m, max_sessions: 64 } }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
-    observability: { trace: node, bodies: false }
+    grant: { limits: { idle: 30m, max_sessions: 8 } }
 `)), 10)
 
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
-	if deployments[0].Trace.String() != "node" {
-		t.Fatalf("trace = %q, want the overlay's", deployments[0].Trace.String())
+	if len(deployments) != 1 {
+		t.Fatalf("deployments = %d, want the one agent both layers name", len(deployments))
+	}
+	if deployments[0].Grant.Limits.MaxSessions != 8 {
+		t.Fatalf("max_sessions = %d, want the overlay's value", deployments[0].Grant.Limits.MaxSessions)
 	}
 }
 
@@ -629,6 +627,7 @@ tools:
       settings: { seconds: 30 }
 skills:
   roots: ["/srv/skills"]
+observability: { trace: node, bodies: true }
 `
 	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(doc))))
 	if err != nil {
@@ -690,7 +689,6 @@ agents:
   - name: seat_1
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
     hooks:
       - impl: audit
         settings: { dir: /var/memory }
@@ -726,7 +724,6 @@ agents:
   - name: seat_1
     program: { impl: graph }
     grant: { limits: { idle: 30m } }
-    observability: { trace: none, bodies: false }
     hooks: [{ impl: nobody-registered-this }]
 `
 	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
@@ -759,10 +756,10 @@ func TestModelGrantsNameProviderAndModel(t *testing.T) {
 	}
 }
 
-// TestLimitsAndObservabilityAreRequired pins the rule that replaced the defaults section: an
-// agent states how its sessions expire and how much of it is recorded. Silence would have had
-// to mean something, and every meaning is a guess with a bill attached.
-func TestLimitsAndObservabilityAreRequired(t *testing.T) {
+// TestLimitsAreRequired pins the rule that replaced the defaults section: an agent states how
+// its sessions expire. Silence would have had to mean something, and every meaning is a guess
+// with a bill attached.
+func TestLimitsAreRequired(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
 	// The document prints unix roots; what it tests is the plan, so the roots are
@@ -779,23 +776,6 @@ version: 1
 agents:
   - name: a
     program: { impl: graph }
-    observability: { trace: none, bodies: false }
-`,
-		"no trace": `
-version: 1
-agents:
-  - name: a
-    program: { impl: graph }
-    grant: { limits: { idle: 30m } }
-    observability: { bodies: false }
-`,
-		"no bodies": `
-version: 1
-agents:
-  - name: a
-    program: { impl: graph }
-    grant: { limits: { idle: 30m } }
-    observability: { trace: none }
 `,
 		"zero idle": `
 version: 1
@@ -803,11 +783,86 @@ agents:
   - name: a
     program: { impl: graph }
     grant: { limits: { idle: 0s } }
-    observability: { trace: none, bodies: false }
 `,
 	} {
 		if _, err := loader.Deployments(context.Background(), caps, sources.Bytes("a.yaml", []byte(platformRoots(doc)))); err == nil || !errdefs.IsValidation(err) {
 			t.Fatalf("%s: err = %v, want a validation error", name, err)
+		}
+	}
+}
+
+// TestObservabilityIsRequired is the same rule one document up: the process says how much of a
+// turn it records, and says both halves. It cannot be per-agent because nothing below the
+// assembly honours a per-agent answer — the tool chain and the model access are built once.
+func TestObservabilityIsRequired(t *testing.T) {
+	loader := deploy.NewLoader(impls(&builds{}))
+
+	for name, doc := range map[string]string{
+		"absent": `
+version: 1
+inference:
+  route: { max_targets: 1 }
+`,
+		"no trace": `
+version: 1
+observability: { bodies: false }
+`,
+		"no bodies": `
+version: 1
+observability: { trace: none }
+`,
+		"unknown level": `
+version: 1
+observability: { trace: everything, bodies: false }
+`,
+	} {
+		if _, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(doc))); err == nil || !errdefs.IsValidation(err) {
+			t.Fatalf("%s: err = %v, want a validation error", name, err)
+		}
+	}
+
+	doc := `
+version: 1
+observability: { trace: node, bodies: true }
+`
+	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(doc)))
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if plan.Observability.Trace != agent.TraceNode || !plan.Observability.Bodies {
+		t.Fatalf("observability = %+v, want the document's", plan.Observability)
+	}
+}
+
+// TestAMiddlewareLinkBelowTheTraceLevelIsNotPlanned is the assembly half of the cost model: a
+// link whose registration says it is only worth installing at "call" does not enter the chain of
+// a process that records "none". Dropping it here is what keeps the tool layer from reading the
+// level — it never learns the level exists.
+func TestAMiddlewareLinkBelowTheTraceLevelIsNotPlanned(t *testing.T) {
+	for level, want := range map[string][]string{
+		"none": {"timeout"},
+		"call": {"timeout", "telemetry"},
+		"node": {"timeout", "telemetry"},
+	} {
+		loader := deploy.NewLoader(impls(&builds{}))
+		doc := `
+version: 1
+observability: { trace: ` + level + `, bodies: false }
+tools:
+  middleware:
+    - { name: timeout, impl: timeout, settings: { seconds: 30 } }
+    - { name: telemetry, impl: telemetry }
+`
+		plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(doc)))
+		if err != nil {
+			t.Fatalf("%s: Process: %v", level, err)
+		}
+		got := make([]string, 0, len(plan.Middleware))
+		for _, link := range plan.Middleware {
+			got = append(got, link.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: chain = %v, want %v", level, got, want)
 		}
 	}
 }

@@ -124,6 +124,20 @@ type NodeKind interface {
 	Invoke(ctx context.Context, in Invoke) (NodeStream, error)
 }
 
+// FailureClassifier is the optional capability of a node kind that knows which diagnosis its
+// failures belong to.
+//
+// The engine cannot derive it. "The model call failed" and "the tool failed" are facts only the
+// kind that made the call has, and mapping them by kind name inside the engine would be a second
+// place that has to learn every new kind. A kind that does not implement this leaves the turn's
+// failure to whoever else classifies it, which is the honest answer for a node that is neither.
+//
+// A type assertion is how the engine stays closed: adding a kind never edits the loop.
+type FailureClassifier interface {
+	// FailureKind is the value a failure of this kind is recorded as on the turn.
+	FailureKind() agent.FailureKind
+}
+
 // Snapshot is a read-only view of one step's state.
 type Snapshot struct {
 	values map[string]Value

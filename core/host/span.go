@@ -52,7 +52,7 @@ func startRunSpan(ctx context.Context, session *Session) (context.Context, trace
 	ctx, span := telemetry.TracerWithSuffix("host").Start(ctx, spanRun,
 		trace.WithAttributes(
 			attribute.String(identity.AttrAgentName, session.agent),
-			attribute.String(telemetry.AttrAgentTraceLevel, session.deploy.trace.String()),
+			attribute.String(telemetry.AttrAgentTraceLevel, session.deploy.observability.Trace.String()),
 		))
 	span.SetAttributes(telemetry.Attrs(ctx)...)
 	return ctx, span

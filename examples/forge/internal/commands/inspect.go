@@ -9,10 +9,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/GizClaw/flowcraft/agent/checkpoint"
+	graph "github.com/GizClaw/flowcraft/agent/graph"
+	"github.com/GizClaw/flowcraft/agent/graph/script"
 	"github.com/GizClaw/flowcraft/core/agent"
-	graph "github.com/GizClaw/flowcraft/core/agent-graph"
-	"github.com/GizClaw/flowcraft/core/agent-graph/script"
-	"github.com/GizClaw/flowcraft/core/agent/checkpoint"
 )
 
 // inspectCmd is the "inspect" command: it prints one task's timeline out of the

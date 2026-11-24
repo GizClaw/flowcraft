@@ -79,6 +79,4 @@
 // the /dev/null stdin rule). A one-shot Exec, a new transport, or a new
 // platform does not need a new interpretation of the contract — it needs the
 // suite to pass.
-//
-// Journal semantics are documented on [JournalProvider] and in sandbox/journal.
 package sandbox

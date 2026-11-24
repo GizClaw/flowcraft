@@ -168,7 +168,7 @@ func runAutoTurn(
 	// Only the turn's own answer is a request for the next line. Falling back to the
 	// seats' text would feed a seat's words back to the referee as if a person had
 	// said them: an empty answer means the table asked for nothing.
-	said := chatfmt.ResultText(result)
+	said := chatfmt.ResultText(result.Content)
 	if rendered == "" {
 		rendered = said
 	}

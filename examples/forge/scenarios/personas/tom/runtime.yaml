@@ -1,63 +1,38 @@
-# The persona's substrate. It speaks the same provider as the raid, so one
-# credential drives both sides of a simulated conversation; the workspace is its
-# own, and so is the session store.
+# The substrate an agent runs on: the process boundary, the models it may call, and which tool sources
+# are wired.
+#
+# Nothing here belongs to a conversation: history, task state and usage live in the session store, which
+# is why this file is the same for every turn.
 version: 1
-name: tom
 
 sandbox:
-  backend: local
-  workdir: ${workspace:root}
-  writes:
-    - ${workspace:root}
-
-files:
-  roots:
-    - ${workspace:root}
+  # A backend holds no directory and no policy: what a session may do comes from the agent's grant. local
+  # is no OS boundary at all; a hardened deployment adds bwrap (Linux) or seatbelt (macOS) here.
+  - {name: local, impl: local}
 
 inference:
-  # One block per account or endpoint: the driver, its settings, and the models
-  # it serves. Declaring it once keeps the key and the base URL from being
-  # repeated per model.
   providers:
     - name: openai
-      # The driver name is what this binary compiles in; see
-      # internal/app/drivers.go.
-      driver: openai
+      # The impl name is what this binary compiles in; see internal/app/drivers.go.
+      impl: openai
       settings:
         base_url: https://api.openai.com/v1
-        api: chat
+        # responses: the surface where per-call options exist at all. Every model node writes
+        # `store: false`, and the chat surface would refuse that option rather than silently drop it.
+        api: responses
         api_key: ${env:OPENAI_API_KEY}
-
-    # A second account is a second block, and the models below decide the
-    # preference. Uncomment both blocks to fail over to DeepSeek: the first
-    # model in the list is tried first.
-    #
-    # - name: deepseek
-    #   driver: openai
-    #   settings:
-    #     base_url: https://api.deepseek.com/v1
-    #     api: chat
-    #     api_key: ${env:DEEPSEEK_API_KEY}
-
-  # Position is priority: the first model is tried first. The driver ships no
-  # line-up, so a model exists because this block declares it.
-  models:
-    - provider: openai
-      model: gpt-4o-mini
-      limits:
-        max_input_tokens: 128000
-        max_output_tokens: 2048
-    # - provider: deepseek
-    #   model: deepseek-chat
-    #   limits:
-    #     max_input_tokens: 128000
-    #     max_output_tokens: 8192
-
+        models:
+          - id: {provider: openai, name: gpt-4o-mini}
   route:
     attempts_per_target: 2
     max_targets: 1
     base_delay: 250ms
     max_delay: 5s
 
+# Both fields are required: "we record nothing" and "nobody said" are different facts.
+observability: {trace: none, bodies: false}
+
 tools:
-  enable: [files]
+  sources:
+    - {name: sim, impl: sim}
+    - {name: files, impl: files}

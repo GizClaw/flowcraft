@@ -120,7 +120,7 @@ core/            Platform module (contracts, inference, tools, sandbox, runtime,
 driver/          Provider adapters that are not protocol families (bytedance, dashscope, minimax)
 examples/        forge (graph demo, a workspace member) · parallel (outside consumer)
 skills/          flowcraft-deploy: reference cards, templates, validator
-tools/           Release gate, fuzz and stress scripts
+scripts/         Release gate, fuzz and stress scripts
 ```
 
 ## Getting started

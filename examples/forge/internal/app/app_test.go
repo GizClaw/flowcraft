@@ -10,14 +10,19 @@ import (
 	"sync"
 	"testing"
 
+	graph "github.com/GizClaw/flowcraft/agent/graph"
 	"github.com/GizClaw/flowcraft/core/agent"
-	graph "github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/tool"
 
+	"github.com/GizClaw/flowcraft/examples/forge/internal/hooks/memory"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
+	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
+	"github.com/GizClaw/flowcraft/inference/openai"
+	"github.com/GizClaw/flowcraft/tool/builtin/delegation"
 )
 
 // copyScenario materializes one scenario into a temp workspace, the same way the
@@ -66,7 +71,7 @@ func (g *stubGenerator) response() inference.GenerateResponse {
 	return inference.GenerateResponse{
 		Message:      answer,
 		FinishReason: inference.FinishStop,
-		Usage:        usage.Usage{InputTokens: 10, OutputTokens: 5},
+		Usage:        outcome.Usage{InputTokens: 10, OutputTokens: 5},
 	}
 }
 
@@ -101,20 +106,43 @@ func (s *stubStream) Next(context.Context) (inference.StreamEvent, error) {
 func (s *stubStream) Result() (inference.GenerateResponse, error) { return s.response, nil }
 func (s *stubStream) Close() error                                { return nil }
 
-func stubDrivers(generator inference.Generator) []runtime.Driver {
-	return []runtime.Driver{{
-		Name: "openai",
-		Build: func(json.RawMessage) (inference.Provider, error) {
-			return inference.Provider{Generator: generator}, nil
-		},
-	}}
+// stubImpls is the binary's table with a stub provider in place of the network one: every other
+// registration is the production one, so a test exercises the real loader and the real engine.
+func stubImpls(generator inference.Generator, sim *simtools.Source) *deploy.Impls {
+	stub := struct {
+		Generator inference.Generator
+	}{generator}
+	registered := deploy.NewImpls().
+		// The document type is the real one, so the block is checked exactly as in production; only the
+		// constructor is replaced.
+		// The provider is the real one, built from the real settings — catalogue, validation and all —
+		// with only the network call replaced. A stub provider would let a document this binary cannot
+		// actually serve pass the test.
+		Provider(deploy.Impl(openai.ProviderID, func(written openAISettings) (*inference.Provider, error) {
+			built, err := openai.New(openai.Settings{
+				APIKey: "sk-test",
+				Models: descriptors(written.Models),
+			})
+			if err != nil {
+				return nil, err
+			}
+			built.Generator = stub.Generator
+			return &built, nil
+		})).
+		ToolSource(deploy.Impl("sim", func(struct{}) (tool.Source, error) { return sim, nil })).
+		ToolSource(deploy.Impl("files", builtinFiles)).
+		ToolSource(deploy.Impl("delegation", func(struct{}) (tool.Source, error) { return delegation.New(), nil })).
+		ToolSource(deploy.Impl("exec", builtinExec)).
+		Hook(memory.Impl()).
+		Program(deploy.Impl("graph", graphProgram))
+	return sandboxBackends(chainLinks(registered))
 }
 
 func TestOpenBuildsEveryDeclaredAgent(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -141,7 +169,7 @@ func TestRunTurnStreamsAndRunsTheToolLoop(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -188,7 +216,7 @@ func TestRunTurnResumesTheSameSession(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -204,7 +232,7 @@ func TestRunTurnResumesTheSameSession(t *testing.T) {
 
 	// The store is the workspace's, so reopening the directory resumes the
 	// session instead of starting a second one.
-	reopened, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	reopened, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -217,7 +245,7 @@ func TestRunTurnResumesTheSameSession(t *testing.T) {
 func TestOpenReportsMissingEnvironment(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
 	unsetEnv(t, "OPENAI_API_KEY")
-	_, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	_, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err == nil {
 		t.Fatal("expected the missing variable to fail the open")
 	}
@@ -233,7 +261,7 @@ func TestInspectNeedsNoCredential(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
-	if len(infos) != 1 || infos[0].Agent != "assistant" || infos[0].Engine != "graph" {
+	if len(infos) != 1 || infos[0].Agent != "assistant" || len(infos[0].Tools) == 0 {
 		t.Fatalf("infos = %+v", infos)
 	}
 	if len(missing) != 1 || missing[0] != "OPENAI_API_KEY" {
@@ -244,7 +272,7 @@ func TestInspectNeedsNoCredential(t *testing.T) {
 func TestPersonaScenarioBuilds(t *testing.T) {
 	dir := copyScenario(t, "personas", "../../scenarios/personas/tom")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -307,7 +335,7 @@ func TestTurnsRememberTheConversation(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/companion")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
 	generator := &recordingGenerator{}
-	a, err := open(context.Background(), dir, stubDrivers(generator))
+	a, err := openWithSim(t, context.Background(), dir, generator)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -337,7 +365,7 @@ func TestTurnsRememberTheConversation(t *testing.T) {
 func TestOpenBuildsTheWerewolfTable(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/werewolf")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -436,7 +464,7 @@ func TestInspectDescribesWhoTheWorkspaceIs(t *testing.T) {
 func TestStorytellerScenarioBuilds(t *testing.T) {
 	dir := copyScenario(t, "raids", "../../scenarios/raids/storyteller")
 	t.Setenv("OPENAI_API_KEY", "sk-test")
-	a, err := open(context.Background(), dir, stubDrivers(&stubGenerator{}))
+	a, err := openWithSim(t, context.Background(), dir, &stubGenerator{})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -450,4 +478,12 @@ func TestStorytellerScenarioBuilds(t *testing.T) {
 	if got := a.InfoFor("seat_wukong").Label; got != "孙悟空" {
 		t.Fatalf("label = %q", got)
 	}
+}
+
+// openWithSim opens a scenario over the production table with the network provider stubbed and one
+// simulated source, so a test can both drive a turn and count what it executed.
+func openWithSim(t *testing.T, ctx context.Context, dir string, generator inference.Generator) (*App, error) {
+	t.Helper()
+	sim := simtools.New()
+	return open(ctx, dir, stubImpls(generator, sim), sim)
 }

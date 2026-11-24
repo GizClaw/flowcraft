@@ -47,7 +47,7 @@ func failingProgram(name string) deploy.Deployment {
 
 func newAgents(t *testing.T) *Agents {
 	t.Helper()
-	res, err := Open(t.Context(), deploy.ProcessPlan{})
+	res, err := Open(t.Context(), deploy.ProcessPlan{}, testOptions(t))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

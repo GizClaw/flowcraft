@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/GizClaw/flowcraft/agent/graph"
 )
 
 // The narrated raid's rules, offline. A story has no winner to announce and no

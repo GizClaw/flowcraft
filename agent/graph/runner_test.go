@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
 // openDriver opens one session over a compiled graph, which is the only way a caller gets a driver.
@@ -249,4 +250,82 @@ func waitForRun(t *testing.T, drv agent.Driver) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("the run never started")
+}
+
+// failingKind is a node that fails, and says which diagnosis it is.
+type failingKind struct{ kind agent.FailureKind }
+
+func (f failingKind) Name() string { return "failing" }
+
+func (f failingKind) FailureKind() agent.FailureKind { return f.kind }
+
+func (f failingKind) Invoke(context.Context, Invoke) (NodeStream, error) {
+	return nil, errors.New("the node could not finish")
+}
+
+// TestAFailingNodeClassifiesTheTurn is the driver's half of the turn's failure vocabulary: the
+// decorator owns timeout, cancellation and panic, and the diagnosis of everything else can only
+// come from the layer that made the call. Without it every turn reports "unclassified".
+func TestAFailingNodeClassifiesTheTurn(t *testing.T) {
+	recorder := telemetrytest.New(t)
+	g := build(t, `
+version: 1
+entry: boom
+nodes:
+  - {id: boom, kind: failing}
+edges:
+  - {from: boom, to: end}
+`, failingKind{kind: agent.FailureModel})
+
+	program := NewProgram(g)
+	defer func() { _ = program.Close() }()
+	driver, err := program.Open(agent.SessionInfo{SessionID: "conv-1"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = driver.Close() }()
+
+	for _, err := range agent.RunTurn(context.Background(), agent.Request{
+		Input:   message.NewTextMessage(message.RoleUser, "hi"),
+		Binding: agenttest.BindingFor("conv-1"),
+	}, driver) {
+		if err != nil {
+			break
+		}
+	}
+
+	span := recorder.RequireNamed(t, "agent.turn")
+	if got := telemetrytest.Attrs(span)["error.kind"].String(); got != string(agent.FailureModel) {
+		t.Fatalf("error.kind = %q, want %q", got, agent.FailureModel)
+	}
+}
+
+// A task is one turn: the message after a finished run opens a new run under its own task id, and the
+// keys the document marks `carry` are what the conversation keeps. A driver that refused would report
+// every second turn as an error, which is what a chat surface would then show the user.
+func TestATurnAfterAFinishedTaskStartsANewRun(t *testing.T) {
+	store := agenttest.NewMemStore()
+	g := build(t, `
+version: 1
+entry: a
+input: messages
+nodes:
+  - {id: a, kind: count}
+edges:
+  - {from: a, to: end}
+state:
+  messages: {type: messages, merge: append, carry: true}
+`, &countKind{})
+	driver, err := NewProgram(g).Open(agent.SessionInfo{SessionID: "conv-1", TaskID: "conv-1"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = driver.Close() }()
+
+	if _, err := turn(t, driver, requestFor(store, "conv-1", "first")); err != nil {
+		t.Fatalf("first turn: %v", err)
+	}
+	if _, err := turn(t, driver, requestFor(store, "conv-1/2", "second")); err != nil {
+		t.Fatalf("second turn: %v", err)
+	}
 }

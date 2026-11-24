@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/inference/usage"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 func call(id, name, arguments string) agent.ToolCallStart {
@@ -30,7 +30,7 @@ func TestCollectorBuildsSpeechAndToolBlocks(t *testing.T) {
 		call("call-1", "play_music", `{"title":"海阔天空"}`),
 		result("call-1", `{"ok":true}`),
 		agent.Text{Text: "音量已调小。"},
-		agent.UsageEvent{Usage: usage.Usage{InputTokens: 10, OutputTokens: 4}},
+		agent.UsageEvent{Usage: outcome.Usage{InputTokens: 10, OutputTokens: 4}},
 		agent.Status{State: agent.StateCompleted},
 	} {
 		collector.Observe(event)
@@ -100,12 +100,12 @@ func TestRenderLabelsToolBlocks(t *testing.T) {
 }
 
 func TestResultTextReportsOnlyAFinalAnswer(t *testing.T) {
-	answer := agent.Result{Content: message.NewTextContent("  完成  ")}
+	answer := message.NewTextContent("  完成  ")
 	if got := ResultText(answer); got != "完成" {
 		t.Fatalf("ResultText = %q", got)
 	}
-	if got := ResultText(agent.Result{}); got != "" {
-		t.Fatalf("empty result = %q, want no text", got)
+	if got := ResultText(message.Content{}); got != "" {
+		t.Fatalf("empty content = %q, want no text", got)
 	}
 }
 

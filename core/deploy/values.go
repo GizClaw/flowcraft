@@ -40,26 +40,27 @@ func parseRoute(doc routeDocument) (route.RetryPolicy, error) {
 	return retry, nil
 }
 
-// observability reads one agent's record level.
+// observability reads the process's record level.
 //
 // Both fields are required. A document that leaves one out would inherit something, and there
-// is nothing to inherit: how much of an agent's traffic is recorded is a statement about that
-// agent, and silence does not make it. The process document used to carry defaults for these;
-// removing them removed the ambiguity with them.
-func observability(doc observabilityDocument, agentName string) (agent.TraceLevel, bool, error) {
+// is nothing to inherit: how much traffic is recorded is a statement about this process, and
+// silence does not make it. The process document used to leave it to each agent; it moved up
+// because nothing below the assembly can honour a per-agent answer — the tool chain and the
+// model access are built once, for the process.
+func observability(doc observabilityDocument) (Observability, error) {
 	if strings.TrimSpace(doc.Trace) == "" {
-		return 0, false, errdefs.Validationf(
-			"deploy: agent %q must state observability.trace (none, run, call or node)", agentName)
+		return Observability{}, errdefs.Validationf(
+			"deploy: observability.trace is required (none, run, call or node)")
 	}
 	trace, err := agent.ParseTraceLevel(doc.Trace)
 	if err != nil {
-		return 0, false, errdefs.Validationf("deploy: agent %q: %v", agentName, err)
+		return Observability{}, errdefs.Validationf("deploy: observability.trace: %v", err)
 	}
 	if doc.Bodies == nil {
-		return 0, false, errdefs.Validationf(
-			"deploy: agent %q must state observability.bodies (true or false)", agentName)
+		return Observability{}, errdefs.Validationf(
+			"deploy: observability.bodies is required (true or false)")
 	}
-	return trace, *doc.Bodies, nil
+	return Observability{Trace: trace, Bodies: *doc.Bodies}, nil
 }
 
 // parseDelay reads a duration string, naming the field when it does not parse.

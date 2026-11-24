@@ -7,7 +7,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
-	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
@@ -37,7 +36,7 @@ func TestLazySourceAndExecute(t *testing.T) {
 		t.Fatal("a lazy tool loaded before its first call")
 	}
 
-	got, err := tooltest.Execute(t, registry, "slow", `{}`)
+	got, err := tooltest.Execute(t, callOnce{registry}, "slow", `{}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -94,7 +93,7 @@ func TestCapabilityReachesADeclaringTool(t *testing.T) {
 		t.Fatalf("NewRegistry: %v", err)
 	}
 
-	result := dispatch.New(registry).Execute(context.Background(),
+	result := callOnce{registry}.Execute(context.Background(),
 		tool.Bind(tooltest.Session("s1"), policy.Grant{}).WithCaps(set),
 		message.ToolCall{ID: "c1", Name: "reader", Arguments: message.NewArguments([]byte(`{}`))})
 	if result.IsError || result.Content.Text() != "tom" {
@@ -115,7 +114,7 @@ func TestScratchIsPartitionedByToolName(t *testing.T) {
 	}
 
 	binding := tooltest.BindingFor("s1")
-	executor := dispatch.New(registry)
+	executor := callOnce{registry}
 	for _, name := range []string{"a", "b"} {
 		if res := executor.Execute(context.Background(), binding,
 			message.ToolCall{ID: name, Name: name, Arguments: message.NewArguments([]byte(`{}`))}); res.IsError {
@@ -137,4 +136,29 @@ func scratchKeys(binding tool.Binding) []string {
 		}
 	}
 	return found
+}
+
+// callOnce is the smallest dispatcher a fixture needs: resolve one tool and call it. A test helper
+// inside core cannot reach for the real executor (it lives in the tool module), and this is also the
+// honest statement of what the helper depends on — a catalog, not an engine.
+type callOnce struct{ catalog tool.Catalog }
+
+func (d callOnce) Execute(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+	target, ok := d.catalog.Get(call.Name)
+	if !ok {
+		return message.NewErrorToolResult(call.ID, "no such tool")
+	}
+	content, err := target.Execute(ctx, b, string(call.Arguments.Raw()))
+	if err != nil {
+		return message.NewErrorToolResult(call.ID, err.Error())
+	}
+	return message.NewToolResult(call.ID, content)
+}
+
+func (callOnce) ExecuteAll(ctx context.Context, b tool.Binding, calls []message.ToolCall) []message.ToolResult {
+	out := make([]message.ToolResult, len(calls))
+	for i, call := range calls {
+		out[i] = callOnce{}.Execute(ctx, b, call)
+	}
+	return out
 }

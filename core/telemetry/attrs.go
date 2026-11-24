@@ -88,6 +88,21 @@ const (
 	// agent.RunTurn, which is the only layer that sees the whole event stream.
 	AttrAgentState = "agent.state"
 
+	// AttrAgentInterrupted is the operator intent one span event applied at a step
+	// boundary ("steer" / "inject"). It is what explains why a turn changed direction
+	// without putting the operator's text on a span.
+	AttrAgentInterrupted = "agent.interrupted"
+
+	// AttrAgentBoundary is the 1-based step boundary an operator input was applied at.
+	// It pairs with AttrAgentInterrupted: the intent says what changed, the boundary says
+	// where the run absorbed it.
+	AttrAgentBoundary = "agent.boundary"
+
+	// AttrCheckpointEvents is how many records one terminal save appended. It separates
+	// "the store is slow" from "this turn wrote a lot", which is the first question a
+	// slow save asks.
+	AttrCheckpointEvents = "checkpoint.events"
+
 	// ----- Tools -----
 
 	// AttrToolName identifies the dispatched tool. It is the attribute that makes a
@@ -97,13 +112,6 @@ const (
 	// AttrToolCallID identifies one invocation: the id the model issued, so a
 	// tool_call event and its tool_result correlate.
 	AttrToolCallID = "tool.call_id"
-
-	// AttrToolSource names where a tool came from ("builtin", "mcp", "plugin").
-	AttrToolSource = "tool.source"
-
-	// AttrToolLazy marks a tool whose schema was materialised on first use rather
-	// than at registration.
-	AttrToolLazy = "tool.lazy"
 
 	// AttrCodeStacktrace carries the stack captured where a panic was turned into an
 	// error result. The result a caller sees says what panicked, never where, so this
@@ -245,14 +253,6 @@ const (
 	// AttrPolicyCheck names the rule that refused a call. It is the dimension a
 	// denial is counted by, so a new value is a deliberate vocabulary change.
 	AttrPolicyCheck = "policy.check"
-
-	// AttrPolicyReason is the stable, redacted explanation for a denial. Never a
-	// payload, never a path the user did not already supply.
-	AttrPolicyReason = "policy.reason"
-
-	// AttrPolicyID is the digest of the session's bind, so a denial names the
-	// permission that refused it.
-	AttrPolicyID = "policy.id"
 
 	// AttrRateLimitBlockedMs is how long the rate limiter made one call wait: it
 	// separates "the tool was slow" from "the fleet was saturated".

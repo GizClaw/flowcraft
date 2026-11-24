@@ -9,12 +9,16 @@ go 1.26.0
 // check that it does not reach into one (internal/layout forbids it), so `core`
 // alone still compiles with GOWORK=off.
 //
-// examples/ stay out: they pin released versions and are built the way a reader
-// builds them, with GOWORK=off (see `make check-consumers`). They rejoin the
-// workspace the day they are ported onto this core.
+// examples/forge rejoined the workspace when it was ported onto this core, which is
+// what its go.mod's local replaces were waiting for: they stay until the modules it
+// needs are tagged, and then become versions. examples/parallel stays out — it pins
+// a released core on purpose, and `make check-consumers` builds it the way a reader
+// builds it, with GOWORK=off.
 use (
 	./agent
 	./core
+	./examples/forge
 	./inference
 	./sandbox
+	./tool
 )

@@ -7,6 +7,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,19 +17,21 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/GizClaw/flowcraft/agent/checkpoint"
+	"github.com/GizClaw/flowcraft/agent/graph"
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-graph"
-	"github.com/GizClaw/flowcraft/core/agent-graph/nodes"
-	"github.com/GizClaw/flowcraft/core/agent-graph/script"
-	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
-	host "github.com/GizClaw/flowcraft/core/agent-host"
-	"github.com/GizClaw/flowcraft/core/agent/checkpoint"
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/host"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/model"
+	"github.com/GizClaw/flowcraft/core/policy"
+	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
+	"github.com/GizClaw/flowcraft/core/tool/projection"
+	"github.com/GizClaw/flowcraft/tool/builtin/delegation"
+	tooldispatch "github.com/GizClaw/flowcraft/tool/dispatch"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/hooks/memory"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
@@ -78,7 +82,8 @@ type App struct {
 	mu     sync.Mutex
 	phase  string
 	priv   map[string]bool
-	mgr    *host.Manager
+	res    *host.Resource
+	mgr    *host.Agents
 	store  *checkpoint.SQLite
 	sim    *simtools.Source
 	agents []string
@@ -115,22 +120,21 @@ type Info struct {
 // failure expansion hits, and once through the loader, which resolves kinds and
 // merges the runtime layers.
 func Open(ctx context.Context, dir string) (*App, error) {
-	return open(ctx, dir, drivers())
+	sim := simtools.New()
+	return open(ctx, dir, implsWith(sim), sim)
 }
 
-// open is Open with the driver table supplied: the production table is the one
-// this binary compiles in, and a test can hand in a stub provider instead of
-// reaching a network.
-func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error) {
+// open is Open with the implementation table supplied: the production table is the one this binary
+// compiles in, and a test can hand in a stub provider instead of reaching a network.
+//
+// The simulated source is passed in rather than built here because the app reports what it executed: a
+// table that built its own instance would leave the counter watching a different one.
+func open(ctx context.Context, dir string, impls *deploy.Impls, sim *simtools.Source) (*App, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace %q: %w", dir, err)
 	}
-	doc, body, err := loadDocument(abs)
-	if err != nil {
-		return nil, err
-	}
-	if missing, err := requiredEnvironment(doc, abs); err != nil {
+	if missing, err := requiredEnvironment(ctx, abs); err != nil {
 		return nil, err
 	} else if len(missing) > 0 {
 		return nil, fmt.Errorf(
@@ -146,34 +150,45 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 		_ = store.Close()
 		return nil, err
 	}
-	sim := simtools.New()
-	a := &App{dir: abs, store: store, sim: sim, infos: make(map[string]Info, len(doc.Agents)), cast: cast,
-		seats: make(chan SeatEvent, 256)}
-	mgr := host.New(graphKinds(abs), host.Bindings{
-		Store:          store,
-		RuntimeOptions: []runtime.Option{runtime.WithDrivers(table...), runtime.WithToolSource(sim)},
-		LoadOptions:    workspaceOptions(abs),
-		Harness:        "examples/forge",
-		// The seats' events do not reach the turn's iterator: a delegated child
-		// runs on its own goroutine. The host is told directly, which is how a
-		// surface shows a seat speaking while the referee waits for it.
-		OnEvent: a.forwardSeat,
-	})
-	specs, err := mgr.Loader().Load(ctx, body)
+	// The process first: what this machine offers, then the agents that select from it. The
+	// capabilities come from the built resource because a provider's settings are opaque to the
+	// document layer.
+	options := workspaceOptions(abs)
+	plan, err := process(ctx, impls, abs, options)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
 	}
-	if _, err := mgr.Deploy(ctx, specs...); err != nil {
+	res, err := host.Open(ctx, plan, host.Options{
+		Capabilities: capabilities(sim),
+		Dispatcher:   dispatcher,
+		View:         view,
+	})
+	if err != nil {
 		_ = store.Close()
 		return nil, err
 	}
-	a.mgr = mgr
+	specs, err := deployments(ctx, impls, abs, options, res.Capabilities())
+	if err != nil {
+		_ = res.Close()
+		_ = store.Close()
+		return nil, err
+	}
+	a := &App{dir: abs, store: store, sim: sim, res: res, cast: cast,
+		seats: make(chan SeatEvent, 256), infos: make(map[string]Info, len(specs))}
+	// The store is the host's, not a decoration around it: the turns it writes are what the next turn
+	// continues from, and the fingerprint is what stops a checkpoint written by a different deployment
+	// set from being resumed as if it were this one.
+	agents := host.NewAgents(res, host.WithStore(store), host.WithFingerprint(fingerprintOf(specs)))
+	if err := agents.Add(specs...); err != nil {
+		_ = res.Close()
+		_ = store.Close()
+		return nil, err
+	}
+	a.mgr = agents
 	for _, spec := range specs {
 		a.agents = append(a.agents, spec.Name)
-		info := describe(abs, spec, sim)
-		// The cast says who speaks and under what name; the deployment only says
-		// which agents exist.
+		info := describe(abs, spec, sim, a.res.Capabilities().ModelIDs())
 		info.Label = cast.Label(spec.Name)
 		info.Director = cast.Director == spec.Name
 		a.infos[spec.Name] = info
@@ -181,29 +196,57 @@ func open(ctx context.Context, dir string, table []runtime.Driver) (*App, error)
 	return a, nil
 }
 
-// graphKinds is the deployment's kind table: the built-in engines, with the graph
-// engine extended by the node kinds a rule script needs.
-//
-// The script kind is built per runtime, because a tool call it makes goes through
-// the runtime's own dispatch chain; the source is rooted at the workspace, so a
-// scenario writes `rules/vote_tally.star` and means the file beside it.
-func graphKinds(workspace string) deploy.Kinds {
-	return deploy.BuiltinKinds().
-		// The one hook the demo ships: a seat's own memory, kept in the workspace.
-		WithHooks(memory.Kind()).
-		WithEngines(deploy.GraphEngine(
-			nodes.WithRuntimeKinds(func(rt *runtime.Runtime) ([]graph.NodeKind, error) {
-				kind, err := script.New(
-					script.WithBackends(starlark.New()),
-					script.WithRuntime(rt),
-					script.WithSource(&script.FileSource{BaseDir: workspace, TTL: time.Second}),
-				)
-				if err != nil {
-					return nil, err
-				}
-				return []graph.NodeKind{kind}, nil
-			}),
-		))
+// capabilities is what this process can hand a tool: the simulated set is application-owned, and the
+// file boundary and process surface are filled per session by the host.
+func capabilities(sim *simtools.Source) *tool.CapSet {
+	set := tool.NewCapSet()
+	// Declared, not filled: the host fills each of these per session, from the authority the document's
+	// grant selected. Declaring one here is what lets a tool that needs it be registered at all, and a
+	// process that declares nothing refuses every such tool at assembly rather than at the first call.
+	platform.TreeSlot.Provide(set, nil)
+	platform.ProcessSlot.Provide(set, nil)
+	platform.SkillsSlot.Provide(set, nil)
+	platform.DelegationSlot.Provide(set, nil)
+	return set
+}
+
+// dispatcher and view are the engine halves the host is opened with: the application picks them, which
+// is what keeps core free of both.
+func dispatcher(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
+	return tooldispatch.New(catalog, chain...)
+}
+
+func view(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
+	projected, err := projection.New(catalog, projection.For(allowed))
+	if err != nil {
+		// A policy the projection refuses is a document error the loader reports; reaching it here
+		// means an authority this process cannot project, which is not a recoverable state.
+		return nil
+	}
+	return projected.NewView()
+}
+
+// impls is the table this binary compiles in: the providers it carries, the process tool sources it
+// wires, the middleware chain it offers, the hook kinds it ships, and the graph engine.
+func impls() *deploy.Impls { return implsWith(simtools.New()) }
+
+// implsWith is the same table over one simulated source, so the caller that counts executions and the
+// tool that runs are the same object.
+func implsWith(sim *simtools.Source) *deploy.Impls {
+	registered := deploy.NewImpls()
+	registered = providers()(registered)
+	registered = sandboxBackends(registered)
+	registered = registered.
+		ToolSource(deploy.Impl("sim", func(struct{}) (tool.Source, error) { return sim, nil })).
+		ToolSource(deploy.Impl("files", builtinFiles)).
+		ToolSource(deploy.Impl("exec", builtinExec)).
+		// The delegate tool is a source like any other; a session whose grant names no delegation policy
+		// is not handed the capability, so it is the grant that decides, not this table.
+		ToolSource(deploy.Impl("delegation", func(struct{}) (tool.Source, error) { return delegation.New(), nil })).
+		Hook(memory.Impl()).
+		Program(deploy.Impl("graph", graphProgram))
+	registered = chainLinks(registered)
+	return registered
 }
 
 // Close shuts the deployments down, then the store: a session that outlives its
@@ -215,7 +258,10 @@ func (a *App) Close() error {
 	}
 	var errs []error
 	if a.mgr != nil {
-		errs = append(errs, a.mgr.Close())
+		errs = append(errs, a.mgr.Close(context.WithoutCancel(context.Background())))
+	}
+	if a.res != nil {
+		errs = append(errs, a.res.Close())
 	}
 	if a.store != nil {
 		errs = append(errs, a.store.Close())
@@ -367,56 +413,80 @@ func (a *App) Stream(ctx context.Context, name, text string) (iter.Seq2[agent.Ev
 	if a == nil || a.mgr == nil {
 		return nil, errors.New("forge app is not open")
 	}
-	session, ok := a.mgr.Session(name, sessionFor(name))
-	if !ok {
-		return nil, fmt.Errorf("agent %q is not deployed; have %s", name, strings.Join(a.agents, ", "))
+	id := sessionFor(name)
+	// A session is opened on first use and kept: the store makes the conversation durable, and the host
+	// refuses a second turn while one is in flight, which is what a busy session should report.
+	if _, ok := a.mgr.Session(id); !ok {
+		if _, err := a.mgr.Open(ctx, id, name); err != nil {
+			return nil, fmt.Errorf("agent %q: %w; have %s", name, err, strings.Join(a.agents, ", "))
+		}
 	}
-	return session.Run(ctx, message.NewTextMessage(message.RoleUser, text)), nil
+	return a.mgr.Run(ctx, id, message.NewTextMessage(message.RoleUser, text)), nil
 }
 
-// RunTurn consumes one turn, handing every event to observe, and returns the
-// snapshot the run produced.
+// Snapshot is what one turn reached, folded from its events: the host owns the durable projection, and
+// this is the part a surface shows.
+type Snapshot struct {
+	State   agent.TaskState
+	Content message.Content
+	// Question is what a paused run asked.
+	Question *message.Content
+}
+
+// RunTurn consumes one turn, handing every event to observe, and returns what it reached.
 //
-// A domain failure (a failed graph, an engine error) is reported as a Result
-// whose State is not completed, with the stream error returned alongside; a
-// caller that ignored the Result would report a failed turn as a successful one,
-// so [Failure] checks both.
+// A domain failure (a failed graph, an engine error) ends the stream with an error and a non-completed
+// state; a caller that ignored one of the two would report a failed turn as a successful one, so
+// [Failure] checks both.
 func (a *App) RunTurn(
 	ctx context.Context,
 	name, text string,
 	observe func(agent.Event),
-) (agent.Result, error) {
+) (Snapshot, error) {
 	events, err := a.Stream(ctx, name, text)
 	if err != nil {
-		return agent.Result{}, err
+		return Snapshot{}, err
 	}
+	var snapshot Snapshot
 	var runErr error
 	for event, err := range events {
 		if err != nil {
 			runErr = err
 			break
 		}
+		switch typed := event.(type) {
+		case agent.Text:
+			snapshot.Content = appendText(snapshot.Content, typed.Text)
+		case agent.Status:
+			if typed.State.Terminal() || typed.State == agent.StateInputRequired {
+				snapshot.State = typed.State
+			}
+			if typed.State == agent.StateInputRequired && typed.Reason != "" {
+				question := message.NewTextContent(typed.Reason)
+				snapshot.Question = &question
+			}
+		}
 		if observe != nil {
 			observe(event)
 		}
 	}
-	session, ok := a.mgr.Session(name, sessionFor(name))
-	if !ok {
-		return agent.Result{}, fmt.Errorf("agent %q is not deployed", name)
+	return snapshot, runErr
+}
+
+// appendText adds one delta to a turn's answer.
+func appendText(content message.Content, text string) message.Content {
+	if text == "" {
+		return content
 	}
-	result, err := session.Result(ctx)
-	if runErr != nil {
-		return result, runErr
+	if said := content.Text(); said != "" {
+		return message.NewTextContent(said + text)
 	}
-	if err != nil {
-		return result, err
-	}
-	return result, nil
+	return message.NewTextContent(text)
 }
 
 // Failure turns a turn's outcome into an error: the stream error if there was
 // one, otherwise a non-terminal or failed state.
-func Failure(result agent.Result, err error) error {
+func Failure(result Snapshot, err error) error {
 	if err != nil {
 		return withCause(err)
 	}
@@ -448,51 +518,46 @@ func withCause(err error) error {
 // Inspect reads workspace metadata without building anything and without
 // requiring a credential: it decodes the document, names the agents, and reports
 // the environment the runtime layers still need.
+// Inspect describes a workspace without building it: the agents its document names, and what the
+// process beside it declares. A workspace whose key is unset is exactly the one an operator inspects, so
+// this reads structure and never expands a placeholder it cannot resolve.
 func Inspect(dir string) ([]Info, []string, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolve workspace %q: %w", dir, err)
+		return nil, nil, err
 	}
-	doc, _, err := loadDocument(abs)
+	names := deployAgents(abs)
+	if len(names) == 0 {
+		return nil, nil, fmt.Errorf("%s: no agents declared", filepath.Join(abs, agentsFile))
+	}
+	models, tools := processFacts(abs)
+	missing, err := requiredEnvironment(context.WithoutCancel(context.Background()), abs)
 	if err != nil {
 		return nil, nil, err
 	}
-	cast, err := story.Load(abs)
-	if err != nil {
-		return nil, nil, err
-	}
-	infos := make([]Info, 0, len(doc.Agents))
-	for _, agent := range doc.Agents {
+	cast, _ := story.Load(abs)
+	facts := agentsFacts(abs)
+	infos := make([]Info, 0, len(names))
+	for i, name := range names {
 		info := Info{
 			Workspace: abs,
-			Agent:     agent.Name,
-			Label:     cast.Label(agent.Name),
-			Director:  cast.Director == agent.Name,
-			Engine:    agent.Engine.Kind,
-			Graph:     expandWorkspace(enginePath(agent.Engine.Settings), abs),
+			Agent:     name,
 			Session:   SessionID,
+			Models:    models,
+			Tools:     tools,
 		}
-		if agent.Runtime != nil && len(agent.Runtime.Layers) > 0 {
-			info.Runtime = filepath.Base(agent.Runtime.Layers[0].Path)
+		if i < len(facts) {
+			info.Graph = facts[i].Graph
+			info.Delegates = facts[i].Delegates
+			info.Hooks = facts[i].Hooks
 		}
-		info.Models, info.Tools = layerFacts(abs, agent.Runtime)
-		if agent.Delegation != nil {
-			info.Delegates = append(info.Delegates, agent.Delegation.Targets...)
-		}
-		for _, hook := range agent.Hooks {
-			info.Hooks = append(info.Hooks, hook.Kind)
-		}
+		info.Label = cast.Label(name)
+		info.Director = cast.Director == name
 		infos = append(infos, info)
-	}
-	missing, err := requiredEnvironment(doc, abs)
-	if err != nil {
-		return nil, nil, err
 	}
 	return infos, missing, nil
 }
 
-// openStore prepares the workspace's durable side. Sessions are keyed by agent
-// and session id alone, which is why each workspace owns one store.
 func openStore(dir string) (*checkpoint.SQLite, error) {
 	path := filepath.Join(dir, ".forge")
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -510,31 +575,52 @@ func openStore(dir string) (*checkpoint.SQLite, error) {
 
 // describe projects one spec onto what a person reads: which agent, which
 // engine, which models the deployment may route to, and which tools it wires.
-func describe(dir string, spec deploy.Spec, sim *simtools.Source) Info {
+func describe(dir string, spec deploy.Deployment, sim *simtools.Source, models []model.ModelID) Info {
 	info := Info{
 		Workspace: dir,
 		Agent:     spec.Name,
-		Runtime:   spec.Runtime.Name,
-		Engine:    spec.Engine.Kind,
+		Engine:    spec.Program.Impl,
 		Session:   SessionID,
 	}
-	for _, model := range spec.Runtime.Inference.Models {
-		info.Models = append(info.Models, model.Provider+":"+model.Model)
+	for _, id := range models {
+		info.Models = append(info.Models, id.Provider+":"+id.Name)
 	}
-	info.Graph = expandWorkspace(enginePath(spec.Engine.Settings), dir)
-	if spec.Delegation != nil {
-		info.Delegates = append(info.Delegates, spec.Delegation.Targets...)
+	if delegation := spec.Grant.Delegation; delegation != nil {
+		info.Delegates = append(info.Delegates, delegation.Targets...)
 	}
 	for _, hook := range spec.Hooks {
-		info.Hooks = append(info.Hooks, hook.Kind)
+		info.Hooks = append(info.Hooks, hook.Impl)
 	}
-	if len(spec.Runtime.Tools.Enable) == 0 {
-		info.Tools = append(info.Tools, "files", "exec", "skills")
+	if allowed := spec.Grant.Tools.Allow; len(allowed) > 0 {
+		info.Tools = append(info.Tools, allowed...)
 	} else {
-		info.Tools = append(info.Tools, spec.Runtime.Tools.Enable...)
+		// Nothing is written down, so everything the process mounted is callable: a source is named as
+		// itself, and the simulated tools by their own names, which is what a `sim` source actually is.
+		for _, source := range processSources(dir) {
+			if source == "sim" {
+				continue
+			}
+			info.Tools = append(info.Tools, source)
+		}
 	}
 	if sim != nil {
 		info.Tools = append(info.Tools, sim.Names()...)
 	}
 	return info
+}
+
+// fingerprintOf names the deployment set this workspace was opened from, so a checkpoint written under
+// one set of documents is not resumed as if it were another: the same agents, in the same order, over
+// the same programmes and grants.
+func fingerprintOf(specs []deploy.Deployment) agent.Fingerprint {
+	hash := sha256.New()
+	for _, spec := range specs {
+		hash.Write([]byte(spec.Name))
+		hash.Write([]byte(spec.Program.Impl))
+		hash.Write([]byte(spec.Grant.Digest()))
+		for _, hook := range spec.Hooks {
+			hash.Write([]byte(hook.Impl))
+		}
+	}
+	return agent.Fingerprint(hex.EncodeToString(hash.Sum(nil)))
 }

@@ -40,6 +40,7 @@ func benchPlan() deploy.ProcessPlan {
 	backend := &boundary{log: &journal{}, filesystemBounds: true}
 	plan.Backends = []deploy.PlannedBackend{boundBackend("local", backend)}
 	plan.Tools = []deploy.PlannedToolSource{plannedSource("workspace")}
+	plan.Observability = deploy.Observability{Trace: agent.TraceNone}
 	return plan
 }
 
@@ -48,7 +49,7 @@ func BenchmarkOpenProcess(b *testing.B) {
 	plan := benchPlan()
 	b.ReportAllocs()
 	for b.Loop() {
-		res, err := Open(context.Background(), plan)
+		res, err := Open(context.Background(), plan, benchOptions())
 		if err != nil {
 			b.Fatalf("Open: %v", err)
 		}
@@ -63,14 +64,13 @@ func benchDeployment(b *testing.B, name string, grant policy.Grant, log *journal
 	return deploy.Deployment{
 		Name:    name,
 		Grant:   grant,
-		Trace:   agent.TraceNone,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &sessionProgram{log: log}, nil }},
 	}
 }
 
 func benchAgents(b *testing.B) *Agents {
 	b.Helper()
-	res, err := Open(context.Background(), benchPlan())
+	res, err := Open(context.Background(), benchPlan(), benchOptions())
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -136,7 +136,7 @@ func BenchmarkRunTurn(b *testing.B) {
 
 func benchRunAgents(b *testing.B) *Agents {
 	b.Helper()
-	res, err := Open(context.Background(), benchPlan())
+	res, err := Open(context.Background(), benchPlan(), benchOptions())
 	if err != nil {
 		b.Fatalf("Open: %v", err)
 	}
@@ -145,7 +145,6 @@ func benchRunAgents(b *testing.B) *Agents {
 	dep := deploy.Deployment{
 		Name:    "referee",
 		Grant:   permissiveGrant("local"),
-		Trace:   agent.TraceCall,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return streamingProgram{}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
@@ -184,6 +183,7 @@ inference:
 tools:
   sources:
     - {name: workspace, impl: files}
+observability: {trace: none, bodies: false}
 `))
 	b.ReportAllocs()
 	for b.Loop() {
@@ -191,4 +191,17 @@ tools:
 			b.Fatalf("Process: %v", err)
 		}
 	}
+}
+
+// benchOptions opens a process the way a benchmark wants: no chain, and the stub engine, so the number
+// measures the process build rather than an executor.
+func benchOptions() Options {
+	o := Options{}
+	o.Dispatcher = func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
+		return stubDispatch{catalog: catalog, chain: chain}
+	}
+	o.View = func(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
+		return stubView{catalog: catalog}
+	}
+	return o
 }

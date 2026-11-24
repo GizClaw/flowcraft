@@ -70,7 +70,6 @@ var Table = map[string]int{
 	"identity":                L0,
 	"identity/inject":         L0,
 	"internal/decode":         L0,
-	"internal/fsatomic":       L0,
 	"internal/layout":         L0,
 	"internal/paths":          L0,
 	"internal/pathtest":       L0,
@@ -104,8 +103,7 @@ var Table = map[string]int{
 
 	// L2 — the tool contract and its gate.
 	"tool":            L2,
-	"tool/dispatch":   L2,
-	"tool/middleware": L2,
+	"tool/platform":   L2,
 	"tool/projection": L2,
 	"tool/tooltest":   L2,
 

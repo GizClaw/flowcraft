@@ -34,14 +34,14 @@ jobs:
           go-version: "1.26"
 
       - name: Validate release changesets
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go run . validate --repo ../..
 
       - name: Build release plan
         id: plan
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: |
@@ -156,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           (
-            cd tools/releasegate
+            cd scripts/releasegate
             GOWORK=off go run . changelog --repo ../.. --check
             GOWORK=off go run . plan --repo ../.. --json
           ) > /tmp/release-plan.json
@@ -167,7 +167,7 @@ jobs:
           fi
 
       - name: Validate planned module pins and tidiness
-        working-directory: tools/releasegate
+        working-directory: scripts/releasegate
         env:
           GOWORK: "off"
         run: go run . preflight --repo ../..

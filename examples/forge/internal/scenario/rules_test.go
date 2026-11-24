@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/agent-graph"
-	"github.com/GizClaw/flowcraft/core/agent-graph/script"
-	"github.com/GizClaw/flowcraft/core/agent-graph/script/starlark"
+	"github.com/GizClaw/flowcraft/agent/graph"
+	"github.com/GizClaw/flowcraft/agent/graph/script"
+	"github.com/GizClaw/flowcraft/agent/graph/script/starlark"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 

@@ -12,8 +12,9 @@ package chatfmt
 import (
 	"strings"
 
+	"github.com/GizClaw/flowcraft/agent/graph"
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent-graph"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // BlockKind names what one block is.
@@ -181,13 +182,10 @@ func Render(blocks []*Block) string {
 	return strings.Join(lines, "\n")
 }
 
-// ResultText is the final assistant message a result carries, or "" when the
-// turn produced none: a failed or paused task has no answer.
-func ResultText(result agent.Result) string {
-	if result.Content.Parts == nil {
-		return ""
-	}
-	return strings.TrimSpace(result.Content.Text())
+// ResultText is the final assistant message a snapshot carries, or "" when the turn produced none: a
+// failed or paused task has no answer.
+func ResultText(content message.Content) string {
+	return strings.TrimSpace(content.Text())
 }
 
 // CallName resolves the tool name of a call id the collector has seen.

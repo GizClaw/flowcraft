@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/identity/inject"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -21,6 +22,14 @@ import (
 // spanTurn is the span one turn opens. It is the tick of the run's clock: without it a
 // run has a start and an end and nothing in between.
 const spanTurn = "agent.turn"
+
+// spanCheckpointSave is the span one terminal save opens. It is the turn's disk clock: without
+// it a slow store and a slow model are the same latency on the turn span.
+const spanCheckpointSave = "checkpoint.save"
+
+// eventInterrupted is the span event one applied operator input adds. It is an event rather
+// than an attribute because a turn can absorb several, and their order is the story.
+const eventInterrupted = "agent.interrupted"
 
 // errNilDriver reports a host that called RunTurn without a driver, which is a wiring bug
 // rather than a turn that failed.
@@ -135,10 +144,13 @@ func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Dr
 			outcome.State = typed.State
 			completed = typed.State.Terminal()
 			records = append(records, recordOf(recordState, typed))
+		case Text:
+			outcome.Content = appendContent(outcome.Content, typed.Text)
 		case UsageEvent:
 			addUsage(&outcome.Usage, typed.Usage)
 		case Interrupted:
 			records = append(records, recordOf(recordInterrupted, typed.Interruption))
+			annotateInterruption(ctx, typed.Interruption)
 		case ArtifactWritten:
 			records = append(records, recordOf(recordArtifact, typed.Artifact))
 		}
@@ -158,6 +170,33 @@ func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Dr
 		outcome.State = StateFailed
 	}
 	return outcome, records, nil
+}
+
+// annotateInterruption puts one applied operator input on the turn's span.
+//
+// The audit half is the checkpoint record beside it: a span event is what a trace reader sees,
+// the record is what survives the process. Neither carries the operator's text — the intent and
+// the position are what explain the turn's change of direction.
+func annotateInterruption(ctx context.Context, interruption Interruption) {
+	span := trace.SpanFromContext(ctx)
+	if !span.IsRecording() {
+		return
+	}
+	span.AddEvent(eventInterrupted, trace.WithAttributes(
+		attribute.String(telemetry.AttrAgentInterrupted, string(interruption.Intent)),
+		attribute.Int(telemetry.AttrAgentBoundary, interruption.Boundary),
+	))
+}
+
+// appendContent adds one delta to the turn's answer.
+func appendContent(content message.Content, text string) message.Content {
+	if text == "" {
+		return content
+	}
+	if said := content.Text(); said != "" {
+		return message.NewTextContent(said + text)
+	}
+	return message.NewTextContent(text)
 }
 
 // recordOf renders one fact for the event log. A payload that cannot encode is dropped
@@ -203,8 +242,9 @@ func finish(ctx context.Context, span trace.Span, req Request, turn TurnInfo, ou
 	}
 }
 
-// saveTerminal writes where the task stands and the facts that explain it. A turn with no
-// store keeps nothing, which is what a stateless deployment wants.
+// saveTerminal writes where the task stands and the facts that explain it, under the span that
+// makes the write visible. A turn with no store keeps nothing, which is what a stateless
+// deployment wants.
 //
 // It writes on a context that ignores cancellation: the decorator cancels the turn's
 // context the moment the caller stops or the driver panics, and a store that honoured
@@ -224,13 +264,38 @@ func saveTerminal(ctx context.Context, req Request, outcome TurnOutcome, records
 			kept = append(kept, record)
 		}
 	}
-	_, _, err := req.Store.Save(context.WithoutCancel(ctx), Checkpoint{
+	saveCtx, end := startSaveSpan(ctx, req, len(kept))
+	_, _, err := req.Store.Save(context.WithoutCancel(saveCtx), Checkpoint{
 		Schema:      Schema,
 		Fingerprint: req.Fingerprint,
 		Task:        task,
 	}, kept)
 	if err != nil {
 		telemetry.WarnErr(ctx, "agent: saving the terminal checkpoint failed", err)
+	}
+	end(err)
+}
+
+// startSaveSpan opens the span one terminal save writes under.
+//
+// It is gated at "run": a deployment that records nothing inside its turns promised two spans
+// per turn, and the save is inside the turn. The closer is always safe to call, so the caller
+// does not branch on the level.
+func startSaveSpan(ctx context.Context, req Request, events int) (context.Context, func(error)) {
+	if !req.Trace.AtLeast(TraceRun) {
+		return ctx, func(error) {}
+	}
+	ctx, span := telemetry.TracerWithSuffix("agent").Start(ctx, spanCheckpointSave,
+		trace.WithAttributes(attribute.Int(telemetry.AttrCheckpointEvents, events)))
+	span.SetAttributes(telemetry.Attrs(ctx)...)
+	return ctx, func(err error) {
+		if err != nil {
+			// The classification goes on the span, the message in the log beside it.
+			span.SetStatus(codes.Error, "save_failed")
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
 	}
 }
 

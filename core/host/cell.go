@@ -8,7 +8,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // cell is one session's boundary: the runner its commands start in, the file handles its tools
@@ -25,15 +24,11 @@ type cell struct {
 	// tree is the file boundary: the read roots as open handles, plus the write set. A write
 	// outside it is refused by the kernel handle, not by a string comparison.
 	tree *fsx.Tree
-	// journal observes writes. Nil when the backend offers none, which is a fact and not an
-	// error: a backend that cannot watch is still a backend.
-	journal sandbox.FileJournal
 }
 
 // openCell builds one session's boundary from the deployment's backend and the grant.
 //
-// The order is the dependency order — runner, then the tree, then the journal over the runner —
-// and close runs it backwards. A confine the backend cannot honour is refused here, at open, so an
+// The order is the dependency order — runner, then the tree over it — and close runs it backwards. A confine the backend cannot honour is refused here, at open, so an
 // operator learns at the first session rather than from a model's runtime error.
 func openCell(ctx context.Context, factory BackendFactory, grant policy.Grant) (*cell, error) {
 	confine, err := confineOf(grant)
@@ -60,18 +55,6 @@ func openCell(ctx context.Context, factory BackendFactory, grant policy.Grant) (
 		return nil, errors.Join(err, c.Close())
 	}
 	c.tree = tree
-
-	if provider, ok := runner.(sandbox.JournalProvider); ok {
-		journal, err := provider.OpenJournal(ctx)
-		if err != nil {
-			// A backend that cannot attach a journal is usable without one — the tools still work and
-			// the boundary is still enforced — but a session running unobserved must not be silent.
-			telemetry.WarnErr(ctx, "host: the backend attached no journal", err)
-			c.journal = nil
-		} else {
-			c.journal = journal
-		}
-	}
 	return c, nil
 }
 
@@ -123,16 +106,10 @@ func openTree(files policy.Files) (*fsx.Tree, error) {
 	}
 }
 
-// Close releases the boundary: the journal first (it reads what the runner produces), then the file
-// handles, then the runner that could still be spawning processes.
+// Close releases the boundary: the file handles first, then the runner that could still be spawning
+// processes.
 func (c *cell) Close() error {
 	var errs []error
-	if c.journal != nil {
-		if err := c.journal.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("host: closing journal: %w", err))
-		}
-		c.journal = nil
-	}
 	if c.tree != nil {
 		if err := c.tree.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("host: closing files: %w", err))

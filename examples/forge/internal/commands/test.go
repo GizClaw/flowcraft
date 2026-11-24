@@ -242,7 +242,7 @@ func runOneTestTurn(
 		return metric, "", failure
 	}
 	rendered := chatfmt.Render(observer.blocks.Blocks())
-	if text := chatfmt.ResultText(result); rendered == "" && text != "" {
+	if text := chatfmt.ResultText(result.Content); rendered == "" && text != "" {
 		rendered = text
 	}
 	return metric, rendered, nil

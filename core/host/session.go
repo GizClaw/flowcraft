@@ -9,23 +9,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/fsx"
-	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // The capability slots a session fills.
 //
-// The names are the contract, not the variables: a tool in another module declares its own handle
-// with the same name and type, and registration refuses a tool whose declared slot this process
-// never fills. That is why the slots are plain package variables here — the tool that reads
-// "fsx.tree" does not import this package, and could not.
-var (
-	filesSlot   = tool.NewSlot[*fsx.Tree]("fsx.tree")
-	processSlot = tool.NewSlot[sandbox.SessionStarter]("sandbox.process")
-)
-
 // Session is one open conversation under one deployment.
 //
 // It is where the four nouns meet: the agent it belongs to, the cell that isolates it, the binding
@@ -44,6 +35,9 @@ type Session struct {
 	touch atomic.Int64
 	// ordinal counts turns, which is what a turn's identity is derived from.
 	ordinal int
+	// chain is the delegation lineage this session runs under: empty for a session a caller opened,
+	// one deeper for every edge below a delegate call.
+	chain identity.Chain
 	// running is true while a turn is in flight. One session has at most one, which is the rule
 	// that lets Steer and Cancel address a turn without an id.
 	running atomic.Bool
@@ -173,13 +167,17 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	}
 
 	capabilities := tool.NewCapSet()
-	filesSlot.Provide(capabilities, built.tree)
-	processSlot.Provide(capabilities,
+	platform.TreeSlot.Provide(capabilities, built.tree)
+	platform.ProcessSlot.Provide(capabilities,
 		starterFor(built.runner, a.approval, agentName, sessionID))
+	// The catalog is the process's: every session of this deployment searches the same discovery.
+	if a.res.skills != nil {
+		platform.SkillsSlot.Provide(capabilities, a.res.skills)
+	}
 
 	// The projection carries the deployment's exposure policy: what the model may see is a property
 	// of the deployment, so one view per session is cheap and the index behind it is shared.
-	view := deploy.projection.NewView()
+	view := deploy.newView()
 	binding := tool.Bind(&sessionScratch{id: sessionID, values: map[string]any{}},
 		deploy.grant).WithView(view).WithCaps(capabilities)
 
@@ -203,6 +201,16 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		driver:    driver,
 	}
 	session.touchNow(time.Now())
+	// Delegation is filled only where the grant permits it: a session that may not delegate gets no
+	// capability, and a delegate tool registered in the process is then refused at registration
+	// instead of failing at the first call.
+	if deploy.grant.Delegation != nil {
+		head := &delegator{agents: a, parent: session}
+		if limit := deploy.grant.Delegation.MaxConcurrent; limit > 0 {
+			head.gate = make(chan struct{}, limit)
+		}
+		platform.DelegationSlot.Provide(capabilities, head)
+	}
 	span.End()
 	return session, span, nil
 }

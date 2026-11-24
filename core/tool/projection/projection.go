@@ -2,6 +2,7 @@ package projection
 
 import (
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -85,3 +86,30 @@ func (s staticView) Visible(name string) bool {
 }
 
 func (s staticView) RecordCall(message.ToolCall) {}
+
+// For is the projection policy a grant's tool set describes.
+//
+// It is the translation from the permission to this engine's own knobs, and it lives here because it is
+// the engine's business: a host that spelled it out would be naming this package, and the layer that
+// picks an engine is the application's.
+//
+// The defaults are deliberately conservative — everything deferred, one round's budget — because a tool
+// set that names no exposure has not said a tool is always visible, and hiding it costs a discovery
+// rather than flooding every round.
+func For(tools policy.ToolSet) Policy {
+	out := Policy{
+		Default: ExposureDeferred,
+		Budget: Budget{
+			MaxDefinitions: tools.Budget.MaxDefinitions,
+			MaxBytes:       tools.Budget.MaxBytes,
+		},
+		Discovery: DefaultDiscoveryPolicy(),
+	}
+	if len(tools.Exposure) > 0 {
+		out.Exposures = make(map[string]Exposure, len(tools.Exposure))
+		for name, exposure := range tools.Exposure {
+			out.Exposures[name] = Exposure(exposure)
+		}
+	}
+	return out
+}

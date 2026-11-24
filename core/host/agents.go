@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/policy"
-	"github.com/GizClaw/flowcraft/core/tool/projection"
+	"github.com/GizClaw/flowcraft/core/tool"
 )
 
 // Agents is the deployment table: one entry per agent this process serves.
@@ -39,6 +40,8 @@ type Agents struct {
 	order    []string
 	sessions map[string]*Session
 	byAge    []*Session
+	// edges numbers delegation edges so two children of one parent get distinct session ids.
+	edges atomic.Int64
 	// retiring holds the deployments a reload replaced while their sessions are still open. They
 	// are out of the table but not out of the process, so Close has to know about them.
 	retiring []*deployment
@@ -51,14 +54,18 @@ type deployment struct {
 	name    string
 	program agent.Program
 	grant   policy.Grant
-	trace   agent.TraceLevel
-	bodies  bool
+	// observability is the process's record level, held here because the turn path reaches it
+	// through the deployment. It is not a per-agent setting: the chain and the model access it
+	// controls are built once for the process.
+	observability deploy.Observability
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
 	// projection is this deployment's tool visibility: the grant's exposure and budget, over the
 	// process's catalog. One per deployment, because the policy is the deployment's.
-	projection *projection.Projection
+	// newView builds one session's projection from this deployment's authority. It is a closure so the
+	// host names no projection implementation.
+	newView func() tool.View
 	// live counts the open sessions, which is what the grant's limit is measured against.
 	live int
 	// retired marks a deployment that a reload replaced: its program is closed when the last
@@ -271,18 +278,20 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: hooks: %w", dep.Name, err), program.Close())
 	}
-	proj, err := projection.New(a.res.tools, projectionPolicy(dep.Grant.Tools))
+	if a.res.newView == nil {
+		return nil, errdefs.NotAvailablef("host: agent %q: this process has no tool projection", dep.Name)
+	}
+	proj := a.res.newView(a.res.tools, dep.Grant.Tools)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
 	}
 	return &deployment{
-		name:       dep.Name,
-		program:    program,
-		grant:      dep.Grant,
-		trace:      dep.Trace,
-		bodies:     dep.Bodies,
-		hooks:      hooks,
-		projection: proj,
+		name:          dep.Name,
+		program:       program,
+		grant:         dep.Grant,
+		observability: a.res.observability,
+		hooks:         hooks,
+		newView:       func() tool.View { return proj },
 	}, nil
 }
 
@@ -333,23 +342,6 @@ func buildHooks(planned []deploy.PlannedHook) (agent.Hooks, error) {
 // The exposure levels are the deployment's, not the process's: two agents on one process can show
 // different tools, which is why the projection is per deployment while the catalog it reads is
 // shared.
-func projectionPolicy(tools policy.ToolSet) projection.Policy {
-	policyValue := projection.Policy{
-		Default: projection.ExposureDeferred,
-		Budget: projection.Budget{
-			MaxDefinitions: tools.Budget.MaxDefinitions,
-			MaxBytes:       tools.Budget.MaxBytes,
-		},
-		Discovery: projection.DefaultDiscoveryPolicy(),
-	}
-	if len(tools.Exposure) > 0 {
-		policyValue.Exposures = make(map[string]projection.Exposure, len(tools.Exposure))
-		for name, exposure := range tools.Exposure {
-			policyValue.Exposures[name] = projection.Exposure(exposure)
-		}
-	}
-	return policyValue
-}
 
 // closeAll releases the deployments a refused Add or Reload built. The close errors are returned
 // joined rather than dropped: a program that cannot be released is the second problem, and the caller

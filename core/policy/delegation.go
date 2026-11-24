@@ -32,7 +32,21 @@ type Delegation struct {
 	Modes []DelegationMode `json:"modes,omitempty" yaml:"modes,omitempty"`
 	// MaxDepth caps how many delegation edges may sit above a leaf run.
 	MaxDepth int `json:"max_depth,omitempty" yaml:"max_depth,omitempty"`
+	// MaxConcurrent caps in-flight synchronous delegations from one session. Zero is unbounded:
+	// the session's own max_sessions already caps how many runs exist at once, and a grant that
+	// wants a tighter fan-out says so here.
+	MaxConcurrent int `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`
+	// Timeout bounds one delegated run. Zero leaves it to the caller's context, which for a sync
+	// edge means the parent turn — so a child that never finishes takes its parent with it.
+	Timeout Duration `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	// MaxInputBytes caps the text one delegation hands over. Zero uses DefaultMaxInputBytes:
+	// an unbounded input turns a delegation into a way to move data the parent was granted and the
+	// child was not.
+	MaxInputBytes int `json:"max_input_bytes,omitempty" yaml:"max_input_bytes,omitempty"`
 }
+
+// DefaultMaxInputBytes is the cap a policy that names none inherits.
+const DefaultMaxInputBytes = 64 << 10
 
 // Validate rejects delegation that cannot be honoured.
 func (d Delegation) Validate() error {
@@ -57,7 +71,24 @@ func (d Delegation) Validate() error {
 	if d.MaxDepth < 0 {
 		return errdefs.Validationf("policy.delegation: max_depth must not be negative")
 	}
+	if d.MaxConcurrent < 0 {
+		return errdefs.Validationf("policy.delegation: max_concurrent must not be negative")
+	}
+	if d.Timeout < 0 {
+		return errdefs.Validationf("policy.delegation: timeout must not be negative")
+	}
+	if d.MaxInputBytes < 0 {
+		return errdefs.Validationf("policy.delegation: max_input_bytes must not be negative")
+	}
 	return nil
+}
+
+// InputLimit is the cap on one delegation's input, resolving the default.
+func (d *Delegation) InputLimit() int {
+	if d != nil && d.MaxInputBytes > 0 {
+		return d.MaxInputBytes
+	}
+	return DefaultMaxInputBytes
 }
 
 // AllowsTarget reports whether name may be delegated to.

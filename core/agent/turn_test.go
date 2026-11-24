@@ -12,7 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/identity/inject"
 	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // sessionCtx is the context a host hands to RunTurn: one with a session attached, which
@@ -459,5 +461,61 @@ func TestRunTurnDeliversADriverErrorOnce(t *testing.T) {
 	}
 	if !errors.Is(seen, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want the driver's", seen)
+	}
+}
+
+// TestTheSaveSpanFollowsTheTraceLevel is the cost model's smallest consequence: the checkpoint
+// write is inside the turn, so a deployment that records nothing inside its turns does not get a
+// span for it — and one that records a run gets exactly one.
+func TestTheSaveSpanFollowsTheTraceLevel(t *testing.T) {
+	for _, tc := range []struct {
+		level agent.TraceLevel
+		want  int
+	}{
+		{agent.TraceNone, 0},
+		{agent.TraceRun, 1},
+		{agent.TraceCall, 1},
+	} {
+		t.Run(tc.level.String(), func(t *testing.T) {
+			recorder := telemetrytest.New(t)
+			req := request(agenttest.NewMemStore())
+			req.Trace = tc.level
+			driver := agenttest.NewScripted(agenttest.Completed()).OpenDriver()
+			if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+				t.Fatalf("RunTurn: %v", err)
+			}
+			if got := len(recorder.Named("checkpoint.save")); got != tc.want {
+				t.Fatalf("checkpoint.save spans = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAnAppliedInterruptionIsASpanEvent is the audit half a trace can see: an operator input that
+// changed the turn's direction is an event on the turn's span, ordered with everything else.
+func TestAnAppliedInterruptionIsASpanEvent(t *testing.T) {
+	recorder := telemetrytest.New(t)
+	driver := agenttest.NewScripted(
+		agent.Interrupted{Interruption: agent.Interruption{Intent: agent.SteerCorrect, Boundary: 2}},
+		agenttest.Completed(),
+	).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), request(nil), driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	turn := recorder.RequireNamed(t, "agent.turn")
+	events := turn.Events()
+	if len(events) != 1 || events[0].Name != "agent.interrupted" {
+		t.Fatalf("events = %+v, want one agent.interrupted", events)
+	}
+	attrs := map[string]attribute.Value{}
+	for _, kv := range events[0].Attributes {
+		attrs[string(kv.Key)] = kv.Value
+	}
+	if got := attrs["agent.interrupted"].AsString(); got != string(agent.SteerCorrect) {
+		t.Fatalf("intent = %q, want %q", got, agent.SteerCorrect)
+	}
+	if got := attrs["agent.boundary"].AsInt64(); got != 2 {
+		t.Fatalf("boundary = %d, want 2", got)
 	}
 }
