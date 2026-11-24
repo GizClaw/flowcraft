@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"iter"
@@ -184,7 +186,11 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		case err == nil:
 			// The previous turn ended: this one is a new task, and the conversation crosses the boundary
 			// through the document's carried keys rather than through one endless run.
-			task.ID = fmt.Sprintf("%s/%d", session.id, session.ordinal)
+			id, err := newTaskID(session.id)
+			if err != nil {
+				return agent.Request{}, err
+			}
+			task.ID = id
 		case errors.Is(err, agent.ErrNoCheckpoint):
 			// A new conversation: the task starts here.
 		default:
@@ -208,6 +214,21 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Manifest: session.deploy.manifest,
 		OnRun:    a.runSink,
 	}, nil
+}
+
+// newTaskID mints the id of a new task: the session's id plus a random suffix.
+//
+// "Fresh" is a durability requirement, not a readability one. The store keys tasks by id, so a
+// repeated id merges two tasks' projections and interleaves their event logs — and every counter
+// this could use restarts: the session's ordinal starts again when a conversation is opened (or
+// the process is), which made the second turn after a reopen collide with a task the store still
+// held. A random suffix has no such history, and nothing parses a task id.
+func newTaskID(sessionID string) (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("host: mint a task id: %w", err)
+	}
+	return sessionID + "/" + hex.EncodeToString(suffix[:]), nil
 }
 
 // Steer hands operator input to the session's running turn.

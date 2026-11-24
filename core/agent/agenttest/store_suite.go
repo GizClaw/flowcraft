@@ -3,6 +3,7 @@ package agenttest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -102,6 +103,36 @@ func storeSectionsMerge(t *testing.T, open StoreFactory) {
 	}
 	if string(stored.Sections["graph"]) != `{"step":1}` {
 		t.Errorf("graph = %s, want this save's value", stored.Sections["graph"])
+	}
+
+	// A third save updates the same section, and a fourth omits sections entirely — which
+	// is what a driver's per-step save followed by the turn decorator's terminal save looks
+	// like. Merging has to survive the whole sequence, including the save that carries none:
+	// a store that wrote only the newest map would resurrect the first save's value here.
+	for step := 2; step <= 3; step++ {
+		next := agent.Checkpoint{
+			Task:     agent.Task{ID: "t1", SessionID: "s1"},
+			Sections: map[string]json.RawMessage{"graph": json.RawMessage(fmt.Sprintf(`{"step":%d}`, step))},
+		}
+		if _, _, err := store.Save(ctx, next, nil); err != nil {
+			t.Fatalf("Save step %d: %v", step, err)
+		}
+	}
+	terminal := agent.Checkpoint{Task: agent.Task{ID: "t1", SessionID: "s1", State: agent.StateCompleted}}
+	if _, _, err := store.Save(ctx, terminal, nil); err != nil {
+		t.Fatalf("terminal Save: %v", err)
+	}
+	stored, err = store.Load(ctx, "t1")
+	if err != nil {
+		t.Fatalf("Load after the terminal save: %v", err)
+	}
+	if string(stored.Sections["graph"]) != `{"step":3}` {
+		t.Errorf("graph = %s after a save that omitted sections, want the newest value",
+			stored.Sections["graph"])
+	}
+	if string(stored.Sections["manifest"]) != `{"driver":"graph"}` {
+		t.Errorf("manifest = %s after a save that omitted sections, want the first save's value",
+			stored.Sections["manifest"])
 	}
 }
 

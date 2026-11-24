@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 	fingerprint TEXT NOT NULL,
 	seed           BLOB NOT NULL DEFAULT '',
 	body           BLOB NOT NULL,
+	sections       BLOB NOT NULL DEFAULT '',
 	version        INTEGER NOT NULL DEFAULT 1,
 	server_version INTEGER NOT NULL DEFAULT 0,
 	saved_at       INTEGER NOT NULL DEFAULT 0,
@@ -256,6 +257,10 @@ func prepare(db *sql.DB, config []Option) error {
 	// And one written before events carried a time has no created_at: those rows
 	// read back as zero, which a reader treats as unknown rather than as 1970.
 	_, _ = db.Exec("ALTER TABLE events ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0")
+	// A database written before sections moved out of the body keeps them there; Load
+	// reads both, and this column is what makes a save merge them instead of replacing
+	// whatever the first save happened to carry.
+	_, _ = db.Exec("ALTER TABLE tasks ADD COLUMN sections BLOB NOT NULL DEFAULT ''")
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("checkpoint: migrate: %w", err)
 	}
@@ -296,18 +301,23 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 	// only what changes after it. A transcript in the projection would make every
 	// save rewrite the whole conversation, so n rounds cost O(n^2) bytes; it lives in
 	// the event log instead.
-	seed, err := json.Marshal(checkpoint)
+	//
+	// Sections are not in either: they merge across saves, so they live in their own
+	// column and are merged inside the transaction below. Putting them in the seed
+	// would resurrect the first save's values on every load, which is exactly the bug
+	// this column exists to end.
+	seeded := checkpoint
+	seeded.Sections = nil
+	seed, err := json.Marshal(seeded)
 	if err != nil {
 		return 0, 0, fmt.Errorf("checkpoint: encode seed: %w", err)
 	}
-	// The body is the mutable part of the row: the projection plus whatever an
-	// adapter above the agent keeps in Sections. The transcript is not here; it lives
-	// in the event log.
+	// The body is the mutable part of the projection. The transcript is not here; it
+	// lives in the event log.
 	body, err := json.Marshal(struct {
-		Artifacts []agent.Artifact           `json:"artifacts,omitempty"`
-		Pending   *message.ToolCall          `json:"pending,omitempty"`
-		Sections  map[string]json.RawMessage `json:"sections,omitempty"`
-	}{checkpoint.Task.Artifacts, checkpoint.Task.Pending, checkpoint.Sections})
+		Artifacts []agent.Artifact  `json:"artifacts,omitempty"`
+		Pending   *message.ToolCall `json:"pending,omitempty"`
+	}{checkpoint.Task.Artifacts, checkpoint.Task.Pending})
 	if err != nil {
 		return 0, 0, fmt.Errorf("checkpoint: encode projection: %w", err)
 	}
@@ -317,14 +327,27 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// Sections merge rather than replace (the contract [agent.Store.Save] states), so the
+	// row's current map is read and updated inside this transaction: a save that omits a
+	// section keeps it, and a save that writes one replaces it. Doing it outside the
+	// transaction would let two writers drop each other's keys.
+	sections, err := mergeSections(ctx, tx, checkpoint.Task.ID, checkpoint.Sections)
+	if err != nil {
+		return 0, 0, err
+	}
+	encodedSections, err := json.Marshal(sections)
+	if err != nil {
+		return 0, 0, fmt.Errorf("checkpoint: encode sections: %w", err)
+	}
+
 	// Ordering is the save counter's job; updated_at is for a reader. Both are
 	// written from one clock read so the row cannot disagree with itself.
 	at := time.Now().UTC()
 	savedAt := at.UnixNano()
 	now := at.Format(savedAtLayout)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, version, server_version, saved_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, sections, version, server_version, saved_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
 			context_id     = excluded.context_id,
 			state          = excluded.state,
@@ -332,6 +355,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 			schema         = excluded.schema,
 			fingerprint    = excluded.fingerprint,
 			body           = excluded.body,
+			sections       = excluded.sections,
 			version        = tasks.version + 1,
 			server_version = CASE WHEN excluded.server_version > 0
 				THEN excluded.server_version ELSE tasks.server_version END,
@@ -345,6 +369,7 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		string(checkpoint.Fingerprint),
 		seed,
 		body,
+		encodedSections,
 		checkpoint.ServerVersion,
 		savedAt,
 		now,
@@ -441,10 +466,11 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		version          int64
 		serverVersion    int64
 	)
+	var sections []byte
 	err := l.db.QueryRowContext(ctx,
-		`SELECT context_id, state, round, seed, body, version, server_version
+		`SELECT context_id, state, round, seed, body, sections, version, server_version
 		 FROM tasks WHERE task_id = ?`, taskID,
-	).Scan(&contextID, &state, &round, &seed, &body, &version, &serverVersion)
+	).Scan(&contextID, &state, &round, &seed, &body, &sections, &version, &serverVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -477,9 +503,9 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		}
 		checkpoint.Task.Artifacts = mutable.Artifacts
 		checkpoint.Task.Pending = mutable.Pending
-		// The seed holds the sections of the first save; later saves update them
-		// through the projection. An adapter that stops writing a section keeps
-		// its last value, which is what "owner-keyed" means.
+		// Rows written before the sections column carry their sections in the body; the
+		// column is authoritative when it exists. An adapter that stops writing a section
+		// keeps its last value, which is what "owner-keyed" means.
 		if len(mutable.Sections) > 0 {
 			if checkpoint.Sections == nil {
 				checkpoint.Sections = make(map[string]json.RawMessage, len(mutable.Sections))
@@ -487,6 +513,18 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 			for key, value := range mutable.Sections {
 				checkpoint.Sections[key] = value
 			}
+		}
+	}
+	if len(sections) > 0 {
+		var merged map[string]json.RawMessage
+		if err := json.Unmarshal(sections, &merged); err != nil {
+			return agent.Checkpoint{}, fmt.Errorf("checkpoint: decode sections: %w", err)
+		}
+		if checkpoint.Sections == nil {
+			checkpoint.Sections = make(map[string]json.RawMessage, len(merged))
+		}
+		for key, value := range merged {
+			checkpoint.Sections[key] = value
 		}
 	}
 	checkpoint.Version = version
@@ -677,4 +715,28 @@ func (l *SQLite) GetBlob(ctx context.Context, ref string) ([]byte, error) {
 		return nil, fmt.Errorf("checkpoint: read blob: %w", err)
 	}
 	return body, nil
+}
+
+// mergeSections reads a row's sections and returns them with next applied on top.
+//
+// A row that has none yet — a first save — starts from next alone, and a nil next leaves
+// what is stored alone, which is the difference between "this save has no sections" and
+// "this save clears every section": the contract has no spelling for the second, and a
+// driver that wanted it would be deleting another owner's data.
+func mergeSections(ctx context.Context, tx *sql.Tx, taskID string, next map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	var stored []byte
+	err := tx.QueryRowContext(ctx, `SELECT sections FROM tasks WHERE task_id = ?`, taskID).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("checkpoint: read sections: %w", err)
+	}
+	merged := make(map[string]json.RawMessage, len(next))
+	if len(stored) > 0 {
+		if err := json.Unmarshal(stored, &merged); err != nil {
+			return nil, fmt.Errorf("checkpoint: decode sections: %w", err)
+		}
+	}
+	for key, value := range next {
+		merged[key] = value
+	}
+	return merged, nil
 }
