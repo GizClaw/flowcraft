@@ -3,25 +3,28 @@
 # check; a developer extends FUZZTIME for a real hunt.
 set -euo pipefail
 
-cd "$(dirname "$0")/../core"
+cd "$(dirname "$0")/.."
 
 time="${FUZZTIME:-15s}"
 
-# Core only: the targets whose packages moved out with the core rebuild run in
-# their own modules — `./internal/a2awire` in agent, `./agent-graph` in agent,
-# `./sandbox-remote/wire` in sandbox — and they rejoin this script there.
+# One entry per target, as "module:package function": the checkout is four
+# modules and a target runs in the module that owns its package.
 targets=(
-	"./internal/decode FuzzToJSON"
-	"./config FuzzLoad"
-	"./internal/search FuzzSearch"
-	"./policy FuzzFilesNormalized"
-	"./sandbox FuzzNarrowIsMonotoneAndIdempotent"
-	"./tool/middleware FuzzTruncateJSONResult"
+	"core:./internal/decode FuzzToJSON"
+	"core:./config FuzzLoad"
+	"core:./internal/search FuzzSearch"
+	"core:./policy FuzzFilesNormalized"
+	"core:./sandbox FuzzNarrowIsMonotoneAndIdempotent"
+	"core:./tool/middleware FuzzTruncateJSONResult"
+	"agent:./graph FuzzStateEvent"
+	"agent:./graph/script FuzzDecodeConfig"
 )
 
 for entry in "${targets[@]}"; do
-	package="${entry% *}"
-	function="${entry#* }"
-	echo "==> ${package} ${function}"
-	go test "${package}" -run '^$' -fuzz "^${function}\$" -fuzztime "${time}"
+	module="${entry%%:*}"
+	rest="${entry#*:}"
+	package="${rest% *}"
+	function="${rest#* }"
+	echo "==> ${module} ${package} ${function}"
+	( cd "${module}" && go test "${package}" -run '^$' -fuzz "^${function}\$" -fuzztime "${time}" )
 done

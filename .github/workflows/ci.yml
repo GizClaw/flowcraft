@@ -35,19 +35,16 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "examples/forge"]
-              for base in ("backends", "driver"):
-                  for path in pathlib.Path(base).rglob("go.mod"):
-                      if "vendor" in path.parts or "testdata" in path.parts:
-                          continue
-                      dirs.append(str(path.parent))
-              return sorted(set(dirs))
+              # One entry per module the checkout builds. The three implementation
+              # modules are siblings of core, not packages inside it; a provider or a
+              # backend is a package there, so the list does not recurse.
+              return sorted({"core", "sandbox", "inference", "agent", "examples/forge"})
 
           dirs = module_dirs()
           # The lint gate skips a module that is built the way a reader builds it:
-          # examples/forge pins a released core, and driver/ pins the core it shipped
-          # against — both are compiled with GOWORK=off by the test job instead.
-          lint_dirs = [d for d in dirs if d not in ("examples/forge", "driver")]
+          # examples/forge pins a released core and is compiled with GOWORK=off by the
+          # test job instead.
+          lint_dirs = [d for d in dirs if d != "examples/forge"]
 
           # Parse each in-workspace module's identity and its requires on
           # other flowcraft modules so a change can pull in every module
@@ -67,10 +64,8 @@ jobs:
           # workspace (see `check-consumers`), so it is not a dependent of the
           # working tree: a change to a module it requires at a tag cannot reach
           # it. It joins the matrix only when its own files change.
-          # A consumer pins released versions and is built outside this workspace. driver/
-          # joined them with the core rebuild: its providers move to the `inference` module,
-          # and until then it is the pinned copy of them, not a workspace member.
-          consumers = {d for d in dirs if d.startswith("examples/") or d == "driver"}
+          # A consumer pins released versions and is built outside this workspace.
+          consumers = {d for d in dirs if d.startswith("examples/")}
           reverse = {d: set() for d in dirs}
           for d, deps in deps_of.items():
               if d in consumers:
@@ -199,7 +194,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core driver examples/forge tools)
+          diff=$(gofmt -s -l core sandbox inference agent examples/forge tools)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -301,7 +296,7 @@ jobs:
       - name: go mod tidy
         run: |
           set -e
-          for d in core examples/forge driver; do
+          for d in core examples/forge; do
             echo "==> $d"
             ( cd "$d" && go mod tidy -diff )
           done
@@ -377,22 +372,6 @@ jobs:
           # outside this workspace, the way a reader compiles it. Inside it,
           # every core change would redden a module that never sees it.
           GOWORK: ${{ matrix.gowork }}
-      # The driver module is consumed outside this workspace — by deployments,
-      # by the examples — where its own go.mod and go.sum are the whole story.
-      # The release workflow gates the planned modules with
-      # GOWORK=off, but a driver tag is not part of a planned release, so
-      # nothing checked the driver's pin or tidiness before it shipped. Build it
-      # the way a consumer does: a missing symbol or a short go.sum would
-      # otherwise fail the first deployment of the next tag under -mod=readonly.
-      - name: Build with GOWORK=off
-        if: startsWith(matrix.module, 'driver')
-        env:
-          GOWORK: "off"
-        working-directory: ${{ matrix.module }}
-        run: |
-          go mod tidy -diff
-          go build ./...
-          go vet ./...
       - name: govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
         working-directory: ${{ matrix.module }}

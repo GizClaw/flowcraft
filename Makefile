@@ -15,15 +15,27 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# driver/ is not a workspace member: it pins the core it shipped against, and
-# inside the workspace it would compile against a rewrite that has moved or
-# removed the packages it imports. It is built as a consumer instead —
-# GOWORK=off, the same way a deployment builds it — until its providers move to
-# the `inference` module.
-MODULES_WORK := core
+#
+# The inference implementations share one module: the protocol families (openai,
+# anthropic), their three-stage pipeline, and the vendor adapters. The sandbox
+# implementations share another, and the agent implementations a third — a new
+# provider, backend or driver is a package beside them, never a new module.
+# Spelled out rather than globbed: a wildcard that stops matching a consolidated
+# module silently drops it from every target below.
+INFERENCE_MODULES := inference
+SANDBOX_MODULES := sandbox
+AGENT_MODULES := agent
+
+MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core
+MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES)
+
+# `go mod tidy` resolves the core version a module pins against the module proxy.
+# The three implementation modules pin a core that is only a commit on main so
+# far, so `make release-preflight` is what tidies them, with a temporary local
+# replace; every other module is tidied here.
+MODULES_TIDY := $(filter-out $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES),$(MODULES_WORK))
 
 # Modules a reader builds from their own go.mod and go.sum, without this
 # workspace: every example. They are checked with GOWORK=off (see
@@ -169,10 +181,10 @@ check-skill-pin:
 # parser inputs, nil paths), and a developer chooses when to pay for them.
 
 # Every module in the workspace that carries benchmarks; a module omitted from
-# this list is a module whose benchmarks never run. `driver` left the workspace
-# with the core rebuild — it is built as a consumer, and its benchmarks (request
-# compilation, on the model-call path) return with the `inference` module.
-BENCH_MODULES ?= core
+# this list is a module whose benchmarks never run. The provider adapters live in
+# `inference` now, and their request compilation is on the model-call path, so
+# the module that holds them is here.
+BENCH_MODULES ?= core inference agent
 BENCH_LABEL ?= run
 
 .PHONY: bench

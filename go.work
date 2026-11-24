@@ -1,13 +1,20 @@
 go 1.26.0
 
-// Only core is a workspace member while core is rebuilt.
+// driver/ is gone: its providers are packages of the `inference` module now, and
+// a new provider is a package there rather than a module.
 //
-// driver/ and examples/ pin the core they shipped against, and they import
-// packages this checkout has moved or removed — so they are built the way a
-// reader builds them, with GOWORK=off (CI's matrix carries the flag), instead
-// of inside the workspace, where the go command would compile them against a
-// core that no longer answers them. driver/'s providers move to the `inference`
-// module; the examples rejoin the workspace once they are ported.
+// The three implementation modules — sandbox, inference, agent — are siblings of
+// core, not packages inside it: a backend or a driver implemented outside this
+// repository has to be importable beside them. Core's own build is the real
+// check that it does not reach into one (internal/layout forbids it), so `core`
+// alone still compiles with GOWORK=off.
+//
+// examples/ stay out: they pin released versions and are built the way a reader
+// builds them, with GOWORK=off (see `make check-consumers`). They rejoin the
+// workspace the day they are ported onto this core.
 use (
+	./agent
 	./core
+	./inference
+	./sandbox
 )
