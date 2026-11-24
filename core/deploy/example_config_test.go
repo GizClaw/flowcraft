@@ -79,6 +79,23 @@ tools:
       impl: exec
       settings:
         shell: "/bin/bash"
+    - name: reference
+      impl: mcp
+      settings:
+        # A server is a command the source starts, or a URL it reaches: the connection belongs to the
+        # deployment, which is why an MCP tool declares no session capability.
+        servers:
+          - name: filesystem
+            transport: stdio
+            command: "npx"
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/assets"]
+          - name: docs
+            transport: http
+            url: "https://docs.internal/mcp"
+            # A credential belongs here as a reference the host resolves — "Bearer ${env:TOKEN}" or a
+            # scheme the application registered — never as a literal. This document is loaded by a
+            # test, so it carries a plain header and needs nothing exported.
+            headers: {X-Client: flowcraft}
   middleware:
     - {name: recover, impl: recover}
     - {name: telemetry, impl: telemetry}
@@ -162,6 +179,9 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 		ToolSource(deploy.Impl("exec", func(map[string]any) (tool.Source, error) {
 			return &fakeSource{}, nil
 		})).
+		ToolSource(deploy.Impl("mcp", func(map[string]any) (tool.Source, error) {
+			return &fakeSource{}, nil
+		})).
 		Middleware(deploy.MiddlewareImpl("recover", func(map[string]any, tool.Catalog) (tool.Middleware, error) {
 			return nil, nil
 		})).
@@ -191,7 +211,7 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	if len(plan.Providers) != 2 || len(plan.Backends) != 2 || len(plan.Tools) != 2 || len(plan.Middleware) != 4 {
+	if len(plan.Providers) != 2 || len(plan.Backends) != 2 || len(plan.Tools) != 3 || len(plan.Middleware) != 4 {
 		t.Fatalf("plan = %d providers, %d backends, %d tools, %d middleware",
 			len(plan.Providers), len(plan.Backends), len(plan.Tools), len(plan.Middleware))
 	}

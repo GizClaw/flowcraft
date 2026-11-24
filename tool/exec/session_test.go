@@ -136,9 +136,6 @@ func TestTTYRefusedWhenNotPublished(t *testing.T) {
 // kill stops the session through Terminate, which the contract has.
 func TestSignalKillStopsTheSession(t *testing.T) {
 	runner := newRunnerIn(t)
-	if !runner.Capabilities().Features.Signal {
-		t.Skip("this platform has no signal channel: a job object cannot deliver one")
-	}
 	group := NewSession(WithTTY(false))
 	binding := bound(t, runner)
 	lifecycle := findTool(t, group, SessionName)
@@ -191,7 +188,7 @@ func TestListShowsOnlyOwnedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start foreign session: %v", err)
 	}
-	t.Cleanup(func() { _ = runner.Terminate(context.Background(), foreign.ID()) })
+	t.Cleanup(func() { _ = foreign.Close() })
 
 	group := NewSession()
 	binding := bound(t, runner)
