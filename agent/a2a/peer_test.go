@@ -23,8 +23,15 @@ type scripted struct {
 	state     agent.TaskState
 	events    []agent.Event
 	cancelled bool
-	received  []message.Message
-	contexts  []string
+	// started is closed once the engine began a run, and block (when non-nil) is what keeps that
+	// run open until a cancel or the caller's deadline. A test that cancels a *running* task needs
+	// both: without the block the run ends and the peer's task reaches whatever state the script
+	// left, which is a different question than the one being asked.
+	started  chan struct{}
+	block    chan struct{}
+	once     sync.Once
+	received []message.Message
+	contexts []string
 	// taskID is what the peer named the task it ran, recorded from the executor's own info.
 	taskID string
 }
@@ -71,13 +78,26 @@ func (s *scripted) State() agent.TaskState {
 	return s.state
 }
 
-func (s *scripted) Run(_ context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
+func (s *scripted) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
 		s.mu.Lock()
 		s.state = agent.StateWorking
 		s.received = append(s.received, msg)
 		events := append([]agent.Event(nil), s.events...)
+		block := s.block
 		s.mu.Unlock()
+		if s.started != nil {
+			s.once.Do(func() { close(s.started) })
+		}
+		defer func() {
+			if block == nil {
+				return
+			}
+			select {
+			case <-block:
+			case <-ctx.Done():
+			}
+		}()
 		for _, event := range events {
 			if status, ok := event.(agent.Status); ok {
 				s.mu.Lock()
@@ -95,7 +115,17 @@ func (s *scripted) Cancel(context.Context, string) error {
 	s.mu.Lock()
 	s.cancelled = true
 	s.state = agent.StateCanceled
+	block := s.block
 	s.mu.Unlock()
+	if block != nil {
+		// Unblock the run so the stream this cancel interrupted can finish; closing twice would
+		// panic, and a peer may be asked twice.
+		select {
+		case <-block:
+		default:
+			close(block)
+		}
+	}
 	return nil
 }
 
