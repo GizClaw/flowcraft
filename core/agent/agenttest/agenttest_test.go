@@ -107,9 +107,6 @@ func TestMemStoreRoundTrip(t *testing.T) {
 	if loaded.Version != 1 || loaded.Task.State != agent.StateWorking {
 		t.Fatalf("loaded = %+v", loaded)
 	}
-	if loaded.Task.History != nil {
-		t.Fatal("the projection kept history; the event log is its only source")
-	}
 
 	latest, err := store.LatestForSession(ctx, "s1")
 	if err != nil || latest.Task.ID != "t1" {

@@ -100,12 +100,6 @@ func RunTurn(ctx context.Context, req Request, d Driver) iter.Seq2[Event, error]
 		ctx, span := startTurnSpan(ctx, req)
 		defer span.End()
 
-		// The saver is derived here, so a host passes a Store and a driver sees the
-		// narrow half of it.
-		if req.Saver == nil && req.Store != nil {
-			req.Saver = storeSaver{store: req.Store}
-		}
-
 		started := time.Now()
 		turn := TurnInfo{
 			Agent:     req.Agent,
@@ -506,18 +500,4 @@ func sessionID(b tool.Binding) string {
 		return ""
 	}
 	return b.Session.ID()
-}
-
-// storeSaver is the narrow view of a store, so a driver cannot compact the log, delete a
-// task or rewrite another one's blob.
-type storeSaver struct{ store Store }
-
-func (s storeSaver) Append(ctx context.Context, taskID string, events []EventRecord) (int64, int64, error) {
-	task := Task{ID: taskID}
-	first, last, err := s.store.Save(ctx, Checkpoint{Schema: Schema, Task: task}, events)
-	return first, last, err
-}
-
-func (s storeSaver) Load(ctx context.Context, taskID string) (Checkpoint, error) {
-	return s.store.Load(ctx, taskID)
 }

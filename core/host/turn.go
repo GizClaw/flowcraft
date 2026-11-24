@@ -200,12 +200,13 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Models:      a.res.models,
 		Ordinal:     session.ordinal,
 		Fingerprint: a.fingerprint,
-		Store:       a.store,
-		Hooks:       session.deploy.hooks,
-		Trace:       session.deploy.observability.Trace,
-		Bodies:      session.deploy.observability.Bodies,
-		Manifest:    session.deploy.manifest,
-		OnRun:       a.runSink,
+		// The host keeps the full store; the turn gets the half a driver may use.
+		Store:    agent.DriverStoreOf(a.store),
+		Hooks:    session.deploy.hooks,
+		Trace:    session.deploy.observability.Trace,
+		Bodies:   session.deploy.observability.Bodies,
+		Manifest: session.deploy.manifest,
+		OnRun:    a.runSink,
 	}, nil
 }
 

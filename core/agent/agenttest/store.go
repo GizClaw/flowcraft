@@ -31,6 +31,10 @@ type task struct {
 	savedSeq int64
 }
 
+// MemStore satisfies the narrow contract a driver is handed as well as the full one, which is
+// what lets a test pass it wherever a [agent.DriverStore] is expected.
+var _ agent.DriverStore = (*MemStore)(nil)
+
 // NewMemStore returns an empty store.
 func NewMemStore() *MemStore {
 	return &MemStore{tasks: map[string]*task{}, blobs: map[string][]byte{}}
@@ -63,7 +67,6 @@ func (m *MemStore) Save(ctx context.Context, cp agent.Checkpoint, events []agent
 	}
 	cp.Schema = agent.Schema
 	cp.Version = entry.cp.Version + 1
-	cp.Task.History = nil // the event log is the only source of history
 	cp.ServerVersion = entry.cp.ServerVersion
 	entry.cp = cp
 	entry.savedSeq = m.saved

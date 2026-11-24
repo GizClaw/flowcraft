@@ -63,7 +63,7 @@ type driver struct {
 	// task is the local task and store this turn was given, kept so Cancel has an address
 	// without repeating the request.
 	task  agent.Task
-	store agent.Store
+	store agent.DriverStore
 	// round counts the lifecycle transitions the peer reported for its current task: it is the
 	// projection's answer to "how far did this get" for a task nobody on this side steps through.
 	round int
@@ -123,8 +123,7 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 		// record of the call: both are written on a context that ignores the cancellation that
 		// stopped the stream.
 		defer func() {
-			d.persist(ctx, req)
-			d.recordCall(ctx, req, started, failure)
+			d.persist(ctx, req, started, failure)
 			finishSendSpan(span, d.State(), failure)
 			span.End()
 		}()
@@ -217,11 +216,12 @@ func (d *driver) restore(ctx context.Context) {
 	d.mu.Unlock()
 }
 
-// persist records the peer's identity in the task's section so a restart can continue it.
+// persist records the peer's identity in the task's section, and the round trip in the log, in
+// one transaction so a restart continues the conversation and a reader sees what it cost.
 //
 // Best effort: a proxy whose identity could not be saved still answered the caller, and failing
 // the answer over it would be worse than losing a resume point.
-func (d *driver) persist(ctx context.Context, req agent.Request) {
+func (d *driver) persist(ctx context.Context, req agent.Request, started time.Time, failure error) {
 	d.mu.Lock()
 	remembered := d.remote
 	store := d.store
@@ -235,6 +235,13 @@ func (d *driver) persist(ctx context.Context, req agent.Request) {
 		telemetry.WarnErr(ctx, "a2a: encode the peer's identity", err)
 		return
 	}
+	events, err := callEvents(remembered, started, failure)
+	if err != nil {
+		// The section is still worth writing: a resume point without the accounting of this
+		// call is better than no resume point at all.
+		telemetry.WarnErr(ctx, "a2a: encode the call record", err)
+		events = nil
+	}
 	_, _, err = store.Save(context.WithoutCancel(ctx), agent.Checkpoint{
 		Schema:      agent.Schema,
 		Fingerprint: req.Fingerprint,
@@ -244,7 +251,7 @@ func (d *driver) persist(ctx context.Context, req agent.Request) {
 			State:     remembered.State,
 		},
 		Sections: map[string]json.RawMessage{section: raw},
-	}, nil)
+	}, events)
 	if err != nil {
 		telemetry.WarnErr(ctx, "a2a: persist the remote task", err)
 	}

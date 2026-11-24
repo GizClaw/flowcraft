@@ -187,7 +187,7 @@ func decodeValue(encoded encodedValue) (Value, error) {
 type RunOption func(*runOptions)
 
 type runOptions struct {
-	store       agent.Store
+	store       agent.DriverStore
 	taskID      string
 	sessionID   string
 	fingerprint agent.Fingerprint
@@ -207,7 +207,7 @@ type runOptions struct {
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
 // session id lets a host find the newest run of a session.
-func WithStore(store agent.Store, taskID string) RunOption {
+func WithStore(store agent.DriverStore, taskID string) RunOption {
 	return func(o *runOptions) { o.store = store; o.taskID = taskID }
 }
 

@@ -12,20 +12,19 @@ import (
 	"github.com/goccy/go-json"
 )
 
-// TestRecordCallIsTheProxysLedger is the record a proxied turn otherwise leaves nothing of: this
+// TestPersistWritesTheRoundTrip is the record a proxied turn otherwise leaves nothing of: this
 // side runs no model call and no tool, so the only fact it can write is the round trip — who
-// answered, how long it took and how it ended.
-func TestRecordCallIsTheProxysLedger(t *testing.T) {
+// answered, how long it took and how it ended. It goes in the same save as the peer's identity,
+// so a resume point and the accounting of the call that produced it cannot disagree.
+func TestPersistWritesTheRoundTrip(t *testing.T) {
 	store := agenttest.NewMemStore()
-	driver := &driver{}
+	driver := &driver{store: store}
 	driver.mu.Lock()
+	driver.task = agent.Task{ID: "t1", SessionID: "s1", State: agent.StateWorking}
 	driver.remote = remote{TaskID: "peer-task", ContextID: "peer-ctx", State: agent.StateCompleted}
 	driver.mu.Unlock()
 
-	req := agenttest.Request()
-	req.Task = agent.Task{ID: "t1", SessionID: "s1", State: agent.StateWorking}
-	req.Saver = saverFor(store)
-	driver.recordCall(context.Background(), req, time.Now().Add(-20*time.Millisecond), nil)
+	driver.persist(context.Background(), agenttest.Request(), time.Now().Add(-20*time.Millisecond), nil)
 
 	events, err := store.Events(context.Background(), "t1")
 	if err != nil {
@@ -47,6 +46,14 @@ func TestRecordCallIsTheProxysLedger(t *testing.T) {
 	if record.LatencyMs < 20 {
 		t.Fatalf("latency = %dms, want the measured round trip", record.LatencyMs)
 	}
+	// The peer's identity rides the same save, which is what a restart resumes from.
+	saved, err := store.Load(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(saved.Sections[section]) == 0 {
+		t.Fatal("the save carried no peer identity")
+	}
 }
 
 // TestRecordCallClassifiesAFailure keeps the record readable on the branch that matters: a failed
@@ -59,13 +66,7 @@ func TestRecordCallClassifiesAFailure(t *testing.T) {
 		{context.Canceled, callCanceled},
 		{context.DeadlineExceeded, callTimeout},
 	} {
-		store := agenttest.NewMemStore()
-		req := agenttest.Request()
-		req.Task = agent.Task{ID: "t1"}
-		req.Saver = saverFor(store)
-		(&driver{}).recordCall(context.Background(), req, time.Now(), tc.err)
-
-		events, err := store.Events(context.Background(), "t1")
+		events, err := callEvents(remote{TaskID: "peer-task"}, time.Now(), tc.err)
 		if err != nil || len(events) != 1 {
 			t.Fatalf("events = %+v, %v", events, err)
 		}
@@ -112,18 +113,4 @@ func TestSendSpanCarriesThePeerAndTheLevel(t *testing.T) {
 	finishSendSpan(span, agent.StateCompleted, nil)
 	span.End()
 	recorder.RequireCount(t, spanSend, 0)
-}
-
-// saverFor is the narrow half of a store, which is what a driver is handed: appending facts and
-// reading the projection, and nothing that rewrites history.
-func saverFor(store agent.Store) agent.Saver { return storeSaver{store: store} }
-
-type storeSaver struct{ store agent.Store }
-
-func (s storeSaver) Append(ctx context.Context, taskID string, events []agent.EventRecord) (int64, int64, error) {
-	return s.store.Save(ctx, agent.Checkpoint{Schema: agent.Schema, Task: agent.Task{ID: taskID}}, events)
-}
-
-func (s storeSaver) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
-	return s.store.Load(ctx, taskID)
 }

@@ -37,7 +37,7 @@ type Run struct {
 	g *Graph
 	// values is the state; store is where it is checkpointed, if anywhere.
 	values      *stateStore
-	store       agent.Store
+	store       agent.DriverStore
 	taskID      string
 	sessionID   string
 	fingerprint agent.Fingerprint

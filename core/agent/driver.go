@@ -126,13 +126,13 @@ type Request struct {
 	// Fingerprint identifies the deployment writing this checkpoint, so a resume can
 	// refuse to continue under a different one instead of silently mixing two.
 	Fingerprint Fingerprint
-	// Store persists the task. Nil keeps the turn in memory only, which is what a test or
+	// Store persists the task: the narrow half of the host's store, which is what a driver may
+	// do with a task it does not own. Nil keeps the turn in memory only, which is what a test or
 	// a stateless deployment wants.
-	Store Store
-	// Saver is the narrow view of Store a driver gets: append facts, read the projection,
-	// and nothing that rewrites history. The turn decorator fills it from Store, so a host
-	// never sets both.
-	Saver Saver
+	//
+	// It is [DriverStore] and not [Store] on purpose: a driver writes the projection and the
+	// facts beside it, and reading another task or deleting one is not part of running a turn.
+	Store DriverStore
 	// Hooks are the host's policy at the turn boundaries.
 	Hooks Hooks
 	// Trace is how much of this turn to record.

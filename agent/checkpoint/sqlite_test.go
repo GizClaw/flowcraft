@@ -153,17 +153,13 @@ func TestPutBlobDeduplicates(t *testing.T) {
 	}
 }
 
-// History after the seed comes from the event log, so the projection row does
-// not grow with it: n rounds cost O(n), not O(n^2).
-func TestProjectionDoesNotCarryHistory(t *testing.T) {
+// The transcript is the event log's, so the projection row does not grow with it:
+// n rounds cost O(n) events, not O(n^2) projection bytes.
+func TestProjectionDoesNotCarryTheTranscript(t *testing.T) {
 	store := openStore(t)
 	ctx := context.Background()
 
-	seed := checkpoint("task-1", 0)
-	seed.Task.History = []message.Message{
-		message.NewTextMessage(message.RoleUser, "write the report"),
-	}
-	if _, _, err := store.Save(ctx, seed, nil); err != nil {
+	if _, _, err := store.Save(ctx, checkpoint("task-1", 0), nil); err != nil {
 		t.Fatalf("Save seed: %v", err)
 	}
 	bodySize := func() int {
@@ -183,13 +179,12 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 			t.Fatalf("marshal: %v", err)
 		}
 		cp := checkpoint("task-1", round)
-		cp.Task.History = append(seed.Task.History, round1)
 		if _, _, err := store.Save(ctx, cp, []agent.EventRecord{{Kind: "message", Payload: payload}}); err != nil {
 			t.Fatalf("Save round %d: %v", round, err)
 		}
 	}
 	if grown := bodySize(); grown > seeded+16 {
-		t.Errorf("projection body grew from %d to %d bytes; history leaked into it", seeded, grown)
+		t.Errorf("projection body grew from %d to %d bytes; the transcript leaked into it", seeded, grown)
 	}
 
 	loaded, err := store.Load(ctx, "task-1")
@@ -197,9 +192,8 @@ func TestProjectionDoesNotCarryHistory(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	// Load is the projection only: the 50 messages are in the event log.
-	if len(loaded.Task.History) != 0 {
-		t.Fatalf("history = %d messages, want the projection to carry none",
-			len(loaded.Task.History))
+	if loaded.Task.ID != "task-1" || loaded.Task.Round != 50 {
+		t.Fatalf("projection = %+v, want the task's identity and its last round", loaded.Task)
 	}
 	events, err := store.Events(ctx, "task-1")
 	if err != nil {

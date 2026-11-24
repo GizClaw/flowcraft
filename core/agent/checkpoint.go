@@ -101,17 +101,17 @@ type Artifact struct {
 
 // Task is one user request and everything the run accumulated answering it.
 //
-// It is the unit a checkpoint captures: the transcript, how far it got, and what it
-// produced. A system prompt is a message in History, not a field beside it.
-// Per-round detail (which model, how many tokens, how long) is telemetry, not state,
-// so it is not here.
+// It is the unit a checkpoint captures: where the run stands and what it produced. The
+// conversation is deliberately not a field: a transcript in the projection would be rewritten
+// on every save, so it lives in the event log ([EventRecord], kind "message") and, for a
+// driver that needs its own shape, in that driver's section. Per-round detail (which model,
+// how many tokens, how long) is telemetry, not state, so it is not here either.
 type Task struct {
-	ID        string            `json:"id"`
-	SessionID string            `json:"context_id,omitempty"`
-	State     TaskState         `json:"state"`
-	Round     int               `json:"round"`
-	History   []message.Message `json:"history,omitempty"`
-	Artifacts []Artifact        `json:"artifacts,omitempty"`
+	ID        string     `json:"id"`
+	SessionID string     `json:"context_id,omitempty"`
+	State     TaskState  `json:"state"`
+	Round     int        `json:"round"`
+	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// Pending is the tool call the task stopped on when it needed the user. It is
 	// checkpointed so a resume knows which call the answer belongs to.
 	Pending *message.ToolCall `json:"pending,omitempty"`
@@ -206,9 +206,8 @@ type Store interface {
 	// Save writes the task projection and appends this round's events in one
 	// transaction. The first save creates the task; later ones advance it.
 	//
-	// The projection never carries history: Task.History is ignored, because the
-	// event log is its only source. Save returns the sequence range it assigned to
-	// the events (first, last), or (0, 0) when there were none.
+	// Save returns the sequence range it assigned to the events (first, last), or (0, 0)
+	// when there were none.
 	//
 	// Sections merge rather than replace: a key this save omits keeps the value the
 	// previous save wrote. That is what "owner-keyed" means — the manifest is written
@@ -217,9 +216,9 @@ type Store interface {
 	Save(ctx context.Context, cp Checkpoint, events []EventRecord, options ...SaveOption) (first, last int64, err error)
 	// Load returns the newest projection of one task.
 	//
-	// It does not replay the event log: Task.History is always empty. A caller that
-	// needs history reads Events or EventsAfter. Keeping the projection small is what
-	// makes Load cost the same for a one-turn task and a thousand-turn one.
+	// It does not replay the event log: the projection carries no transcript. A caller that
+	// needs the conversation reads Events or EventsAfter. Keeping the projection small is
+	// what makes Load cost the same for a one-turn task and a thousand-turn one.
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
 	// LatestForSession returns the newest task of one session, which is what resuming
 	// a session needs: checkpoints are keyed by task, but a session outlives each of
@@ -249,14 +248,78 @@ type Store interface {
 	GetBlob(ctx context.Context, ref string) ([]byte, error)
 }
 
-// Saver is what a driver sees of a store: append facts, and read where the task
-// stands. It is the narrow half of [Store], so a driver cannot compact the log or
-// delete a task.
-type Saver interface {
-	// Append writes the facts and returns the sequence range they were given.
-	Append(ctx context.Context, taskID string, events []EventRecord) (first, last int64, err error)
-	// Load returns the newest projection, for a driver that resumes mid-task.
+// DriverStore is what a driver may do with a task: write where it stands, read it back, replay
+// its own facts, and keep the bytes it references.
+//
+// It is the narrow half of [Store], and the reason the narrow half exists: the rest of the
+// contract — listing every task, deleting one, rewriting an adapter's counter — belongs to the
+// host and to tooling, and a driver holding it could end a conversation it does not own. The
+// surface here is exactly what a run does:
+//
+//   - [DriverStore.Save] writes one projection and this step's facts in one transaction, and
+//     takes options because compaction belongs to the save that makes a base durable: as a
+//     second call it would pay two commits for one decision;
+//   - [DriverStore.Load] is what a resume starts from, and [DriverStore.EventsAfter] is what it
+//     replays instead of re-executing;
+//   - the blobs are the bytes a record or a projection refers to.
+type DriverStore interface {
+	// Save writes the task projection and appends this step's events in one transaction. The
+	// first save creates the task; later ones advance it. It returns the sequence range the
+	// events were given, or (0, 0) when there were none.
+	Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord, options ...SaveOption) (first, last int64, err error)
+	// Load returns the newest projection of one task.
 	Load(ctx context.Context, taskID string) (Checkpoint, error)
+	// LatestForSession returns the newest task of one session: the resume point a driver
+	// continues a conversation from when the task itself is new. A driver is bound to one
+	// session, so this asks about the conversation it owns, not somebody else's.
+	LatestForSession(ctx context.Context, sessionID string) (Checkpoint, error)
+	// EventsAfter returns the facts recorded after seq (exclusive), oldest first.
+	EventsAfter(ctx context.Context, taskID string, after int64) ([]EventRecord, error)
+	// PutBlob stores bytes and returns their reference.
+	PutBlob(ctx context.Context, data []byte) (string, error)
+	// GetBlob returns the bytes a reference names.
+	GetBlob(ctx context.Context, ref string) ([]byte, error)
+}
+
+// DriverStoreOf narrows a [Store] to what a driver may do with a task.
+//
+// It is the adapter a host needs, and using it is what makes the promise above true instead of a
+// comment: the store the host holds is the full contract, and the request carries the half a
+// driver may use. A store that already satisfies [DriverStore] — the in-memory and SQLite ones
+// do — can be handed over directly.
+func DriverStoreOf(store Store) DriverStore {
+	if store == nil {
+		return nil
+	}
+	return driverStore{store: store}
+}
+
+// driverStore is the narrow view: every method delegates, and what is left out is what no
+// driver may call.
+type driverStore struct{ store Store }
+
+func (s driverStore) Save(ctx context.Context, checkpoint Checkpoint, events []EventRecord, options ...SaveOption) (int64, int64, error) {
+	return s.store.Save(ctx, checkpoint, events, options...)
+}
+
+func (s driverStore) Load(ctx context.Context, taskID string) (Checkpoint, error) {
+	return s.store.Load(ctx, taskID)
+}
+
+func (s driverStore) LatestForSession(ctx context.Context, sessionID string) (Checkpoint, error) {
+	return s.store.LatestForSession(ctx, sessionID)
+}
+
+func (s driverStore) EventsAfter(ctx context.Context, taskID string, after int64) ([]EventRecord, error) {
+	return s.store.EventsAfter(ctx, taskID, after)
+}
+
+func (s driverStore) PutBlob(ctx context.Context, data []byte) (string, error) {
+	return s.store.PutBlob(ctx, data)
+}
+
+func (s driverStore) GetBlob(ctx context.Context, ref string) ([]byte, error) {
+	return s.store.GetBlob(ctx, ref)
 }
 
 // ManifestSchema versions the manifest's shape and digest inputs.
