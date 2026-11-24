@@ -44,6 +44,14 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 	plan := ProcessPlan{SkillRoots: append([]string(nil), doc.Skills.Roots...)}
 	seen := map[string]struct{}{}
 
+	// The record level is read first: the chain below is filtered by it, so a document whose
+	// observability block is wrong reports that before it reports anything about a middleware.
+	level, err := observability(doc.Observability)
+	if err != nil {
+		return ProcessPlan{}, err
+	}
+	plan.Observability = level
+
 	for _, entry := range doc.Inference.Providers {
 		planned, err := l.planProvider(entry)
 		if err != nil {
@@ -81,6 +89,11 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 		}
 		if err := takeName(seen, "middleware", planned.Name); err != nil {
 			return ProcessPlan{}, err
+		}
+		// A link whose registration says it is only worth installing above this level is left
+		// out here rather than built and disabled: the plan is what the chain will be.
+		if planned.Trace > level.Trace {
+			continue
 		}
 		plan.Middleware = append(plan.Middleware, planned)
 	}
@@ -134,8 +147,9 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	return out, nil
 }
 
-// resolveAgent is one agent's resolution: its program, its authority, its record of what to
-// trace, and the hook names the host must resolve.
+// resolveAgent is one agent's resolution: its program, its authority, and the hook names the
+// host must resolve. How much of a turn is recorded is not here: it is the process's, and the
+// process document states it.
 func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, error) {
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
@@ -162,10 +176,6 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 	if err := checkGrant(name, entry.Grant, caps); err != nil {
 		return Deployment{}, err
 	}
-	trace, bodies, err := observability(entry.Observability, name)
-	if err != nil {
-		return Deployment{}, err
-	}
 	hooks, err := l.planHooks(name, entry.Hooks)
 	if err != nil {
 		return Deployment{}, err
@@ -175,8 +185,6 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 		Name:    name,
 		Program: program,
 		Grant:   entry.Grant,
-		Trace:   trace,
-		Bodies:  bodies,
 		Hooks:   hooks,
 	}, nil
 }
@@ -318,8 +326,9 @@ func (l *Loader) planMiddleware(entry entryDocument) (PlannedMiddleware, error) 
 	}
 	build := planned.make
 	return PlannedMiddleware{
-		Name: entry.Name,
-		Impl: planned.impl,
+		Name:  entry.Name,
+		Impl:  planned.impl,
+		Trace: planned.trace,
 		New: func() (func(tool.Catalog) (tool.Middleware, error), error) {
 			built, err := build()
 			if err != nil {
@@ -360,8 +369,9 @@ func (l *Loader) planProgram(entry programDocument) (PlannedProgram, error) {
 
 // planned is the family-neutral result of one resolution.
 type planned struct {
-	impl string
-	make func() (any, error)
+	impl  string
+	trace agent.TraceLevel
+	make  func() (any, error)
 }
 
 // plan is the one path every family takes: find the implementation, then decode the settings
@@ -386,8 +396,9 @@ func (l *Loader) plan(group Group, label, impl string, raw json.RawMessage) (pla
 		return planned{}, err
 	}
 	return planned{
-		impl: impl,
-		make: func() (any, error) { return factory.Make(settings) },
+		impl:  impl,
+		trace: factory.Trace,
+		make:  func() (any, error) { return factory.Make(settings) },
 	}, nil
 }
 

@@ -16,12 +16,15 @@ import (
 func TestEverySourceFeedsTheLoader(t *testing.T) {
 	loader := deploy.NewLoader(deploy.NewImpls())
 
-	fsys := fstest.MapFS{"base.yaml": &fstest.MapFile{Data: []byte("version: 1\n")}}
+	// A minimal but complete process document: observability is required, so a bare version is
+	// not a document the loader accepts — that rule is the loader's, not this package's.
+	document := []byte("version: 1\nobservability: { trace: none, bodies: false }\n")
+	fsys := fstest.MapFS{"base.yaml": &fstest.MapFile{Data: document}}
 	for name, layer := range map[string]config.Layer{
-		"bytes": sources.Bytes("base.yaml", []byte("version: 1\n")),
+		"bytes": sources.Bytes("base.yaml", document),
 		"fs":    sources.FS(fsys, "base.yaml"),
 		"func": sources.Func("base.yaml", func(context.Context) ([]byte, error) {
-			return []byte("version: 1\n"), nil
+			return document, nil
 		}),
 	} {
 		if _, err := loader.Process(context.Background(), layer); err != nil {

@@ -3,8 +3,8 @@
 // # Two documents
 //
 // A process document says what this process carries: provider targets, sandbox backends,
-// tool sources, skill roots. An agent document says what one agent is: its prompt, its
-// program, its grant, its observability and its hooks.
+// tool sources, skill roots, and how much of a turn it records. An agent document says what one
+// agent is: its prompt, its program, its grant and its hooks.
 //
 // Neither document can name a resource the other one owns. An agent selects from the
 // process's resources through its [policy.Grant]; it cannot add a provider or a backend. To

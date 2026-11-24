@@ -51,8 +51,10 @@ type deployment struct {
 	name    string
 	program agent.Program
 	grant   policy.Grant
-	trace   agent.TraceLevel
-	bodies  bool
+	// observability is the process's record level, held here because the turn path reaches it
+	// through the deployment. It is not a per-agent setting: the chain and the model access it
+	// controls are built once for the process.
+	observability deploy.Observability
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
@@ -276,13 +278,12 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
 	}
 	return &deployment{
-		name:       dep.Name,
-		program:    program,
-		grant:      dep.Grant,
-		trace:      dep.Trace,
-		bodies:     dep.Bodies,
-		hooks:      hooks,
-		projection: proj,
+		name:          dep.Name,
+		program:       program,
+		grant:         dep.Grant,
+		observability: a.res.observability,
+		hooks:         hooks,
+		projection:    proj,
 	}, nil
 }
 

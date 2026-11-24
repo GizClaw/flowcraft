@@ -40,6 +40,10 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMCostMicros, "llm.cost.micros"},
 		{AttrLLMRequestID, "llm.request.id"},
 		{AttrLLMTimeToFirstTokenMs, "llm.time_to_first_token.ms"},
+		{AttrAgentState, "agent.state"},
+		{AttrAgentInterrupted, "agent.interrupted"},
+		{AttrAgentBoundary, "agent.boundary"},
+		{AttrCheckpointEvents, "checkpoint.events"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -62,6 +66,7 @@ func TestAttrConstants_Unique(t *testing.T) {
 		AttrRouteRetries, AttrRouteFallbacks, AttrRouteOutcome, AttrRouteBackoffMs,
 		AttrRouteAttemptNumber,
 		AttrLLMCostMicros, AttrLLMRequestID, AttrLLMTimeToFirstTokenMs,
+		AttrAgentState, AttrAgentInterrupted, AttrAgentBoundary, AttrCheckpointEvents,
 	}
 	seen := make(map[string]struct{}, len(all))
 	for _, k := range all {

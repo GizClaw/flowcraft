@@ -61,6 +61,10 @@ type PlannedMiddleware struct {
 	// reads a tool's metadata from there. A nil middleware is a disabled link, which the chain
 	// skips.
 	New func() (func(tool.Catalog) (tool.Middleware, error), error)
+	// Trace is the least level this link is worth installing at, declared by its registration.
+	// The loader leaves a link out of the plan when the process records less than this, so the
+	// assembly never builds one that would only turn itself off per call.
+	Trace agent.TraceLevel
 }
 
 // PlannedHook is one lifecycle policy, resolved but not built.

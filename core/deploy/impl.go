@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -63,6 +64,22 @@ type Factory struct {
 	Plan func(raw json.RawMessage) (any, error)
 	// Make builds the object from what Plan returned.
 	Make func(settings any) (any, error)
+	// Trace is the least trace level this implementation is worth installing at. Zero means
+	// always.
+	//
+	// It is the registration's own statement of cost, not the loader's guess: only the
+	// application knows that its telemetry link produces the very spans a lower level promised
+	// to skip. The loader drops the link instead of building one that turns itself off, which
+	// is what keeps the level a construction decision rather than a per-call branch.
+	Trace agent.TraceLevel
+}
+
+// AtTrace declares the least trace level this implementation is worth installing at.
+//
+//	impls.Middleware(deploy.MiddlewareImpl("telemetry", build).AtTrace(agent.TraceCall))
+func (f Factory) AtTrace(level agent.TraceLevel) Factory {
+	f.Trace = level
+	return f
 }
 
 // Impl builds a factory for one implementation, typed at both ends.

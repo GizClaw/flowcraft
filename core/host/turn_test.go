@@ -43,23 +43,33 @@ func (p *seenProgram) Close() error                                 { return nil
 // seenHost opens one session whose driver the test can inspect.
 func seenHost(t *testing.T, opts ...AgentsOption) (*Agents, *seenDriver) {
 	t.Helper()
+	driver := &seenDriver{log: &journal{}}
+	agents := hostFor(t, func() (agent.Program, error) { return &seenProgram{driver: driver}, nil }, opts...)
+	return agents, driver
+}
+
+// hostFor opens one session under a program the test supplies, which is how a case drives a
+// specific behaviour through the whole host path: process, deployment, session and turn.
+func hostFor(t *testing.T, program func() (agent.Program, error), opts ...AgentsOption) *Agents {
+	t.Helper()
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
-	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
-		boundBackend("local", backend),
-	}})
+	res, err := Open(t.Context(), deploy.ProcessPlan{
+		Backends: []deploy.PlannedBackend{
+			boundBackend("local", backend),
+		},
+		Observability: deploy.Observability{Trace: agent.TraceCall},
+	})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = res.Close() })
 
-	driver := &seenDriver{log: log}
 	agents := NewAgents(res, opts...)
 	dep := deploy.Deployment{
 		Name:    "referee",
 		Grant:   permissiveGrant("local"),
-		Trace:   agent.TraceCall,
-		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &seenProgram{driver: driver}, nil }},
+		Program: deploy.PlannedProgram{Impl: "graph", New: program},
 	}
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -68,7 +78,7 @@ func seenHost(t *testing.T, opts ...AgentsOption) (*Agents, *seenDriver) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
-	return agents, driver
+	return agents
 }
 
 // TestTheTurnCarriesTheSessionIdentity is the identity row the framework promises: every span below a
@@ -216,6 +226,48 @@ func TestTheRunSpanCarriesTheSessionsIdentity(t *testing.T) {
 	} {
 		if got := attrs[key].String(); !strings.Contains(got, want) {
 			t.Fatalf("%s = %q, want %q; attrs: %v", key, got, want, attrs)
+		}
+	}
+}
+
+// failingDriver records a classification and then fails, which is what a driver does with the
+// box: it is the layer that knows whether the model or a tool was what died.
+type failingDriver struct{ kind agent.FailureKind }
+
+func (d failingDriver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		agent.RecordFailure(ctx, d.kind)
+		yield(nil, errors.New("the call did not finish"))
+	}
+}
+
+func (d failingDriver) Close() error { return nil }
+
+type classifiedProgram struct{ kind agent.FailureKind }
+
+func (p classifiedProgram) Open(agent.SessionInfo) (agent.Driver, error) {
+	return failingDriver{kind: p.kind}, nil
+}
+
+func (p classifiedProgram) Close() error { return nil }
+
+// TestBothSpansOfATurnReadOneClassification is the turn's two clocks sharing one verdict. The
+// box is installed before the run span opens, so the driver's classification reaches host.run
+// and agent.turn alike: a reader who filters on either name sees the same answer.
+func TestBothSpansOfATurnReadOneClassification(t *testing.T) {
+	recorder := telemetrytest.New(t)
+	agents := hostFor(t, func() (agent.Program, error) {
+		return classifiedProgram{kind: agent.FailureModel}, nil
+	})
+
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+
+	for _, name := range []string{"host.run", "agent.turn"} {
+		span := recorder.RequireNamed(t, name)
+		attrs := telemetrytest.Attrs(span)
+		if got := attrs["error.kind"].String(); got != string(agent.FailureModel) {
+			t.Fatalf("%s: error.kind = %q, want %q", name, got, agent.FailureModel)
 		}
 	}
 }

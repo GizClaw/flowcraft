@@ -91,6 +91,10 @@ func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message)
 			return
 		}
 
+		// The failure box is installed before the run span opens, not inside RunTurn, so both
+		// spans of this turn read the same classification: the decorator reuses a box it finds
+		// rather than making a second one.
+		runCtx = agent.WithFailureBox(runCtx)
 		spanCtx, span := startRunSpan(runCtx, session)
 		defer span.End()
 		state, failures := agent.TaskState(""), 0
@@ -165,7 +169,8 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Fingerprint: a.fingerprint,
 		Store:       a.store,
 		Hooks:       session.deploy.hooks,
-		Trace:       session.deploy.trace,
+		Trace:       session.deploy.observability.Trace,
+		Bodies:      session.deploy.observability.Bodies,
 	}, nil
 }
 

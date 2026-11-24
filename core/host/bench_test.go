@@ -40,6 +40,7 @@ func benchPlan() deploy.ProcessPlan {
 	backend := &boundary{log: &journal{}, filesystemBounds: true}
 	plan.Backends = []deploy.PlannedBackend{boundBackend("local", backend)}
 	plan.Tools = []deploy.PlannedToolSource{plannedSource("workspace")}
+	plan.Observability = deploy.Observability{Trace: agent.TraceNone}
 	return plan
 }
 
@@ -63,7 +64,6 @@ func benchDeployment(b *testing.B, name string, grant policy.Grant, log *journal
 	return deploy.Deployment{
 		Name:    name,
 		Grant:   grant,
-		Trace:   agent.TraceNone,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &sessionProgram{log: log}, nil }},
 	}
 }
@@ -145,7 +145,6 @@ func benchRunAgents(b *testing.B) *Agents {
 	dep := deploy.Deployment{
 		Name:    "referee",
 		Grant:   permissiveGrant("local"),
-		Trace:   agent.TraceCall,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return streamingProgram{}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {

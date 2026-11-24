@@ -35,7 +35,12 @@ type Resource struct {
 	skillRoots []string
 	tools      *tool.Registry
 	dispatch   tool.Dispatcher
-	closers    []closer
+	// observability is how much of a turn this process records. It is one value for the whole
+	// process because everything it controls — the tool chain, the model access, the backends —
+	// is built once here, and a level two agents could disagree about would be a knob with no
+	// effect.
+	observability deploy.Observability
+	closers       []closer
 }
 
 // BackendFactory builds one session's backend instance from that session's confine.
@@ -78,8 +83,9 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 	}
 
 	r := &Resource{
-		backends:   make(map[string]BackendFactory, len(plan.Backends)),
-		skillRoots: append([]string(nil), plan.SkillRoots...),
+		backends:      make(map[string]BackendFactory, len(plan.Backends)),
+		skillRoots:    append([]string(nil), plan.SkillRoots...),
+		observability: plan.Observability,
 	}
 	// unwind releases what was built so far, keeping the original error as the cause.
 	unwind := func(err error) (*Resource, error) {

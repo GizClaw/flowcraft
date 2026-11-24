@@ -66,6 +66,8 @@ inference:
     base_delay: 250ms
     max_delay: 4s
 
+observability: {trace: call, bodies: false}
+
 tools:
   sources:
     - name: workspace
@@ -120,7 +122,6 @@ agents:
         modes: ["sync"]
         max_depth: 2
       limits: {idle: 30m, max_sessions: 64}
-    observability: {trace: call, bodies: false}
     hooks:
       - impl: seat-memory
         settings: {dir: ".forge/memory", keep: 12}
@@ -136,7 +137,6 @@ agents:
       models:
         - id: {provider: openai, name: "gpt-5"}
       limits: {idle: 10m}
-    observability: {trace: none, bodies: false}
 `
 
 // TestTheDocumentedConfigLoads is the example above, run.
@@ -195,6 +195,11 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 		t.Fatalf("plan = %d providers, %d backends, %d tools, %d middleware",
 			len(plan.Providers), len(plan.Backends), len(plan.Tools), len(plan.Middleware))
 	}
+	// How much of a turn is recorded is the process's, not an agent's: everything it controls is
+	// built once for the process.
+	if plan.Observability.Trace != agent.TraceCall || plan.Observability.Bodies {
+		t.Fatalf("observability = %+v, want the documented trace level", plan.Observability)
+	}
 	caps := deploy.Capabilities{
 		Backends: plan.BackendNames(),
 		Models:   []string{"openai/gpt-5"},
@@ -212,9 +217,6 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	}
 	if referee.Grant.Sandbox != "hardened" || referee.Grant.Limits.MaxSessions != 64 {
 		t.Fatalf("referee grant = %+v", referee.Grant)
-	}
-	if referee.Trace != agent.TraceCall || referee.Bodies {
-		t.Fatalf("referee observability = %v / %v", referee.Trace, referee.Bodies)
 	}
 	if len(referee.Hooks) != 1 || referee.Hooks[0].Impl != "seat-memory" {
 		t.Fatalf("referee hooks = %+v", referee.Hooks)

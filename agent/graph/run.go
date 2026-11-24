@@ -437,6 +437,25 @@ func (r *Run) startNodeSpan(ctx context.Context, id string, kind NodeKind) (cont
 	}
 }
 
+// classify records why a node failed, in the turn's closed vocabulary.
+//
+// It is the driver's half of the contract: the decorator owns timeout, cancellation and panic,
+// and everything else is a diagnosis only the layer that made the call can name. A refusal wins
+// over the kind's own answer — a policy denial is the cause, and "the tool failed" would send a
+// reader looking for a bug in the tool.
+func (r *Run) classify(ctx context.Context, kind NodeKind, err error) {
+	if err == nil || errors.Is(err, errConsumerStopped) {
+		return
+	}
+	if errdefs.IsPolicyDenied(err) {
+		agent.RecordFailure(ctx, agent.FailurePolicyDenied)
+		return
+	}
+	if classifier, ok := kind.(FailureClassifier); ok {
+		agent.RecordFailure(ctx, classifier.FailureKind())
+	}
+}
+
 // emit yields one progress event. A consumer that stopped leaves the run
 // canceled: the step already ran, so replaying it later would repeat its side
 // effects. Suspension and completion are not progress events and are yielded
@@ -526,6 +545,7 @@ func (r *Run) runStepInline(
 	}
 	nodeCtx, end := r.startNodeSpan(ctx, id, kind)
 	result, err := r.invokeInline(nodeCtx, id, inv, emit)
+	r.classify(nodeCtx, kind, err)
 	end(err)
 	// The consumer may have stopped while the node was streaming; a stopped
 	// consumer is not offered another event.
@@ -566,6 +586,7 @@ func (r *Run) invokeInline(
 ) (result Result, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			agent.RecordFailure(ctx, agent.FailurePanicked)
 			err = fmt.Errorf("node %q panicked: %v", id, recovered)
 		}
 	}()
@@ -672,6 +693,7 @@ func (r *Run) runStep(
 			outcome := stepResult{index: i}
 			defer func() {
 				if rv := recover(); rv != nil {
+					agent.RecordFailure(stepCtx, agent.FailurePanicked)
 					outcome = stepResult{index: i, err: fmt.Errorf("node %q panicked: %v", id, rv)}
 				}
 				done <- outcome
@@ -690,6 +712,7 @@ func (r *Run) runStep(
 			announced := emit(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeStarted))
 			nodeCtx, end := r.startNodeSpan(stepCtx, id, kind)
 			outcome.result, outcome.err = r.invokeOnce(nodeCtx, id, invocations[i], emit)
+			r.classify(nodeCtx, kind, outcome.err)
 			end(outcome.err)
 			if announced {
 				emit(nodeInvokeEvent(r.step+1, id, kind.Name(), NodeDone))

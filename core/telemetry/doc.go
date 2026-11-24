@@ -22,7 +22,7 @@
 //
 //	span name                    emitted by
 //	sandbox.exec                 core/sandbox           (one executed command)
-//	tool.execute                 core/tool/middleware   (one dispatched call)
+//	tool.execute                 tool/middleware        (one dispatched call)
 //	tool.load                    core/tool/projection   (lazy tool materialisation)
 //	mcp.connect                  core/tool-mcp          (server connect / reconnect)
 //	llm.route                    core/inference/route   (selection, retry, failover)

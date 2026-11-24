@@ -118,6 +118,10 @@ func Model(opts ...ModelOption) graph.NodeKind {
 
 func (*modelKind) Name() string { return "model" }
 
+// FailureKind reports a model call as the turn's diagnosis: the input or the answer, not the
+// step that carried it.
+func (*modelKind) FailureKind() agent.FailureKind { return agent.FailureModel }
+
 // modelConfig is the node's config. It is decoded strictly: a misspelled field
 // is a load error, not a silently defaulted setting.
 type modelConfig struct {
