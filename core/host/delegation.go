@@ -138,6 +138,7 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		runCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
+	folded := &foldedStream{}
 	for event, runErr := range d.agents.Run(nestedRunCtx(runCtx), child, userMessage(req.Input)) {
 		if runErr != nil {
 			if errors.Is(runErr, context.DeadlineExceeded) {
@@ -147,8 +148,9 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 			}
 			return outcome, runErr
 		}
-		foldDelegated(&outcome, event)
+		foldDelegated(&outcome, folded, event)
 	}
+	outcome.Content = folded.content()
 	return outcome, nil
 }
 
@@ -193,23 +195,32 @@ func admitDelegation(d *policy.Delegation, target, mode string, chain identity.C
 	return nil
 }
 
-// appendText adds one delta to a delegation's answer, keeping the content a single text part.
-func appendText(content message.Content, text string) message.Content {
-	if text == "" {
-		return content
+// foldedStream is what a delegation accumulates while the child streams.
+//
+// The answer's deltas are kept as they arrive and joined once: concatenating per delta copies the
+// whole answer on every event, which is quadratic in the number of deltas — and a delegated edge
+// would pay it twice, once in the child's decorator and once here.
+type foldedStream struct {
+	deltas []string
+}
+
+// content materialises the answer once the stream has ended: one allocation, sized exactly,
+// instead of a copy per delta.
+func (f *foldedStream) content() message.Content {
+	if len(f.deltas) == 0 {
+		return message.Content{}
 	}
-	if existing := content.Text(); existing != "" {
-		return message.NewTextContent(existing + text)
-	}
-	return message.NewTextContent(text)
+	return message.NewTextContent(strings.Join(f.deltas, ""))
 }
 
 // foldDelegated keeps what the caller of a delegation needs from the child's stream: its answer, the
 // question it paused on, and the terminal state. Everything else belongs to the child's own trace.
-func foldDelegated(outcome *platform.DelegationOutcome, event agent.Event) {
+func foldDelegated(outcome *platform.DelegationOutcome, folded *foldedStream, event agent.Event) {
 	switch typed := event.(type) {
 	case agent.Text:
-		outcome.Content = appendText(outcome.Content, typed.Text)
+		if typed.Text != "" {
+			folded.deltas = append(folded.deltas, typed.Text)
+		}
 	case agent.Status:
 		if typed.State.Terminal() || typed.State == agent.StateInputRequired {
 			outcome.Status = string(typed.State)
@@ -292,12 +303,14 @@ func (d *delegator) Answer(ctx context.Context, session, answer string) (platfor
 		return platform.DelegationOutcome{}, err
 	}
 	outcome := platform.DelegationOutcome{Session: session}
+	folded := &foldedStream{}
 	for event, err := range d.agents.Run(ctx, session, userMessage(answer)) {
 		if err != nil {
 			return outcome, err
 		}
-		foldDelegated(&outcome, event)
+		foldDelegated(&outcome, folded, event)
 	}
+	outcome.Content = folded.content()
 	return outcome, nil
 }
 
