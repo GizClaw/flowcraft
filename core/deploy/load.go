@@ -136,13 +136,16 @@ type versioned interface {
 
 // loadDocument merges the layers and decodes the result strictly: YAML or JSON, unknown
 // fields refused, one document per layer.
-func loadDocument[T versioned](ctx context.Context, layers []config.Layer, label string) (T, error) {
+func loadDocument[T versioned](ctx context.Context, layers []config.Layer, label string, opts []config.Option) (T, error) {
 	var zero T
 	// Provenance is off: this loader discards the merged document, and a provenance it never
 	// reads is a walk over every layer per load. Turning it on is a one-line change when a
 	// `deploy describe` needs to say which layer wrote a field.
-	doc, _, err := config.Load[T](ctx, layers, config.Strict[T],
-		config.WithLabel(label), config.WithoutProvenance())
+	options := append([]config.Option{
+		config.WithLabel(label),
+		config.WithoutProvenance(),
+	}, opts...)
+	doc, _, err := config.Load[T](ctx, layers, config.Strict[T], options...)
 	if err != nil {
 		return zero, err
 	}

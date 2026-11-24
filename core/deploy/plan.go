@@ -1,9 +1,12 @@
 package deploy
 
 import (
+	"strings"
+
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
+	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -143,8 +146,8 @@ type Capabilities struct {
 	// selects one of them by name.
 	Backends []string
 	// Models are the models it serves, as "provider/name": the ids its providers' catalogs
-	// report. They are read after the process is built, because a provider's settings are
-	// opaque here.
+	// report. They are read after the process is built, because a provider's settings are opaque
+	// here — `deploy` decodes none of them.
 	Models []string
 }
 
@@ -156,4 +159,21 @@ func (p ProcessPlan) BackendNames() []string {
 		names = append(names, backend.Name)
 	}
 	return names
+}
+
+// ModelIDs is Models as the typed value an agent document is checked against.
+//
+// The strings are what a capability list reports to an operator; a caller comparing them with a
+// document needs the type, and parsing "provider/name" at each call site is how the two spellings drift
+// apart. A name without a provider is skipped rather than guessed at.
+func (c Capabilities) ModelIDs() []model.ModelID {
+	out := make([]model.ModelID, 0, len(c.Models))
+	for _, ref := range c.Models {
+		provider, name, ok := strings.Cut(ref, "/")
+		if !ok || provider == "" || name == "" {
+			continue
+		}
+		out = append(out, model.ModelID{Provider: provider, Name: name})
+	}
+	return out
 }

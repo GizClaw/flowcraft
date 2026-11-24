@@ -23,10 +23,25 @@ import (
 // this process does not carry" a single error message instead of two spellings.
 type Loader struct {
 	impls *Impls
+	// configOptions are the placeholder resolvers the application registered. A document writes
+	// `${scheme:args}` where a value cannot be written down, and only the binary knows which schemes it
+	// can resolve — so they travel with the loader, not with a layer.
+	configOptions []config.Option
 }
 
 // NewLoader returns a loader over the application's registration table.
 func NewLoader(impls *Impls) *Loader { return &Loader{impls: impls} }
+
+// WithConfigOptions returns a loader that expands the placeholders these resolvers answer.
+//
+// It returns a copy rather than mutating: a loader is a value an application may keep and refine per
+// load, and a method that changed its receiver would make the second load of a workspace depend on what
+// the first one registered. Only ${env:...} is built in; anything else is the application's to name.
+func (l *Loader) WithConfigOptions(opts ...config.Option) *Loader {
+	refined := *l
+	refined.configOptions = append(append([]config.Option(nil), l.configOptions...), opts...)
+	return &refined
+}
 
 // Process resolves the process document into a plan.
 //
@@ -36,7 +51,7 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 	if err := l.ready(); err != nil {
 		return ProcessPlan{}, err
 	}
-	doc, err := loadDocument[processDocument](ctx, layers, "runtime")
+	doc, err := loadDocument[processDocument](ctx, layers, "runtime", l.configOptions)
 	if err != nil {
 		return ProcessPlan{}, err
 	}
@@ -121,7 +136,7 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	if err := l.ready(); err != nil {
 		return nil, err
 	}
-	doc, err := loadDocument[agentDocument](ctx, layers, "agent")
+	doc, err := loadDocument[agentDocument](ctx, layers, "agent", l.configOptions)
 	if err != nil {
 		return nil, err
 	}
