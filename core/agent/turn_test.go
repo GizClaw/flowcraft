@@ -640,6 +640,49 @@ func TestTheSinkSeesTheFinishedRun(t *testing.T) {
 	}
 }
 
+// TestTheRunRecordUsesTheHostsManifestID is why the identity travels on the request: the host
+// computes it once at install, and a turn must report that answer rather than re-hash a value it
+// may not even agree with.
+func TestTheRunRecordUsesTheHostsManifestID(t *testing.T) {
+	var got []agent.RunRecord
+	req := request(nil)
+	req.Manifest = agent.Manifest{Schema: agent.ManifestSchema, Deployment: "fp-other", Driver: "graph"}
+	req.ManifestID = "sha256:the-hosts-answer"
+	req.OnRun = func(record agent.RunRecord) { got = append(got, record) }
+	driver := agenttest.NewScripted(agenttest.Completed()).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sink calls = %d, want 1", len(got))
+	}
+	if got[0].Manifest != req.ManifestID {
+		t.Fatalf("record manifest = %q, want the host's %q", got[0].Manifest, req.ManifestID)
+	}
+	if got[0].Manifest == req.Manifest.ID() {
+		t.Fatal("the turn hashed the manifest it was given instead of trusting the host's id")
+	}
+}
+
+// TestAnEmptyManifestIDFallsBackToTheManifest covers the caller that drives a turn without a host:
+// it sets no precomputed identity, so the value it carries is still named in the record.
+func TestAnEmptyManifestIDFallsBackToTheManifest(t *testing.T) {
+	var got []agent.RunRecord
+	req := request(nil)
+	req.Manifest = agent.Manifest{Schema: agent.ManifestSchema, Deployment: "fp-1", Driver: "graph"}
+	req.OnRun = func(record agent.RunRecord) { got = append(got, record) }
+	driver := agenttest.NewScripted(agenttest.Completed()).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("sink calls = %d, want 1", len(got))
+	}
+	if got[0].Manifest != req.Manifest.ID() {
+		t.Fatalf("record manifest = %q, want the value's %q", got[0].Manifest, req.Manifest.ID())
+	}
+}
+
 // TestTheSinkSeesAFailedRun keeps the sink on every path: a turn that failed is exactly the run a
 // dataset wants, and "no record" would make the failures the one thing missing from the corpus.
 func TestTheSinkSeesAFailedRun(t *testing.T) {
