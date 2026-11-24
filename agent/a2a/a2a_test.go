@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/agent/a2a"
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -205,24 +206,62 @@ func TestThePausedTaskSurvivesARestart(t *testing.T) {
 
 // Cancel is the protocol's own: dropping the context stops the local read and leaves the peer
 // running, which is why the driver implements agent.Canceller at all.
+//
+// The cancel has to target a task that is *still running*. Scripting a terminal status and then
+// cancelling asked a different question: the peer's store would already say the task is over, the
+// protocol refuses to cancel such a task, and whether the refusal won was a race between the
+// server's store write and the next request — which is what made this test fail on CI while
+// passing locally. So the peer's engine blocks after its first status, the cancel lands while the
+// run is in flight, and the assertion is about the peer having been told.
 func TestCancelReachesThePeer(t *testing.T) {
-	server, engine := peer(t,
-		agent.Status{State: agent.StateWorking},
-		agent.Status{State: agent.StateInputRequired},
-	)
+	server, engine := peer(t, agent.Status{State: agent.StateWorking})
+	engine.started = make(chan struct{})
+	engine.block = make(chan struct{})
+
 	driver := connect(t, server.URL, "conv-1")
-	if got := runTurn(t, driver, request("conv-1", "hi")); got.err != nil {
-		t.Fatalf("Run: %v", got.err)
+	ctx, stop := context.WithTimeout(context.Background(), 10*time.Second)
+	defer stop()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Drained without assertions: a t.Fatalf here would run on a goroutine that is not the
+		// test's, which the testing package does not allow.
+		for range driver.Run(ctx, request("conv-1", "hi")) {
+		}
+	}()
+
+	select {
+	case <-engine.started:
+	case <-ctx.Done():
+		t.Fatal("the peer never started the run")
 	}
+
 	canceller, ok := driver.(agent.Canceller)
 	if !ok {
 		t.Fatal("the peer driver must be able to forward a cancellation")
 	}
-	if err := canceller.Cancel(context.Background(), "user stopped"); err != nil {
-		t.Fatalf("Cancel: %v", err)
+	// A cancel that arrives before the peer has named its task is a no-op by contract — there is
+	// nothing to cancel yet — so the operator's retry is what makes this deterministic: the
+	// alternative is a test that races the first stream event.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := canceller.Cancel(ctx, "user stopped"); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		if engine.wasCancelled() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the peer never saw the cancellation")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	if !engine.wasCancelled() {
-		t.Error("the peer never saw the cancellation")
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("the cancelled run never finished")
 	}
 }
 
