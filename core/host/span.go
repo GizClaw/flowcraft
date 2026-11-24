@@ -66,11 +66,15 @@ func finishRunSpan(ctx context.Context, span trace.Span, state agent.TaskState, 
 	if state != "" {
 		span.SetAttributes(attribute.String(telemetry.AttrAgentState, string(state)))
 	}
-	kind, ok := agent.FailureKindFrom(ctx)
-	if failures == 0 && !ok {
+	// A turn that reported no failure is a success, whatever the box holds: the box exists in
+	// every turn (it is installed before this span opens), and "a box is attached" is not "a
+	// failure was classified". Reading it first is what made every clean turn's run span say
+	// Error and log a warning while its child turn span said Ok.
+	if failures == 0 {
 		span.SetStatus(codes.Ok, "")
 		return
 	}
+	kind, ok := agent.FailureKindFrom(ctx)
 	if !ok {
 		kind = agent.FailureUnclassified
 	}

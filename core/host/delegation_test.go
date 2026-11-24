@@ -3,10 +3,13 @@ package host
 import (
 	"context"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/policy"
+	"github.com/GizClaw/flowcraft/core/tool/platform"
 )
 
 // A delegation is admitted by three facts and refused by each of them: which agent, which mode, how
@@ -74,5 +77,77 @@ func TestDelegationLimitsAreThePolicys(t *testing.T) {
 	release()
 	if _, err := gate.acquire(context.Background()); err != nil {
 		t.Fatalf("acquire after release: %v", err)
+	}
+}
+
+// asyncHost installs a parent that may delegate to a child asynchronously, over one process.
+func asyncHost(t *testing.T) (*Agents, *sessionProgram, *sessionProgram) {
+	t.Helper()
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+
+	parentGrant := permissiveGrant("local")
+	parentGrant.Delegation = &policy.Delegation{
+		Targets: []string{"child"},
+		Modes:   []policy.DelegationMode{policy.DelegationAsync},
+	}
+	parent, parentProgram := sessionDeployment(t, "parent", parentGrant, log, backend)
+	child, childProgram := sessionDeployment(t, "child", permissiveGrant("local"), log, backend)
+	if err := agents.Add(parent, child); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "p1", "parent"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+	return agents, parentProgram, childProgram
+}
+
+// TestAnAsyncDelegationActuallyRuns is the async edge's whole promise: the child runs after the
+// asking turn returns. The child's session has to outlive the call that opened it — a close
+// registered by the caller erased it before the goroutine could start, and the caller was told
+// "submitted" about a run that never happened.
+func TestAnAsyncDelegationActuallyRuns(t *testing.T) {
+	agents, _, childProgram := asyncHost(t)
+	parent, _ := agents.Session("p1")
+
+	delegator := &delegator{agents: agents, parent: parent}
+	outcome, err := delegator.Delegate(t.Context(), platform.DelegationRequest{
+		Target: "child", Mode: "async", Input: "please review",
+	})
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if outcome.Status != string(agent.StateSubmitted) {
+		t.Fatalf("status = %q, want submitted", outcome.Status)
+	}
+
+	// The goroutine closes the child when the run ends; that is also the signal that it ran.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, open := agents.Session(outcome.Session); !open {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the child session %q was never closed; the run did not happen", outcome.Session)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if got := childProgram.opens.Load(); got != 1 {
+		t.Fatalf("the child program opened %d drivers, want 1", got)
+	}
+}
+
+// TestStatusWithoutAStoreIsRefused keeps a model-supplied tool call from panicking: the store is
+// optional, and a host that has none cannot answer where a child stands.
+func TestStatusWithoutAStoreIsRefused(t *testing.T) {
+	agents, _, _ := asyncHost(t)
+	parent, _ := agents.Session("p1")
+	delegator := &delegator{agents: agents, parent: parent}
+	if _, err := delegator.Status(t.Context(), "p1/child-1"); err == nil {
+		t.Fatal("Status answered without a store")
+	} else if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Status = %v, want NotAvailable", err)
 	}
 }

@@ -557,7 +557,7 @@ func TestCancelStopsTheTurnAndTellsThePeer(t *testing.T) {
 func waitRunning(t *testing.T, agents *Agents, sessionID string) {
 	t.Helper()
 	for range 1000 {
-		if session, ok := agents.Session(sessionID); ok && session.running.Load() {
+		if session, ok := agents.Session(sessionID); ok && session.isRunning() {
 			return
 		}
 		time.Sleep(time.Millisecond)
@@ -632,5 +632,91 @@ func TestCloseReleasesARetiredProgram(t *testing.T) {
 	}
 	if got := strings.Count(log.joined(), "close:program"); got != 2 {
 		t.Fatalf("program closes = %d (%s), want both the live and the retired one", got, log.joined())
+	}
+}
+
+// TestClosingASessionStopsItsRunningTurn is the coordination a close owes a turn: stop it, then
+// wait for it, then release the driver and the boundary. Closing underneath a streaming turn let a
+// command run on a closed runner and raced on the driver field.
+func TestClosingASessionStopsItsRunningTurn(t *testing.T) {
+	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
+	agents, _ := runnableHost(t, driver)
+
+	done := make(chan error, 1)
+	go func() {
+		var failure error
+		for _, err := range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+			if err != nil {
+				failure = err
+			}
+		}
+		done <- failure
+	}()
+	waitRunning(t, agents, "s1")
+
+	closed := make(chan error, 1)
+	go func() { closed <- agents.CloseSession(t.Context(), "s1") }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("CloseSession: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CloseSession waited forever on the running turn")
+	}
+	select {
+	case failure := <-done:
+		// The turn was stopped, not failed: cancellation reaches the driver as an error, and
+		// what matters here is that it ended before the close returned.
+		if failure != nil && !errors.Is(failure, context.Canceled) {
+			t.Fatalf("turn = %v, want a cancellation", failure)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the turn outlived the close")
+	}
+	close(driver.block)
+}
+
+// TestEvictIdleSkipsARunningTurn is the idle limit's blind spot: a turn's last touch is the
+// previous turn's, so a model call longer than the limit made its own session look abandoned and
+// evicted it mid-run.
+func TestEvictIdleSkipsARunningTurn(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Limits.Idle = policy.Duration(time.Millisecond)
+	blocked := &turnDriver{log: log, block: make(chan struct{})}
+	dep := deploy.Deployment{
+		Name:    "referee",
+		Grant:   grant,
+		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &turnProgram{driver: blocked}, nil }},
+	}
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() {
+		close(blocked.block)
+		_ = agents.Close(t.Context())
+	})
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	go func() {
+		for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+		}
+	}()
+	waitRunning(t, agents, "s1")
+
+	evicted, err := agents.EvictIdle(t.Context(), "referee", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("EvictIdle: %v", err)
+	}
+	if len(evicted) != 0 {
+		t.Fatalf("evicted %v, want a running turn to be left alone", evicted)
+	}
+	if _, open := agents.Session("s1"); !open {
+		t.Fatal("the running session was evicted")
 	}
 }

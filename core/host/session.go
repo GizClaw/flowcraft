@@ -3,6 +3,7 @@ package host
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,22 @@ import (
 
 // The capability slots a session fills.
 //
+// OpenOption configures one session's open.
+type OpenOption func(*openOptions)
+
+type openOptions struct {
+	chain identity.Chain
+}
+
+// WithChain records the delegation lineage the session runs under.
+//
+// It is the only way a session learns it is somebody's child: a caller-opened session has no
+// chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
+// grant's max_depth counts was always zero, so the limit never fired.
+func WithChain(chain identity.Chain) OpenOption {
+	return func(o *openOptions) { o.chain = chain }
+}
+
 // Session is one open conversation under one deployment.
 //
 // It is where the four nouns meet: the agent it belongs to, the cell that isolates it, the binding
@@ -38,29 +55,95 @@ type Session struct {
 	// chain is the delegation lineage this session runs under: empty for a session a caller opened,
 	// one deeper for every edge below a delegate call.
 	chain identity.Chain
-	// running is true while a turn is in flight. One session has at most one, which is the rule
-	// that lets Steer and Cancel address a turn without an id.
-	running atomic.Bool
-	// cancelMu guards the running turn's cancellation, which is set while it streams.
-	cancelMu sync.Mutex
-	cancel   context.CancelFunc
+	// turnMu guards the turn slot: whether one is in flight, how to stop it, and whether the
+	// session is closing. One session has at most one turn, which is the rule that lets Steer and
+	// Cancel address a turn without an id — and the reason a close has to coordinate with it
+	// instead of just closing the driver underneath.
+	turnMu sync.Mutex
+	// running is true while a turn is in flight.
+	running bool
+	// cancel stops the running turn; nil when none is.
+	cancel context.CancelFunc
+	// closing is set by close before it stops the turn, so a turn that has not registered its
+	// cancellation yet cannot start after the close decision.
+	closing bool
+	// turnDone is closed when the turn in flight ends. A close waits on it before releasing the
+	// driver and the boundary the turn is using.
+	turnDone chan struct{}
+}
+
+// beginTurn claims the session's turn slot, or reports why it cannot.
+func (s *Session) beginTurn() error {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	switch {
+	case s.closing:
+		return errdefs.NotAvailablef("host: session %q is closing", s.id)
+	case s.running:
+		return errdefs.Conflictf("host: session %q already has a turn in flight", s.id)
+	}
+	s.running = true
+	s.turnDone = make(chan struct{})
+	return nil
+}
+
+// endTurn releases the slot and wakes a close that is waiting for the turn.
+func (s *Session) endTurn() {
+	s.turnMu.Lock()
+	s.running = false
+	done := s.turnDone
+	s.turnDone = nil
+	s.turnMu.Unlock()
+	if done != nil {
+		close(done)
+	}
+}
+
+// isRunning reports whether a turn is in flight.
+func (s *Session) isRunning() bool {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.running
 }
 
 // setCancel records the running turn's cancellation, or clears it when the turn ends.
+//
+// A cancellation installed after a close has already decided to stop the session is applied
+// immediately: otherwise a close that arrived between beginTurn and this call would wait for a
+// turn nobody had told to stop.
 func (s *Session) setCancel(cancel context.CancelFunc) {
-	s.cancelMu.Lock()
-	defer s.cancelMu.Unlock()
+	s.turnMu.Lock()
 	s.cancel = cancel
+	closing := s.closing
+	s.turnMu.Unlock()
+	if closing && cancel != nil {
+		cancel()
+	}
 }
 
 // takeCancel hands back the running turn's cancellation and forgets it, so a second Cancel is a
 // no-op rather than a nil dereference.
 func (s *Session) takeCancel() context.CancelFunc {
-	s.cancelMu.Lock()
-	defer s.cancelMu.Unlock()
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
 	cancel := s.cancel
 	s.cancel = nil
 	return cancel
+}
+
+// beginClose marks the session closing, stops the turn in flight and returns the channel that
+// reports it ended (nil when nothing is running). The caller waits on it before releasing the
+// driver and the boundary: a turn that is still streaming tools must not have them closed under it.
+func (s *Session) beginClose() <-chan struct{} {
+	s.turnMu.Lock()
+	s.closing = true
+	cancel := s.cancel
+	done := s.turnDone
+	s.turnMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return done
 }
 
 // ID is the session's address.
@@ -80,16 +163,22 @@ func (s *Session) Binding() tool.Binding { return s.binding }
 //
 // Everything expensive — the backend instance, the file handles, the driver — happens outside the
 // table's lock, so opening one session never delays a turn in another.
-func (a *Agents) Open(ctx context.Context, sessionID, agentName string) (*Session, error) {
+func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...OpenOption) (*Session, error) {
 	if sessionID == "" {
 		return nil, errdefs.Validationf("host: a session needs an id")
+	}
+	var opening openOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&opening)
+		}
 	}
 	deploy, err := a.admit(agentName, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy)
+	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy, opening)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +237,7 @@ func (a *Agents) admit(agentName, sessionID string) (*deployment, error) {
 }
 
 // buildSession builds one session's cell, binding and driver. It holds no lock.
-func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, deploy *deployment) (*Session, trace.Span, error) {
+func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, deploy *deployment, opening openOptions) (*Session, trace.Span, error) {
 	// The span starts before the boundary is built, so a failure to build one is inside the session's
 	// own trace rather than a span of its own.
 	probe := &Session{id: sessionID, agent: agentName, tenant: a.tenant, authority: a.authority, deploy: deploy}
@@ -208,6 +297,12 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		cell:      built,
 		binding:   binding,
 		driver:    driver,
+		chain:     opening.chain,
+	}
+	if err := a.announceSession(ctx, session); err != nil {
+		openErr := errors.Join(err, session.close())
+		failSessionSpan(ctx, span, openErr)
+		return nil, span, openErr
 	}
 	session.touchNow(time.Now())
 	// Delegation is filled only where the grant permits it: a session that may not delegate gets no
@@ -222,6 +317,38 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	}
 	span.End()
 	return session, span, nil
+}
+
+// announceSession runs the deployment's OnSession hook for the conversation that is about to
+// exist.
+//
+// It is the boundary the hook is documented on — "after a session is opened or restored, before
+// its turn" — and the only place that knows both: the store read that says whether this is a
+// resume happens here, once, rather than on every turn. An error refuses the open: a host that
+// cannot prepare its memory should not run a turn blind.
+func (a *Agents) announceSession(ctx context.Context, session *Session) error {
+	hooks := session.deploy.hooks
+	if hooks.OnSession == nil {
+		return nil
+	}
+	info := agent.SessionInfo{Agent: session.agent, SessionID: session.id, State: agent.StateSubmitted}
+	if a.store != nil {
+		loaded, err := a.store.LatestForSession(ctx, session.id)
+		switch {
+		case err == nil && !loaded.Task.State.Terminal():
+			info.State = loaded.Task.State
+			info.TaskID = loaded.Task.ID
+			info.Resumed = true
+		case err == nil, errors.Is(err, agent.ErrNoCheckpoint):
+			// A finished task is history, not a resume point; a missing one is a new conversation.
+		default:
+			return fmt.Errorf("host: session %q: reading its checkpoint: %w", session.id, err)
+		}
+	}
+	if err := hooks.OnSession(ctx, info); err != nil {
+		return fmt.Errorf("host: agent %q: on-session hook: %w", session.agent, err)
+	}
+	return nil
 }
 
 // Sessions lists the open session ids under one agent, oldest first.
@@ -288,6 +415,12 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		if session.agent != agentName || now.Sub(session.lastTouch()) < idle {
 			continue
 		}
+		// A turn in flight is not idle, however long it has been running: its session's last
+		// touch is the previous turn's, so a slow model call would otherwise look like an
+		// abandoned conversation and have its boundary torn out mid-command.
+		if session.isRunning() {
+			continue
+		}
 		expired = append(expired, session)
 		if retired := a.forgetLocked(session); retired != nil {
 			drained = append(drained, retired)
@@ -347,8 +480,12 @@ func (s *Session) touchNow(now time.Time) { s.touch.Store(now.UnixNano()) }
 // lastTouch is the last recorded activity.
 func (s *Session) lastTouch() time.Time { return time.Unix(0, s.touch.Load()) }
 
-// close releases the session's driver and its boundary.
+// close releases the session's driver and its boundary, after stopping and waiting out the turn
+// that may be using them.
 func (s *Session) close() error {
+	if done := s.beginClose(); done != nil {
+		<-done
+	}
 	var errs []error
 	if s.driver != nil {
 		if err := s.driver.Close(); err != nil {

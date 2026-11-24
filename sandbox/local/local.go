@@ -140,9 +140,16 @@ func (r *Runner) registry() *sessionkit.SessionRegistry {
 func buildEnv(p policy.EnvPolicy) []string {
 	var env []string
 
-	if p.Allow == nil {
+	switch p.Allow {
+	case nil:
 		env = append(env, os.Environ()...)
-	} else if len(p.Allow) > 0 {
+	default:
+		// An allow-list, including one that selected nothing, must produce a non-nil slice:
+		// exec.Cmd reads nil Env as "inherit the caller's environment", so a list whose names
+		// happen to be unset on this host would hand the child every secret the daemon holds.
+		// The previous code returned the nil it started from, which made that a silent widening
+		// rather than the empty environment the document asked for.
+		env = make([]string, 0, len(p.Allow))
 		allow := make(map[string]bool, len(p.Allow))
 		for _, name := range p.Allow {
 			allow[name] = true
@@ -180,10 +187,9 @@ func buildEnv(p policy.EnvPolicy) []string {
 		}
 	}
 
-	if p.Allow != nil && len(p.Allow) == 0 && len(p.Inject) == 0 {
-		// Distinguish "inherit nothing" from "inherit everything": return
-		// an empty (non-nil) slice so exec.Cmd.Env is set to no entries
-		// instead of falling back to os.Environ().
+	if p.Allow != nil && len(env) == 0 {
+		// The same distinction at the end: an allow-list that matched nothing is "inherit
+		// nothing", and it has to be spelled as a non-nil empty slice for exec.Cmd.
 		return []string{}
 	}
 	return env

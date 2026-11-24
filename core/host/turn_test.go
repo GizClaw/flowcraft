@@ -160,7 +160,7 @@ func TestAFinishedTaskIsNotResumed(t *testing.T) {
 	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "again")) {
 	}
 	req := driver.requests[0]
-	if req.Task.ID != "s1/1" {
+	if req.Task.ID == "s1" || !strings.HasPrefix(req.Task.ID, "s1/") {
 		t.Fatalf("task id = %q, want a new task for the new turn", req.Task.ID)
 	}
 	if req.Task.SessionID != "s1" {
@@ -320,5 +320,38 @@ func TestTheRunSinkIsWiredFromTheHostOption(t *testing.T) {
 	}
 	if record.State != agent.StateCompleted {
 		t.Fatalf("state = %q, want completed", record.State)
+	}
+}
+
+// TestTaskIDsSurviveAReopen is the durability half of "a task is one turn": the id of a new task
+// must not repeat one the store already holds, or the new turn overwrites the old row and
+// interleaves two event logs. A per-session counter restarts when the conversation is reopened,
+// which is exactly the case this pins.
+func TestTaskIDsSurviveAReopen(t *testing.T) {
+	store := agenttest.NewMemStore()
+	agents, driver := seenHost(t, WithStore(store), WithFingerprint("fp-1"))
+
+	// Two turns: the first mints the task, the second (after a terminal one) mints a new id.
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "one")) {
+	}
+	if err := agents.CloseSession(t.Context(), "s1"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	// The same conversation id reopened: a fresh Session, whose ordinal starts over.
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "two")) {
+	}
+
+	seen := map[string]bool{}
+	for _, request := range driver.requests {
+		if seen[request.Task.ID] {
+			t.Fatalf("task id %q was minted twice across a reopen", request.Task.ID)
+		}
+		seen[request.Task.ID] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("task ids = %v, want two distinct ones", seen)
 	}
 }

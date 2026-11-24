@@ -103,7 +103,7 @@ func TestCancelIsCountedAndSpanned(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		session, _ := agents.Session("s1")
-		if session != nil && session.running.Load() {
+		if session != nil && session.isRunning() {
 			break
 		}
 		if time.Now().After(deadline) {

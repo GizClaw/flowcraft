@@ -2,6 +2,8 @@ package host
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"iter"
@@ -99,11 +101,11 @@ func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message)
 			yield(nil, errdefs.NotFoundf("host: session %q is not open", sessionID))
 			return
 		}
-		if !session.running.CompareAndSwap(false, true) {
-			yield(nil, errdefs.Conflictf("host: session %q already has a turn in flight", sessionID))
+		if err := session.beginTurn(); err != nil {
+			yield(nil, err)
 			return
 		}
-		defer session.running.Store(false)
+		defer session.endTurn()
 
 		runCtx, cancel := context.WithCancel(session.identity(ctx))
 		session.setCancel(cancel)
@@ -164,7 +166,19 @@ func (s *Session) identity(ctx context.Context) context.Context {
 		// A host that already attached an identity owns the trace; the turn runs under it.
 		return ctx
 	}
-	return attached
+	if s.chain.ID == "" {
+		return attached
+	}
+	// The chain goes on after the session, because that is the order the injection points
+	// allow: a lineage is a fact about a run that already has a conversation. Failing here is a
+	// programming error rather than a deployment one — the session either has a chain at open or
+	// it does not — so the turn keeps the session identity and the loss is logged.
+	withChain, chainErr := inject.Chain(attached, s.chain)
+	if chainErr != nil {
+		telemetry.WarnErr(ctx, "host: attaching the delegation lineage failed", chainErr)
+		return attached
+	}
+	return withChain
 }
 
 // request assembles one turn's request.
@@ -184,7 +198,11 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		case err == nil:
 			// The previous turn ended: this one is a new task, and the conversation crosses the boundary
 			// through the document's carried keys rather than through one endless run.
-			task.ID = fmt.Sprintf("%s/%d", session.id, session.ordinal)
+			id, err := newTaskID(session.id)
+			if err != nil {
+				return agent.Request{}, err
+			}
+			task.ID = id
 		case errors.Is(err, agent.ErrNoCheckpoint):
 			// A new conversation: the task starts here.
 		default:
@@ -210,6 +228,21 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 	}, nil
 }
 
+// newTaskID mints the id of a new task: the session's id plus a random suffix.
+//
+// "Fresh" is a durability requirement, not a readability one. The store keys tasks by id, so a
+// repeated id merges two tasks' projections and interleaves their event logs — and every counter
+// this could use restarts: the session's ordinal starts again when a conversation is opened (or
+// the process is), which made the second turn after a reopen collide with a task the store still
+// held. A random suffix has no such history, and nothing parses a task id.
+func newTaskID(sessionID string) (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("host: mint a task id: %w", err)
+	}
+	return sessionID + "/" + hex.EncodeToString(suffix[:]), nil
+}
+
 // Steer hands operator input to the session's running turn.
 //
 // The driver decides whether it can take input at all — a driver with no step boundary says so by
@@ -221,7 +254,7 @@ func (a *Agents) Steer(ctx context.Context, sessionID string, in agent.SteerInpu
 		recordSteer(ctx, in, steerIdle)
 		return "", errdefs.NotFoundf("host: session %q is not open", sessionID)
 	}
-	if !session.running.Load() {
+	if !session.isRunning() {
 		recordSteer(ctx, in, steerIdle)
 		return "", agent.ErrSessionIdle
 	}

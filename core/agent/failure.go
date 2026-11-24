@@ -76,6 +76,19 @@ func WithFailureBox(ctx context.Context) context.Context {
 	return context.WithValue(ctx, failureKey{}, &failureBox{})
 }
 
+// WithoutFailureBox returns ctx without the turn's classification box.
+//
+// A run started from inside another run — a delegated child — must classify its own failures: the
+// parent's box is first-wins, so a child's model error would otherwise be reported as the parent
+// turn's reason, and a child's cancellation would mask the parent's real failure.
+func WithoutFailureBox(ctx context.Context) context.Context {
+	return context.WithValue(ctx, failureKey{}, detachedBox{})
+}
+
+// detachedBox is what a detached context carries: another type, so recordedKind's assertion
+// fails and the box reads as absent.
+type detachedBox struct{}
+
 // RecordFailure classifies the current turn's failure.
 //
 // The first classification wins: the innermost stage is closest to the cause, and an

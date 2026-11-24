@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"iter"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/identity"
@@ -69,6 +70,10 @@ type turnFacts struct {
 	outcome   TurnOutcome
 	records   []EventRecord
 	artifacts []Artifact
+	// text holds the answer's deltas as they arrive. Concatenating per delta re-copies the whole
+	// answer each time, which is quadratic in the number of deltas on the path where latency *is*
+	// the product; the answer is materialised once, in [finish].
+	text []string
 }
 
 // Turn runs one turn: it attaches the turn's identity, opens its span, drives the driver,
@@ -169,7 +174,9 @@ func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Dr
 			completed = typed.State.Terminal()
 			facts.records = append(facts.records, recordOf(recordState, typed))
 		case Text:
-			facts.outcome.Content = appendContent(facts.outcome.Content, typed.Text)
+			if typed.Text != "" {
+				facts.text = append(facts.text, typed.Text)
+			}
 		case UsageEvent:
 			addUsage(&facts.outcome.Usage, typed.Usage)
 		case Interrupted:
@@ -213,17 +220,6 @@ func annotateInterruption(ctx context.Context, interruption Interruption) {
 	))
 }
 
-// appendContent adds one delta to the turn's answer.
-func appendContent(content message.Content, text string) message.Content {
-	if text == "" {
-		return content
-	}
-	if said := content.Text(); said != "" {
-		return message.NewTextContent(said + text)
-	}
-	return message.NewTextContent(text)
-}
-
 // recordOf renders one fact for the event log. A payload that cannot encode is dropped
 // rather than failing the turn: the log is evidence, not the result.
 func recordOf(kind string, value any) EventRecord {
@@ -257,6 +253,11 @@ func mergeArtifacts(into []Artifact, artifact Artifact) []Artifact {
 // It runs on every path out of RunTurn — a driver error, a panic, a consumer that stopped
 // — so the record of a turn never depends on which of them happened.
 func finish(ctx context.Context, span trace.Span, req Request, d Driver, turn TurnInfo, facts turnFacts, started time.Time) {
+	if len(facts.text) > 0 {
+		// One allocation for the whole answer, sized exactly: the deltas were kept rather than
+		// concatenated so a long stream does not copy itself once per delta.
+		facts.outcome.Content = message.NewTextContent(strings.Join(facts.text, ""))
+	}
 	outcome := facts.outcome
 	elapsed := time.Since(started)
 	if outcome.State != "" {

@@ -2,7 +2,10 @@ package host
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -10,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
-	"github.com/GizClaw/flowcraft/core/identity/inject"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -68,12 +70,22 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	// One child per delegation edge: the id is derived so two edges of one chain are distinguishable,
 	// and so a resumed parent's next edge does not collide with the one before it.
 	child := d.parent.id + "/" + target + "-" + strconv.FormatInt(d.agents.nextEdge(), 36)
-	if _, err := d.agents.Open(ctx, child, target); err != nil {
+
+	// The first edge of a chain mints its id; every edge below it extends the one it was given.
+	// Without an id the lineage cannot be attached at all, which is what made max_depth inert and
+	// left chain.id off every span.
+	chain := identity.Chain{ID: parent.chain.ID, Depth: parent.chain.Depth + 1}
+	if chain.ID == "" {
+		minted, err := newChainID()
+		if err != nil {
+			return platform.DelegationOutcome{}, err
+		}
+		chain.ID = minted
+	}
+	if _, err := d.agents.Open(ctx, child, target, WithChain(chain)); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
-	defer func() { _ = d.agents.CloseSession(ctx, child) }()
 
-	chain := identity.Chain{ID: parent.chain.ID, Depth: parent.chain.Depth + 1}
 	outcome := platform.DelegationOutcome{
 		Session: child,
 		Chain:   chain.ID,
@@ -83,18 +95,33 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		// An async edge is a hand-off: the child is started and the caller gets its address. The run
 		// outlives the turn that asked for it, so it gets a root span of its own linked to the asking
 		// turn — a child of a span that has already ended would be a trace nobody can read.
-		parent := trace.SpanContextFromContext(ctx)
+		//
+		// The goroutine owns the child from here, including closing it: a close registered by the
+		// caller would run as this function returned and erase the session before the run it just
+		// started, which is what made every async edge a no-op with a "submitted" answer.
+		parentSpan := trace.SpanContextFromContext(ctx)
 		bgCtx, span := telemetry.TracerWithSuffix("host").Start(
-			withChain(context.WithoutCancel(ctx), chain), "host.delegate.async",
-			trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: parent}))
+			nestedRunCtx(context.WithoutCancel(ctx)), "host.delegate.async",
+			trace.WithNewRoot(), trace.WithLinks(trace.Link{SpanContext: parentSpan}))
+		outcome.Status = string(agent.StateSubmitted)
 		go func() {
 			defer span.End()
-			for range d.agents.Run(bgCtx, child, userMessage(req.Input)) {
+			// WithoutCancel: the close must land even when the asking turn has ended, and the
+			// session id is the only thing it needs.
+			defer func() { _ = d.agents.CloseSession(context.WithoutCancel(bgCtx), child) }()
+			for _, runErr := range d.agents.Run(bgCtx, child, userMessage(req.Input)) {
+				if runErr != nil {
+					// Nobody is waiting for this run: the log and the span are what a reader has.
+					telemetry.WarnErr(bgCtx, "host: an async delegation failed", runErr)
+				}
 			}
 		}()
-		outcome.Status = string(agent.StateSubmitted)
 		return outcome, nil
 	}
+
+	// A sync edge is a request: the child exists for as long as this call, and the caller's
+	// context is the one that bounds it.
+	defer func() { _ = d.agents.CloseSession(ctx, child) }()
 
 	release, err := d.acquire(ctx)
 	if err != nil {
@@ -111,7 +138,8 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		runCtx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	for event, runErr := range d.agents.Run(withChain(runCtx, chain), child, userMessage(req.Input)) {
+	folded := &foldedStream{}
+	for event, runErr := range d.agents.Run(nestedRunCtx(runCtx), child, userMessage(req.Input)) {
 		if runErr != nil {
 			if errors.Is(runErr, context.DeadlineExceeded) {
 				_ = d.agents.Cancel(context.WithoutCancel(ctx), child, "delegation timed out")
@@ -120,8 +148,9 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 			}
 			return outcome, runErr
 		}
-		foldDelegated(&outcome, event)
+		foldDelegated(&outcome, folded, event)
 	}
+	outcome.Content = folded.content()
 	return outcome, nil
 }
 
@@ -166,23 +195,32 @@ func admitDelegation(d *policy.Delegation, target, mode string, chain identity.C
 	return nil
 }
 
-// appendText adds one delta to a delegation's answer, keeping the content a single text part.
-func appendText(content message.Content, text string) message.Content {
-	if text == "" {
-		return content
+// foldedStream is what a delegation accumulates while the child streams.
+//
+// The answer's deltas are kept as they arrive and joined once: concatenating per delta copies the
+// whole answer on every event, which is quadratic in the number of deltas — and a delegated edge
+// would pay it twice, once in the child's decorator and once here.
+type foldedStream struct {
+	deltas []string
+}
+
+// content materialises the answer once the stream has ended: one allocation, sized exactly,
+// instead of a copy per delta.
+func (f *foldedStream) content() message.Content {
+	if len(f.deltas) == 0 {
+		return message.Content{}
 	}
-	if existing := content.Text(); existing != "" {
-		return message.NewTextContent(existing + text)
-	}
-	return message.NewTextContent(text)
+	return message.NewTextContent(strings.Join(f.deltas, ""))
 }
 
 // foldDelegated keeps what the caller of a delegation needs from the child's stream: its answer, the
 // question it paused on, and the terminal state. Everything else belongs to the child's own trace.
-func foldDelegated(outcome *platform.DelegationOutcome, event agent.Event) {
+func foldDelegated(outcome *platform.DelegationOutcome, folded *foldedStream, event agent.Event) {
 	switch typed := event.(type) {
 	case agent.Text:
-		outcome.Content = appendText(outcome.Content, typed.Text)
+		if typed.Text != "" {
+			folded.deltas = append(folded.deltas, typed.Text)
+		}
 	case agent.Status:
 		if typed.State.Terminal() || typed.State == agent.StateInputRequired {
 			outcome.Status = string(typed.State)
@@ -198,14 +236,25 @@ func foldDelegated(outcome *platform.DelegationOutcome, event agent.Event) {
 // session ids without a clock or a random source in the identity.
 func (a *Agents) nextEdge() int64 { return a.edges.Add(1) }
 
-// withChain attaches the child's lineage to the context it runs under, which is what a span and a
-// checkpoint fingerprint read.
-func withChain(ctx context.Context, chain identity.Chain) context.Context {
-	attached, err := inject.Chain(ctx, chain)
-	if err != nil {
-		return ctx
+// nestedRunCtx is the context a delegated child runs under: the parent's identity and the
+// parent's failure classification are both stripped, because the child attaches its own session
+// (which is what carries the chain) and classifies its own failures.
+//
+// Without the first, `inject.Session` refuses the child's session and the error was swallowed, so
+// every span of the child carried the parent's conversation and the parent's bind — a different
+// grant. Without the second, the parent's first-wins box recorded the child's model error as the
+// parent turn's reason.
+func nestedRunCtx(ctx context.Context) context.Context {
+	return agent.WithoutFailureBox(identity.Detach(ctx))
+}
+
+// newChainID mints the id of a delegation chain's first edge.
+func newChainID() (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("host: mint a chain id: %w", err)
 	}
-	return attached
+	return "chain-" + hex.EncodeToString(suffix[:]), nil
 }
 
 func userMessage(text string) message.Message {
@@ -232,6 +281,12 @@ func (d *delegator) Status(ctx context.Context, session string) (platform.Delega
 	if err := d.child(session); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
+	if d.agents.store == nil {
+		// A host without a store keeps nothing to ask about: the child's state exists only in
+		// its driver, which this process does not hold.
+		return platform.DelegationOutcome{}, errdefs.NotAvailablef(
+			"host: delegation status needs a checkpoint store")
+	}
 	checkpoint, err := d.agents.store.Load(ctx, session)
 	if err != nil {
 		return platform.DelegationOutcome{}, err
@@ -248,12 +303,14 @@ func (d *delegator) Answer(ctx context.Context, session, answer string) (platfor
 		return platform.DelegationOutcome{}, err
 	}
 	outcome := platform.DelegationOutcome{Session: session}
+	folded := &foldedStream{}
 	for event, err := range d.agents.Run(ctx, session, userMessage(answer)) {
 		if err != nil {
 			return outcome, err
 		}
-		foldDelegated(&outcome, event)
+		foldDelegated(&outcome, folded, event)
 	}
+	outcome.Content = folded.content()
 	return outcome, nil
 }
 
