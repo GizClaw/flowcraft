@@ -65,8 +65,8 @@ func mustLoad(t *testing.T, layers ...Layer) (testConfig, *Doc) {
 // Windows, where a path needs a volume.
 func platformPaths(text string) string {
 	return strings.NewReplacer(
-		pathtest.Abs("work"), pathtest.Abs("work"),
-		pathtest.Abs("tmp"), pathtest.Abs("tmp"),
+		"/work", pathtest.Abs("work"),
+		"/tmp", pathtest.Abs("tmp"),
 		"/expanded", pathtest.Abs("expanded"),
 		"/fallback", pathtest.Abs("fallback"),
 	).Replace(text)

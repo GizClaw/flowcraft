@@ -117,7 +117,7 @@ func TestTheApproverDecidesEverythingElse(t *testing.T) {
 	if got.Agent != "referee" || got.SessionID != "s1" {
 		t.Fatalf("request = %+v, want the session's identity", got)
 	}
-	if strings.Join(got.Argv, " ") != "rm -rf /srv" || got.WorkDir != pathtest.Abs("srv") {
+	if strings.Join(got.Argv, " ") != "rm -rf "+pathtest.Abs("srv") || got.WorkDir != pathtest.Abs("srv") {
 		t.Fatalf("request = %+v, want the command as written", got)
 	}
 }

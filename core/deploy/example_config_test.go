@@ -21,11 +21,11 @@ import (
 // Settings decode into a map because the test is about the document's shape, not about any
 // one implementation's settings — a real implementation declares its own struct and gets strict
 // decoding from that.
-// onPlatformRoot rewrites the documented roots onto this platform's absolute spelling, by
-// prefixing the synthetic root the way pathtest does. Nothing is created and nothing else in
-// the document changes.
-func onPlatformRoot(document string) string {
-	for _, root := range []string{"/srv/", "/opt/", "/tmp/"} {
+// platformRoots rebases the unix roots the documents are printed with onto this platform's
+// spelling: a Windows path needs a volume, and the document layers judge absoluteness with
+// filepath.IsAbs. Nothing is created, and nothing else in the text changes.
+func platformRoots(document string) string {
+	for _, root := range []string{"/srv/", "/opt/", "/tmp/", "/bin/", "/usr/"} {
 		document = strings.ReplaceAll(document, root, pathtest.Roots()+strings.TrimPrefix(root, "/"))
 	}
 	return document
@@ -184,8 +184,8 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	// What this test checks is the schema, not that /srv exists, so the roots are rebased
 	// onto the platform's own spelling: a Windows path needs a volume, and policy.Files
 	// judges absoluteness with filepath.IsAbs.
-	process := onPlatformRoot(documentedProcess)
-	agents := onPlatformRoot(documentedAgents)
+	process := platformRoots(documentedProcess)
+	agents := platformRoots(documentedAgents)
 	loader := deploy.NewLoader(impls)
 	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(process)))
 	if err != nil {
