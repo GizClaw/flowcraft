@@ -39,8 +39,7 @@ const (
 // the wire vocabulary stays closed.
 //
 // An event is the product surface, not a trace record. Streamed text and reasoning
-// never become spans, and a span never carries their content; see the observability
-// section of docs/plans/agent-turn.md.
+// never become spans, and a span never carries their content.
 type Event interface {
 	Kind() EventKind
 	event()

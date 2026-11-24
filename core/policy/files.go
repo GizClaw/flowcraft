@@ -27,7 +27,12 @@ type Files struct {
 	Read []string `json:"read,omitempty" yaml:"read,omitempty"`
 	// Write lists writable subtrees. Empty means all, unless ReadOnly is set.
 	Write []string `json:"write,omitempty" yaml:"write,omitempty"`
-	// ReadOnly refuses every write. It is mutually exclusive with Write.
+	// ReadOnly refuses every write from the file tools. It is mutually exclusive with Write.
+	//
+	// It is a tool-layer permission, not a filesystem mount: `exec("echo x > /tmp/f")` does not
+	// go through fsx, and a backend that does not mount read-only cannot enforce it. A deployment
+	// that needs the stronger guarantee asks for it from the sandbox backend (bwrap's --ro-bind),
+	// not from this field.
 	ReadOnly bool `json:"readonly,omitempty" yaml:"readonly,omitempty"`
 }
 

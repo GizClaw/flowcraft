@@ -1,9 +1,12 @@
 package policy_test
 
 import (
+	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -246,4 +249,55 @@ func TestDenialChecksAreTheDocumentedFive(t *testing.T) {
 		}
 		seen[check] = true
 	}
+}
+
+// FuzzNarrowOnlyNarrows is the batch-1 gate the plan asked for and the code did not have: a table
+// test checks the cases someone thought of, and the property that matters — a narrowed grant is
+// inside the one it came from, and narrowing twice is narrowing once — holds for every input.
+func FuzzNarrowOnlyNarrows(f *testing.F) {
+	f.Add([]byte(`{"sandbox":"local","files":{"read":["/srv"],"write":["/srv/out"]},"models":[{"id":{"provider":"p","name":"m"}}]}`), []byte(`{}`))
+	f.Add([]byte(`{}`), []byte(`{"tools":{"allow":["a"]}}`))
+	f.Fuzz(func(t *testing.T, grantJSON, requestJSON []byte) {
+		var ceiling policy.Grant
+		if err := json.Unmarshal(grantJSON, &ceiling); err != nil {
+			return
+		}
+		normalized, err := ceiling.Normalized()
+		if err != nil {
+			return
+		}
+		var request policy.Request
+		if err := json.Unmarshal(requestJSON, &request); err != nil {
+			return
+		}
+		bind, err := normalized.Narrow(request)
+		if err != nil {
+			// Every refusal is a value a caller can inspect, never a bare string.
+			var denial *policy.Denial
+			if !errors.As(err, &denial) && !errdefs.IsValidation(err) && !errdefs.IsForbidden(err) {
+				t.Fatalf("refusal %v is neither a Denial nor a classified error", err)
+			}
+			return
+		}
+		// Narrowing twice is narrowing once: a bind re-narrowed by the same request is itself.
+		again, err := bind.Narrow(request)
+		if err != nil {
+			t.Fatalf("a bind cannot be narrowed by the request that produced it: %v", err)
+		}
+		if again.Digest() != bind.Digest() {
+			t.Fatalf("narrow is not idempotent: %s vs %s", bind.Digest(), again.Digest())
+		}
+		// And the bind is inside the ceiling it came from: re-narrowing the ceiling by the bind's
+		// own shape must not refuse what the bind already carries.
+		if _, err := normalized.Narrow(requestOf(bind)); err != nil {
+			t.Fatalf("the bind %s is not inside its ceiling: %v", bind.Digest(), err)
+		}
+	})
+}
+
+// requestOf spells a grant as the request that would produce it, which is how the fuzz asserts
+// containment without a second comparison implementation.
+func requestOf(g policy.Grant) policy.Request {
+	tools := g.Tools
+	return policy.Request{Models: g.Models, Tools: &tools, Budget: &g.Tools.Budget}
 }
