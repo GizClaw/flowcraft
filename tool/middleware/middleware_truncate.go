@@ -10,11 +10,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/GizClaw/flowcraft/core/internal/fsatomic"
-	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/tool/internal/fsatomic"
 
 	"github.com/goccy/go-json"
 	"go.opentelemetry.io/otel/attribute"
@@ -164,7 +163,7 @@ func Truncate(settings TruncateSettings) tool.Middleware {
 func spillPath(dir, callID string) string {
 	name := callID
 	if name == "" || name == "." || name == ".." ||
-		strings.ContainsAny(name, `/\`) || !paths.RelRef(name) {
+		strings.ContainsAny(name, `/\`) || !relRef(name) {
 		sum := sha256.Sum256([]byte(callID))
 		name = hex.EncodeToString(sum[:16])
 	}
@@ -451,4 +450,15 @@ func replaceTextParts(content message.Content, text string) message.Content {
 		out.Parts = append(out.Parts, part)
 	}
 	return out
+}
+
+// relRef reports whether ref is a relative path that stays below its base.
+//
+// It is the guard on a spool file's name: the name comes from a call, and a name that climbed out of
+// the directory (or was absolute) would turn "write the truncated result" into "write anywhere".
+func relRef(ref string) bool {
+	clean := filepath.Clean(ref)
+	return !filepath.IsAbs(clean) &&
+		clean != ".." &&
+		!strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }

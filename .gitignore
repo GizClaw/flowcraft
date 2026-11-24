@@ -46,6 +46,8 @@
 !sandbox/**
 !skills/
 !skills/**
+!tool/
+!tool/**
 !tools/
 !tools/**
 !.release/

@@ -246,7 +246,7 @@ func (d failingDriver) Close() error { return nil }
 type classifiedProgram struct{ kind agent.FailureKind }
 
 func (p classifiedProgram) Open(agent.SessionInfo) (agent.Driver, error) {
-	return failingDriver{kind: p.kind}, nil
+	return failingDriver(p), nil
 }
 
 func (p classifiedProgram) Close() error { return nil }

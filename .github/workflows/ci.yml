@@ -38,7 +38,7 @@ jobs:
               # One entry per module the checkout builds. The three implementation
               # modules are siblings of core, not packages inside it; a provider or a
               # backend is a package there, so the list does not recurse.
-              return sorted({"core", "sandbox", "inference", "agent", "examples/forge"})
+              return sorted({"core", "sandbox", "inference", "agent", "tool", "examples/forge"})
 
           dirs = module_dirs()
           # The lint gate skips a module that is built the way a reader builds it:
@@ -194,7 +194,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core sandbox inference agent examples/forge tools)
+          diff=$(gofmt -s -l core sandbox inference agent tool examples/forge tools)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"

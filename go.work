@@ -17,4 +17,5 @@ use (
 	./core
 	./inference
 	./sandbox
+	./tool
 )

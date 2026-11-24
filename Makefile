@@ -25,17 +25,20 @@ SHELL := /bin/bash
 INFERENCE_MODULES := inference
 SANDBOX_MODULES := sandbox
 AGENT_MODULES := agent
+# The tool sources the platform ships — files, exec, skills, mcp — are one module for the same
+# reason the others are: a new source is a package beside them, and core keeps the contract.
+TOOL_MODULES := tool
 
-MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) examples/forge
+MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES)
+MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES)
 
 # `go mod tidy` resolves the core version a module pins against the module proxy.
 # The three implementation modules pin a core that is only a commit on main so
 # far, so `make release-preflight` is what tidies them, with a temporary local
 # replace; every other module is tidied here.
-MODULES_TIDY := $(filter-out $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES),$(MODULES_WORK))
+MODULES_TIDY := $(filter-out $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES),$(MODULES_WORK))
 
 # Modules a reader builds from their own go.mod and go.sum, without this
 # workspace: every example. They are checked with GOWORK=off (see
@@ -185,7 +188,7 @@ check-skill-pin:
 # `inference` now, and their request compilation is on the model-call path, so
 # the module that holds them is here; `sandbox` carries the process floor every
 # tool pays before it does any work of its own.
-BENCH_MODULES ?= core sandbox inference agent
+BENCH_MODULES ?= core sandbox inference agent tool
 BENCH_LABEL ?= run
 
 .PHONY: bench

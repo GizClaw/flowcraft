@@ -183,6 +183,7 @@ inference:
 tools:
   sources:
     - {name: workspace, impl: files}
+observability: {trace: none, bodies: false}
 `))
 	b.ReportAllocs()
 	for b.Loop() {
