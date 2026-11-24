@@ -65,39 +65,22 @@ func callErrorKind(err error) string {
 	}
 }
 
-// recordCall appends one round trip to the task's log.
+// callEvents renders the round trip as the one fact the log keeps about it.
 //
-// It is written through the narrow [agent.Saver] the turn hands over, not the store: a proxy appends
-// facts, and the projection it writes beside them is its own section. A failure to record is logged
-// and dropped — the answer already reached the caller, and losing the evidence of it is not a reason
-// to fail a turn that worked.
-func (d *driver) recordCall(ctx context.Context, req agent.Request, started time.Time, failure error) {
-	if req.Saver == nil || req.Task.ID == "" {
-		return
-	}
-	d.mu.Lock()
-	record := CallRecord{
-		PeerTaskID: d.remote.TaskID,
-		ContextID:  d.remote.ContextID,
-		State:      d.remote.State,
-	}
-	d.mu.Unlock()
-	record.LatencyMs = time.Since(started).Milliseconds()
-	record.ErrorKind = callErrorKind(failure)
-
-	payload, err := json.Marshal(record)
+// It is written in the same save as the peer's identity, so a reader never sees a peer task the
+// log has no round trip for — and so a proxy pays one commit per call rather than two.
+func callEvents(remembered remote, started time.Time, failure error) ([]agent.EventRecord, error) {
+	payload, err := json.Marshal(CallRecord{
+		PeerTaskID: remembered.TaskID,
+		ContextID:  remembered.ContextID,
+		State:      remembered.State,
+		LatencyMs:  time.Since(started).Milliseconds(),
+		ErrorKind:  callErrorKind(failure),
+	})
 	if err != nil {
-		telemetry.WarnErr(ctx, "a2a: encode the call record", err)
-		return
+		return nil, err
 	}
-	_, _, err = req.Saver.Append(context.WithoutCancel(ctx), req.Task.ID, []agent.EventRecord{{
-		Kind:    RecordCall,
-		Payload: payload,
-		At:      started,
-	}})
-	if err != nil {
-		telemetry.WarnErr(ctx, "a2a: append the call record", err)
-	}
+	return []agent.EventRecord{{Kind: RecordCall, Payload: payload, At: started}}, nil
 }
 
 // finishSendSpan closes one round trip with the classification, never the message.

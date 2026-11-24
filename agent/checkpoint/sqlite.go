@@ -85,6 +85,11 @@ const savedAtLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // SQLite is the database/sql backend. A Postgres backend is a sibling file
 // with the same shape, which is why nothing here is named "local".
+// SQLite satisfies the narrow contract a driver is handed as well as the full one: the host
+// passes its store through agent.DriverStoreOf, and a driver that already has the store can hand
+// it over directly.
+var _ agent.DriverStore = (*SQLite)(nil)
+
 type SQLite struct {
 	db *sql.DB
 	// owned reports whether this store opened db, because Close has to know:
@@ -287,20 +292,17 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 	if checkpoint.Task.ID == "" {
 		return 0, 0, errdefs.Validationf("checkpoint: task id is required")
 	}
-	// The projection never carries history: the event log is its only source, so
-	// serializing a reconstructed transcript here would be wasted bytes on every
-	// save.
-	checkpoint.Task.History = nil
 	// The seed is the task as of the first save and never changes; the body holds
-	// only what changes after it. Writing history here made every save rewrite the
-	// whole task, so n rounds cost O(n^2) bytes.
+	// only what changes after it. A transcript in the projection would make every
+	// save rewrite the whole conversation, so n rounds cost O(n^2) bytes; it lives in
+	// the event log instead.
 	seed, err := json.Marshal(checkpoint)
 	if err != nil {
 		return 0, 0, fmt.Errorf("checkpoint: encode seed: %w", err)
 	}
 	// The body is the mutable part of the row: the projection plus whatever an
-	// adapter above the agent keeps in Sections. History is not here; it lives in
-	// the event log.
+	// adapter above the agent keeps in Sections. The transcript is not here; it lives
+	// in the event log.
 	body, err := json.Marshal(struct {
 		Artifacts []agent.Artifact           `json:"artifacts,omitempty"`
 		Pending   *message.ToolCall          `json:"pending,omitempty"`
@@ -487,8 +489,6 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 			}
 		}
 	}
-	// History is the event log's, not the projection's.
-	checkpoint.Task.History = nil
 	checkpoint.Version = version
 	checkpoint.ServerVersion = serverVersion
 	return checkpoint, nil

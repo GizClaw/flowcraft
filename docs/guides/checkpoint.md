@@ -49,10 +49,17 @@ The interface is semantic rather than relational: a task is addressed by id, and
 a first save is just a save, so create and append collapse into `Save`. Where
 state lives — a local file, Postgres, an object store — is a deployment decision.
 
+A driver never sees this interface. The turn hands it `agent.DriverStore` — `Save`
+(with the compaction options), `Load`, `LatestForSession`, `EventsAfter` and the
+two blob calls — so a driver can do what a run does and cannot list tasks, delete
+one, or rewrite an adapter's counter. `agent.DriverStoreOf` is the adapter a host
+applies; a store that already satisfies both (the in-memory and SQLite ones do)
+can be handed over directly.
+
 | Call                     | Answers                                                                                                               |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | `Save`                   | Writes the projection and appends this round's events in **one transaction**; returns the sequence range it assigned. |
-| `Load`                   | The newest projection of one task. It does not replay: `Task.History` is always empty.                                |
+| `Load`                   | The newest projection of one task. It does not replay: the projection carries no transcript.                          |
 | `LatestForSession`       | The newest task of a session — what resuming a session needs, since checkpoints are keyed by task.                    |
 | `Events` / `EventsAfter` | Every appended fact, or the suffix after a sequence, oldest first.                                                    |
 | `SetServerVersion`       | Advances the adapter's counter without rewriting the projection.                                                      |

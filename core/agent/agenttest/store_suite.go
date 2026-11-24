@@ -17,12 +17,12 @@ type StoreFactory func(t *testing.T) agent.Store
 // It is the store's half of the conformance story: a second backend — a file, Postgres, an
 // object store — is verified against this instead of re-deriving what Save and Load mean.
 // The assertions are the guarantees a caller relies on, not the fixture's behaviour:
-// sequence monotonicity, a projection without history, event order, and a
+// sequence monotonicity, a projection that carries no transcript, event order, and a
 // content-addressed blob reference.
 func StoreSuite(t *testing.T, open StoreFactory) {
 	t.Helper()
 	t.Run("SaveCreatesThenAdvances", func(t *testing.T) { storeAdvances(t, open) })
-	t.Run("ProjectionCarriesNoHistory", func(t *testing.T) { storeProjectionSmall(t, open) })
+	t.Run("ProjectionCarriesNoTranscript", func(t *testing.T) { storeProjectionIsSmall(t, open) })
 	t.Run("SectionsMergeAcrossSaves", func(t *testing.T) { storeSectionsMerge(t, open) })
 	t.Run("EventsKeepTheirOrder", func(t *testing.T) { storeEventOrder(t, open) })
 	t.Run("LatestForSessionPicksNewest", func(t *testing.T) { storeLatestForSession(t, open) })
@@ -105,7 +105,7 @@ func storeSectionsMerge(t *testing.T, open StoreFactory) {
 	}
 }
 
-func storeProjectionSmall(t *testing.T, open StoreFactory) {
+func storeProjectionIsSmall(t *testing.T, open StoreFactory) {
 	t.Helper()
 	ctx := context.Background()
 	store := open(t)
@@ -118,9 +118,17 @@ func storeProjectionSmall(t *testing.T, open StoreFactory) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if len(loaded.Task.History) != 0 {
-		t.Fatalf("the projection carried %d history entries; the log is their only source",
-			len(loaded.Task.History))
+	// The projection carries where the run stands, and the facts beside it are the log: a
+	// transcript in the projection would be rewritten on every save.
+	stored, err := store.Events(ctx, "t1")
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(stored) != 1 || stored[0].Kind != "message" {
+		t.Fatalf("events = %+v, want the one fact that was saved", stored)
+	}
+	if loaded.Task.ID != "t1" || loaded.Task.SessionID != "s1" {
+		t.Fatalf("projection = %+v, want the task's identity", loaded.Task)
 	}
 }
 
