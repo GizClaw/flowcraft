@@ -166,6 +166,10 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	platform.TreeSlot.Provide(capabilities, built.tree)
 	platform.ProcessSlot.Provide(capabilities,
 		starterFor(built.runner, a.approval, agentName, sessionID))
+	// The catalog is the process's: every session of this deployment searches the same discovery.
+	if a.res.skills != nil {
+		platform.SkillsSlot.Provide(capabilities, a.res.skills)
+	}
 
 	// The projection carries the deployment's exposure policy: what the model may see is a property
 	// of the deployment, so one view per session is cheap and the index behind it is shared.

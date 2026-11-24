@@ -18,9 +18,11 @@ import (
 	"sort"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/skill"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 )
@@ -28,13 +30,15 @@ import (
 // Resources is a built process. Its fields are unexported because there is exactly one thing a
 // caller may do with each of them, and handing out the fields would let a caller close one.
 type Resource struct {
-	providers  []*inference.Provider
-	models     *inference.Provider
-	backends   map[string]BackendFactory
-	order      []string
-	skillRoots []string
-	tools      *tool.Registry
-	dispatch   tool.Dispatcher
+	providers []*inference.Provider
+	models    *inference.Provider
+	backends  map[string]BackendFactory
+	order     []string
+	// skills is the catalog discovered from the plan's roots, once for the whole process: the tools
+	// search what the host reports, so there is one discovery and not one per session.
+	skills   *skill.Index
+	tools    *tool.Registry
+	dispatch tool.Dispatcher
 	// observability is how much of a turn this process records. It is one value for the whole
 	// process because everything it controls — the tool chain, the model access, the backends —
 	// is built once here, and a level two agents could disagree about would be a knob with no
@@ -84,12 +88,19 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 
 	r := &Resource{
 		backends:      make(map[string]BackendFactory, len(plan.Backends)),
-		skillRoots:    append([]string(nil), plan.SkillRoots...),
 		observability: plan.Observability,
 	}
 	// unwind releases what was built so far, keeping the original error as the cause.
 	unwind := func(err error) (*Resource, error) {
 		return nil, errors.Join(err, r.Close())
+	}
+
+	// The skill catalog is discovered here, over a read-only tree of the roots the deployment named,
+	// and the tree is released at once: what a session needs later is the index, not the handles.
+	if skills, err := buildSkills(ctx, plan.SkillRoots); err != nil {
+		return unwind(err)
+	} else {
+		r.skills = skills
 	}
 
 	for _, planned := range plan.Providers {
@@ -259,4 +270,30 @@ func (r *Resource) Close() error {
 	r.providers = nil
 	r.models = nil
 	return errors.Join(errs...)
+}
+
+// buildSkills discovers the deployment's skill roots and indexes them.
+//
+// It reads through a tree of those roots and closes it immediately: the index is the result, and a
+// process that kept the handles would keep file descriptors for a catalog it never reads again. A
+// session reads a skill body through its own boundary, so a grant that does not include the skill
+// roots still cannot read them — the index says what exists, the tree decides what is reachable.
+func buildSkills(ctx context.Context, roots []string) (*skill.Index, error) {
+	if len(roots) == 0 {
+		return nil, nil
+	}
+	tree, err := fsx.Open(roots)
+	if err != nil {
+		return nil, fmt.Errorf("host: skill roots: %w", err)
+	}
+	defer func() { _ = tree.Close() }()
+	discovered := skill.Discover(ctx, tree, roots)
+	if len(discovered.Skills) == 0 && len(discovered.Diagnostics) > 0 {
+		return nil, fmt.Errorf("host: skill discovery: %s", discovered.Diagnostics[0].Message)
+	}
+	index, err := skill.NewIndex(discovered.Skills)
+	if err != nil {
+		return nil, fmt.Errorf("host: skill index: %w", err)
+	}
+	return index, nil
 }
