@@ -3,6 +3,7 @@
 package journal
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -232,13 +233,13 @@ func TestSourceCloseIsSafeAgainstAnInFlightPoll(t *testing.T) {
 	}
 	select {
 	case err := <-done:
-		if err != nil && err != errSourceClosed {
+		if err != nil && !errors.Is(err, errSourceClosed) {
 			t.Fatalf("in-flight Poll = %v, want nil or errSourceClosed", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("the in-flight poll never returned")
 	}
-	if _, err := src.Poll(time.Millisecond); err != errSourceClosed {
+	if _, err := src.Poll(time.Millisecond); !errors.Is(err, errSourceClosed) {
 		t.Fatalf("Poll after Close = %v, want errSourceClosed", err)
 	}
 	if _, err := unix.Read(src.fd, make([]byte, 16)); err != unix.EBADF {

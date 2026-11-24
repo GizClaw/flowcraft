@@ -421,7 +421,7 @@ func (j *job) cpuBreach() (bool, error) {
 	used, err := j.accounting()
 	if err != nil {
 		if notifyErr := j.notifierFailure(); notifyErr != nil {
-			return false, fmt.Errorf("job accounting unreadable (%v) and the verdict channel lost: %w", err, notifyErr)
+			return false, fmt.Errorf("job accounting unreadable (%w) and the verdict channel lost: %w", err, notifyErr)
 		}
 		return false, nil
 	}
