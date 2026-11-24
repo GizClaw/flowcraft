@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 
 	"go.yaml.in/yaml/v3"
@@ -156,6 +157,11 @@ func cloneNode(node *yaml.Node) *yaml.Node {
 
 // nodeKindName names a merge source in an error. The caller has already resolved
 // aliases, so only the three kinds a `<<` value can hold are reachable.
+//
+// A scalar's *value* is not printed, only its position: placeholders are expanded before the
+// document is merged, so a `<<: ${secret:ci:token}` that resolved to a string would put the
+// secret in a validation error — which is exactly where a document author pastes it into a
+// ticket. The line and column say which entry to look at without saying what is in it.
 func nodeKindName(node *yaml.Node) string {
 	switch node.Kind {
 	case yaml.MappingNode:
@@ -163,6 +169,6 @@ func nodeKindName(node *yaml.Node) string {
 	case yaml.SequenceNode:
 		return "a sequence"
 	default:
-		return "the scalar " + node.Value
+		return fmt.Sprintf("a scalar (line %d, column %d)", node.Line, node.Column)
 	}
 }

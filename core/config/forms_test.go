@@ -569,3 +569,23 @@ func TestMergeSourceWithoutAnAliasIsRefused(t *testing.T) {
 		t.Fatal("an alias without a target was accepted")
 	}
 }
+
+// TestAMergeSourceErrorNeverPrintsTheValue is the leak this pins shut: placeholders are expanded
+// before the merge, so a `<<: ${secret:ci:token}` that resolved to a string reached the validation
+// error verbatim — and a validation error is exactly what a document author pastes into a ticket.
+func TestAMergeSourceErrorNeverPrintsTheValue(t *testing.T) {
+	document, err := parseDocument([]byte("merged:\n  <<: sk-live-abcdef\n"))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = expandMergeKeys(document)
+	if err == nil {
+		t.Fatal("a scalar merge source was accepted")
+	}
+	if strings.Contains(err.Error(), "sk-live") {
+		t.Fatalf("the error printed the scalar's value: %v", err)
+	}
+	if !strings.Contains(err.Error(), "a scalar") {
+		t.Fatalf("err = %v, want the kind and the position", err)
+	}
+}

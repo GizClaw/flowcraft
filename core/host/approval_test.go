@@ -139,7 +139,7 @@ func TestAnApprovedCommandRuns(t *testing.T) {
 // TestARefusalIsAPolicyDenial keeps the classification: a host rule that refuses is a policy denial
 // with the approval check, which is what a model reads to correct itself and what a dashboard counts.
 func TestARefusalIsAPolicyDenial(t *testing.T) {
-	reviewer := &reviewer{err: errors.New("operator said no")}
+	reviewer := &reviewer{err: &policy.Denial{Check: policy.CheckApproval, Reason: "operator said no"}}
 	starter, _ := approvalHost(t, Approval{Approver: reviewer})
 
 	err := start(t, starter, spec("rm", "-rf", pathtest.Roots()))
@@ -152,6 +152,34 @@ func TestARefusalIsAPolicyDenial(t *testing.T) {
 	}
 	if !strings.Contains(denial.Reason, "operator said no") {
 		t.Fatalf("reason = %q, want the approver's", denial.Reason)
+	}
+}
+
+// TestAFailedApproverKeepsItsDetailOutOfThePrompt is the leak this pins shut: the reason is rendered
+// back to the model, and an approver that failed on an HTTP call or a file read puts paths, endpoints
+// or token fragments in its error text. The model gets a fixed sentence; the caller and the log get
+// the cause.
+func TestAFailedApproverKeepsItsDetailOutOfThePrompt(t *testing.T) {
+	const leaked = "vault: 403 for token sk-live-abcdef"
+	reviewer := &reviewer{err: errors.New(leaked)}
+	starter, backend := approvalHost(t, Approval{Approver: reviewer})
+
+	err := start(t, starter, spec("ls"))
+	if !errdefs.IsPolicyDenied(err) {
+		t.Fatalf("err = %v, want a policy denial", err)
+	}
+	denial, ok := policy.AsDenial(err)
+	if !ok {
+		t.Fatalf("err = %v, want a *policy.Denial", err)
+	}
+	if strings.Contains(denial.Reason, "sk-live") || strings.Contains(denial.Error(), "sk-live") {
+		t.Fatalf("the approver's text reached the model-facing denial: %q", denial.Error())
+	}
+	if denial.Cause == nil || !strings.Contains(denial.Cause.Error(), "sk-live") {
+		t.Fatalf("cause = %v, want the approver's failure preserved for the caller", denial.Cause)
+	}
+	if len(backend.started) != 0 {
+		t.Fatal("a command ran after the approver failed")
 	}
 }
 
