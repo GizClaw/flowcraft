@@ -183,8 +183,9 @@ check-skill-pin:
 # Every module in the workspace that carries benchmarks; a module omitted from
 # this list is a module whose benchmarks never run. The provider adapters live in
 # `inference` now, and their request compilation is on the model-call path, so
-# the module that holds them is here.
-BENCH_MODULES ?= core inference agent
+# the module that holds them is here; `sandbox` carries the process floor every
+# tool pays before it does any work of its own.
+BENCH_MODULES ?= core sandbox inference agent
 BENCH_LABEL ?= run
 
 .PHONY: bench
