@@ -28,8 +28,9 @@ type View struct {
 	st viewState
 	// epoch bumps on every mutation that can change the visible set.
 	epoch uint64
-	// snapshot caches the catalog-derived half of the visible set. Guarded by
-	// mu; catalogSnapshotLocked is the only reader and writer.
+	// snapshot caches the catalog-derived half of the visible set for one catalog
+	// definition epoch. Guarded by mu; cachedSnapshot and publishSnapshot are the
+	// only reader and writer, and a build never runs under mu.
 	snapshot catalogSnapshot
 	// searchCache is the process-wide BM25 index. Nil for a view built by hand
 	// (tests, a fixture): such a view keeps no index between calls.
@@ -41,6 +42,9 @@ type View struct {
 // the policy, which is fixed after construction) and the serialized size of each
 // definition. The discovery pool and the per-round budget are state-dependent and are
 // applied per call.
+//
+// A published snapshot is immutable: concurrent readers share its slice and its map, so
+// whoever built it must not touch either after handing it over.
 type catalogSnapshot struct {
 	cands []candidate
 	sizes map[string]int64
@@ -64,8 +68,9 @@ func (v *View) bumpEpoch() { v.epoch++ }
 // Definitions implements [tool.View]: the definitions that reach the model this
 // round, after the discovery pool cap and the per-round budget.
 func (v *View) Definitions() []message.ToolDefinition {
+	snap := v.catalogSnapshot()
 	v.mu.Lock()
-	out := v.visibleDefinitionsLocked()
+	out := v.visibleDefinitionsLocked(snap)
 	v.mu.Unlock()
 	return out
 }
@@ -77,9 +82,9 @@ func (v *View) Definitions() []message.ToolDefinition {
 // actually sent, so a tool that is eligible but loses the budget still answers true
 // here; authority is a separate question that dispatch answers, not the projection.
 func (v *View) Visible(name string) bool {
+	snap := v.catalogSnapshot()
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	snap := v.catalogSnapshotLocked()
 	st := fitDiscoveryPool(v.st.snapshot(), snap.sizes, v.policy.Discovery)
 	for _, c := range snap.cands {
 		if c.name == name {
@@ -89,32 +94,83 @@ func (v *View) Visible(name string) bool {
 	return false
 }
 
-// visibleDefinitionsLocked computes the definitions that reach the model for the
-// current state and policy, applying the discovery pool cap and the per-round budget.
-// Definitions and Discover share it so the exposure report can never drift from the
-// definitions that are actually sent. Callers hold mu.
-func (v *View) visibleDefinitionsLocked() []message.ToolDefinition {
-	snap := v.catalogSnapshotLocked()
+// visibleDefinitionsLocked computes the definitions that reach the model for the given
+// catalog snapshot and the current state and policy, applying the discovery pool cap and
+// the per-round budget. Definitions and Discover share it so the exposure report can
+// never drift from the definitions that are actually sent. Callers hold mu.
+func (v *View) visibleDefinitionsLocked(snap catalogSnapshot) []message.ToolDefinition {
 	st := fitDiscoveryPool(v.st.snapshot(), snap.sizes, v.policy.Discovery)
 	return visibleDefinitions(snap.cands, st, v.policy)
 }
 
-// catalogSnapshotLocked returns the catalog-derived half of the visible set,
-// rebuilding it only when the catalog's definition epoch moved. The epoch is read, the
-// definitions are measured, and the result is published only when the epoch is still
-// the one the definitions belong to: a derivation of an older catalog published under a
-// newer epoch would keep stale definitions — and the byte sizes the discovery pool is
-// accounted against — for as long as the catalog stood still. Callers hold mu.
-func (v *View) catalogSnapshotLocked() catalogSnapshot {
-	aware, keyed := v.catalog.(definitionEpoch)
-	var epoch uint64
-	if keyed {
-		epoch = aware.DefinitionsEpoch()
-		if v.snapshot.keyed && v.snapshot.cands != nil && v.snapshot.epoch == epoch {
-			return v.snapshot
+// catalogSnapshotAttempts bounds the rebuild loop in catalogSnapshot. One retry is all
+// the loop is for — the catalog moved once while a snapshot was being built — and a
+// catalog that never stands still must not keep a reader from returning: the last build
+// answers the call without being published, which is what a reader pays on a miss anyway.
+const catalogSnapshotAttempts = 2
+
+// catalogSnapshot returns the catalog-derived half of the visible set for the catalog's
+// current definition epoch.
+//
+// The epoch is read, the snapshot is built with no lock held, and it is published only
+// while the epoch is still the one its definitions belong to — the shape the registry's
+// own Definitions cache uses. Building it under mu meant a catalog re-list ran in front
+// of every concurrent call in the session, and a round records its calls from several
+// goroutines ([tool.Dispatcher.ExecuteAll]); the lock now covers only the state half.
+func (v *View) catalogSnapshot() catalogSnapshot {
+	for attempt := 1; ; attempt++ {
+		epoch, keyed := catalogEpoch(v.catalog)
+		if snap, ok := v.cachedSnapshot(epoch, keyed); ok {
+			return snap
 		}
+		snap := buildCatalogSnapshot(v.catalog, v.policy, epoch, keyed)
+		if v.publishSnapshot(snap) || attempt >= catalogSnapshotAttempts {
+			return snap
+		}
+		// The catalog moved while the snapshot was being built. Publishing it would
+		// keep definitions — and the byte sizes the discovery pool is accounted
+		// against — under an epoch they do not belong to, so the build is dropped and
+		// the next pass starts from the newer epoch.
 	}
-	defs := v.catalog.Definitions()
+}
+
+// cachedSnapshot returns the snapshot already built for the catalog's definition epoch,
+// if the cache holds one. It never builds: a miss is the caller's cue to build with no
+// lock held.
+func (v *View) cachedSnapshot(epoch uint64, keyed bool) (catalogSnapshot, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if keyed && v.snapshot.keyed && v.snapshot.cands != nil && v.snapshot.epoch == epoch {
+		return v.snapshot, true
+	}
+	return catalogSnapshot{}, false
+}
+
+// publishSnapshot records snap as the cached snapshot and reports whether it did.
+//
+// A build that lost the race is not published: caching a derivation of an older catalog
+// under a newer epoch would keep stale definitions — and the byte sizes the discovery
+// pool is accounted against — for as long as the catalog stood still. The epoch is read
+// before the lock, so a move in the window can still land a snapshot tagged with the
+// epoch it was built for; readers compare that tag, so such a store costs one rebuild
+// rather than a wrong answer.
+func (v *View) publishSnapshot(snap catalogSnapshot) bool {
+	epoch, keyed := catalogEpoch(v.catalog)
+	if !keyed || epoch != snap.epoch {
+		return false
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.snapshot = snap
+	return true
+}
+
+// buildCatalogSnapshot derives the catalog half of the visible set from the catalog's
+// definitions. It runs with no view lock held: Definitions reaches a deferred tool's own
+// lock, a decorator that is caller code, or a read-side wrapper, and none of that may run
+// in front of another goroutine's RecordCall.
+func buildCatalogSnapshot(catalog tool.Catalog, policy Policy, epoch uint64, keyed bool) catalogSnapshot {
+	defs := catalog.Definitions()
 	snap := catalogSnapshot{
 		cands: make([]candidate, 0, len(defs)),
 		sizes: make(map[string]int64, len(defs)),
@@ -126,13 +182,19 @@ func (v *View) catalogSnapshotLocked() catalogSnapshot {
 		snap.cands = append(snap.cands, candidate{
 			name: def.Name,
 			def:  def,
-			exp:  v.policy.exposureOf(def.Name),
+			exp:  policy.exposureOf(def.Name),
 		})
 	}
-	if !keyed || aware.DefinitionsEpoch() == epoch {
-		v.snapshot = snap
-	}
 	return snap
+}
+
+// catalogEpoch reports the catalog's definition epoch and whether the catalog can say.
+func catalogEpoch(catalog tool.Catalog) (uint64, bool) {
+	aware, ok := catalog.(definitionEpoch)
+	if !ok {
+		return 0, false
+	}
+	return aware.DefinitionsEpoch(), true
 }
 
 // fitDiscoveryPool restricts the snapshot's discovered set to the pool budget,
@@ -193,6 +255,10 @@ func (v *View) Require(names ...string) {
 // loaded (tool_search calls EnsureLoaded first) so the pool measures real definitions;
 // entries are then evicted LRU until the pool fits Policy.Discovery.
 func (v *View) Discover(names ...string) DiscoverOutcome {
+	// The snapshot is read before the lock: measuring the definitions is the
+	// catalog's cost, and it must not be paid in front of every other call in the
+	// session.
+	snap := v.catalogSnapshot()
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.bumpEpoch()
@@ -202,7 +268,7 @@ func (v *View) Discover(names ...string) DiscoverOutcome {
 	// changed the bytes on the wire, and measuring the tool's own text here would make
 	// the two disagree. The snapshot is shared with Definitions, so both budget
 	// computations use the same figures.
-	sizes := v.catalogSnapshotLocked().sizes
+	sizes := snap.sizes
 
 	reasons := make(map[string]string, len(names))
 	changed := false
@@ -240,7 +306,7 @@ func (v *View) Discover(names ...string) DiscoverOutcome {
 	var visible map[string]struct{}
 	if changed {
 		visible = make(map[string]struct{})
-		for _, def := range v.visibleDefinitionsLocked() {
+		for _, def := range v.visibleDefinitionsLocked(snap) {
 			visible[def.Name] = struct{}{}
 		}
 	}
@@ -312,9 +378,9 @@ func evictsBefore(a discoveredEntry, aDeferred bool, b discoveredEntry, bDeferre
 // RecordCall implements [tool.View]: a tool the model used stays in the discovery pool
 // and becomes the most recently used entry.
 func (v *View) RecordCall(call message.ToolCall) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-
+	// Everything the pool entry needs is read before the lock: the policy is fixed
+	// after construction, and a session records one call per result, so neither a
+	// re-list nor a catalog read belongs in the way of the next goroutine's call.
 	switch v.policy.exposureOf(call.Name) {
 	case ExposureDirect, ExposureDeferred:
 	default:
@@ -324,10 +390,14 @@ func (v *View) RecordCall(call message.ToolCall) {
 	if !ok {
 		return
 	}
-	size, measured := v.catalogSnapshotLocked().sizes[call.Name]
+	snap := v.catalogSnapshot()
+	size, measured := snap.sizes[call.Name]
 	if !measured {
 		size = definitionBytes(t.Definition())
 	}
+
+	v.mu.Lock()
+	defer v.mu.Unlock()
 	v.st.touch(call.Name, size, 0)
 	v.bumpEpoch()
 	v.evictForFitLocked()
