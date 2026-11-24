@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 // dispatchThrough composes a chain around terminal the way the executor does:
@@ -39,10 +40,10 @@ func TestDefaultChainShape(t *testing.T) {
 
 	// Recover is outermost: a panicking tool becomes an error result instead of
 	// taking the process with it.
-	dispatch := dispatchThrough(chain, func(context.Context, message.ToolCall) message.ToolResult {
+	dispatch := dispatchThrough(chain, func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		panic("boom")
 	})
-	res := dispatch(ctx, message.ToolCall{ID: "call", Name: "boom"})
+	res := dispatch(ctx, tooltest.Binding(), message.ToolCall{ID: "call", Name: "boom"})
 	if !res.IsError {
 		t.Fatalf("a panic escaped the default chain: %#v", res)
 	}
@@ -53,12 +54,12 @@ func TestDefaultChainShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewImageBytes: %v", err)
 	}
-	dispatch = dispatchThrough(chain, func(_ context.Context, call message.ToolCall) message.ToolResult {
+	dispatch = dispatchThrough(chain, func(_ context.Context, _ tool.Binding, call message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: call.ID, Content: message.Content{
 			Parts: []message.Part{message.ImagePart{Source: source}},
 		}}
 	})
-	res = dispatch(ctx, message.ToolCall{ID: "call", Name: "shot"})
+	res = dispatch(ctx, tooltest.Binding(), message.ToolCall{ID: "call", Name: "shot"})
 	for _, part := range res.Content.Parts {
 		if _, isImage := part.(message.ImagePart); isImage {
 			t.Fatal("an oversized image part survived the default chain")

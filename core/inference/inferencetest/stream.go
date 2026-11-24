@@ -9,8 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 // CallExpectation is one tool call the assembled answer must contain.

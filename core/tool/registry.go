@@ -11,7 +11,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -38,12 +37,24 @@ const (
 )
 
 type options struct {
-	conflict ConflictPolicy
-	decorate DefinitionDecorator
+	conflict    ConflictPolicy
+	decorate    DefinitionDecorator
+	provisioned *CapSet
 }
 
 // Option configures a Registry.
 type Option func(*options)
+
+// WithProvisioned declares the capabilities this process can hand a tool.
+//
+// Registration refuses a tool that asks for a slot the set does not carry: a tool
+// whose authority will be absent at call time is a tool that fails on the first call
+// that needs it, and the layer that wired the process is the only one that can fix
+// it. The default is nil — a registry that says nothing provides nothing — so wiring
+// the capabilities is a decision, not an omission.
+func WithProvisioned(set *CapSet) Option {
+	return func(o *options) { o.provisioned = set }
+}
 
 // WithConflictPolicy sets the duplicate-name policy. The default is
 // ConflictError; pass ConflictOverwrite to let later sources win.
@@ -124,13 +135,16 @@ func capDescription(description string) (string, bool) {
 // included), forbids further lazy loads, and detaches the sources
 // that were attached at construction.
 type Registry struct {
-	mu        sync.RWMutex
-	tools     map[string]Tool
-	order     []string
-	conflict  ConflictPolicy
-	decorate  DefinitionDecorator
-	closed    bool
-	detachers []RegistryDetacher
+	mu       sync.RWMutex
+	tools    map[string]Tool
+	order    []string
+	conflict ConflictPolicy
+	decorate DefinitionDecorator
+	// provisioned is what this process can hand a tool; registration refuses a tool
+	// that asks for more.
+	provisioned *CapSet
+	closed      bool
+	detachers   []RegistryDetacher
 	// defs caches the sorted definitions; nil means rebuild. Atomic because a
 	// deferred tool invalidates it while holding its own lock.
 	defs atomic.Pointer[[]message.ToolDefinition]
@@ -158,9 +172,10 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 		}
 	}
 	r := &Registry{
-		tools:    make(map[string]Tool),
-		conflict: o.conflict,
-		decorate: o.decorate,
+		tools:       make(map[string]Tool),
+		conflict:    o.conflict,
+		decorate:    o.decorate,
+		provisioned: o.provisioned,
 	}
 	for _, src := range sources {
 		if src == nil {
@@ -263,6 +278,12 @@ func (r *Registry) addLocked(t Tool) error {
 		// should not move the epoch.
 		return errdefs.Validationf("tool: name is %d bytes, want <= %d",
 			len(def.Name), MaxToolNameBytes)
+	}
+	if missing := r.provisioned.Missing(t.Needs()...); len(missing) > 0 {
+		// Checked before the epoch moves, for the same reason as the name.
+		return errdefs.NotAvailablef(
+			"tool %q needs %s, which this process does not provide",
+			def.Name, strings.Join(missing, ", "))
 	}
 	r.invalidateDefinitions()
 	if _, exists := r.tools[def.Name]; exists {
@@ -465,12 +486,34 @@ func (p *lazyProxy) Definition() message.ToolDefinition {
 	return p.spec.Placeholder
 }
 
-func (p *lazyProxy) Execute(ctx context.Context, arguments string) (message.Content, error) {
+func (p *lazyProxy) Execute(ctx context.Context, b Binding, arguments string) (message.Content, error) {
 	t, err := p.load(ctx)
 	if err != nil {
 		return message.Content{}, err
 	}
-	return t.Execute(ctx, arguments)
+	return t.Execute(ctx, b, arguments)
+}
+
+// Needs reports the declaration, loaded or not.
+//
+// It deliberately does not forward the loaded tool's needs: dispatch derives the
+// capability allowance from this declaration and caches it per tool, so a proxy whose
+// answer changed after loading would hand the tool a different set than the one the
+// process validated. A loaded tool that needs more than it announced fails its load
+// instead (see [declaredShortfall]).
+func (p *lazyProxy) Needs() []Need { return p.spec.Needs }
+
+// declaredShortfall returns the needs of loaded that the declaration did not announce.
+func declaredShortfall(declared, loaded []Need) []string {
+	allow := AllowOf(declared...)
+	var short []string
+	for _, need := range loaded {
+		if need != nil && !allow.Has(need) {
+			short = append(short, need.SlotName())
+		}
+	}
+	sort.Strings(short)
+	return short
 }
 
 // EnsureLoaded forces the deferred load without executing the tool.
@@ -504,6 +547,18 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 	}
 	p.inner, p.err = p.loadLazy(ctx)
 	p.loaded = true
+	// The declaration is the contract: dispatch derives this tool's capability
+	// allowance from the needs declared before loading, so a tool that turns out to
+	// need more than it declared would read those slots as absent for its whole life.
+	// Refusing the load names the tool instead.
+	if p.err == nil && p.inner != nil {
+		if undeclared := declaredShortfall(p.spec.Needs, p.inner.Needs()); len(undeclared) > 0 {
+			p.err = errdefs.NotAvailablef(
+				"tool %q loaded declaring needs it did not announce: %s",
+				p.spec.Name, strings.Join(undeclared, ", "))
+			p.inner = nil
+		}
+	}
 	// The real definition replaces the placeholder: the cached set is stale.
 	if p.registry != nil {
 		p.registry.invalidateDefinitions()
@@ -525,7 +580,7 @@ func (p *lazyProxy) loadLazy(ctx context.Context) (Tool, error) {
 		trace.WithAttributes(attribute.String(telemetry.AttrToolName, p.spec.Name)))
 	// The runtime identity the host attached, so a lazy load is attributable to
 	// the runtime that triggered it.
-	span.SetAttributes(correlation.Attrs(ctx)...)
+	span.SetAttributes(telemetry.Attrs(ctx)...)
 	defer span.End()
 
 	start := time.Now()

@@ -57,7 +57,7 @@ func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[str
 		})
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			limit := defaultTimeout
 			override, explicit := perTool[call.Name]
 			if explicit {
@@ -65,15 +65,15 @@ func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[str
 			} else if exempt != nil && exempt.get(call.Name) {
 				// The tool says it bounds itself and the host has not
 				// overridden that, so impose nothing.
-				return next(ctx, call)
+				return next(ctx, b, call)
 			}
 			if limit <= 0 {
-				return next(ctx, call)
+				return next(ctx, b, call)
 			}
 			execCtx, cancel := context.WithTimeout(ctx, limit)
 			defer cancel()
 
-			res := next(execCtx, call)
+			res := next(execCtx, b, call)
 			if execCtx.Err() == context.DeadlineExceeded {
 				tool.RecordFailure(ctx, tool.FailureTimeout)
 				return message.NewErrorToolResult(call.ID,

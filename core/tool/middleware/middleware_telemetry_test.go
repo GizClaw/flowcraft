@@ -11,20 +11,21 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"github.com/GizClaw/flowcraft/core/correlation"
+	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
 	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 	rec := installTelemetryTestTracer(t)
-	exec := tool.NewExecutor(catalogWith(echoTool("echo")), Telemetry())
+	exec := dispatch.New(catalogWith(echoTool("echo")), Telemetry())
 	tc := call("echo")
 
-	res := exec.Execute(context.Background(), tc)
+	res := exec.Execute(context.Background(), tooltest.Binding(), tc)
 	if res.IsError {
 		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
@@ -58,16 +59,16 @@ func TestTelemetry_EmitsExecutionSpan(t *testing.T) {
 // is; it only copies what it finds.
 func TestTelemetry_CarriesRuntimeIdentity(t *testing.T) {
 	rec := installTelemetryTestTracer(t)
-	exec := tool.NewExecutor(catalogWith(echoTool("echo")), Telemetry())
-	ctx := correlation.WithRun(context.Background(), correlation.Run{RuntimeID: "rt-7", TenantID: "acme"})
+	exec := dispatch.New(catalogWith(echoTool("echo")), Telemetry())
+	ctx := identity.Attach(context.Background(), identity.Run{SessionID: "session-7", Tenant: "acme"})
 
-	if res := exec.Execute(ctx, call("echo")); res.IsError {
+	if res := exec.Execute(ctx, tooltest.Binding(), call("echo")); res.IsError {
 		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
 
 	span := rec.Ended()[0]
-	telemetrytest.RequireAttrString(t, span, correlation.AttrRuntimeID, "rt-7")
-	telemetrytest.RequireAttrString(t, span, correlation.AttrTenantID, "acme")
+	telemetrytest.RequireAttrString(t, span, identity.AttrSessionID, "session-7")
+	telemetrytest.RequireAttrString(t, span, identity.AttrTenantID, "acme")
 }
 
 // TestTelemetry_RecordsFailureKind pins the classification channel: the stages
@@ -114,9 +115,9 @@ func TestTelemetry_RecordsFailureKind(t *testing.T) {
 				blockingTool("blocking"),
 				panickingTool("panicking"),
 			)
-			exec := tool.NewExecutor(catalog, test.mws...)
+			exec := dispatch.New(catalog, test.mws...)
 
-			if res := exec.Execute(context.Background(), call(test.toolName)); !res.IsError {
+			if res := exec.Execute(context.Background(), tooltest.Binding(), call(test.toolName)); !res.IsError {
 				t.Fatalf("execute = %q, want an error result", res.Content.Text())
 			}
 
@@ -146,13 +147,13 @@ func TestTelemetry_ApprovalDenialIsPolicyDenied(t *testing.T) {
 	deny := ApproverFunc(func(context.Context, message.ToolCall) error {
 		return errors.New("not on the allow list")
 	})
-	exec := tool.NewExecutor(
+	exec := dispatch.New(
 		catalogWith(echoTool("echo")),
 		Telemetry(),
 		Approval(deny, "echo"),
 	)
 
-	if res := exec.Execute(context.Background(), call("echo")); !res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("echo")); !res.IsError {
 		t.Fatalf("execute = %q, want a denial", res.Content.Text())
 	}
 	span := rec.Ended()[0]
@@ -249,20 +250,22 @@ func TestTelemetry_RecordsPolicyAndLimitAnnotations(t *testing.T) {
 		t.Fatalf("ResultLimiter: %v", err)
 	}
 	approve := ApproverFunc(func(context.Context, message.ToolCall) error { return nil })
-	exec := tool.NewExecutor(
+	exec := dispatch.New(
 		catalogWith(echoTool("echo")),
 		Telemetry(),
 		Approval(approve, "echo"),
 		limiter,
 	)
 
-	res := exec.Execute(context.Background(), call("echo"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("echo"))
 	if res.IsError {
 		t.Fatalf("execute = %q, want success", res.Content.Text())
 	}
 	attrs := telemetrySpanAttrs(rec.Ended()[0])
-	if attrs[telemetry.AttrPolicyDecision] != "allow" {
-		t.Errorf("policy.decision = %v, want allow", attrs[telemetry.AttrPolicyDecision])
+	// An allowed call carries no policy annotation: policy.check names the rule that
+	// refused, and there was no refusal.
+	if got, ok := attrs[telemetry.AttrPolicyCheck]; ok {
+		t.Errorf("policy.check = %v on an allowed call, want absent", got)
 	}
 	if attrs[telemetry.AttrResultTruncated] != true {
 		t.Errorf("result.truncated = %v, want true", attrs[telemetry.AttrResultTruncated])
@@ -279,12 +282,12 @@ func TestTelemetry_RecordsRateLimitWait(t *testing.T) {
 	rec := installTelemetryTestTracer(t)
 	paced := metaTool{Tool: echoTool("echo"), meta: tool.ToolMeta{RateLimit: 5}}
 	catalog := catalogWith(paced)
-	exec := tool.NewExecutor(catalog, Telemetry(), RateLimit(catalog))
+	exec := dispatch.New(catalog, Telemetry(), RateLimit(catalog))
 
-	if res := exec.Execute(context.Background(), call("echo")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("echo")); res.IsError {
 		t.Fatalf("first execute = %q", res.Content.Text())
 	}
-	if res := exec.Execute(context.Background(), call("echo")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("echo")); res.IsError {
 		t.Fatalf("second execute = %q", res.Content.Text())
 	}
 

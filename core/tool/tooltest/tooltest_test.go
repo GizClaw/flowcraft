@@ -22,7 +22,7 @@ func TestFixturesAndSuites(t *testing.T) {
 func TestRecordingTool(t *testing.T) {
 	rec := tooltest.NewRecordingTool("rec")
 	rec.SetResponse("ok", nil)
-	got, err := rec.Execute(context.Background(), `{"a":1}`)
+	got, err := rec.Execute(context.Background(), tool.Binding{}, `{"a":1}`)
 	if err != nil || got.Text() != "ok" {
 		t.Fatalf("Execute = (%q, %v)", got.Text(), err)
 	}

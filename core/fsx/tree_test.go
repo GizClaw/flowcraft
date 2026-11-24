@@ -3,226 +3,293 @@ package fsx_test
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/fsx"
-	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 )
 
-func openTree(t *testing.T, roots ...string) (*fsx.Tree, context.Context) {
+// fixture is one directory tree the tests can point boundaries at:
+//
+//	<tmp>/work/inside.txt
+//	<tmp>/work/sub/nested.txt
+//	<tmp>/other/outside.txt
+func fixture(t *testing.T) (work, other string) {
 	t.Helper()
-	tree, err := fsx.Open(fsx.WithWritable(roots...))
+	tmp := t.TempDir()
+	// Canonicalize once: the tree reports roots and walk results in their
+	// resolved spelling (on macOS /var is /private/var), so the expectations
+	// must start resolved too.
+	if resolved, err := filepath.EvalSymlinks(tmp); err == nil {
+		tmp = resolved
+	}
+	work = filepath.Join(tmp, "work")
+	other = filepath.Join(tmp, "other")
+	for _, dir := range []string{filepath.Join(work, "sub"), other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	for path, body := range map[string]string{
+		filepath.Join(work, "inside.txt"):        "inside",
+		filepath.Join(work, "sub", "nested.txt"): "nested",
+		filepath.Join(other, "outside.txt"):      "outside",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	return work, other
+}
+
+func mustOpen(t *testing.T, read []string, opts ...fsx.Option) *fsx.Tree {
+	t.Helper()
+	tree, err := fsx.Open(read, opts...)
 	if err != nil {
-		t.Fatalf("fsx.Open: %v", err)
+		t.Fatalf("Open(%v): %v", read, err)
 	}
 	t.Cleanup(func() { _ = tree.Close() })
-	return tree, context.Background()
+	return tree
 }
 
-func TestOpenRejectsUnusableRoots(t *testing.T) {
-	if _, err := fsx.Open(fsx.WithWritable("relative/dir")); err == nil {
-		t.Error("relative root accepted, want a validation error")
-	}
-	if _, err := fsx.Open(fsx.WithWritable(filepath.Join(t.TempDir(), "missing"))); err == nil {
-		t.Error("missing root accepted, want an error: a handle cannot enforce what it cannot open")
-	}
-	if _, err := fsx.Open(fsx.WithWritable(pathtest.Roots())); err != nil {
-		t.Errorf("filesystem root rejected: %v", err)
-	}
-}
+func TestReadsAreConfinedToTheReadRoots(t *testing.T) {
+	work, other := fixture(t)
+	tree := mustOpen(t, []string{work})
+	ctx := context.Background()
 
-func TestWriteReadRoundTrip(t *testing.T) {
-	root := t.TempDir()
-	tree, ctx := openTree(t, root)
-
-	path := filepath.Join(root, "nested", "a.txt")
-	if err := tree.Write(ctx, path, []byte("hello")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	got, err := tree.Read(ctx, path)
+	data, err := tree.Read(ctx, filepath.Join(work, "inside.txt"))
 	if err != nil {
-		t.Fatalf("Read: %v", err)
+		t.Fatalf("read inside: %v", err)
 	}
-	if string(got) != "hello" {
-		t.Errorf("Read = %q, want %q", got, "hello")
+	if string(data) != "inside" {
+		t.Fatalf("read inside = %q", data)
+	}
+
+	if _, err := tree.Read(ctx, filepath.Join(other, "outside.txt")); !errors.Is(err, fsx.ErrDenied) {
+		t.Fatalf("read outside the roots = %v, want ErrDenied", err)
 	}
 }
 
-func TestWriteOutsideEveryRootIsDenied(t *testing.T) {
-	root := t.TempDir()
-	tree, ctx := openTree(t, root)
+// TestNoReadRootsMeansUnrestricted pins the asymmetry the package documents:
+// omitting read roots does not close the file system, it removes the read
+// boundary. Writes still need an explicit grant.
+func TestNoReadRootsMeansUnrestricted(t *testing.T) {
+	work, other := fixture(t)
+	tree := mustOpen(t, nil)
+	ctx := context.Background()
 
-	outside := filepath.Join(t.TempDir(), "elsewhere.txt")
-	err := tree.Write(ctx, outside, []byte("x"))
+	for _, path := range []string{filepath.Join(work, "inside.txt"), filepath.Join(other, "outside.txt")} {
+		if _, err := tree.Read(ctx, path); err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+	}
+	if got := tree.Readable(); got != nil {
+		t.Fatalf("Readable() = %v, want nil (unrestricted)", got)
+	}
+}
+
+func TestWritesAreRefusedWithoutAGrant(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work})
+	ctx := context.Background()
+
+	err := tree.Write(ctx, filepath.Join(work, "created.txt"), []byte("x"))
 	if !errors.Is(err, fsx.ErrDenied) {
-		t.Errorf("Write(%s) = %v, want fsx.ErrDenied", outside, err)
-	}
-	if _, statErr := os.Stat(outside); !os.IsNotExist(statErr) {
-		t.Errorf("denied write created %s: %v", outside, statErr)
+		t.Fatalf("write without a grant = %v, want ErrDenied", err)
 	}
 }
 
-// A symlink inside the root must not be usable to leave it: the handle
-// resolves the link relative to the root and refuses the escape.
-func TestSymlinkEscapeIsDenied(t *testing.T) {
-	outside := t.TempDir()
-	root := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+func TestWritesAreConfinedToTheWriteRoots(t *testing.T) {
+	work, other := fixture(t)
+	sub := filepath.Join(work, "sub")
+	tree := mustOpen(t, []string{work}, fsx.WithWrite(sub))
+	ctx := context.Background()
+
+	if err := tree.Write(ctx, filepath.Join(sub, "new.txt"), []byte("ok")); err != nil {
+		t.Fatalf("write inside the write root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(sub, "new.txt")); err != nil {
+		t.Fatalf("written file is missing: %v", err)
+	}
+
+	for _, path := range []string{
+		filepath.Join(work, "sibling.txt"),    // inside the read root, outside the write root
+		filepath.Join(other, "elsewhere.txt"), // outside both
+	} {
+		if err := tree.Write(ctx, path, []byte("x")); !errors.Is(err, fsx.ErrDenied) {
+			t.Fatalf("write %s = %v, want ErrDenied", path, err)
+		}
+	}
+}
+
+func TestWriteCreatesMissingParents(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work}, fsx.WithWrite(work))
+
+	path := filepath.Join(work, "a", "b", "c.txt")
+	if err := tree.Write(context.Background(), path, []byte("deep")); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "deep" {
+		t.Fatalf("read back = %q, %v", data, err)
+	}
+}
+
+func TestWithAllWritesRemovesTheWriteBoundary(t *testing.T) {
+	work, other := fixture(t)
+	tree := mustOpen(t, []string{work}, fsx.WithAllWrites())
+	ctx := context.Background()
+
+	if err := tree.Write(ctx, filepath.Join(other, "anywhere.txt"), []byte("x")); err != nil {
+		t.Fatalf("write with all writes: %v", err)
+	}
+	if !tree.WriteAll() {
+		t.Fatal("WriteAll() = false")
+	}
+	if got := tree.Writable(); got != nil {
+		t.Fatalf("Writable() = %v, want nil (unrestricted)", got)
+	}
+}
+
+func TestAllWritesAndWriteAreMutuallyExclusive(t *testing.T) {
+	work, _ := fixture(t)
+	if _, err := fsx.Open(nil, fsx.WithAllWrites(), fsx.WithWrite(work)); err == nil {
+		t.Fatal("Open with both write options succeeded, want a validation error")
+	}
+}
+
+func TestRelativePathsAreRejected(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work}, fsx.WithWrite(work))
+	ctx := context.Background()
+
+	if _, err := tree.Read(ctx, "inside.txt"); err == nil {
+		t.Fatal("relative read succeeded, want a validation error")
+	}
+	if err := tree.Write(ctx, "inside.txt", nil); err == nil {
+		t.Fatal("relative write succeeded, want a validation error")
+	}
+}
+
+func TestRootsMustExistAndBeDirectories(t *testing.T) {
+	work, _ := fixture(t)
+	file := filepath.Join(work, "inside.txt")
+
+	for name, root := range map[string]string{
+		"missing":  filepath.Join(work, "nope"),
+		"file":     file,
+		"relative": "work",
+		"glob":     filepath.Join(work, "*"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := fsx.Open([]string{root}); err == nil {
+				t.Fatalf("Open(%q) succeeded, want a validation error", root)
+			}
+		})
+	}
+}
+
+// TestNestedRootsCollapse pins normalization: a root covered by another is
+// redundant, and keeping both would make selection depend on declaration order.
+func TestNestedRootsCollapse(t *testing.T) {
+	work, _ := fixture(t)
+	sub := filepath.Join(work, "sub")
+
+	tree := mustOpen(t, []string{work, sub}, fsx.WithWrite(work, sub))
+	readable := tree.Readable()
+	if len(readable) != 1 {
+		t.Fatalf("Readable() = %v, want one canonical root", readable)
+	}
+	if writable := tree.Writable(); len(writable) != 1 {
+		t.Fatalf("Writable() = %v, want one canonical root", writable)
+	}
+}
+
+// TestSymlinkEscapeIsRefused is the reason the boundary is a handle rather than a
+// string check: a link inside the root that points outside must not be followed.
+func TestSymlinkEscapeIsRefused(t *testing.T) {
+	work, other := fixture(t)
+	link := filepath.Join(work, "escape")
+	if err := os.Symlink(other, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
+	tree := mustOpen(t, []string{work})
 
-	tree, ctx := openTree(t, root)
-	err := tree.Write(ctx, filepath.Join(root, "escape", "secret.txt"), []byte("x"))
-	if !errors.Is(err, fsx.ErrDenied) {
-		t.Errorf("write through an escaping symlink = %v, want fsx.ErrDenied", err)
-	}
-	if _, statErr := os.Stat(filepath.Join(outside, "secret.txt")); !os.IsNotExist(statErr) {
-		t.Errorf("denied write created a file outside the root: %v", statErr)
+	if _, err := tree.Read(context.Background(), filepath.Join(link, "outside.txt")); err == nil {
+		t.Fatal("read through an escaping symlink succeeded")
 	}
 }
 
-func TestReadsAreUnrestricted(t *testing.T) {
-	root := t.TempDir()
-	outside := t.TempDir()
-	outsideFile := filepath.Join(outside, "data.txt")
-	if err := os.WriteFile(outsideFile, []byte("payload"), 0o644); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
+func TestWalkReportsAbsolutePathsAndSkipsTheRoot(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work})
 
-	tree, ctx := openTree(t, root)
-	got, err := tree.Read(ctx, outsideFile)
+	var walked []string
+	err := tree.Walk(context.Background(), work, func(path string, _ os.DirEntry) error {
+		walked = append(walked, path)
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("Read outside the writable roots = %v, want nil (reads are unrestricted)", err)
-	}
-	if string(got) != "payload" {
-		t.Errorf("Read = %q, want %q", got, "payload")
-	}
-}
-
-func TestMkdirRemoveCopy(t *testing.T) {
-	root := t.TempDir()
-	tree, ctx := openTree(t, root)
-
-	if err := tree.Mkdir(ctx, filepath.Join(root, "a", "b")); err != nil {
-		t.Fatalf("Mkdir: %v", err)
-	}
-	if err := tree.Write(ctx, filepath.Join(root, "a", "b", "one.txt"), []byte("one")); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if err := tree.Copy(ctx, filepath.Join(root, "a", "b", "one.txt"), filepath.Join(root, "a", "two.txt")); err != nil {
-		t.Fatalf("Copy: %v", err)
-	}
-	if got, err := tree.Read(ctx, filepath.Join(root, "a", "two.txt")); err != nil || string(got) != "one" {
-		t.Fatalf("copied content = %q, %v; want %q, nil", got, err, "one")
-	}
-	if err := tree.Remove(ctx, filepath.Join(root, "a")); err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if err := tree.Remove(ctx, filepath.Join(root, "a")); err != nil {
-		t.Errorf("second Remove = %v, want nil (idempotent)", err)
-	}
-	if err := tree.Remove(ctx, root); err == nil {
-		t.Error("Remove(root) = nil, want a refusal")
-	}
-}
-
-func TestWritableIsCanonical(t *testing.T) {
-	root := t.TempDir()
-	tree, _ := openTree(t, root)
-
-	real, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		t.Fatalf("EvalSymlinks: %v", err)
-	}
-	got := tree.Writable()
-	if len(got) != 1 || got[0] != real {
-		t.Errorf("Writable() = %v, want [%q]", got, real)
-	}
-}
-
-// WriteStream must copy into the file handle as it reads. A buffering
-// implementation would block until the stream closes, so the first chunk would
-// never become observable; this pins the property rather than the memory use.
-func TestWriteStreamDoesNotBuffer(t *testing.T) {
-	root := t.TempDir()
-	tree, ctx := openTree(t, root)
-	target := filepath.Join(root, "stream.txt")
-
-	pipeReader, pipeWriter := io.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		_, err := tree.WriteStream(ctx, target, pipeReader)
-		done <- err
-	}()
-
-	if _, err := pipeWriter.Write([]byte("first")); err != nil {
-		t.Fatalf("write to pipe: %v", err)
+		t.Fatalf("walk: %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if data, err := os.ReadFile(target); err == nil && string(data) == "first" {
-			break
+	want := map[string]bool{
+		filepath.Join(work, "inside.txt"):        true,
+		filepath.Join(work, "sub"):               true,
+		filepath.Join(work, "sub", "nested.txt"): true,
+	}
+	for _, path := range walked {
+		if path == work {
+			t.Fatalf("walk reported the root itself: %v", walked)
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("WriteStream did not make the first chunk visible before the stream closed: it buffers")
+		if !filepath.IsAbs(path) {
+			t.Fatalf("walk reported a relative path %q in %v", path, walked)
 		}
-		time.Sleep(5 * time.Millisecond)
+		delete(want, path)
 	}
-
-	if err := pipeWriter.Close(); err != nil {
-		t.Fatalf("close pipe: %v", err)
-	}
-	if err := <-done; err != nil {
-		t.Fatalf("WriteStream: %v", err)
+	if len(want) != 0 {
+		t.Fatalf("walk missed %v (got %v)", want, walked)
 	}
 }
 
-type failingReader struct {
-	sent bool
-}
+func TestRemoveRefusesTheRootItself(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work}, fsx.WithWrite(work))
 
-func (r *failingReader) Read(p []byte) (int, error) {
-	if r.sent {
-		return 0, errors.New("source failed")
+	if err := tree.Remove(context.Background(), work); err == nil {
+		t.Fatal("removing the writable root succeeded")
 	}
-	r.sent = true
-	return copy(p, "partial"), nil
-}
-
-// A source failure must surface with the bytes already copied, not be swallowed
-// by a Close error or reported as success.
-func TestWriteStreamReportsSourceErrors(t *testing.T) {
-	root := t.TempDir()
-	tree, ctx := openTree(t, root)
-	target := filepath.Join(root, "partial.txt")
-
-	n, err := tree.WriteStream(ctx, target, &failingReader{})
-	if err == nil {
-		t.Fatal("WriteStream = nil error, want the source failure")
-	}
-	if n != int64(len("partial")) {
-		t.Errorf("WriteStream reported %d bytes, want %d", n, len("partial"))
-	}
-	if data, readErr := os.ReadFile(target); readErr != nil || string(data) != "partial" {
-		t.Errorf("partial content = %q, %v; want %q, nil", data, readErr, "partial")
+	if _, err := os.Stat(work); err != nil {
+		t.Fatalf("root was removed: %v", err)
 	}
 }
 
-func TestClosedTreeRefusesWrites(t *testing.T) {
-	root := t.TempDir()
-	tree, err := fsx.Open(fsx.WithWritable(root))
+func TestCopyCrossesTheBoundaryOneSideAtATime(t *testing.T) {
+	work, _ := fixture(t)
+	tree := mustOpen(t, []string{work}, fsx.WithWrite(work))
+	ctx := context.Background()
+
+	src := filepath.Join(work, "inside.txt")
+	dst := filepath.Join(work, "sub", "copied.txt")
+	if err := tree.Copy(ctx, src, dst); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+	if data, err := os.ReadFile(dst); err != nil || string(data) != "inside" {
+		t.Fatalf("copied = %q, %v", data, err)
+	}
+}
+
+func TestCloseReleasesAndRefusesFurtherUse(t *testing.T) {
+	work, _ := fixture(t)
+	tree, err := fsx.Open([]string{work})
 	if err != nil {
-		t.Fatalf("fsx.Open: %v", err)
+		t.Fatalf("Open: %v", err)
 	}
 	if err := tree.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := tree.Write(context.Background(), filepath.Join(root, "x.txt"), []byte("x")); err == nil {
-		t.Error("write after Close = nil, want an error")
+	if _, err := tree.Read(context.Background(), filepath.Join(work, "inside.txt")); !errors.Is(err, fsx.ErrClosed) {
+		t.Fatalf("read on a closed tree = %v, want ErrClosed", err)
 	}
 }

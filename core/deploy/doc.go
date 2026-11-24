@@ -1,22 +1,34 @@
-// Package deploy is the document and assembly layer: it turns a deployment
-// document into Specs and holds the kind tables a host registers into. The
-// process-level Manager, Session and host bindings live in core/agent-host.
+// Package deploy turns deployment documents into values — and nothing else.
 //
-// It registers no implementation of its own. A registration ships beside the
-// thing it registers — deploy/engines/graph, deploy/engines/a2a,
-// deploy/protocols/a2a for the exposure, and deploy/sources for the bytes a
-// document names — so this package's import closure is the document format and
-// nothing beyond it, and a host links exactly the engines it deploys.
-// deploy/builtin wires the whole set for a host that wants it.
+// # Two documents
 //
-// The built-in exposure is A2A: deploy/protocols/a2a holds the server and the
-// [ProtocolKind] that mounts it, which is possible there because the server takes
-// a session table, store and identity as values rather than reaching into this
-// package. The client half — a remote A2A agent used as an engine — is
-// core/agent-a2a, registered by deploy/engines/a2a.
+// A process document says what this process carries: provider targets, sandbox backends,
+// tool sources, skill roots. An agent document says what one agent is: its prompt, its
+// program, its grant, its observability and its hooks.
 //
-// The session table is not here: core/agent owns the run slot, the
-// lifecycle and the checkpoint identity, and deploy wires it. Its surface is the
-// protocol's — Run one message, State, Cancel — because a message is a request,
-// not an entry in a backlog.
+// Neither document can name a resource the other one owns. An agent selects from the
+// process's resources through its [policy.Grant]; it cannot add a provider or a backend. To
+// add resources you change the process document, which means restarting the process — a
+// different action from deploying an agent, and the error messages keep the two apart.
+//
+// # Values, not handles
+//
+// [Loader.Process] returns a [ProcessPlan]: for every entry, the decoded settings and the
+// factory that will build it — never the built object. Whoever builds is [host], which is
+// also the only layer that closes what it built. The reason is not ceremony: a loader that
+// returned handles would own their lifecycle, and "only the assembly layer holds the
+// process" would stop being true the moment a test called Load.
+//
+// The factories come from the application, through [Impls]. Core cannot carry a standard
+// table: the shipped implementations live in the sandbox and inference modules, and core is
+// forbidden from importing them.
+//
+// # Two kinds of failure
+//
+// A document that does not hold together is a [errdefs.Validation] error: unknown field,
+// wrong type, missing required value, an implementation nobody registered. A document that holds
+// together but asks for something this process does not have is [errdefs.NotAvailable]:
+// a sandbox backend that is not configured here, a model that is not wired, a hook that is
+// not registered. The first is fixed by editing the document, the second by changing how
+// the process was started.
 package deploy

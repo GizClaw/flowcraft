@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -61,9 +60,9 @@ func startRoute(ctx context.Context, operation string) (context.Context, *routeC
 		trace.WithAttributes(
 			attribute.String(telemetry.AttrInferenceOperation, operation),
 		))
-	// The runtime identity the host attached: this span is where a call's
-	// instance is decided, so every attempt below inherits it.
-	span.SetAttributes(correlation.Attrs(ctx)...)
+	// Who the call belongs to comes from the context; this span is where the
+	// attempt's target is decided, so every attempt below inherits it.
+	span.SetAttributes(telemetry.Attrs(ctx)...)
 	return ctx, &routeCall{
 		ctx:       ctx,
 		span:      span,

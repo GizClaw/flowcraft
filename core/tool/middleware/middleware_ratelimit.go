@@ -42,7 +42,7 @@ func RateLimit(catalog tool.Catalog) tool.Middleware {
 		return &pacer{interval: time.Duration(float64(time.Second) / rate)}
 	})
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			if p := pacers.get(call.Name); p != nil {
 				start := time.Now()
 				if err := p.wait(ctx); err != nil {
@@ -57,7 +57,7 @@ func RateLimit(catalog tool.Catalog) tool.Middleware {
 						telemetry.AttrRateLimitBlockedMs, waited.Milliseconds()))
 				}
 			}
-			return next(ctx, call)
+			return next(ctx, b, call)
 		}
 	}
 }

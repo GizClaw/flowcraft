@@ -6,7 +6,7 @@ import (
 
 // Runner is a sandbox: it starts interactive process sessions under the
 // sandbox's policy and manages their lifecycle. The one-shot form is a
-// derived view over Start — engine.Exec drains a session and truncates its
+// derived view over Start — approval.Exec drains a session and truncates its
 // output, so a backend has no second code path to keep in step. The one
 // documented override is a decorator that needs the completed result and
 // implements the optional [Executor] capability; it carries the whole one-shot
@@ -21,7 +21,7 @@ import (
 // forward the optional capabilities — [JournalProvider.OpenJournal] and
 // [SessionAttacher.Attach] — the same way: a decorator that swallows one
 // while [Capabilities] keeps advertising it makes the declaration a lie.
-// Embedding sandbox.Runner does not promote those methods; engine.Forwarder is
+// Embedding sandbox.Runner does not promote those methods; approval.Forwarder is
 // the base that forwards them for you. It deliberately does not promote
 // [Executor] either: a decorator that re-runs the command must be the outermost
 // value, never wrapped by a plain Forwarder that would turn the override off
@@ -42,6 +42,17 @@ type Runner interface {
 	Start(ctx context.Context, spec SessionSpec) (Session, error)
 	List(ctx context.Context) ([]SessionInfo, error)
 	Terminate(ctx context.Context, id string) error
+}
+
+// SessionStarter is the part of a runner a tool may use: it starts a session and
+// nothing else.
+//
+// The split exists because managing sessions is a different authority from using
+// one. A tool that may add a command channel needs Start; only the boundary's
+// owner may enumerate or terminate what is running. Handing a tool a Runner would
+// quietly hand it both.
+type SessionStarter interface {
+	Start(ctx context.Context, spec SessionSpec) (Session, error)
 }
 
 // Capabilities is the explicit declaration of a Runner's surface: what

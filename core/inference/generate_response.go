@@ -3,8 +3,8 @@ package inference
 import (
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/core/inference/outcome"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 )
 
 // FinishReason is why the model stopped. It is the canonical set; a driver maps

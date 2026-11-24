@@ -38,7 +38,7 @@ func Enable() { disabled.Store(false) }
 // record's native trace/span ids. Duplicating them as attributes would put the
 // same fact in two places, and only the native fields are what a backend joins
 // logs and traces on.
-func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...attribute.KeyValue) {
+func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...Attr) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -64,11 +64,11 @@ func emit(ctx context.Context, severity otellog.Severity, msg string, attrs ...a
 	l.Emit(ctx, rec)
 }
 
-func Trace(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+func Trace(ctx context.Context, msg string, attrs ...Attr) {
 	emit(ctx, otellog.SeverityTrace, msg, attrs...)
 }
 
-func Debug(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+func Debug(ctx context.Context, msg string, attrs ...Attr) {
 	emit(ctx, otellog.SeverityDebug, msg, attrs...)
 }
 
@@ -90,15 +90,15 @@ func DebugEnabled(ctx context.Context) bool {
 	})
 }
 
-func Info(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+func Info(ctx context.Context, msg string, attrs ...Attr) {
 	emit(ctx, otellog.SeverityInfo, msg, attrs...)
 }
 
-func Warn(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+func Warn(ctx context.Context, msg string, attrs ...Attr) {
 	emit(ctx, otellog.SeverityWarn, msg, attrs...)
 }
 
-func Error(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
+func Error(ctx context.Context, msg string, attrs ...Attr) {
 	emit(ctx, otellog.SeverityError, msg, attrs...)
 }
 
@@ -122,7 +122,7 @@ func Error(ctx context.Context, msg string, attrs ...attribute.KeyValue) {
 //
 // A nil err produces no log record; calling this with a nil error is a
 // cheap no-op so defer chains can use it unconditionally.
-func WarnErr(ctx context.Context, msg string, err error, attrs ...attribute.KeyValue) {
+func WarnErr(ctx context.Context, msg string, err error, attrs ...Attr) {
 	if err == nil {
 		return
 	}

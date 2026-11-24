@@ -15,16 +15,15 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# The provider adapters share one module: `driver` provides every
-# `driver/<name>` package, so a new provider is a package, not a module.
-# Spelled out rather than globbed — a wildcard that stops matching a
-# consolidated module silently drops it from every target below.
-DRIVER_MODULES := driver
-
-MODULES_WORK := core $(DRIVER_MODULES) examples/forge
+# driver/ is not a workspace member: it pins the core it shipped against, and
+# inside the workspace it would compile against a rewrite that has moved or
+# removed the packages it imports. It is built as a consumer instead —
+# GOWORK=off, the same way a deployment builds it — until its providers move to
+# the `inference` module.
+MODULES_WORK := core
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(DRIVER_MODULES)
+MODULES_LINT := core
 
 # Modules a reader builds from their own go.mod and go.sum, without this
 # workspace: every example. They are checked with GOWORK=off (see

@@ -12,6 +12,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 	"github.com/goccy/go-json"
 )
 
@@ -39,8 +41,8 @@ func (c singleToolCatalog) Definitions() []message.ToolDefinition {
 // runThroughChain executes one call through the production executor.
 func runThroughChain(t *testing.T, mws []tool.Middleware, text string) message.ToolResult {
 	t.Helper()
-	exec := tool.NewExecutor(singleToolCatalog{text: text}, mws...)
-	return exec.Execute(context.Background(),
+	exec := dispatch.New(singleToolCatalog{text: text}, mws...)
+	return exec.Execute(context.Background(), tooltest.Binding(),
 		message.ToolCall{ID: "call-1", Name: "big", Arguments: message.NewArguments([]byte(`{}`))})
 }
 
@@ -57,10 +59,10 @@ func TestTruncatePersistsFullOutputAndTruncates(t *testing.T) {
 		t.Fatal("middleware must not be nil when enabled")
 	}
 
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent(strings.Repeat("x", 1000))}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 
 	if len([]rune(res.Content.Text())) > 200 {
 		t.Fatalf("truncated content = %d runes, want <= 200", len([]rune(res.Content.Text())))
@@ -86,10 +88,10 @@ func TestTruncatePassesSmallResultsThrough(t *testing.T) {
 		MaxChars: 100,
 		Dir:      t.TempDir(),
 	})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent("short")}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	if res.Content.Text() != "short" {
 		t.Fatalf("content = %q, want untouched", res.Content.Text())
 	}
@@ -109,14 +111,14 @@ func TestTruncateDisabled(t *testing.T) {
 
 func TestTruncateSkipsErrors(t *testing.T) {
 	mw := Truncate(TruncateSettings{Enabled: true, MaxChars: 5, Dir: t.TempDir()})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID:  "call-1",
 			Content: message.NewTextContent(strings.Repeat("e", 100)),
 			IsError: true,
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	if len([]rune(res.Content.Text())) != 100 {
 		t.Fatalf("error result must pass through untouched, got %d runes", len([]rune(res.Content.Text())))
 	}
@@ -149,13 +151,13 @@ func TestTruncateKeepsJSONEnvelopeValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID:  "call-1",
 			Content: message.NewTextContent(string(full)),
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	out := res.Content.Text()
 	if got := len([]rune(out)); got > 400 {
 		t.Fatalf("truncated result = %d runes, want <= 400", got)
@@ -209,13 +211,13 @@ func TestTruncateExcerptsEachOversizedJSONString(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID:  "call-1",
 			Content: message.NewTextContent(string(full)),
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	out := res.Content.Text()
 	if got := len([]rune(out)); got > 400 {
 		t.Fatalf("truncated result = %d runes, want <= 400", got)
@@ -258,13 +260,13 @@ func TestTruncateBoundsStructuredJSONWithPointerEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID:  "call-1",
 			Content: message.NewTextContent(string(full)),
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	out := res.Content.Text()
 	if got := len([]rune(out)); got > 300 {
 		t.Fatalf("truncated result = %d runes, want <= 300", got)
@@ -310,10 +312,10 @@ func TestTruncateSpillFailureStillExcerpts(t *testing.T) {
 		Dir:      filepath.Join(blocked, "tools"),
 		WorkDir:  work,
 	})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent(strings.Repeat("x", 500))}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	out := res.Content.Text()
 	if res.IsError {
 		t.Fatal("spill failure must not turn the result into an error")
@@ -339,13 +341,13 @@ func TestTruncateSpillNameCannotEscape(t *testing.T) {
 		MaxChars: 300,
 		Dir:      dir,
 	})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID:  filepath.Join("..", "..", "escape"),
 			Content: message.NewTextContent(strings.Repeat("x", 600)),
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -378,10 +380,10 @@ func TestTruncateBudgetTooSmallForEnvelopeFallsBackToExcerpt(t *testing.T) {
 		Dir:      t.TempDir(),
 	})
 	full := `{"content":"` + strings.Repeat("x", 400) + `"}`
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent(full)}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	out := res.Content.Text()
 	if len([]rune(out)) > 20 {
 		t.Fatalf("result = %d runes, want <= 20", len([]rune(out)))
@@ -402,7 +404,7 @@ func TestTruncateKeepsNonTextParts(t *testing.T) {
 		MaxChars: 60,
 		Dir:      t.TempDir(),
 	})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{
 			CallID: "call-1",
 			Content: message.Content{Parts: []message.Part{
@@ -414,7 +416,7 @@ func TestTruncateKeepsNonTextParts(t *testing.T) {
 			}},
 		}
 	}
-	res := mw(next)(context.Background(), message.ToolCall{})
+	res := mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 	if len(res.Content.Parts) != 2 {
 		t.Fatalf("parts = %d, want the excerpt and the data part", len(res.Content.Parts))
 	}
@@ -468,10 +470,10 @@ func TestTruncateCacheOwnerOnly(t *testing.T) {
 		MaxChars: 10,
 		Dir:      dir,
 	})
-	next := func(context.Context, message.ToolCall) message.ToolResult {
+	next := func(context.Context, tool.Binding, message.ToolCall) message.ToolResult {
 		return message.ToolResult{CallID: "call-1", Content: message.NewTextContent(strings.Repeat("x", 100))}
 	}
-	mw(next)(context.Background(), message.ToolCall{})
+	mw(next)(context.Background(), tooltest.Binding(), message.ToolCall{})
 
 	dirInfo, err := os.Stat(dir)
 	if err != nil {

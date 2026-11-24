@@ -21,16 +21,20 @@
 // the dimension that varies (tool, model, exit code) is an attribute:
 //
 //	span name                    emitted by
-//	llm.route                    core/inference/route   (selection, retry, failover)
-//	llm.generate|embed|decide    core/inference/protocol (transport, decode, usage)
-//	tool.execute                 core/tool/middleware   (one dispatched call)
 //	sandbox.exec                 core/sandbox           (one executed command)
-//	tool.load                    core/tool/engine       (lazy tool materialisation)
+//	tool.execute                 core/tool/middleware   (one dispatched call)
+//	tool.load                    core/tool/projection   (lazy tool materialisation)
 //	mcp.connect                  core/tool-mcp          (server connect / reconnect)
+//	llm.route                    core/inference/route   (selection, retry, failover)
+//	llm.generate|embed|decide    core/inference/pipeline (transport, decode, usage)
+//
+// Only the first is implemented today; the others arrive with the batches that
+// add the packages beside them.
 //
 // A span named "bash.execute" is what this rule forbids: it makes the name's
 // cardinality equal to the tool count, so every dashboard has to filter by name
-// instead of grouping by it. Emit "tool.execute" and set AttrToolName.
+// instead of grouping by it: emit "tool.execute" and put the tool's name in an
+// attribute.
 //
 // The root of a tree — a run, a turn — belongs to the host. Core does not know
 // where a turn starts, and a guessed boundary is worse than none.
@@ -39,9 +43,9 @@
 //
 //  1. One span per layer. Do not reopen the caller's span to "avoid nesting";
 //     give the layer its own name and its own semantics.
-//  2. One key per fact. A fact covered by the OpenTelemetry GenAI conventions is
-//     emitted as gen_ai.*; a fact they do not define (cost, provider request id)
-//     stays in llm.*. Never both — see semconv.go and TestAttrsHaveOneHome.
+//  2. One key per fact. When the inference layer lands it decides once whether a
+//     fact is emitted as gen_ai.* (the OpenTelemetry conventions) or llm.*;
+//     emitting both would give one fact two sources of truth.
 //  3. No payloads. Spans carry identifiers, counts and classifications, never
 //     prompts, completions, tool arguments, file contents or credentials. Error
 //     text belongs in a log record, where the redaction rules live.

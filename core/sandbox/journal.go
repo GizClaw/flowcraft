@@ -63,7 +63,7 @@ func ParseFileOp(s string) (FileOp, bool) {
 
 // WriteEvent is one observed change inside the runner's write boundary.
 //
-// Path is relative to the runner root with "/" separators and no
+// Path is relative to the journal root with "/" separators and no
 // leading slash when the change happened under the root; changes under
 // an explicitly writable path outside the root carry that cleaned
 // absolute path instead. Session is the id of the sandbox session that
@@ -204,45 +204,6 @@ type FileJournal interface {
 	// Close releases the reader's handle. It does not stop the
 	// journal; the owning runner does that on Close.
 	Close() error
-}
-
-// DefaultJournalRetention is the number of events a journal retains for
-// replay when JournalOptions.Retention is zero.
-const DefaultJournalRetention = 4096
-
-// JournalOptions is the construction-time configuration of a file
-// journal. It answers "what to watch and how much to keep"; what a
-// consumer does with the events (artifact chips, artifact filters) is
-// not the journal's business.
-type JournalOptions struct {
-	// Exclude lists directories — relative to the runner root — whose
-	// entire subtree is never registered for watching. It is the cost
-	// control: a watch costs kernel memory per directory, and build
-	// trees such as .git, node_modules or dist are noise for a
-	// consumer interested in artifacts. nil excludes nothing, and the
-	// journal applies no default list of its own: an implicit filter
-	// would silently hide writes a deployment believes it is
-	// watching.
-	Exclude []string
-	// Ops filters which event classes are delivered; nil delivers
-	// every write-class op. Filtering happens after folding, so it
-	// removes noise without losing the events that explain the ones
-	// that remain, and it never produces a [JournalGap]: a filtered
-	// event is not a missing event.
-	Ops []FileOp
-	// Retention is how many events the journal keeps readable for
-	// replay. <= 0 applies [DefaultJournalRetention]. A full window
-	// drops the oldest events and reports JournalGapRetention to the
-	// readers that needed them; it never blocks the watcher.
-	Retention int
-	// MaxWatchSet bounds how many directories the journal registers,
-	// which is what turns an unaffordable watch into a reported
-	// JournalGapCapacity instead of a silent hole. <= 0 uses the
-	// implementation default, reported through
-	// [JournalCapabilities.WatchBudget]. On a platform whose watch
-	// primitive is charged per entry rather than per directory (kqueue
-	// on macOS), every watched entry — file or directory — counts.
-	MaxWatchSet int
 }
 
 // JournalCapabilities is the journal surface a runner can offer. The

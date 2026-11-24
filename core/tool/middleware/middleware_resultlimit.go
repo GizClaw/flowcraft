@@ -90,8 +90,8 @@ func ResultLimiter(max int, opts ...ResultLimitOption) (tool.Middleware, error) 
 		}
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			res := next(ctx, call)
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+			res := next(ctx, b, call)
 			limited := limitResult(res, max, cfg.marker, cfg.partBudget, cfg.structuredBudget)
 			// A shortened result is a context-budget outcome the model has to
 			// live with; recording it on the span is what makes a bad answer
@@ -192,8 +192,8 @@ func ResultPartLimiter(budget int, opts ...ResultLimitOption) (tool.Middleware, 
 		cfg.structuredBudget = budget
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			res := next(ctx, call)
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+			res := next(ctx, b, call)
 			limited, cut := limitPartBytes(res.Content, budget, cfg.structuredBudget)
 			// The rebuilt content reaches the caller even when no marker is due: a
 			// structured part replaced by a note explains itself, and dropping the

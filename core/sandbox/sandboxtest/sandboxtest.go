@@ -16,7 +16,7 @@
 // # Using it
 //
 //	sandboxtest.Run(t, func(t *testing.T, root string) sandboxtest.Harness {
-//		runner := local.New(root)
+//		runner := local.New()
 //		t.Cleanup(func() { _ = runner.Close() })
 //		return sandboxtest.Harness{Runner: runner, Root: root}
 //	})
@@ -41,8 +41,8 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/core/sandbox/engine"
 )
 
 // Timeouts. They are deliberately generous: the suite runs on shared CI hosts
@@ -67,16 +67,11 @@ type Harness struct {
 	// Shell renders scripts for the platform the backend runs on. Nil means
 	// ForPlatform(runtime.GOOS).
 	Shell Shell
-	// OwnsResources marks a runner that replaces ExecOptions.Resources instead
-	// of passing it through. engine.WithDefaults does exactly that by design
-	// ("defaults wins entirely"), so the two subtests that assert a caller's
-	// cap reaches the backend are skipped rather than failed. A backend leaves
-	// this false.
-	OwnsResources bool
 }
 
-// Builder constructs one backend rooted at root. It is called once per
-// subtest, so each assertion starts from a clean runner.
+// Builder constructs one backend. root is a scratch directory the backend may use
+// as a working directory — the contract gives a backend no directory of its own —
+// and it is called once per subtest, so each assertion starts from a clean runner.
 type Builder func(t *testing.T, root string) Harness
 
 // Run exercises the contract. Backends call it from their own test file so a
@@ -233,7 +228,7 @@ func testANonZeroExitIsAResult(t *testing.T, build Builder) {
 func testExecHonoursTheTimeout(t *testing.T, build Builder) {
 	h := build(t, t.TempDir())
 	requireSessions(t, h)
-	_, err := engine.Exec(context.Background(), h.Runner,
+	_, err := sandbox.Exec(context.Background(), h.Runner,
 		h.shell().Argv(h.shell().LongRunning())[0],
 		h.shell().Argv(h.shell().LongRunning())[1:],
 		sandbox.ExecOptions{WorkDir: h.Root, Timeout: 200 * time.Millisecond})
@@ -248,16 +243,13 @@ func testExecHonoursTheTimeout(t *testing.T, build Builder) {
 func testExecTruncatesPerStream(t *testing.T, build Builder) {
 	h := build(t, t.TempDir())
 	requireSessions(t, h)
-	if h.OwnsResources {
-		t.Skip("this runner owns ExecOptions.Resources; a caller cap never reaches the backend")
-	}
 	const cap = 16
-	result, err := engine.Exec(context.Background(), h.Runner,
+	result, err := sandbox.Exec(context.Background(), h.Runner,
 		h.shell().Argv("echo 0123456789012345678901234567890123456789")[0],
 		h.shell().Argv("echo 0123456789012345678901234567890123456789")[1:],
 		sandbox.ExecOptions{
 			WorkDir:   h.Root,
-			Resources: sandbox.ResourceLimits{MaxOutputBytes: cap},
+			Resources: policy.Resources{MaxOutputBytes: cap},
 		})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -490,84 +482,39 @@ func testNoAdvertisedSessionsMeansNoExec(t *testing.T, build Builder) {
 	requireNotAvailable(t, err, "Exec on a backend with no session support")
 }
 
+// testThePolicyGateAgreesWithTheDeclaration checks the construction-time gate
+// against the backend's own declaration: every dimension the backend does not
+// claim must be refused before it opens anything, and every dimension it claims
+// must pass. A backend that advertises a capability it does not enforce turns
+// the declaration into a lie, and this is where the lie is caught.
 func testThePolicyGateAgreesWithTheDeclaration(t *testing.T, build Builder) {
 	h := build(t, t.TempDir())
-	if h.OwnsResources {
-		t.Skip("this runner owns ExecOptions.Resources; the gate sees only its own values")
-	}
 	caps := h.Runner.Capabilities().Policy
-	if !h.sessionsWork(t) {
-		t.Skip("backend serves no sessions")
-	}
 
-	// A cap the runner does not enforce is rejected up front, never
-	// silently dropped. This is the check that catches a backend which
-	// forgets to pass its own Enforcement to ValidateExecPolicy.
-	memory := sandbox.SessionSpec{
-		Argv: h.shell().Argv("echo caps"),
-		Opts: sandbox.ExecOptions{
-			WorkDir:   h.Root,
-			Resources: sandbox.ResourceLimits{MemoryBytes: 64 << 20},
-		},
-	}
-	sess, err := h.Runner.Start(context.Background(), memory)
-	if caps.MemoryCap {
-		if err != nil {
-			t.Fatalf("MemoryBytes rejected by a runner that advertises MemoryCap: %v", err)
-		}
-		_ = sess.Close()
-	} else {
-		requireNotAvailable(t, err, "MemoryBytes on a runner that does not advertise MemoryCap")
-	}
-
-	cpu := sandbox.SessionSpec{
-		Argv: h.shell().Argv("echo caps"),
-		Opts: sandbox.ExecOptions{
-			WorkDir:   h.Root,
-			Timeout:   time.Second,
-			Resources: sandbox.ResourceLimits{CPUMillicores: 100},
-		},
-	}
-	sess, err = h.Runner.Start(context.Background(), cpu)
-	if caps.CPUCap {
-		if err != nil {
-			t.Fatalf("CPUMillicores rejected by a runner that advertises CPUCap: %v", err)
-		}
-		_ = sess.Close()
-	} else {
-		requireNotAvailable(t, err, "CPUMillicores on a runner that does not advertise CPUCap")
-	}
-
-	// Disk quotas have no mechanism anywhere, so the gate rejects them
-	// regardless of what a backend advertises.
-	disk := sandbox.SessionSpec{
-		Argv: h.shell().Argv("echo caps"),
-		Opts: sandbox.ExecOptions{
-			WorkDir:   h.Root,
-			Resources: sandbox.ResourceLimits{DiskBytes: 1 << 20},
-		},
-	}
-	requireNotAvailable(t, startSession(t, h, disk), "DiskBytes (no backend enforces a quota)")
-}
-
-func testCloseTerminatesEverySessionAndIsIdempotent(t *testing.T, build Builder) {
-	h := build(t, t.TempDir())
-	requireSessions(t, h)
-	sess := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv(h.shell().LongRunning())})
-	if err := h.Runner.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), settleTimeout)
-	defer cancel()
-	exit, err := sess.Wait(ctx)
-	if err != nil {
-		t.Fatalf("Wait after Close: %v", err)
-	}
-	if exit.Reason == sandbox.SessionExited && exit.Code == 0 {
-		t.Fatalf("session exited 0 after Close; a running child must be terminated")
-	}
-	if err := h.Runner.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
+	for _, tc := range []struct {
+		name    string
+		confine sandbox.Confine
+		claimed bool
+	}{
+		{"memory cap", sandbox.Confine{Resources: policy.Resources{MemoryBytes: 64 << 20}}, caps.MemoryCap},
+		{"cpu cap", sandbox.Confine{Resources: policy.Resources{CPUMillicores: 100}}, caps.CPUCap},
+		{"environment allow-list", sandbox.Confine{Env: policy.EnvPolicy{Allow: []string{"PATH"}}}, caps.EnvAllowList},
+		{"unix sockets", sandbox.Confine{Net: policy.NetPolicy{UnixSockets: []string{"/run/sock"}}}, caps.UnixSocketPolicy},
+		{"disk cap", sandbox.Confine{Resources: policy.Resources{DiskBytes: 1 << 20}}, caps.DiskCap},
+		{"file write set", sandbox.Confine{Files: policy.Files{
+			Read: []string{t.TempDir()}, Write: []string{t.TempDir()},
+		}}, caps.FilesystemBounds},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := sandbox.ValidateConfine(tc.confine, caps)
+			if tc.claimed {
+				if err != nil {
+					t.Fatalf("the gate refused a dimension the backend claims: %v", err)
+				}
+				return
+			}
+			requireNotAvailable(t, err, "the gate accepted a dimension the backend does not claim")
+		})
 	}
 }
 
@@ -647,7 +594,7 @@ func (h Harness) exec(t *testing.T, script string) (*sandbox.ExecResult, error) 
 	ctx, cancel := context.WithTimeout(context.Background(), stepTimeout)
 	defer cancel()
 	argv := h.shell().Argv(script)
-	return engine.Exec(ctx, h.Runner, argv[0], argv[1:],
+	return sandbox.Exec(ctx, h.Runner, argv[0], argv[1:],
 		sandbox.ExecOptions{WorkDir: h.Root})
 }
 
@@ -666,7 +613,7 @@ func (h Harness) sessionsWork(t *testing.T) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), stepTimeout)
 	defer cancel()
-	sess, err := h.Runner.Start(ctx, sandbox.SessionSpec{Argv: h.shell().Argv("echo probe")})
+	sess, err := h.Runner.Start(ctx, h.withWorkDir(sandbox.SessionSpec{Argv: h.shell().Argv("echo probe")}))
 	if err != nil {
 		return false
 	}
@@ -674,11 +621,22 @@ func (h Harness) sessionsWork(t *testing.T) bool {
 	return true
 }
 
+// withWorkDir fills in the harness directory when the spec names none.
+//
+// The contract makes the working directory a caller decision — the backend keeps
+// no root of its own — so the suite, which is the caller here, supplies one.
+func (h Harness) withWorkDir(spec sandbox.SessionSpec) sandbox.SessionSpec {
+	if spec.Opts.WorkDir == "" {
+		spec.Opts.WorkDir = h.Root
+	}
+	return spec
+}
+
 func startSession(t *testing.T, h Harness, spec sandbox.SessionSpec) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), stepTimeout)
 	defer cancel()
-	sess, err := h.Runner.Start(ctx, spec)
+	sess, err := h.Runner.Start(ctx, h.withWorkDir(spec))
 	if err == nil {
 		t.Cleanup(func() { _ = sess.Close() })
 	}
@@ -689,7 +647,7 @@ func startOK(t *testing.T, h Harness, spec sandbox.SessionSpec) sandbox.Session 
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), stepTimeout)
 	defer cancel()
-	sess, err := h.Runner.Start(ctx, spec)
+	sess, err := h.Runner.Start(ctx, h.withWorkDir(spec))
 	if err != nil {
 		t.Fatalf("Start(%q): %v", strings.Join(spec.Argv, " "), err)
 	}
@@ -738,5 +696,26 @@ func requireNotAvailable(t *testing.T, err error, what string) {
 	}
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("%s: err = %v, want errdefs.NotAvailable", what, err)
+	}
+}
+
+func testCloseTerminatesEverySessionAndIsIdempotent(t *testing.T, build Builder) {
+	h := build(t, t.TempDir())
+	requireSessions(t, h)
+	sess := startOK(t, h, sandbox.SessionSpec{Argv: h.shell().Argv(h.shell().LongRunning())})
+	if err := h.Runner.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), settleTimeout)
+	defer cancel()
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait after Close: %v", err)
+	}
+	if exit.Reason == sandbox.SessionExited && exit.Code == 0 {
+		t.Fatalf("session exited 0 after Close; a running child must be terminated")
+	}
+	if err := h.Runner.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 }

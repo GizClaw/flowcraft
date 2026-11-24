@@ -31,7 +31,7 @@ func TestDiscover(t *testing.T) {
 		t.Fatalf("write notes: %v", err)
 	}
 
-	tree, err := fsx.Open()
+	tree, err := fsx.Open(nil)
 	if err != nil {
 		t.Fatalf("fsx.Open: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestDiscover(t *testing.T) {
 }
 
 func TestDiscoverMissingRootIsEmpty(t *testing.T) {
-	tree, err := fsx.Open()
+	tree, err := fsx.Open(nil)
 	if err != nil {
 		t.Fatalf("fsx.Open: %v", err)
 	}

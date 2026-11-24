@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/correlation"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -42,7 +41,7 @@ const (
 // cause.
 func Telemetry() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
 			ctx, span := telemetry.TracerWithSuffix("tool").Start(ctx, spanToolExecute,
 				trace.WithAttributes(
 					attribute.String(telemetry.AttrToolName, call.Name),
@@ -51,11 +50,11 @@ func Telemetry() tool.Middleware {
 			// The runtime identity the host attached: every span below a runtime
 			// carries it, so a trace can be filtered by instance without the
 			// middleware knowing what a runtime is.
-			span.SetAttributes(correlation.Attrs(ctx)...)
+			span.SetAttributes(telemetry.Attrs(ctx)...)
 			defer span.End()
 
 			start := time.Now()
-			res := next(ctx, call)
+			res := next(ctx, b, call)
 			duration := time.Since(start)
 
 			if !res.IsError {

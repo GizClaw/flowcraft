@@ -13,6 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/dispatch"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 	"github.com/goccy/go-json"
 )
 
@@ -23,9 +25,9 @@ import (
 func TestRecover_PanicBecomesErrorResult(t *testing.T) {
 	reg := catalogWith(tool.TextTool(message.ToolDefinition{Name: "panicker"},
 		func(_ context.Context, _ string) (string, error) { panic("boom") }))
-	exec := tool.NewExecutor(reg, Recover())
+	exec := dispatch.New(reg, Recover())
 
-	res := exec.Execute(context.Background(), call("panicker"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("panicker"))
 	if !res.IsError {
 		t.Fatal("expected IsError result for panic")
 	}
@@ -40,9 +42,9 @@ func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 			func(_ context.Context, _ string) (string, error) { panic("boom") }),
 		echoTool("fine"),
 	)
-	exec := tool.NewExecutor(reg, Recover())
+	exec := dispatch.New(reg, Recover())
 
-	results := exec.ExecuteAll(context.Background(), []message.ToolCall{
+	results := exec.ExecuteAll(context.Background(), tooltest.Binding(), []message.ToolCall{
 		{ID: "c1", Name: "panicker", Arguments: message.NewArguments(json.RawMessage("{}"))},
 		{ID: "c2", Name: "fine", Arguments: message.NewArguments(json.RawMessage("{}"))},
 	})
@@ -73,13 +75,13 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 			inFlight.Add(-1)
 			return "ok", nil
 		}))
-	exec := tool.NewExecutor(reg, MustConcurrency(2))
+	exec := dispatch.New(reg, MustConcurrency(2))
 
 	calls := make([]message.ToolCall, 6)
 	for i := range calls {
 		calls[i] = message.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "slow", Arguments: message.NewArguments(json.RawMessage("{}"))}
 	}
-	exec.ExecuteAll(context.Background(), calls)
+	exec.ExecuteAll(context.Background(), tooltest.Binding(), calls)
 	if got := maxSeen.Load(); got > 2 {
 		t.Errorf("max in-flight = %d, want <= 2", got)
 	}
@@ -98,15 +100,15 @@ func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 				return "", ctx.Err()
 			}
 		}))
-	exec := tool.NewExecutor(reg, MustConcurrency(1))
+	exec := dispatch.New(reg, MustConcurrency(1))
 
 	first := make(chan message.ToolResult, 1)
-	go func() { first <- exec.Execute(context.Background(), call("holder")) }()
+	go func() { first <- exec.Execute(context.Background(), tooltest.Binding(), call("holder")) }()
 	<-started // first call now holds the only slot
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	res := exec.Execute(ctx, call("holder"))
+	res := exec.Execute(ctx, tooltest.Binding(), call("holder"))
 	if !res.IsError {
 		t.Fatal("expected IsError while waiting on a held slot with cancelled ctx")
 	}
@@ -145,9 +147,9 @@ func TestTimeout_SlowToolTimesOut(t *testing.T) {
 			<-ctx.Done()
 			return "", ctx.Err()
 		}))
-	exec := tool.NewExecutor(reg, Timeout(50*time.Millisecond, nil))
+	exec := dispatch.New(reg, Timeout(50*time.Millisecond, nil))
 
-	res := exec.Execute(context.Background(), call("hang"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("hang"))
 	if !res.IsError {
 		t.Fatal("expected IsError for timed-out tool")
 	}
@@ -169,15 +171,15 @@ func TestTimeout_PerToolOverrideAndExemption(t *testing.T) {
 			}),
 		echoTool("fast"),
 	)
-	exec := tool.NewExecutor(reg, Timeout(30*time.Millisecond, map[string]time.Duration{
+	exec := dispatch.New(reg, Timeout(30*time.Millisecond, map[string]time.Duration{
 		"slowish": 200 * time.Millisecond, // override: fits
 		"fast":    0,                      // exempt
 	}))
 
-	if res := exec.Execute(context.Background(), call("slowish")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("slowish")); res.IsError {
 		t.Errorf("slowish with generous override should succeed, got %q", res.Content.Text())
 	}
-	if res := exec.Execute(context.Background(), call("fast")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("fast")); res.IsError {
 		t.Errorf("exempt tool should succeed, got %q", res.Content.Text())
 	}
 }
@@ -192,18 +194,20 @@ type ratedTool struct {
 }
 
 func (r ratedTool) Definition() message.ToolDefinition { return r.def }
-func (r ratedTool) Execute(_ context.Context, _ string) (message.Content, error) {
+
+func (ratedTool) Needs() []tool.Need { return nil }
+func (r ratedTool) Execute(ctx context.Context, _ tool.Binding, arguments string) (message.Content, error) {
 	return message.NewTextContent("ok"), nil
 }
 func (r ratedTool) Metadata() tool.ToolMeta { return tool.ToolMeta{RateLimit: r.rate} }
 
 func TestRateLimit_PacesCalls(t *testing.T) {
 	reg := catalogWith(ratedTool{def: message.ToolDefinition{Name: "api"}, rate: 50})
-	exec := tool.NewExecutor(reg, RateLimit(reg))
+	exec := dispatch.New(reg, RateLimit(reg))
 
 	start := time.Now()
 	for i := 0; i < 3; i++ {
-		if res := exec.Execute(context.Background(), call("api")); res.IsError {
+		if res := exec.Execute(context.Background(), tooltest.Binding(), call("api")); res.IsError {
 			t.Fatalf("call %d: %s", i, res.Content.Text())
 		}
 	}
@@ -215,11 +219,11 @@ func TestRateLimit_PacesCalls(t *testing.T) {
 
 func TestRateLimit_UndeclaredPassesThrough(t *testing.T) {
 	reg := catalogWith(echoTool("plain"))
-	exec := tool.NewExecutor(reg, RateLimit(reg))
+	exec := dispatch.New(reg, RateLimit(reg))
 
 	start := time.Now()
 	for i := 0; i < 5; i++ {
-		if res := exec.Execute(context.Background(), call("plain")); res.IsError {
+		if res := exec.Execute(context.Background(), tooltest.Binding(), call("plain")); res.IsError {
 			t.Fatalf("call %d: %s", i, res.Content.Text())
 		}
 	}
@@ -242,9 +246,9 @@ func TestApproval_DeniedShortCircuits(t *testing.T) {
 	approver := ApproverFunc(func(_ context.Context, _ message.ToolCall) error {
 		return errors.New("user rejected")
 	})
-	exec := tool.NewExecutor(reg, Approval(approver, "exec"))
+	exec := dispatch.New(reg, Approval(approver, "exec"))
 
-	res := exec.Execute(context.Background(), call("exec"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("exec"))
 	if !res.IsError {
 		t.Fatal("expected IsError for denied call")
 	}
@@ -259,12 +263,12 @@ func TestApproval_DeniedShortCircuits(t *testing.T) {
 func TestApproval_ApprovedAndUngated(t *testing.T) {
 	reg := catalogWith(echoTool("exec"), echoTool("other"))
 	approver := ApproverFunc(func(_ context.Context, _ message.ToolCall) error { return nil })
-	exec := tool.NewExecutor(reg, Approval(approver, "exec"))
+	exec := dispatch.New(reg, Approval(approver, "exec"))
 
-	if res := exec.Execute(context.Background(), call("exec")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("exec")); res.IsError {
 		t.Errorf("approved call should succeed, got %q", res.Content.Text())
 	}
-	if res := exec.Execute(context.Background(), call("other")); res.IsError {
+	if res := exec.Execute(context.Background(), tooltest.Binding(), call("other")); res.IsError {
 		t.Errorf("ungated tool should skip approval, got %q", res.Content.Text())
 	}
 }
@@ -282,9 +286,9 @@ func TestAudit_RecordsEveryCall(t *testing.T) {
 		records = append(records, rec)
 		mu.Unlock()
 	})
-	exec := tool.NewExecutor(reg, Audit(sink))
+	exec := dispatch.New(reg, Audit(sink))
 
-	res := exec.Execute(context.Background(), call("echo"))
+	res := exec.Execute(context.Background(), tooltest.Binding(), call("echo"))
 	if res.IsError {
 		t.Fatalf("unexpected error: %s", res.Content.Text())
 	}
@@ -322,11 +326,13 @@ func (s selfTimingTool) Definition() message.ToolDefinition {
 	return message.ToolDefinition{Name: s.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 
+func (selfTimingTool) Needs() []tool.Need { return nil }
+
 func (s selfTimingTool) Metadata() tool.ToolMeta {
 	return tool.ToolMeta{SelfTimeout: s.selfTimeout}
 }
 
-func (s selfTimingTool) Execute(ctx context.Context, _ string) (message.Content, error) {
+func (s selfTimingTool) Execute(ctx context.Context, _ tool.Binding, arguments string) (message.Content, error) {
 	select {
 	case <-time.After(s.sleep):
 		return message.NewTextContent("finished"), nil
@@ -341,10 +347,10 @@ func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
 		selfTimingTool{name: "wrapped", selfTimeout: false, sleep: time.Second},
 	)
 
-	executor := tool.NewExecutor(registry,
+	executor := dispatch.New(registry,
 		TimeoutWithCatalog(registry, time.Millisecond, nil))
 
-	self := executor.Execute(context.Background(), call("self"))
+	self := executor.Execute(context.Background(), tooltest.Binding(), call("self"))
 	if self.IsError {
 		t.Errorf("self-timing tool was cut short: %q", self.Content.Text())
 	}
@@ -352,7 +358,7 @@ func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
 		t.Errorf("self-timing tool content = %q, want %q", self.Content.Text(), "finished")
 	}
 
-	wrapped := executor.Execute(context.Background(), call("wrapped"))
+	wrapped := executor.Execute(context.Background(), tooltest.Binding(), call("wrapped"))
 	if !wrapped.IsError {
 		t.Errorf("tool without a SelfTimeout claim should have timed out, got %q", wrapped.Content.Text())
 	}
@@ -366,10 +372,10 @@ func TestTimeoutWithCatalog_PerToolOverridesSelfTimeout(t *testing.T) {
 		selfTimingTool{name: "self", selfTimeout: true, sleep: time.Second},
 	)
 
-	executor := tool.NewExecutor(registry, TimeoutWithCatalog(
+	executor := dispatch.New(registry, TimeoutWithCatalog(
 		registry, 0, map[string]time.Duration{"self": time.Millisecond}))
 
-	res := executor.Execute(context.Background(), call("self"))
+	res := executor.Execute(context.Background(), tooltest.Binding(), call("self"))
 	if !res.IsError {
 		t.Errorf("per-tool override should bound a self-timing tool, got %q", res.Content.Text())
 	}
@@ -383,9 +389,9 @@ func TestTimeout_IgnoresSelfTimeoutWithoutCatalog(t *testing.T) {
 		selfTimingTool{name: "self", selfTimeout: true, sleep: time.Second},
 	)
 
-	executor := tool.NewExecutor(registry, Timeout(time.Millisecond, nil))
+	executor := dispatch.New(registry, Timeout(time.Millisecond, nil))
 
-	res := executor.Execute(context.Background(), call("self"))
+	res := executor.Execute(context.Background(), tooltest.Binding(), call("self"))
 	if !res.IsError {
 		t.Errorf("Timeout without a catalog should still wrap, got %q", res.Content.Text())
 	}

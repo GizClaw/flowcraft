@@ -54,8 +54,11 @@ func (r *RecordingTool) Definition() message.ToolDefinition {
 	}
 }
 
+// Needs reports what this fake requires: nothing.
+func (r *RecordingTool) Needs() []tool.Need { return nil }
+
 // Execute implements tool.Tool.
-func (r *RecordingTool) Execute(_ context.Context, arguments string) (message.Content, error) {
+func (r *RecordingTool) Execute(_ context.Context, _ tool.Binding, arguments string) (message.Content, error) {
 	r.mu.Lock()
 	r.calls = append(r.calls, RecordedCall{Arguments: arguments})
 	response, err := r.response, r.err

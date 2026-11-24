@@ -44,8 +44,10 @@ jobs:
               return sorted(set(dirs))
 
           dirs = module_dirs()
-          # examples/forge stays out of the lint gate.
-          lint_dirs = [d for d in dirs if d != "examples/forge"]
+          # The lint gate skips a module that is built the way a reader builds it:
+          # examples/forge pins a released core, and driver/ pins the core it shipped
+          # against — both are compiled with GOWORK=off by the test job instead.
+          lint_dirs = [d for d in dirs if d not in ("examples/forge", "driver")]
 
           # Parse each in-workspace module's identity and its requires on
           # other flowcraft modules so a change can pull in every module
@@ -65,7 +67,10 @@ jobs:
           # workspace (see `check-consumers`), so it is not a dependent of the
           # working tree: a change to a module it requires at a tag cannot reach
           # it. It joins the matrix only when its own files change.
-          consumers = {d for d in dirs if d.startswith("examples/")}
+          # A consumer pins released versions and is built outside this workspace. driver/
+          # joined them with the core rebuild: its providers move to the `inference` module,
+          # and until then it is the pinned copy of them, not a workspace member.
+          consumers = {d for d in dirs if d.startswith("examples/") or d == "driver"}
           reverse = {d: set() for d in dirs}
           for d, deps in deps_of.items():
               if d in consumers:
@@ -397,85 +402,8 @@ jobs:
           # else inside it.
           GOWORK: ${{ matrix.gowork }}
 
-  test-sandbox-bwrap:
-    name: Integration core/sandbox-bwrap
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
-      - name: Install bubblewrap
-        run: |
-          set -euo pipefail
-          if command -v bwrap >/dev/null 2>&1; then
-            echo "bwrap already present: $(command -v bwrap)"
-            bwrap --version
-            exit 0
-          fi
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends bubblewrap
-          bwrap --version
-      # Ubuntu 24.04 restricts unprivileged user namespaces through
-      # AppArmor, which leaves bubblewrap failing with "setting up uid
-      # map: Permission denied" before it can mount anything (the runner
-      # image ships, but does not load, the profile that allows it). The
-      # journal integration tests below need a real namespace, so make
-      # one available and prove it.
-      - name: Make bubblewrap usable
-        run: |
-          set -euo pipefail
-          # A fresh mount namespace starts with an empty root, so the
-          # probe binds the host root read-only exactly like the
-          # runner's own filesystem flags do: without that, bwrap fails
-          # on a missing /bin/true before it ever reaches the namespace
-          # setup under test.
-          probe_log=$(mktemp)
-          probe() {
-            bwrap --ro-bind / / --unshare-pid --die-with-parent -- /bin/true 2>"$probe_log"
-          }
-          report() { sed 's/^/  /' "$probe_log"; }
-
-          if probe; then
-            echo "bwrap can create a namespace"
-            exit 0
-          fi
-          echo "bwrap cannot create a namespace:"
-          report
-
-          # The profile the bubblewrap package ships re-allows exactly
-          # bwrap's own user-namespace creation; write it when the
-          # installed package predates the profile, then reload.
-          sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
-          abi <abi/4.0>,
-          include <tunables/global>
-          profile bwrap /usr/bin/bwrap flags=(unconfined) {
-            userns,
-          }
-          EOF
-          sudo apparmor_parser -r /etc/apparmor.d/bwrap || true
-          if probe; then
-            echo "bwrap works with the AppArmor profile loaded"
-            exit 0
-          fi
-          echo "still failing with the profile loaded:"
-          report
-
-          # Hosts whose AppArmor has nothing to load take the blunt
-          # route: lift the restriction for this runner.
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          if probe; then
-            echo "bwrap works with the unprivileged-userns restriction lifted"
-            exit 0
-          fi
-          echo "bwrap still cannot create a namespace:"
-          report
-          exit 1
-      - name: Test
-        run: |
-          go test -tags=integration_bwrap -count=1 -timeout 180s \
-            ./sandbox-bwrap/...
-        working-directory: core
+  # The bwrap integration lane tested ./sandbox-bwrap, which moved to the `sandbox`
+  # module with the backend. It returns there, together with the backend it gates.
 
   test-core-windows:
     name: Test core (windows)
@@ -494,30 +422,15 @@ jobs:
       - name: Test
         working-directory: core
         run: go test -count=1 ./...
-      # The unix half of this package is race-checked on the linux and macOS
-      # lanes (sandbox-faults.yml); the windows half is not, because those lanes
-      # do not build it. The sampler and the cap goroutine are the code where a
-      # race would be silent rather than loud, so the detector gets the package
-      # on the only platform that compiles it. Scoped to the package, not the
-      # module, to keep the merge gate's cost in seconds.
-      - name: Race (sessionkit)
-        working-directory: core
-        run: go test -count=1 -race -timeout 300s ./sandbox/sessionkit/
+      # sandbox/sessionkit left core with the sandbox module, and its windows race
+      # step goes with it: the sampler and the cap goroutine it guards are the code
+      # where a race is silent rather than loud, so that lane is not dropped there.
 
-  test-sandbox-windows:
-    name: Integration core/sandbox-windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.26"
-      - name: Test
-        working-directory: core
-        run: go test -count=1 -timeout 180s ./sandbox-windows/...
+  # The windows integration lane tested ./sandbox-windows, which moved to the
+  # `sandbox` module with the backend; test-core-windows still covers core itself.
 
   test-sandbox-macos:
-    name: Integration core/sandbox + seatbelt (darwin)
+    name: Integration core/sandbox (darwin)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -531,15 +444,11 @@ jobs:
       # that executes the kqueue source and its leaf watches. sandbox-exec
       # ships with macOS, so nothing is installed.
       #
-      # runtime/... is here for the seatbelt adapter: everywhere else it
-      # reaches the !darwin stub, which discards its options before they can
-      # be wrong. This is the one lane where the backend the composition
-      # root registers is the real one.
+      # The backends and sessionkit this lane used to exercise moved to the
+      # `sandbox` module; the core contract keeps its darwin path here.
       - name: Test
         working-directory: core
-        run: |
-          go test -count=1 -race -timeout 300s \
-            ./sandbox/... ./sandbox-local/... ./sandbox-seatbelt/... ./runtime/...
+        run: go test -count=1 -race -timeout 300s ./sandbox/...
 
   ci-pass:
     name: CI
@@ -555,9 +464,7 @@ jobs:
       - test-shuffle
       - bench
       - test
-      - test-sandbox-bwrap
       - test-core-windows
-      - test-sandbox-windows
       - test-sandbox-macos
     runs-on: ubuntu-latest
     steps:
@@ -574,9 +481,7 @@ jobs:
             "${{ needs.test-shuffle.result }}" \
             "${{ needs.bench.result }}" \
             "${{ needs.test.result }}" \
-            "${{ needs.test-sandbox-bwrap.result }}" \
             "${{ needs.test-core-windows.result }}" \
-            "${{ needs.test-sandbox-windows.result }}" \
             "${{ needs.test-sandbox-macos.result }}" \
           )
           for r in "${results[@]}"; do

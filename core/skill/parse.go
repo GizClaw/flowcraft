@@ -2,11 +2,12 @@ package skill
 
 import (
 	"fmt"
-	"github.com/GizClaw/flowcraft/core/internal/decode"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/GizClaw/flowcraft/core/internal/decode"
 )
 
 // Limits mirror the agentskills.io parser behaviour.

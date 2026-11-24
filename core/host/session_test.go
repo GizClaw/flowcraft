@@ -1,0 +1,637 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"iter"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/policy"
+	"github.com/GizClaw/flowcraft/core/sandbox"
+)
+
+// boundary is a backend instance: it records its own closure and whether it claims to bound writes.
+type boundary struct {
+	log              *journal
+	filesystemBounds bool
+	buildErr         error
+	closed           int
+}
+
+func (b *boundary) Close() error {
+	b.closed++
+	b.log.add("close:sandbox")
+	return nil
+}
+
+func (b *boundary) Capabilities() sandbox.Capabilities {
+	return sandbox.Capabilities{Policy: sandbox.Enforcement{FilesystemBounds: b.filesystemBounds}}
+}
+
+func (*boundary) Start(context.Context, sandbox.SessionSpec) (sandbox.Session, error) {
+	return nil, errors.New("not used")
+}
+
+func (*boundary) List(context.Context) ([]sandbox.SessionInfo, error) { return nil, nil }
+
+func (*boundary) Terminate(context.Context, string) error { return nil }
+
+// boundBackend is a deployment whose backend factory returns b, or fails.
+func boundBackend(name string, b *boundary) deploy.PlannedBackend {
+	return deploy.PlannedBackend{Name: name, Impl: "fake",
+		New: func() (func(sandbox.Confine) (sandbox.Runner, error), error) {
+			return func(sandbox.Confine) (sandbox.Runner, error) {
+				if b.buildErr != nil {
+					return nil, b.buildErr
+				}
+				return b, nil
+			}, nil
+		}}
+}
+
+// sessionDriver is one session's driver: these tests never run a turn.
+type sessionDriver struct {
+	log  *journal
+	name string
+}
+
+func (d *sessionDriver) Run(context.Context, agent.Request) iter.Seq2[agent.Event, error] {
+	return func(func(agent.Event, error) bool) {}
+}
+
+func (d *sessionDriver) Close() error {
+	d.log.add("close:driver:" + d.name)
+	return nil
+}
+
+// sessionProgram is a deployment's program: it opens one driver per session and counts them.
+type sessionProgram struct {
+	log *journal
+	// opens is atomic because the concurrency test opens several sessions at once.
+	opens    atomic.Int32
+	failOpen bool
+}
+
+func (p *sessionProgram) Open(agent.SessionInfo) (agent.Driver, error) {
+	if p.failOpen {
+		return nil, errors.New("open failed")
+	}
+	n := p.opens.Add(1)
+	return &sessionDriver{log: p.log, name: string(rune('0' + n))}, nil
+}
+
+func (p *sessionProgram) Close() error {
+	p.log.add("close:program")
+	return nil
+}
+
+// sessionDeployment is a deployment with one backend and a program that opens drivers.
+func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journal, backend *boundary) (deploy.Deployment, *sessionProgram) {
+	t.Helper()
+	program := &sessionProgram{log: log}
+	return deploy.Deployment{
+		Name:    name,
+		Grant:   grant,
+		Trace:   agent.TraceNone,
+		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
+	}, program
+}
+
+// permissiveGrant allows everything and names the backend the deployment configured. Files are
+// unrestricted, so no directory has to exist for most tests.
+func permissiveGrant(sandboxName string) policy.Grant {
+	return policy.Grant{
+		Sandbox: sandboxName,
+		Limits:  policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 0},
+	}
+}
+
+// hostWith builds an Agents over a resource whose single backend is b.
+func hostWith(t *testing.T, backend *boundary) *Agents {
+	t.Helper()
+	res, err := Open(t.Context(), deploy.ProcessPlan{
+		Backends: []deploy.PlannedBackend{boundBackend("local", backend)},
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = res.Close() })
+	return NewAgents(res)
+}
+
+// TestOpenSessionBuildsAndClosesEverything is the session's lifecycle: opening builds the driver and
+// the boundary, closing releases both.
+func TestOpenSessionBuildsAndClosesEverything(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, program := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	session, err := agents.Open(t.Context(), "s1", "referee")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got := program.opens.Load(); got != 1 {
+		t.Fatalf("program opens = %d, want one driver per session", got)
+	}
+	if session.ID() != "s1" || session.Agent() != "referee" {
+		t.Fatalf("session = %q/%q", session.ID(), session.Agent())
+	}
+	if got := agents.Sessions("referee"); len(got) != 1 || got[0] != "s1" {
+		t.Fatalf("sessions = %v", got)
+	}
+
+	if err := agents.CloseSession(t.Context(), "s1"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	if got := log.joined(); got != "close:driver:1,close:sandbox" {
+		t.Fatalf("events = %q, want the driver then the boundary", got)
+	}
+	if backend.closed != 1 {
+		t.Fatalf("backend closed %d times", backend.closed)
+	}
+}
+
+// TestTheBindingCarriesTheSessionsCapabilities is what the slot names are for: the tree and the
+// process starter reach a tool through the binding, and nothing else does.
+func TestTheBindingCarriesTheSessionsCapabilities(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	session, err := agents.Open(t.Context(), "s1", "referee")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = agents.CloseSession(t.Context(), "s1") }()
+
+	tree, ok := filesSlot.Get(session.Binding().Caps)
+	if !ok || tree == nil {
+		t.Fatal("the file boundary is not in the binding")
+	}
+	if _, ok := processSlot.Get(session.Binding().Caps); !ok {
+		t.Fatal("the process starter is not in the binding")
+	}
+}
+
+// TestOpenRefusesAConfineTheBackendCannotEnforce: a read-only grant on a backend that cannot confine
+// writes is refused at open, and nothing is left built.
+func TestOpenRefusesAConfineTheBackendCannotEnforce(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: false}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Files = policy.Files{ReadOnly: true}
+	dep, program := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	_, err := agents.Open(t.Context(), "s1", "referee")
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("err = %v, want NotAvailable", err)
+	}
+	if got := program.opens.Load(); got != 0 {
+		t.Fatalf("%d drivers opened for a session that cannot exist", got)
+	}
+	if backend.closed != 1 {
+		t.Fatalf("the refused boundary was not closed: %d", backend.closed)
+	}
+}
+
+// TestMaxSessionsIsEnforced is the grant's table decision, measured per deployment.
+func TestMaxSessionsIsEnforced(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Limits.MaxSessions = 1
+	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s2", "referee"); err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("second Open = %v, want NotAvailable", err)
+	}
+}
+
+// TestRemoveRefusesWhileSessionsAreOpen keeps a deployment from vanishing under a running
+// conversation.
+func TestRemoveRefusesWhileSessionsAreOpen(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := agents.Remove("referee"); !errors.Is(err, ErrSessionsActive) {
+		t.Fatalf("Remove = %v, want ErrSessionsActive", err)
+	}
+	if !agents.Deployed("referee") {
+		t.Fatal("a refused Remove uninstalled the agent")
+	}
+}
+
+// TestReloadKeepsTheOldProgramAliveForOpenSessions is the reload contract: a session keeps the
+// program it was opened under, and the old one is released when the last of them closes.
+func TestReloadKeepsTheOldProgramAliveForOpenSessions(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	reloaded, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Reload(reloaded); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if strings.Contains(log.joined(), "close:program") {
+		t.Fatalf("events = %q: the old program was closed under an open session", log.joined())
+	}
+
+	if err := agents.CloseSession(t.Context(), "s1"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	if !strings.Contains(log.joined(), "close:program") {
+		t.Fatalf("events = %q: the retired program was never released", log.joined())
+	}
+}
+
+// TestEvictIdleClosesTheSessionsPastTheLimit keeps the idle horizon honest: a session that has done
+// nothing for longer than the grant allows is closed, and one that is recent is not.
+func TestEvictIdleClosesTheSessionsPastTheLimit(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Limits.Idle = policy.Duration(time.Minute)
+	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "old", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "new", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// Age one session past the horizon and leave the other fresh.
+	old, _ := agents.Session("old")
+	old.touchNow(time.Now().Add(-2 * time.Minute))
+
+	ids, err := agents.EvictIdle(t.Context(), "referee", time.Now())
+	if err != nil {
+		t.Fatalf("EvictIdle: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "old" {
+		t.Fatalf("evicted = %v, want [old]", ids)
+	}
+	if _, ok := agents.Session("new"); !ok {
+		t.Fatal("the recent session was evicted")
+	}
+}
+
+// TestOpenWithAFileGrantOpensTheTree is the bridge from a grant to real handles: the roots exist on
+// this host, so the tree opens and a tool could read through it.
+func TestOpenWithAFileGrantOpensTheTree(t *testing.T) {
+	root := t.TempDir()
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Files = policy.Files{Read: []string{root}, Write: []string{root}}
+	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	session, err := agents.Open(t.Context(), "s1", "referee")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = agents.CloseSession(t.Context(), "s1") }()
+
+	tree, ok := filesSlot.Get(session.Binding().Caps)
+	if !ok {
+		t.Fatal("no file boundary in the binding")
+	}
+	target := filepath.Join(root, "note.txt")
+	if err := os.WriteFile(target, []byte("hi"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if _, err := tree.Read(t.Context(), target); err != nil {
+		t.Fatalf("read through the session's tree: %v", err)
+	}
+}
+
+// TestOpenOnAnUnknownAgentIsNotFound and the closed-table case are the two refusals a caller can hit
+// before any work happens.
+func TestOpenRefusals(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	if _, err := agents.Open(t.Context(), "s1", "missing"); !errdefs.IsNotFound(err) {
+		t.Fatalf("unknown agent = %v, want NotFound", err)
+	}
+	if err := agents.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "missing"); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("closed table = %v, want NotAvailable", err)
+	}
+}
+
+// turnDriver is a driver that can be steered and cancelled, which is what the turn tests exercise.
+type turnDriver struct {
+	log       *journal
+	events    []agent.Event
+	steers    []agent.SteerInput
+	cancelled []string
+	block     chan struct{}
+}
+
+func (d *turnDriver) Run(ctx context.Context, _ agent.Request) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		for _, event := range d.events {
+			if !yield(event, nil) {
+				return
+			}
+		}
+		if d.block != nil {
+			// Wait until the test cancels, so Cancel has a turn to stop.
+			<-ctx.Done()
+			yield(nil, ctx.Err())
+		}
+	}
+}
+
+func (d *turnDriver) Close() error { return nil }
+
+func (d *turnDriver) Steer(in agent.SteerInput) (agent.SteerID, error) {
+	d.steers = append(d.steers, in)
+	return agent.SteerID("steer-1"), nil
+}
+
+func (d *turnDriver) Unsteer(agent.SteerID) error { return nil }
+
+func (d *turnDriver) Cancel(_ context.Context, reason string) error {
+	d.cancelled = append(d.cancelled, reason)
+	return nil
+}
+
+// turnProgram hands back one driver the test controls.
+type turnProgram struct{ driver *turnDriver }
+
+func (p *turnProgram) Open(agent.SessionInfo) (agent.Driver, error) { return p.driver, nil }
+func (p *turnProgram) Close() error                                 { return nil }
+
+// runnableHost opens one session whose driver the test holds.
+func runnableHost(t *testing.T, driver *turnDriver) (*Agents, *turnProgram) {
+	t.Helper()
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	program := &turnProgram{driver: driver}
+	dep := deploy.Deployment{
+		Name:    "referee",
+		Grant:   permissiveGrant("local"),
+		Trace:   agent.TraceNone,
+		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
+	}
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+	return agents, program
+}
+
+// TestRunStreamsTheDriversEvents is the turn's contract: the host assembles the request, the decorator
+// runs the driver, and every event reaches the caller.
+func TestRunStreamsTheDriversEvents(t *testing.T) {
+	driver := &turnDriver{log: &journal{}, events: []agent.Event{
+		agent.Text{Text: "hello"},
+		agent.Status{State: agent.StateCompleted},
+	}}
+	agents, _ := runnableHost(t, driver)
+
+	var seen []agent.EventKind
+	for event, err := range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		seen = append(seen, event.Kind())
+	}
+	if len(seen) != 2 || seen[0] != agent.KindText || seen[1] != agent.KindStatus {
+		t.Fatalf("events = %v", seen)
+	}
+	if session, _ := agents.Session("s1"); session.ordinal != 1 {
+		t.Fatalf("ordinal = %d, want one turn counted", session.ordinal)
+	}
+}
+
+// TestASecondRunIsRefused: one session has at most one turn in flight, which is the rule Steer and
+// Cancel rely on.
+func TestASecondRunIsRefused(t *testing.T) {
+	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
+	agents, _ := runnableHost(t, driver)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range agents.Run(ctx, "s1", message.NewTextMessage(message.RoleUser, "first")) {
+		}
+	}()
+	// Wait until the first turn is streaming.
+	waitRunning(t, agents, "s1")
+
+	var failure error
+	for _, err := range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "second")) {
+		failure = err
+	}
+	if failure == nil || !errdefs.IsConflict(failure) {
+		t.Fatalf("second Run = %v, want a conflict", failure)
+	}
+	cancel()
+	<-done
+}
+
+// TestSteerReachesTheDriver keeps the routing honest: the host does not interpret the input, it hands
+// it to the session's driver.
+func TestSteerReachesTheDriver(t *testing.T) {
+	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
+	agents, _ := runnableHost(t, driver)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range agents.Run(ctx, "s1", message.NewTextMessage(message.RoleUser, "first")) {
+		}
+	}()
+	waitRunning(t, agents, "s1")
+
+	id, err := agents.Steer(t.Context(), "s1", agent.SteerInput{Intent: agent.SteerRedirect})
+	if err != nil {
+		t.Fatalf("Steer: %v", err)
+	}
+	if id != "steer-1" {
+		t.Fatalf("id = %q", id)
+	}
+	if len(driver.steers) != 1 || driver.steers[0].Intent != agent.SteerRedirect {
+		t.Fatalf("steers = %+v", driver.steers)
+	}
+	cancel()
+	<-done
+}
+
+// TestSteerOnAnIdleSessionSaysSo: nothing is in flight, so there is nothing to steer.
+func TestSteerOnAnIdleSessionSaysSo(t *testing.T) {
+	driver := &turnDriver{log: &journal{}}
+	agents, _ := runnableHost(t, driver)
+	if _, err := agents.Steer(t.Context(), "s1", agent.SteerInput{}); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Fatalf("Steer = %v, want ErrSessionIdle", err)
+	}
+}
+
+// TestCancelStopsTheTurnAndTellsThePeer covers both halves of cancellation: the context ends the
+// local steps, and a driver that talks to a peer is told as well.
+func TestCancelStopsTheTurnAndTellsThePeer(t *testing.T) {
+	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
+	agents, _ := runnableHost(t, driver)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "first")) {
+		}
+	}()
+	waitRunning(t, agents, "s1")
+
+	if err := agents.Cancel(t.Context(), "s1", "operator"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	<-done
+	if len(driver.cancelled) != 1 || driver.cancelled[0] != "operator" {
+		t.Fatalf("cancelled = %v", driver.cancelled)
+	}
+	// The turn ended, so a second Cancel has nothing to stop.
+	if err := agents.Cancel(t.Context(), "s1", "again"); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Fatalf("second Cancel = %v, want ErrSessionIdle", err)
+	}
+}
+
+// waitRunning blocks until the session reports a turn in flight, so the tests above do not race the
+// goroutine they just started.
+func waitRunning(t *testing.T, agents *Agents, sessionID string) {
+	t.Helper()
+	for range 1000 {
+		if session, ok := agents.Session(sessionID); ok && session.running.Load() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the turn never started")
+}
+
+// TestTheSessionLimitHoldsUnderConcurrentOpens is the check the reviewer found missing: the limit was
+// checked before the build, and the build happens outside the lock.
+func TestTheSessionLimitHoldsUnderConcurrentOpens(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Limits.MaxSessions = 1
+	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	const attempts = 8
+	var wg sync.WaitGroup
+	results := make(chan error, attempts)
+	for i := range attempts {
+		wg.Add(1)
+		go func(ordinal int) {
+			defer wg.Done()
+			_, err := agents.Open(context.Background(), fmt.Sprintf("s%d", ordinal), "referee")
+			results <- err
+		}(i)
+	}
+	wg.Wait()
+	close(results)
+
+	opened := 0
+	for err := range results {
+		if err == nil {
+			opened++
+		}
+	}
+	if opened != 1 {
+		t.Fatalf("opened = %d sessions, want exactly the limit", opened)
+	}
+	if got := len(agents.Sessions("referee")); got != 1 {
+		t.Fatalf("table holds %d sessions, want 1", got)
+	}
+}
+
+// TestCloseReleasesARetiredProgram is the leak the reviewer found: a reload retires a deployment, and the
+// table must still close its program when it shuts down.
+func TestCloseReleasesARetiredProgram(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	reloaded, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Reload(reloaded); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if strings.Contains(log.joined(), "close:program") {
+		t.Fatalf("events = %q: the retired program closed while its session was open", log.joined())
+	}
+
+	if err := agents.Close(t.Context()); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := strings.Count(log.joined(), "close:program"); got != 2 {
+		t.Fatalf("program closes = %d (%s), want both the live and the retired one", got, log.joined())
+	}
+}

@@ -4,36 +4,36 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/outcome"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // Hooks are the host's policy at the boundaries of a turn.
 //
-// The three points are the ones a host owns, rather than the ones an engine owns:
-// a session arrives, a turn arrives, a turn ends. They exist because a host has no
-// other place to reach a turn it did not start - a delegated child, a message that
-// came in over A2A - and because "what this agent is" belongs to the agent, not to
-// the substrate that happens to run it.
+// The three points are the ones a host owns, rather than the ones a driver owns: a
+// session arrives, a turn arrives, a turn ends. They exist because a host has no other
+// place to reach a turn it did not start — a delegated child, a message that came in
+// over A2A — and because "what this agent is" belongs to the agent, not to the driver
+// that happens to run it.
 //
-// What a hook cannot do is deliberate. It cannot rewrite the system framing, cut
-// the engine's transcript, or intercept one model call: those are the engine's
-// state, and a hook that reached into them would turn this package into a prompt
-// framework.
+// What a hook cannot do is deliberate. It cannot rewrite the system framing, cut the
+// driver's transcript, or intercept one model call: those are the driver's state, and a
+// hook that reached into them would turn this package into a prompt framework.
 type Hooks struct {
-	// OnSession runs after a session is opened or restored, before its turn. An
-	// error fails the open, so a host that cannot prepare its memory refuses the
-	// turn instead of running it blind.
+	// OnSession runs after a session is opened or restored, before its turn. An error
+	// fails the open, so a host that cannot prepare its memory refuses the turn instead
+	// of running it blind.
 	OnSession func(ctx context.Context, session SessionInfo) error
-	// BeforeTurn runs before the turn is handed to the engine and may rewrite its
-	// message: a seat's recap, its private memory, the identity it speaks as. An
-	// error stops the turn before it starts.
-	BeforeTurn func(ctx context.Context, turn *Turn) error
-	// AfterTurn runs after the run ends, with the state and result it reached.
+	// BeforeTurn runs before the turn is handed to the driver and may rewrite its
+	// message: a seat's recap, its private memory, the identity it speaks as. An error
+	// stops the turn before it starts.
+	BeforeTurn func(ctx context.Context, turn *TurnInfo) error
+	// AfterTurn runs after the run ends, with the outcome it reached.
 	//
-	// A failure is logged and does not change the turn: the work is already
-	// durable, and reporting an error after the terminal event would break the
-	// stream contract every consumer relies on.
-	AfterTurn func(ctx context.Context, turn Turn, result Result) error
+	// A failure is logged and does not change the turn: the work is already durable,
+	// and reporting an error after the terminal event would break the stream contract
+	// every consumer relies on.
+	AfterTurn func(ctx context.Context, turn TurnInfo, result TurnOutcome) error
 }
 
 // SessionInfo is what OnSession is told about the session it is entering.
@@ -43,24 +43,36 @@ type SessionInfo struct {
 	// SessionID and TaskID identify the session and the task it continues.
 	SessionID string
 	TaskID    string
-	// State is where the task stands: submitted for a new one, or wherever a
-	// restored one was left.
+	// State is where the task stands: submitted for a new one, or wherever a restored
+	// one was left.
 	State TaskState
 	// Resumed reports that the task came from the store rather than being minted.
 	Resumed bool
 }
 
-// Turn is one message and the identity it is handled under.
-type Turn struct {
+// TurnInfo is one message and the identity it is handled under.
+type TurnInfo struct {
 	// Agent is the deployment name.
 	Agent string
 	// SessionID is the session the message belongs to.
 	SessionID string
 	// TaskID is empty in BeforeTurn: the task is minted by the run it starts.
 	TaskID string
-	// Message is the turn's input. BeforeTurn may replace it, including its
-	// metadata.
+	// Message is the turn's input. BeforeTurn may replace it, including its metadata.
 	Message message.Message
+}
+
+// TurnOutcome is what a finished turn reached, as a hook sees it.
+//
+// It is deliberately not the host's Result: the terminal content and the artifact list
+// are a projection of the checkpoint, which the host owns. A hook gets the decision
+// (state) and the failure, which is what a policy is written against.
+type TurnOutcome struct {
+	State TaskState
+	// Err is the failure that ended the turn, nil when it completed.
+	Err error
+	// Usage is the turn's accounting, so a hook can bill without reading the stream.
+	Usage outcome.Usage
 }
 
 // Empty reports whether no hook is set, so the run path can skip the plumbing.
@@ -70,10 +82,9 @@ func (h Hooks) Empty() bool {
 
 // Chain composes hooks into one: each stage runs in declaration order.
 //
-// OnSession and BeforeTurn stop at the first failure, because a later hook would
-// be acting on a session or a message its predecessor rejected. AfterTurn runs
-// every hook and logs what failed: one policy's bookkeeping is not another's to
-// cancel.
+// OnSession and BeforeTurn stop at the first failure, because a later hook would be
+// acting on a session or a message its predecessor rejected. AfterTurn runs every hook
+// and logs what failed: one policy's bookkeeping is not another's to cancel.
 func Chain(hooks ...Hooks) Hooks {
 	var chained Hooks
 	var sessions, before, after []int
@@ -99,7 +110,7 @@ func Chain(hooks ...Hooks) Hooks {
 		}
 	}
 	if len(before) > 0 {
-		chained.BeforeTurn = func(ctx context.Context, turn *Turn) error {
+		chained.BeforeTurn = func(ctx context.Context, turn *TurnInfo) error {
 			for _, i := range before {
 				if err := hooks[i].BeforeTurn(ctx, turn); err != nil {
 					return err
@@ -109,7 +120,7 @@ func Chain(hooks ...Hooks) Hooks {
 		}
 	}
 	if len(after) > 0 {
-		chained.AfterTurn = func(ctx context.Context, turn Turn, result Result) error {
+		chained.AfterTurn = func(ctx context.Context, turn TurnInfo, result TurnOutcome) error {
 			for _, i := range after {
 				if err := hooks[i].AfterTurn(ctx, turn, result); err != nil {
 					telemetry.WarnErr(ctx, "agent: an after-turn hook failed", err)

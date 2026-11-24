@@ -31,8 +31,8 @@ type RedactRule struct {
 func Redact(rules ...RedactRule) tool.Middleware {
 	red := newRedactor(rules...)
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
-			return red.Result(next(ctx, call))
+		return func(ctx context.Context, b tool.Binding, call message.ToolCall) message.ToolResult {
+			return red.Result(next(ctx, b, call))
 		}
 	}
 }

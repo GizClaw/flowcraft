@@ -7,11 +7,8 @@
 // manages their lifecycle. A [Session] is the unified handle to one running
 // process — output is an append-only log read by cursor, input is a stream, and
 // exit is a cached value. The one-shot form is derived, not part of the
-// interface: engine.Exec drains a session, so a new backend gets one-shot
-// execution for free and has no second code path to keep in step. The exception
-// is a decorator that needs the completed result — [Executor] — and even that
-// delegates to engine.Exec one layer down rather than re-implementing the
-// drain.
+// interface: [Exec] drains a session, so a new backend gets one-shot execution
+// for free and has no second code path to keep in step.
 //
 // Two rules make a backend honest, and both are enforced by review rather than
 // by the type system:
@@ -27,47 +24,61 @@
 //
 // # Layering
 //
-// Four layers, in dependency order:
+// Three layers, in dependency order:
 //
-//  1. This package: contracts and the value types they are made of. Zero
-//     behavior: no OS probing, no process spawning, no HTTP, no filesystem
-//     access. If a symbol would need any of those, it belongs one layer down.
-//  2. engine: the SDK over the contract — policy decorators (command gates,
-//     approval, defaults), escalation, resource-limit validation, the one-shot
-//     Exec, and platform shell selection.
-//  3. Support packages that a backend needs but that are not the contract:
-//     journal (filesystem event sources), netpolicy (proxy, MITM, SOCKS5), and
-//     sessionkit (process spawning, the session registry, the group resource
-//     sampler).
-//  4. Backends: core/sandbox-local, core/sandbox-bwrap, core/sandbox-seatbelt,
-//     core/sandbox-windows — and core/sandbox-remote, which wraps another runner
-//     instead of spawning processes. A backend is a sibling directory, not a
-//     subpackage, because it is an implementation of the contract rather than
-//     part of it.
+//  1. This package: the contract, the values it is made of, and the three derived
+//     pieces every backend would otherwise re-implement — [Exec] (the one-shot
+//     form), [ValidateConfine] (the construction-time check that the instance's
+//     permission is enforceable, with [Confine.Narrow] resolving a call's budget
+//     against the instance's ceiling), and [DefaultShell]/[ShellFor] (which shell
+//     exists on this host). It spawns nothing itself: Exec goes through a
+//     [SessionStarter], and the shell picker only probes.
 //
-// A backend is an implementation, not part of the contract. It may import
-// engine and any support package; nothing above it may import a backend except
-// the host that selects one (core/runtime).
+//  2. The sandbox module (github.com/GizClaw/flowcraft/sandbox), which owns how
+//     the contract is carried out: journal (filesystem event sources),
+//     netpolicy (proxy, MITM, SOCKS5), and sessionkit (process spawning, the
+//     session registry, the group resource sampler). They depend on this package;
+//     this package never depends on them, which is why they are a module rather
+//     than a subdirectory: the contract is versioned with the platform, the
+//     implementations with the backends they serve.
 //
-// # Why the support packages are public
+//     The split is also a stability statement. This package is the compatibility
+//     surface: its exported API is what a backend implements, so breaking it is a
+//     deliberate, recorded change. The sandbox module is not — its machinery may be
+//     reshaped between minor versions, because every backend that exists today
+//     lives in this repository. The first backend from outside freezes that surface
+//     too.
 //
-// Go's internal rule bounds visibility by directory: core/sandbox/internal/...
-// is importable only from inside core/sandbox. Every shared mechanism a backend
-// needs therefore has to live in a public package: sessionkit, sandboxtest and
-// journal/journaltest are public for that reason, rather than internal/session,
-// internal/sandboxtest and internal/journaltest. core/sandbox/internal is
-// reserved for things no backend may ever need — the bwrap package keeps its own
-// bridge under its own internal/.
+//  3. Backends, in that same module: sandbox/local, sandbox/bwrap,
+//     sandbox/seatbelt, sandbox/windows — and sandbox/remote, which wraps another
+//     runner instead of spawning processes. A backend is a sibling package of the
+//     machinery, not a subpackage of it, because it is an implementation of the
+//     contract rather than part of the contract.
+//
+// The machinery is in the sandbox module today; no backend is yet — the batch
+// that rebuilds one is where the module gains its first.
+//
+// Command gating is deliberately absent. Asking a human, or a rule, whether one
+// command may run — and asking again whether a refused command may leave the
+// boundary — is host policy, not a sandbox capability: it decorates the narrow
+// [SessionStarter], and "leave the boundary" means opening a session with a wider
+// grant rather than widening this one.
+//
+// A backend may import any of the machinery beside it; nothing above it may
+// import a backend except the host that selects one.
 //
 // # Verifying a backend
 //
-// A backend is verified against [sandboxtest], not against its own reading of
-// this documentation: the suite drives a real runner and asserts the promises
+// A backend is verified against sandbox/sandboxtest, not against its own reading
+// of this documentation. The suite lives beside this package, not in the
+// implementations module, because it is the contract's executable specification:
+// a backend author outside this repository should be able to depend on the
+// contract and its suite without pulling in the machinery built here. It drives a
+// real runner and asserts the promises
 // made here (capability honesty, cursor semantics, EOF, idempotent lifecycle,
 // the /dev/null stdin rule). A one-shot Exec, a new transport, or a new
 // platform does not need a new interpretation of the contract — it needs the
 // suite to pass.
 //
-// The behavioural guide is docs/guides/sandbox.md; journal semantics are
-// documented on [JournalProvider] and in the journal package.
+// Journal semantics are documented on [JournalProvider] and in sandbox/journal.
 package sandbox

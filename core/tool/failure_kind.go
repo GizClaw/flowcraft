@@ -3,6 +3,8 @@ package tool
 import (
 	"context"
 	"errors"
+
+	"github.com/GizClaw/flowcraft/core/policy"
 )
 
 // FailureKind classifies why one tool call failed.
@@ -31,16 +33,21 @@ const (
 	FailureToolError FailureKind = "tool_error"
 )
 
-// classifyToolFailure maps the error a tool returned onto the vocabulary. A tool
+// ClassifyFailure maps the error a tool returned onto the vocabulary. A tool
 // that respects its context reports the deadline or cancellation the caller
 // imposed; that is not a tool bug, and calling it one would bury real tool
 // failures in the same bucket.
-func classifyToolFailure(err error) FailureKind {
+func ClassifyFailure(err error) FailureKind {
+	var denial *policy.Denial
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
 		return FailureTimeout
 	case errors.Is(err, context.Canceled):
 		return FailureCanceled
+	case errors.As(err, &denial):
+		// A refusal is not a tool bug: the tool never ran, and calling it one buries the rule that
+		// refused it under every other failure the tool layer reports.
+		return FailurePolicyDenied
 	default:
 		return FailureToolError
 	}
