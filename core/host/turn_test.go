@@ -143,6 +143,30 @@ func TestTheStoreFeedsTheTaskAndTheFingerprint(t *testing.T) {
 	}
 }
 
+// TestAFinishedTaskIsNotResumed is the other half of that pair: a task is one turn, so the turn after a
+// finished one is a new task — and the conversation crosses the boundary through the keys a document
+// marks `carry`, not through one endless run.
+func TestAFinishedTaskIsNotResumed(t *testing.T) {
+	store := agenttest.NewMemStore()
+	if _, _, err := store.Save(context.Background(), agent.Checkpoint{
+		Fingerprint: "fp-1",
+		Task:        agent.Task{ID: "s1", SessionID: "s1", State: agent.StateCompleted},
+	}, []agent.EventRecord{{Kind: "message", Payload: []byte(`"earlier"`)}}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	agents, driver := seenHost(t, WithStore(store), WithFingerprint("fp-1"))
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "again")) {
+	}
+	req := driver.requests[0]
+	if req.Task.ID != "s1/1" {
+		t.Fatalf("task id = %q, want a new task for the new turn", req.Task.ID)
+	}
+	if req.Task.SessionID != "s1" {
+		t.Fatalf("session id = %q, want the conversation it belongs to", req.Task.SessionID)
+	}
+}
+
 // failingStore is a store whose reads fail, which must stop the turn before it starts.
 type failingStore struct{}
 

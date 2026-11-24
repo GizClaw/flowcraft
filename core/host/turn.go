@@ -141,17 +141,22 @@ func (s *Session) identity(ctx context.Context) context.Context {
 
 // request assembles one turn's request.
 //
-// The task is the session's: a conversation continues the task it started, so its checkpoint key is
-// the session id and its round count is what the turn ordinal is derived from.
+// A task is one turn and a session is the conversation, so the task id is minted per turn — but only
+// while the previous one is still open: a suspended task is continued under its own id, and a finished
+// one is history the engine carries forward through the keys its document marks `carry`.
 func (a *Agents) request(ctx context.Context, session *Session, msg message.Message) (agent.Request, error) {
 	session.ordinal++
 	task := agent.Task{ID: session.id, SessionID: session.id, State: agent.StateWorking}
 	if a.store != nil {
 		loaded, err := a.store.LatestForSession(ctx, session.id)
 		switch {
-		case err == nil:
+		case err == nil && !loaded.Task.State.Terminal():
 			task = loaded.Task
 			task.State = agent.StateWorking
+		case err == nil:
+			// The previous turn ended: this one is a new task, and the conversation crosses the boundary
+			// through the document's carried keys rather than through one endless run.
+			task.ID = fmt.Sprintf("%s/%d", session.id, session.ordinal)
 		case errors.Is(err, agent.ErrNoCheckpoint):
 			// A new conversation: the task starts here.
 		default:
