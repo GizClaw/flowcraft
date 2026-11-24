@@ -43,6 +43,12 @@ type Denial struct {
 	// anything the caller would not want a model to read: it is rendered back
 	// to the agent so it can correct itself.
 	Reason string
+	// Cause is the failure behind a refusal, when there was one: an approver that errored, a
+	// store that could not answer. It is deliberately not part of [Denial.Error] and must never
+	// be copied into Reason — the difference between "the policy refused" and "the policy could
+	// not be consulted" is what a caller needs to decide whether to retry, and it is exactly the
+	// detail that must not reach a prompt.
+	Cause error
 }
 
 func (d *Denial) Error() string {

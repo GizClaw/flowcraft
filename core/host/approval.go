@@ -113,7 +113,15 @@ func (s approvalStarter) Start(ctx context.Context, spec sandbox.SessionSpec) (s
 		// that wants to retry has to be able to tell them apart.
 		telemetry.WarnErr(ctx, "host: the approver failed", err)
 		recordDenial(ctx, policy.CheckApproval, s.agent)
-		return nil, &policy.Denial{Check: policy.CheckApproval, Reason: err.Error()}
+		// The reason is rendered back to the model, so it is a fixed sentence: an approver that
+		// failed on an HTTP call, a policy engine or a file read can put paths, endpoints or a
+		// token fragment in its error text, and none of that belongs in a prompt. The cause is
+		// wrapped, so a caller can still tell a failure from a refusal and can read the detail.
+		return nil, &policy.Denial{
+			Check:  policy.CheckApproval,
+			Reason: "the approval service failed; the command was not run",
+			Cause:  err,
+		}
 	}
 	return s.next.Start(ctx, spec)
 }
