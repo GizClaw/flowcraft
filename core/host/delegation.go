@@ -164,7 +164,7 @@ type lineageView struct {
 // lineage is the parent's delegation view. The chain is read from the identity the turn attached, so a
 // resumed process continues the chain it recorded rather than starting a new one at depth zero.
 func (s *Session) lineage() lineageView {
-	return lineageView{policy: s.deploy.grant.Delegation, chain: s.chain}
+	return lineageView{policy: s.grant.Delegation, chain: s.chain}
 }
 
 // admitDelegation answers the three questions the grant asks: which agent, which mode, how deep.

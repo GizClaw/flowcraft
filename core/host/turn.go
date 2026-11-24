@@ -160,7 +160,7 @@ func (s *Session) identity(ctx context.Context) context.Context {
 		Agent:     s.agent,
 		Authority: s.authority,
 		SessionID: s.id,
-		Bind:      s.deploy.grant.Digest(),
+		Bind:      s.bindID,
 	})
 	if err != nil {
 		// A host that already attached an identity owns the trace; the turn runs under it.

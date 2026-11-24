@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
@@ -718,5 +719,98 @@ func TestEvictIdleSkipsARunningTurn(t *testing.T) {
 	}
 	if _, open := agents.Session("s1"); !open {
 		t.Fatal("the running session was evicted")
+	}
+}
+
+// TestASessionRunsUnderTheNarrowedGrant is the two-instances rule the domain model states: the
+// deployment's grant is the ceiling, and a session may run under less. Nothing in the host called
+// [policy.Grant.Narrow], so every session ran under the ceiling and `session.bind.id` was always
+// equal to `agent.grant.id` — the "an untrusted peer can only ask for less" property held only
+// inside `policy`.
+func TestASessionRunsUnderTheNarrowedGrant(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+
+	ceiling := permissiveGrant("local")
+	ceiling.Models = []model.ModelRef{
+		{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}},
+		{ID: model.ModelID{Provider: "openai", Name: "gpt-5-mini"}},
+	}
+	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file", "write_file", "exec"}}
+	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	request := policy.Request{
+		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-5-mini"}}},
+		Tools:  &policy.ToolSet{Allow: []string{"read_file"}},
+	}
+	session, err := agents.Open(t.Context(), "s1", "referee", WithRequest(request))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	bind := session.Binding().Grant
+	if bind.AllowsTool("write_file") || bind.AllowsTool("exec") {
+		t.Fatalf("bind allows %v, want only the requested tool", bind.Tools.Allow)
+	}
+	if !bind.AllowsTool("read_file") {
+		t.Fatal("bind lost the tool the request asked for")
+	}
+	if len(bind.Models) != 1 || bind.Models[0].ID.Name != "gpt-5-mini" {
+		t.Fatalf("bind models = %v, want the requested one", bind.Models)
+	}
+	if session.bindID == "" || session.bindID == ceiling.Digest() {
+		t.Fatalf("bind id = %q, want the narrowed grant's digest", session.bindID)
+	}
+}
+
+// TestANarrowingRequestCannotWiden is the direction that matters: a request outside the ceiling is
+// refused at open, not truncated into something that looks narrower but is not.
+func TestANarrowingRequestCannotWiden(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	ceiling := permissiveGrant("local")
+	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file"}}
+	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	_, err := agents.Open(t.Context(), "s1", "referee", WithRequest(policy.Request{
+		Tools: &policy.ToolSet{Allow: []string{"read_file", "exec"}},
+	}))
+	if err == nil {
+		t.Fatal("a request for a tool outside the ceiling was accepted")
+	}
+	if _, open := agents.Session("s1"); open {
+		t.Fatal("a refused open left a session behind")
+	}
+}
+
+// TestASessionWithoutARequestKeepsTheCeiling is the compatibility half: a caller with nothing to
+// narrow gets the deployment's grant unchanged, and the bind digest still names it.
+func TestASessionWithoutARequestKeepsTheCeiling(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	ceiling := permissiveGrant("local")
+	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file"}}
+	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	session, err := agents.Open(t.Context(), "s1", "referee")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if session.bindID != ceiling.Digest() {
+		t.Fatalf("bind id = %q, want the ceiling's", session.bindID)
 	}
 }
