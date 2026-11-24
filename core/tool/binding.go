@@ -118,6 +118,19 @@ type View interface {
 	RecordCall(call message.ToolCall)
 }
 
+// ViewFactory builds one session's view over a deployment's tool table.
+//
+// The split is the reason this type exists. What may be shown at all is a property of the
+// grant, which is per deployment; what *this conversation* has seen, what it discovered, and
+// how much of its per-round budget it has spent is a property of the conversation. A single
+// view shared by two sessions would let one conversation's tool calls evict the other's, and
+// would make the prompt a session sends depend on what somebody else did — which is neither
+// reproducible nor isolated.
+//
+// So a deployment holds one factory (the policy, and whatever index it shares) and every
+// session asks it for its own view.
+type ViewFactory func() View
+
 // Dispatcher is the execution contract consumers depend on.
 type Dispatcher interface {
 	// Execute runs one call under the binding.

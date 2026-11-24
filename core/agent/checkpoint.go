@@ -291,8 +291,9 @@ type Manifest struct {
 	Driver string `json:"driver,omitempty"`
 	// Models is the model catalog this deployment may call, as it was declared.
 	Models string `json:"models,omitempty"`
-	// Tools is the tool schema the deployment exposes: the definitions the model reads,
-	// after the grant's exposure and any decorator.
+	// Tools is the tool schema the deployment configures: the definitions the model is
+	// offered, after the grant's exposure and any decorator. It is not what one round sent —
+	// a discovery budget that dropped a name is a conversation fact, not a deployment one.
 	Tools string `json:"tools,omitempty"`
 	// Harness is the host-supplied build identity.
 	Harness string `json:"harness,omitempty"`

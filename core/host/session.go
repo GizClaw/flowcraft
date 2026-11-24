@@ -175,9 +175,18 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		platform.SkillsSlot.Provide(capabilities, a.res.skills)
 	}
 
-	// The projection carries the deployment's exposure policy: what the model may see is a property
-	// of the deployment, so one view per session is cheap and the index behind it is shared.
+	// The view is this conversation's own: what may be shown is the deployment's, but what this
+	// session has discovered, how recently it used it and how much of its per-round budget it has
+	// spent are facts of this conversation. One view per session is cheap because the index behind
+	// it belongs to the deployment's factory and is shared.
 	view := deploy.newView()
+	if view == nil {
+		openErr := errors.Join(
+			errdefs.NotAvailablef("host: agent %q: the tool projection built nothing", agentName),
+			built.Close())
+		failSessionSpan(ctx, span, openErr)
+		return nil, span, openErr
+	}
 	binding := tool.Bind(&sessionScratch{id: sessionID, values: map[string]any{}},
 		deploy.grant).WithView(view).WithCaps(capabilities)
 

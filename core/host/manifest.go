@@ -81,12 +81,14 @@ type manifestModel struct {
 	Declared *model.ModelDescriptor `json:",omitempty"`
 }
 
-// manifestTools is the schema the model reads in this deployment: the grant's exposure,
-// after the process's definition decorators.
+// manifestTools is the schema this deployment configures: the grant's exposure, after the
+// process's definition decorators.
 //
-// It is taken from the projection a session will use, not from the registry, because that
-// is the list the model is actually shown — a deployment that hides a tool, or rewrites a
-// description, is a different version combination even though the registry is shared.
+// It is read from a view — a fresh one, since a session's own accumulates discovery and
+// budget — and not from the registry, because that view is the surface the model is offered: a
+// deployment that hides a tool, or rewrites a description, is a different version combination
+// even though the registry is shared. What it deliberately does not include is per-round
+// trimming; a manifest that changed with one round's budget would stop naming a deployment.
 func manifestTools(view tool.View) string {
 	if view == nil {
 		return ""

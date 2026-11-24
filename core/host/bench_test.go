@@ -201,8 +201,8 @@ func benchOptions() Options {
 	o.Dispatcher = func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
 		return stubDispatch{catalog: catalog, chain: chain}
 	}
-	o.View = func(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
-		return stubView{catalog: catalog}
+	o.View = func(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error) {
+		return statelessFactory(catalog), nil
 	}
 	return o
 }
