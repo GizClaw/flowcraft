@@ -19,6 +19,13 @@ nodes:
       messages: messages
       output: answer
       request:
+        # Per-call options belong to the request, not to the deployment: what one turn asks for is the
+        # node's decision. `store: false` keeps the provider from holding the prompt, the answer and the
+        # tool arguments for thirty days — the driver's default for a call that says nothing is to store.
+        extensions:
+          - provider: openai
+            id: generation
+            fields: {store: false}
         system: |
           你只扮演门外货郎。只说门外货郎会说出口的话，不替旁白、其他角色或妖怪发言。
           表面虚弱可怜，话里带一点不自然；不要直接承认自己是妖怪。

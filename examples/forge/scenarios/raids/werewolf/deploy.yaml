@@ -4,137 +4,209 @@ agents:
   # The referee owns the rules and makes no model call of its own: every line of
   # the game is spoken by a seat, reached through the delegate tool.
   - name: referee
-    engine:
-      kind: graph
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/referee.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     # Sync delegation: a rule asks one seat and waits for its answer, which is
     # what a turn-based table needs. Depth and concurrency are the manager's.
-    delegation:
-      targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
-      modes: [sync]
-      timeout: 2m
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+      delegation:
+        targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
+        modes: [sync]
+        timeout: 2m
 
   - name: seat_1
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_1.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_2
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_2.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_3
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_3.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_4
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_4.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_5
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_5.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_6
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_6.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_7
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_7.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_8
-    engine:
-      kind: graph
+    grant:
+      sandbox: local
+      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
+      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
+      files: {}
+      net: {mode: default}
+      limits: {idle: 30m, max_sessions: 64}
+    program:
+      impl: graph
       settings:
+        # What a node calls when the graph names no model.
+        model: {provider: openai, name: gpt-6.1-sol}
+        # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
+        # and means the file beside it.
+        scripts: ${workspace:root}
         path: ${workspace:root}/graphs/seat_8.yaml
-    runtime:
-      layers:
-        - priority: 0
-          path: ${workspace:root}/runtime.yaml
     hooks:
       # The seat's memory: delegation starts a fresh child session per call,
       # so what it said before lives in the workspace, keyed by the game.
-      - kind: seat-memory
-        settings: {dir: .forge/memory, keep: 12}
+      - impl: seat-memory
+        settings: {dir: "${workspace:root}/.forge/memory", keep: 12}

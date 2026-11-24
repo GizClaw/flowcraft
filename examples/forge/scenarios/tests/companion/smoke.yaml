@@ -1,0 +1,5 @@
+name: companion_smoke
+description: "One turn, tools included: ask for music and let the model call the player."
+raid: companion
+turns:
+  - "你好，帮我放一首轻音乐吧。"

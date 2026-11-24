@@ -1,42 +1,43 @@
 # One substrate for the whole table: the referee and every seat share it.
 #
-# Seats differ by their graph (a persona prompt), not by their deployment: a
-# runtime describes the boundary, the files and the models, and none of that
-# changes per player.
+# Seats differ by their graph (a persona prompt), not by their deployment: the process describes what
+# this machine offers, and the agent document selects from it.
 version: 1
-name: storyteller
 
+# A backend holds no directory and no policy: the write set and the network posture come from the
+# session's grant.
 sandbox:
-  backend: local
-  workdir: ${workspace:root}
-  writes:
-    - ${workspace:root}
-  output_mib: 8
-
-files:
-  # Seat memory lives under .forge/memory; the story state under .forge.
-  roots:
-    - ${workspace:root}
+  - {name: local, impl: local}
 
 inference:
   providers:
     - name: openai
-      driver: openai
+      impl: openai
       settings:
         base_url: https://api.openai.com/v1
-        api: chat
+        # responses: the surface where per-call options exist at all. Every model node writes
+        # `store: false`, and the chat surface would refuse that option rather than silently drop it.
+        api: responses
         api_key: ${env:OPENAI_API_KEY}
-  models:
-    - provider: openai
-      model: gpt-6.1-sol
-      limits:
-        max_input_tokens: 128000
-        max_output_tokens: 2048
+        models:
+          - id: {provider: openai, name: gpt-6.1-sol}
   route:
     attempts_per_target: 2
     base_delay: 250ms
 
+# How much of a turn this process records. Both fields are required: "we record nothing" and "nobody
+# said" are different facts, and the second one is how a deployment ends up with no trace at all.
+observability: {trace: call, bodies: false}
+
 tools:
-  # Built-in sets the runtime wires. The delegate tool a seat call needs is
-  # mounted by the manager from the agent's delegation policy, not here.
-  enable: [files]
+  sources:
+    # The table's own simulated tools, then the file set the seats read and write through.
+    - {name: sim, impl: sim}
+    - {name: files, impl: files}
+    - {name: delegation, impl: delegation}
+  middleware:
+    - {name: recover, impl: recover}
+    - {name: telemetry, impl: telemetry}
+
+skills:
+  roots: ["${workspace:root}/skills"]

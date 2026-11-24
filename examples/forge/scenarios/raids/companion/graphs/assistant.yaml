@@ -46,6 +46,13 @@ nodes:
       usage: usage
       output: answer
       request:
+        # Per-call options live here, not in the deployment: what one request asks for is a turn's
+        # decision. `store: false` keeps the provider from keeping the prompt, the answer and the tool
+        # arguments for thirty days — the driver's default for a call that says nothing is to store.
+        extensions:
+          - provider: openai
+            id: generation
+            fields: {store: false}
         system: |
           你是一个中文语音助手，运行在一台智能音箱上。
 
