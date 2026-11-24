@@ -70,11 +70,12 @@ type deployment struct {
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
-	// projection is this deployment's tool visibility: the grant's exposure and budget, over the
-	// process's catalog. One per deployment, because the policy is the deployment's.
-	// newView builds one session's projection from this deployment's authority. It is a closure so the
-	// host names no projection implementation.
-	newView func() tool.View
+	// newView builds one session's view of this deployment's tool table: the grant's exposure over
+	// the process's catalog, plus the state one conversation accumulates. It is a factory rather
+	// than a value because that state — the discovery pool, its recency order, the budget a round
+	// has spent — belongs to the conversation, and two sessions sharing one view would interfere
+	// with each other. It is a closure so the host names no projection implementation.
+	newView tool.ViewFactory
 	// live counts the open sessions, which is what the grant's limit is measured against.
 	live int
 	// retired marks a deployment that a reload replaced: its program is closed when the last
@@ -290,11 +291,18 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	if a.res.newView == nil {
 		return nil, errdefs.NotAvailablef("host: agent %q: this process has no tool projection", dep.Name)
 	}
-	proj := a.res.newView(a.res.tools, dep.Grant.Tools)
+	newView, err := a.res.newView(a.res.tools, dep.Grant.Tools)
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
 	}
-	manifest := a.manifestOf(dep.Program.Impl, dep.Grant.Models, proj)
+	if newView == nil {
+		return nil, errors.Join(
+			fmt.Errorf("host: agent %q: tool exposure: the projection built nothing", dep.Name), program.Close())
+	}
+	// The manifest describes the exposure the deployment configures, so it is read from a fresh
+	// view: a session's view accumulates discovery and budget as it runs, and what one
+	// conversation has spent is not a property of the deployment.
+	manifest := a.manifestOf(dep.Program.Impl, dep.Grant.Models, newView())
 	return &deployment{
 		name:          dep.Name,
 		program:       program,
@@ -302,7 +310,7 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 		observability: a.res.observability,
 		manifest:      manifest,
 		hooks:         hooks,
-		newView:       func() tool.View { return proj },
+		newView:       newView,
 	}, nil
 }
 

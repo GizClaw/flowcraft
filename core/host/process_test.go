@@ -445,10 +445,16 @@ func testOptions(t *testing.T) Options {
 		Dispatcher: func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
 			return stubDispatch{catalog: catalog, chain: chain}
 		},
-		View: func(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
-			return stubView{catalog: catalog}
+		View: func(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error) {
+			return statelessFactory(catalog), nil
 		},
 	}
+}
+
+// statelessFactory answers with a fresh view per session. The stub keeps no state, so a case
+// that cares about isolation supplies its own factory (see view_test.go).
+func statelessFactory(catalog tool.Catalog) tool.ViewFactory {
+	return func() tool.View { return stubView{catalog: catalog} }
 }
 
 // stubDispatch runs a call straight through the catalog, recording nothing: what a host test asserts is

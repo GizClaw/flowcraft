@@ -217,14 +217,19 @@ func dispatcher(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {
 	return tooldispatch.New(catalog, chain...)
 }
 
-func view(catalog tool.Catalog, allowed policy.ToolSet) tool.View {
+// view is the deployment's exposure: one projection per deployment, one view per session.
+//
+// The projection holds the catalog, the normalized policy and the shared search index; a view
+// holds what one conversation has discovered and spent. Returning a single view here would make
+// two sessions evict each other's tools, which is why the seam asks for a factory.
+func view(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error) {
 	projected, err := projection.New(catalog, projection.For(allowed))
 	if err != nil {
-		// A policy the projection refuses is a document error the loader reports; reaching it here
-		// means an authority this process cannot project, which is not a recoverable state.
-		return nil
+		// A policy the projection refuses is an authority this process cannot enforce, so the
+		// deployment is refused at install instead of at the first session.
+		return nil, err
 	}
-	return projected.NewView()
+	return func() tool.View { return projected.NewView() }, nil
 }
 
 // impls is the table this binary compiles in: the providers it carries, the process tool sources it

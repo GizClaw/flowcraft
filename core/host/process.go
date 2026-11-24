@@ -45,9 +45,9 @@ type Resource struct {
 	// is built once here, and a level two agents could disagree about would be a knob with no
 	// effect.
 	observability deploy.Observability
-	// newView builds a deployment's projection; nil means this process has none, which a deployment
-	// with tools cannot run without.
-	newView func(catalog tool.Catalog, allowed policy.ToolSet) tool.View
+	// newView builds a deployment's exposure factory; nil means this process has none, which a
+	// deployment with tools cannot run without.
+	newView func(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error)
 	closers []closer
 }
 
@@ -77,10 +77,17 @@ type Options struct {
 	// the document asked for. The application supplies it: which executor runs a call is a decision
 	// about this binary, not about a deployment document.
 	Dispatcher func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher
-	// View builds one deployment's projection over the tool table, from the tool set its grant allows.
-	// It is per deployment rather than per session because what may be shown is a property of the
-	// authority, and one projection serves every session under the same one.
-	View func(catalog tool.Catalog, allowed policy.ToolSet) tool.View
+	// View builds one deployment's exposure over the tool table, from the tool set its grant
+	// allows, and returns the factory every session asks for its own view.
+	//
+	// The two halves are separate for a reason: what may be shown is the grant's, so it is
+	// built once per deployment, while the discovery pool, its recency order and the budget a
+	// round has spent belong to one conversation. An implementation that returns a single view
+	// for every session would let two sessions evict each other's tools.
+	//
+	// A policy the projection refuses is reported here, at install, rather than at the first
+	// session: a deployment whose authority cannot be projected is not deployable at all.
+	View func(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error)
 }
 
 // Open builds the process described by plan.
