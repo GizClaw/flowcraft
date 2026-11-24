@@ -34,10 +34,10 @@ func TestFilesNormalizedPrunesNestedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Normalized: %v", err)
 	}
-	if want := []string{pathtest.Abs("srv/work")}; !reflect.DeepEqual(got.Read, want) {
+	if want := []string{pathtest.Clean("srv/work")}; !reflect.DeepEqual(got.Read, want) {
 		t.Fatalf("Read = %v, want %v", got.Read, want)
 	}
-	if want := []string{pathtest.Abs("srv/work/out")}; !reflect.DeepEqual(got.Write, want) {
+	if want := []string{pathtest.Clean("srv/work/out")}; !reflect.DeepEqual(got.Write, want) {
 		t.Fatalf("Write = %v, want %v", got.Write, want)
 	}
 }

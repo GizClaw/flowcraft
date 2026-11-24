@@ -41,7 +41,7 @@ func TestNarrowOfNothingKeepsTheCeiling(t *testing.T) {
 	if got.Tools.Allow == nil {
 		t.Fatal("tool allow-list was widened to unrestricted")
 	}
-	if got.Files.Read[0] != pathtest.Abs("srv/w") {
+	if got.Files.Read[0] != pathtest.Clean("srv/w") {
 		t.Fatalf("files = %+v, want the ceiling's", got.Files)
 	}
 	if !got.Limits.IsZero() {

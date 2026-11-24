@@ -7,7 +7,10 @@
 // nothing to do with what it is testing.
 package pathtest
 
-import goruntime "runtime"
+import (
+	"path/filepath"
+	goruntime "runtime"
+)
 
 // Roots returns the synthetic absolute root for this platform: "/" on unix and
 // "C:/" on Windows. Nothing is created; the value only has to satisfy
@@ -27,4 +30,13 @@ func Roots() string {
 // a form feed), which would turn a fixture path into a different string entirely.
 func Abs(name string) string {
 	return Roots() + name
+}
+
+// Clean returns the spelling a normalizer produces: Abs(name) through
+// filepath.Clean, which is what a policy or a confine does to a root before it
+// stores it. A fixture that feeds Abs and then compares against a normalized
+// value needs this on Windows, where Clean turns the forward slashes Abs writes
+// into backslashes.
+func Clean(name string) string {
+	return filepath.Clean(Abs(name))
 }
