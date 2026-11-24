@@ -18,6 +18,7 @@ targets=(
 	"core:./tool/middleware FuzzTruncateJSONResult"
 	"agent:./graph FuzzStateEvent"
 	"agent:./graph/script FuzzDecodeConfig"
+	"agent:./a2a/wire FuzzFromMessage"
 )
 
 for entry in "${targets[@]}"; do
