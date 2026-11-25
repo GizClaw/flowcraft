@@ -60,32 +60,31 @@ and it is the value an agent document is resolved against.
 
 ```go
 session, err := agents.Open(ctx, sessionID, "assistant",
-    host.WithRequest(request),  // narrow the grant, per caller
+    authority, // a policy.Grant: what this session may do
 )
 for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
 | Noun        | Owns                                                                                           |
 | ----------- | ---------------------------------------------------------------------------------------------- |
-| the agent   | the deployment: its program, its hooks, its grant as a ceiling.                                |
+| the agent   | the deployment: its program, its hooks, its session table.                                     |
 | the cell    | the boundary: one backend instance built from _this_ session's confine, plus its `fsx.Tree`.   |
-| the binding | one `tool.Binding`: the narrowed grant, the session identity, the view, the capability pocket. |
+| the binding | one `tool.Binding`: the session's grant, its identity, the view, the capability pocket.       |
 | the driver  | one `agent.Driver` over the deployment's program: the in-flight turn, its queue, its cancel.   |
 
 `Open` is admit → build outside the table's lock → re-validate → insert. Only the
 cheap questions are asked under the lock (closed, unknown agent, session limit,
-duplicate id); the expensive work — factory lookup, `Narrow` when a request was
-supplied, `openCell`, capability slots, the view, `program.Open`, the `OnSession`
-hook — happens without it, and the same questions are asked again before the
-insert. The session limit must be checked under the lock that inserts: two opens
-can both pass the first check.
+duplicate id); the expensive work — normalizing the grant, checking it against what
+the process carries, `openCell`, capability slots, the view, the manifest,
+`program.Open`, the `OnSession` hook — happens without it, and the same questions
+are asked again before the insert. The session limit must be checked under the lock
+that inserts: two opens can both pass the first check.
 
-`WithRequest` is the only thing that triggers `Grant.Narrow`. A caller that does
-not narrow gets the whole ceiling, which is safe in direction and not fail-closed;
-a request outside the ceiling is refused at open rather than truncated, because a
-permission that quietly lost a field is indistinguishable from one that never had
-it. `Request` carries models, a tool set and a budget — deliberately no path and
-no network posture, so untrusted input cannot choose the boundary.
+The grant is a required argument, so there is no default to inherit: the deployment
+document says what runs, and the caller says what this conversation may do. A grant
+naming a backend or a model the process does not carry is `NotAvailable`; one that
+does not validate is a `Validation` error. Neither is truncated into something that
+looks narrower but is not.
 
 ## The boundary comes from the grant
 
@@ -191,45 +190,44 @@ and an approver error is not a denial and also refuses. A process with no policy
 installs the starter undecorated, so approval stays opt-in.
 
 **Escalation** answers "may this one command exceed the boundary". Only a command
-the backend already refused with `sandbox.ErrConfineDenied` is offered, there is
-exactly one retry, and the budget comes from the deployment's `grant.escalate`
-(`max_per_session`, counted before the question):
+the backend already refused with `sandbox.ErrConfineDenied` is offered, and there is
+exactly one retry:
 
 ```go
 agents := host.NewAgents(res,
     host.WithApproval(host.Approval{Whitelist: host.Whitelist{{"git", "status"}}, Approver: ui}),
-    host.WithEscalation(ui), // implements host.Escalator
+    host.WithEscalation(ui),              // implements host.Escalator
+    host.WithEscalationTTL(5*time.Minute), // how long the widened cell may live
 )
 ```
 
-The escalator is told the command, its working directory, the authority in force
-(`From`) and the widest the declaration allows (`To`). Its answer goes through
-`Grant.Widen`, so a grant outside the declaration is refused rather than trusted;
-only `files.write`, `net` and `exec.env` can move. The widened command runs in a
-temporary cell built from the wider grant — the session's own cell is never widened
-in place, because a boundary is what a session _is_. The audit record carries
-hashes and digests (command hash, both bind digests, the escalator's type, the
-decision, the duration) under event kind `escalation`, on
-`context.WithoutCancel`, so a cancelled turn still leaves the record.
+The escalator is told the command, its working directory and the authority in force
+(`From`). Its answer goes through `Grant.Widen`, so an answer that drops a permit the
+session had, changes anything but `files.write`, `net` and `exec.env`, or does not
+validate is refused rather than trusted. The widened command runs in a temporary
+cell built from the wider grant — the session's own cell is never widened in place,
+because a boundary is what a session _is_ — and `ValidateConfine` is what says
+whether the backend can honour it. The audit record carries hashes and digests
+(command hash, both bind digests, the escalator's type, the decision, the duration)
+under event kind `escalation`, on `context.WithoutCancel`, so a cancelled turn still
+leaves the record.
 
-Declaring `grant.escalate` and installing no escalator is a failure at the first
-refused command (`NotAvailable`), not a silent narrow retry: unlike approval, the
-declaration is a promise somebody made.
+With no escalator installed the refusal stands: the feature is opt-in, like approval.
 
 ## The session table
 
 | Call                                     | Use                                                                                                                                                         |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Open`                            | Admit a session. `WithRequest` narrows, `WithChain` attaches a delegation lineage.                                                                          |
+| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                              |
 | `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                           |
 | `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                |
-| `Agents.EvictIdle(agent, now)`           | Evict by `grant.limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |
+| `Agents.EvictIdle(agent, now)`           | Evict by the agent's `limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |
 | `Agents.Add` / `Remove` / `Reload`       | Install, retract, swap. `Remove` refuses while sessions are open (`ErrSessionsActive`).                                                                     |
 | `Agents.Close(ctx)`                      | Close the whole table, then let `Resource.Close` release the process.                                                                                       |
 
-`limits` sits in the grant because it is parsed from the same document, but it is
-not a permission: `Narrow` clears it, the digest ignores it, and a session does not
-limit itself.
+`limits` sits beside the grant in the agent document rather than inside it, because
+it is the session table's policy and not a permission: a session does not limit
+itself, and the digest of a grant never sees it.
 
 ## Ownership
 

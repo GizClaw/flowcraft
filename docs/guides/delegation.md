@@ -24,23 +24,29 @@ imports the host.
 
 ## Deployment
 
-Delegation is a block on an agent's grant. A process document cannot grant it, and an
-absent block is not "unrestricted" — it is no delegation at all, which is the safe zero
-value for the one capability that can manufacture a run under a different grant:
+Delegation is a block on the authority a session is opened with. No document can grant
+it, and an absent block is not "unrestricted" — it is no delegation at all, which is the
+safe zero value for the one capability that can manufacture a run under a different
+authority:
 
-```yaml
-agents:
-  - name: forge
-    grant:
-      # …
-      delegation:
-        targets: [forge-review, forge-test] # required: naming is how it is granted
-        modes: [sync, async] # required; async must be named to be used
-        max_depth: 4 # zero caps nothing
-        max_concurrent: 4 # zero is unbounded; the session's own limit still applies
-        timeout: 5m # zero leaves it to the caller's context
-        max_input_bytes: 65536 # zero uses policy.DefaultMaxInputBytes (64 KiB)
+```go
+authority := policy.Grant{
+    // …
+    Delegation: &policy.Delegation{
+        Targets:       []string{"forge-review", "forge-test"}, // required: naming is how it is granted
+        Modes:         []policy.DelegationMode{policy.DelegationSync, policy.DelegationAsync},
+        MaxDepth:      4,     // zero caps nothing
+        MaxConcurrent: 4,     // zero is unbounded; the session's own limit still applies
+        Timeout:       policy.Duration(5 * time.Minute), // zero leaves it to the caller's context
+        MaxInputBytes: 65536, // zero uses policy.DefaultMaxInputBytes (64 KiB)
+    },
+}
 ```
+
+The child's authority is resolved from the trusted side. With no resolver installed it
+inherits the parent's grant, which is the one rule that cannot escalate; an application
+that needs per-target authority installs `host.WithDelegationGrant` and returns something
+narrower.
 
 | Field             | Rule                                                                                                                         |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -51,11 +57,12 @@ agents:
 | `timeout`         | Bounds one synchronous edge. Zero leaves the child to the caller's context, which for a sync edge is the parent's turn.      |
 | `max_input_bytes` | Caps the text one delegation hands over. Zero uses `policy.DefaultMaxInputBytes`.                                            |
 
-The values are validated at load (`policy.Delegation.Validate`, reached through
-`Grant.Normalized`), so a block with no target or no mode is a document error rather
-than a session that cannot delegate. Every edge is admitted against the **parent's**
-grant: only the caller's side can answer "may this session hand work to that agent, that
-way, this deep".
+The values are validated with the grant (`policy.Delegation.Validate`, reached through
+`Grant.Normalized`), so a block with no target or no mode is refused at open rather than
+being a session that silently cannot delegate. Every edge is admitted against the **parent's**
+authority: only the caller's side can answer "may this session hand work to that agent, that
+way, this deep". The child then runs under its own — inherited from the parent, or resolved by
+the application — never under authority borrowed from somewhere the parent could not reach.
 
 ## The four verbs
 

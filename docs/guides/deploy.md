@@ -24,10 +24,10 @@ one owns:
 | Document           | Says                                                                                                                                       |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | a process document | what _this process_ carries: the sandbox backends, the model targets, the tool sources, the skill roots, and how much of a turn it records |
-| an agent document  | what _one agent_ is: its name, its program, its grant, its hooks                                                                           |
+| an agent document  | what _one agent_ is: its name, its program, its session table, its hooks                                                                   |
 
-An agent selects from the process's resources through its `policy.Grant`; it
-cannot add a provider or a backend. Adding a resource means editing the process
+A session selects from the process's resources through the `policy.Grant` its
+caller states when it is opened; a document cannot add a provider or a backend. Adding a resource means editing the process
 document and restarting — a different action from deploying an agent, and the
 error messages keep the two apart.
 
@@ -73,8 +73,8 @@ observability: { trace: call, bodies: false }
 | Section                 | Rule                                                                                                                        |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `version`               | Must be `1` (`deploy.SupportedVersion`). Another version is refused instead of read optimistically.                         |
-| `sandbox[]`             | `{name, impl, settings}`. `name` is what an agent's `grant.sandbox` selects; `impl` is a backend registered on the process. |
-| `inference.providers[]` | `{name, impl, settings}`. `name` is what a grant's models are checked against, `impl` a registered provider.                |
+| `sandbox[]`             | `{name, impl, settings}`. `name` is what a session's `grant.sandbox` selects; `impl` is a backend registered on the process. |
+| `inference.providers[]` | `{name, impl, settings}`. `name` is what a grant's models are checked against, `impl` a registered provider.                 |
 | `inference.route`       | `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. Selectors are Go values and stay out of the document.      |
 | `tools.sources[]`       | `{name, impl, settings}`. Every source is aggregated into one tool table for the process.                                   |
 | `tools.middleware[]`    | `{name, impl, settings}`. The chain every tool call passes through, outermost first.                                        |
@@ -102,25 +102,7 @@ agents:
       settings:
         model: { provider: openai, name: gpt-4o-mini }
         path: /srv/agent/graphs/assistant.yaml
-    grant:
-      sandbox: bwrap # the process must configure it; escalate needs a boundary
-      files:
-        read: [/srv/agent]
-        write: [/srv/agent/out]
-      net: { mode: allow_list, allow_hosts: [api.openai.com] }
-      exec: { timeout: 60s }
-      resources: { cpu_millicores: 2000, memory_bytes: 2147483648 }
-      models:
-        - id: { provider: openai, name: gpt-4o-mini }
-      tools: { allow: [read_file, write_file, exec] }
-      escalate:
-        # Every dimension a declaration widens must cover what the grant already
-        # allows; on a restricted write set that means restating its roots.
-        files: { write: [/srv/agent/out, /srv/agent/cache] }
-        net: { mode: allow_list, allow_hosts: [api.openai.com, "*.github.com"] }
-        ttl: 5m
-        max_per_session: 3
-      limits: { idle: 30m, max_sessions: 8 }
+    limits: { idle: 30m, max_sessions: 8 }
     hooks:
       - impl: memory
         settings: { dir: /srv/agent/memory, retain: 40 }
@@ -131,43 +113,42 @@ agents:
 | `version`          | Must be `1`.                                                                                              |
 | `agents[].name`    | Required, unique in the document, and what a host addresses the agent by. Layer merging also keys on it.  |
 | `agents[].program` | Required. `impl` names a registered program (`graph` in `examples/forge`); `settings` are that program's. |
-| `agents[].grant`   | The agent's `policy.Grant`: its ceiling. Validated at load (see [The grant](#the-grant)).                 |
+| `agents[].limits`  | **Required.** `idle > 0` and optionally `max_sessions`. The session table's policy, not a permission.     |
 | `agents[].hooks`   | `{impl, settings}`, chained in declaration order. An impl nobody registered is a document error.          |
 
-The document has no runtime section on purpose: what an agent may use is its
-grant, not a private copy of the process. An agent that needs a second backend or
-a second provider is an agent the process cannot serve, and saying so at load is
-the whole point of this layer.
+The document has no runtime section on purpose: what an agent may use is the
+process's, not a private copy of it. It also has no permission section: what a
+session may do is stated by whoever opens it (see [Authority](#authority)).
 
-## The grant
+## Authority
 
-`policy.Grant` is the ceiling an agent's sessions run under. It is decoded and
-validated by `core/policy`, not by `deploy`, so the document and the runtime
-enforce one rule set:
+`policy.Grant` is what one session may do. It is a required argument to
+`host.Open` — a session with no stated authority has not been authorised by
+anybody — and it is built by the application, which is the trusted side. The
+value is validated by `core/policy`, not by the host, so the code that builds one
+and the code that enforces it agree by construction.
 
 | Field        | Meaning                                                                                                               | Zero value                                                                  |
 | ------------ | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| `sandbox`    | The backend this agent's sessions run in, by the name the process gave it.                                            | The runtime's default; a name the process does not carry is `NotAvailable`. |
+| `sandbox`    | The backend this session runs in, by the name the process gave it.                                                    | The one backend the process configured; a name it does not carry is `NotAvailable`. |
 | `files`      | `read[]`, `write[]`, `readonly`. Absolute roots, no globs, no symlink resolution.                                     | Neither side restricted.                                                    |
 | `net`        | `mode` (`default`, `deny_all`, `allow_list`, `proxy`), `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`. | `default`: the host decides.                                                |
 | `exec`       | `timeout`, `env`, `shell`.                                                                                            | No timeout, the host's environment, the backend's shell.                    |
 | `resources`  | `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.                                                   | Unbounded — and a backend that cannot enforce a non-zero value must refuse. |
-| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **none**: a model call spends money, so there is no "all".      |
+| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **every model the process serves**.                             |
 | `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                       |
 | `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                          |
-| `escalate`   | A declared widening: `files.write[]`, `net`, `exec.env`, `ttl`, `max_per_session`.                                    | Absent means a refused command stays refused.                               |
-| `limits`     | `idle`, `max_sessions`.                                                                                               | **Required**: an agent must state `limits.idle`.                            |
+Three defaults are deliberately equal, and the equality is the design: files are
+open because a read is recoverable and auditable; tools are open because which
+tools exist is a property of the process; models are open because which models
+exist is the process's too. Each one is enforced where it is used — the tree
+handles the files, the projection the tools, and the host refuses a model call
+outside the set before any provider sees it.
 
-Three defaults are deliberately different, and the difference is the design:
-files are open because a read is recoverable and auditable; tools are open because
-which tools exist is a property of the process; models are closed because a call
-names a resource and there is no "everything" spelling for it.
-
-`Grant.Normalized()` is the load-time gate and the canonical form at once. It
-normalizes `files`, `tools` and `net`, validates `exec`, `resources`, `limits` and
-`delegation`, de-duplicates models while keeping declaration order (that order is
-the failover priority), deep-copies the slices a narrowing could touch, and checks
-`escalate` against the grant it sits on.
+`Grant.Normalized()` is the gate and the canonical form at once. It normalizes
+`files`, `tools` and `net`, validates `exec`, `resources` and `delegation`,
+de-duplicates models while keeping declaration order (that order is the failover
+priority), and deep-copies the slices the value owns.
 
 Three `files` invariants are refused rather than repaired:
 
@@ -181,51 +162,38 @@ A root must be absolute, non-empty, free of surrounding whitespace and not a glo
 nothing are the same permission and must produce the same digest. Normalization is
 lexical: nothing is resolved, so a symlink and its target are two different roots.
 
-`readonly` is a _tool-level_ permission, not a mount: `exec("echo x > /tmp/f")`
-does not go through `fsx`. A stronger promise has to come from a backend that
-mounts read-only, or from one that refuses a write-restricting confine it cannot
-enforce — which is what the shipped backends do.
+`readonly` is refused unless the backend can bound writes at the OS level: it is a
+confine, not a wish. `exec("echo x > /tmp/f")` never goes through `fsx`, so a
+backend that only checks paths inside the file tools cannot honour it, and
+`ValidateConfine` refuses such a confine at open rather than accepting a promise it
+does not keep.
 
-### `escalate`: declared widening
+### Widening a refused command
 
-`grant.escalate` is what an operator allowed above the ceiling for one command at
-a time. It is a second layer, not a second ceiling: a caller that narrowed a
-session through `policy.Request` cannot have the whole ceiling handed back by a
-refused command.
+A backend that refuses a command with `sandbox.ErrConfineDenied` has said the command is outside
+the session's authority. A process may offer that refusal to an operator
+(`host.WithEscalation`), and what comes back is an approval for **one command in a temporary
+cell** — never a change to the session's own boundary.
 
-```yaml
-grant:
-  sandbox: bwrap # a backend that can confine writes
-  files: { read: [/srv/agent], write: [/srv/agent/out] }
-  net: { mode: allow_list, allow_hosts: [api.openai.com] }
-  exec: { env: { allow: [PATH] } }
-  escalate:
-    files: { write: [/srv/agent/out, /srv/agent/cache] }
-    net: { mode: allow_list, allow_hosts: [api.openai.com, "*.github.com"] }
-    exec: { env: { allow: [PATH, HTTPS_PROXY] } }
-    ttl: 5m
-    max_per_session: 3
+```go
+host.WithEscalation(myEscalator)   // an implementation of host.Escalator
+host.WithEscalationTTL(5 * time.Minute)
 ```
 
-- Only three dimensions widen: `files.write`, `net` and `exec.env`. Widening
-  anything else would change what the session _is_, not where one command runs.
-- `files.read` and `files.readonly` are refused, and so is a `files.write` root
-  outside the grant's read roots.
-- Every dimension the declaration names must **cover** what the grant already
-  allows — an escalation only widens. On a grant with a restricted write set that
-  means `escalate.files.write` restates the grant's own roots and adds to them; a
-  declaration that lists three dimensions while the grant restricts files must
-  still name the write set.
-- `ttl` and `max_per_session` are required and must be positive: a widening with
-  no end is a new ceiling, and an uncapped one lets a model turn the confine into
-  a prompt it can summon.
-- The declaration is checked against the selected backend at load. A backend that
-  does not report write confinement has no boundary to widen, so the deployment is
-  `NotAvailable` — better than a success signal that means nothing.
+- The answer must be a widening: `policy.Grant.Widen` refuses one that drops a permit the session
+  already had, changes anything but `files.write`, `net` and `exec.env`, or does not validate. An
+  answer that replaces the authority instead of widening it does not run.
+- The bound above the approval is what the machine can enforce: the temporary cell is built from
+  the widened grant through the same backend factory, and `sandbox.ValidateConfine` is what says
+  whether that backend can honour it.
+- The attempt is retried once. A second refusal inside the widened cell is the answer, so a model
+  cannot summon a prompt by walking into whatever boundary it is given.
+- `ttl` belongs to the process rather than to a document: a temporary cell has to end, whatever
+  the command asked for.
+- Every widening that reached a cell leaves an audit record: the command hash, the two bind
+  digests and the decision. The command text, its arguments and the paths are never written.
 
-A session never carries the declaration: `Grant.Narrow` clears it, and only the
-host's escalation path reads it, when a backend refused a command with
-`sandbox.ErrConfineDenied`.
+With no escalator installed the refusal stands; the feature is opt-in, like approval.
 
 ## Registering implementations
 
@@ -274,7 +242,7 @@ Two registration-wide declarations travel with the factory:
 | Declaration | Answers                                                                                                                                                                                                                                                                                                                                                          |
 | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `AtTrace`   | The least trace level the link is worth installing at. A middleware below the process's level is left out of the plan, not built and disabled.                                                                                                                                                                                                                   |
-| `Enforcing` | What a backend can enforce on this platform, as a `sandbox.Enforcement`. The loader reads it while loading a document, because the per-session instance does not exist yet — and a backend that declares nothing is one nothing can be escalated on. `sandbox/local` is that case: it reports no filesystem bounds, so `grant.escalate` on it is `NotAvailable`. |
+| `Enforcing` | What a backend can enforce on this platform, as a `sandbox.Enforcement`. The host reads it when a session is opened, because the per-session instance does not exist until then — and a backend that declares nothing bounds nothing, so a session that narrows writes onto it is refused. `sandbox/local` is that case. |
 
 ## Loading
 
@@ -350,16 +318,15 @@ missing := req.Missing(os.LookupEnv) // every unset variable, in one pass
 
 | Class          | Means                                                                                                                                                                           | Fixed by                          |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `Validation`   | The document does not hold together: unknown field, wrong type, missing required value, a duplicate name, a name nobody registered, a grant that cannot be enforced.            | Editing the document.             |
-| `NotAvailable` | The document holds together but asks for something this process lacks: a backend it does not configure, a model it does not serve, an escalation on a backend with no boundary. | Changing how the process started. |
+| `Validation`   | The document does not hold together: unknown field, wrong type, missing required value, a duplicate name, a name nobody registered.                                              | Editing the document.             |
+| `NotAvailable` | The document holds together but asks for something this process lacks: a program or hook kind it did not register, a session whose grant names a backend or a model the process does not carry. | Changing how the process started. |
 
 ```text
 deploy: an agent document needs at least one agent
 deploy: every agent needs a name
-deploy: agent "assistant" must state grant.limits (idle, and optionally max_sessions)
+deploy: agent "assistant" must state limits (idle, and optionally max_sessions)
 deploy: agent "assistant" selects sandbox "bwrap", which this process does not configure (local)
 deploy: agent "assistant" names model "openai/gpt-5", which this process does not serve (openai/gpt-4o-mini)
-deploy: agent "assistant" declares grant.escalate on sandbox "local", which does not confine writes; there is no boundary to widen
 deploy: observability.trace is required (none, run, call or node)
 deploy: observability.bodies is required (true or false)
 ```
@@ -377,24 +344,25 @@ agents := host.NewAgents(res,
     host.WithFingerprint(deploy.Fingerprint(deployments)),
     host.WithHarness("forge@1.2.3"),
     host.WithApproval(approval),              // the policy that decides a command
-    host.WithEscalation(escalator),           // who agrees to a declared widening
+    host.WithEscalation(escalator),           // who agrees to widen a refused command
+    host.WithEscalationTTL(5*time.Minute),    // how long that widened cell may live
     host.WithRunSink(func(record agent.RunRecord) { ... }),
 )
 if err := agents.Add(deployments...); err != nil { ... }
 defer agents.Close(ctx)
 
-session, err := agents.Open(ctx, sessionID, "assistant", host.WithRequest(request))
+session, err := agents.Open(ctx, sessionID, "assistant", authority)
 for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
 | Call                                           | Use                                                                                                   |
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                        |
-| `Agents.Open`                                  | Admit a session: `WithRequest` narrows the grant, `WithChain` attaches a delegation lineage.          |
+| `Agents.Open`                                  | Admit a session under the `policy.Grant` its caller states; `WithChain` attaches a delegation lineage. |
 | `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                            |
 | `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                   |
 | `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                    |
-| `Agents.EvictIdle`                             | Evict by the grant's `limits.idle`. Explicit, and it skips a running session however long it has run. |
+| `Agents.EvictIdle`                             | Evict by the agent's `limits.idle`. Explicit, and it skips a running session however long it has run. |
 | `Agents.Names` / `Deployed`                    | What is installed.                                                                                    |
 | `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                          |
 
@@ -402,7 +370,9 @@ A reload retires the old program and closes it when its last session is gone: a
 session runs against what it was opened under.
 
 `deploy.Fingerprint(deployments)` is the identity of a deployment set — name,
-program kind, `Grant.Digest()` and hook kinds, per deployment, in order. It lives
+program kind and hook kinds, per deployment, in order. Authority is deliberately
+not in it: a deployment no longer carries one, and the checkpoint records the
+manifest a session ran under instead. It lives
 in `deploy` because two processes must compute it identically to be comparable at
 all; a checkpoint written under a different fingerprint is refused on resume. The
 observability settings and the model manifest are deliberately outside it: a
@@ -415,7 +385,7 @@ record level decides how much evidence a run leaves, not whether it can continue
 | `core/deploy`         | Both document shapes, the implementation table, loading, plans, `Fingerprint`. Imports no implementation. |
 | `core/deploy/sources` | `File`, `Bytes`, `FS`, `Func`, `Over`: the four constructors over `config.Layer`.                         |
 | `core/host`           | `Resource` (one process), `Agents` (one deployment table), `Session` (one conversation), one turn.        |
-| `core/policy`         | `Grant`, `Request`, `Narrow`, `Widen`, `Denial`: authority in one value.                                  |
+| `core/policy`         | `Grant`, `Widen`, `Diff`, `Denial`: authority in one value.                                               |
 | `core/config`         | The layer stack, the merge, placeholders and provenance.                                                  |
 | `core/agent`          | The turn decorator, the driver contract, the checkpoint and record shapes.                                |
 | `agent/graph`         | The `graph` program's implementation and its document; see [graph.md](graph.md).                          |
