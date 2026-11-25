@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -241,11 +242,29 @@ func (r *Resource) addCloser(name string, close func() error) {
 // backendFactory returns the constructor registered under name, which is what a grant's sandbox
 // field selects.
 //
+// An empty name asks for the runtime's default: the one backend this process configured. A
+// process with none, or with several and an unstated choice, has no default — guessing would run
+// the session somewhere the caller did not name.
+//
 // It is unexported because [Agents] reads it directly: a session's backend instance is built from
 // this factory and that session's confine, so the only consumer is in this package.
 func (r *Resource) backendFactory(name string) (BackendFactory, bool) {
-	factory, ok := r.backends[name]
-	return factory, ok
+	if name != "" {
+		factory, ok := r.backends[name]
+		return factory, ok
+	}
+	if len(r.order) == 1 {
+		return r.backends[r.order[0]], true
+	}
+	return nil, false
+}
+
+// sandboxNames renders the backends this process configured, for an error message.
+func (r *Resource) sandboxNames() string {
+	if len(r.order) == 0 {
+		return "none"
+	}
+	return strings.Join(r.order, ", ")
 }
 
 // Capabilities reports what an agent document may ask for.

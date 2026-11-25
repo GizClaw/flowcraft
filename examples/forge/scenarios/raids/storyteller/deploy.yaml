@@ -14,25 +14,8 @@ agents:
         scripts: ${workspace:root}
         path: ${workspace:root}/graphs/narrator.yaml
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      delegation:
-        targets: [seat_wukong, seat_tangseng, seat_bajie, seat_monster]
-        modes: [sync]
-        timeout: 2m
-
   - name: seat_wukong
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -50,12 +33,6 @@ agents:
 
   - name: seat_tangseng
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -71,12 +48,6 @@ agents:
 
   - name: seat_bajie
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -92,12 +63,6 @@ agents:
 
   - name: seat_monster
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:

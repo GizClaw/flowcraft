@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/internal/pathtest"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 )
 
@@ -144,14 +143,11 @@ func roots(values ...string) []string {
 // TestAsDenialSurvivesWrapping is the contract the recording layer relies on: a
 // refusal stays inspectable after a caller wraps it with context.
 func TestAsDenialSurvivesWrapping(t *testing.T) {
-	_, err := policy.Grant{Models: []model.ModelRef{
-		{ID: model.ModelID{Provider: "openai", Name: "gpt-4o-mini"}},
-	}}.Narrow(policy.Request{
-		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
-	})
+	refused := &policy.Denial{Check: policy.CheckModels, Reason: "model is not granted"}
+	var err error = refused
 	denial, ok := policy.AsDenial(err)
 	if !ok {
-		t.Fatalf("Narrow returned %v, want a *policy.Denial", err)
+		t.Fatalf("AsDenial(%v) did not find the denial", err)
 	}
 	if denial.Check != policy.CheckModels {
 		t.Fatalf("Check = %q, want %q", denial.Check, policy.CheckModels)

@@ -31,7 +31,6 @@ var documentTypes = []any{
 	policy.MITMPolicy{},
 	policy.Escalation{},
 	policy.Change{},
-	policy.Request{},
 }
 
 // TestEveryDocumentFieldIsTagged is the mechanical half of "a Grant is the

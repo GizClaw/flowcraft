@@ -305,28 +305,6 @@ func TestEscalationLoadTimeRules(t *testing.T) {
 	}
 }
 
-// TestNarrowDoesNotCarryTheDeclaration pins the direction: a bind is what a
-// session is, and what it may be widened to is the deployment's statement, so the
-// narrowed grant does not travel with it.
-func TestNarrowDoesNotCarryTheDeclaration(t *testing.T) {
-	bind, err := confined().Narrow(policy.Request{})
-	if err != nil {
-		t.Fatalf("Narrow: %v", err)
-	}
-	if bind.Escalate != nil {
-		t.Fatal("the bind carries the escalation declaration")
-	}
-	if _, err := bind.Widen(bind); err == nil {
-		t.Fatal("a bind with no declaration widened")
-	}
-	// The declaration is still the ceiling's, and the host re-attaches it to widen.
-	from := bind
-	from.Escalate = confined().Escalate
-	if _, err := from.Widen(from.Escalate.Widest(bind)); err != nil {
-		t.Fatalf("Widen: %v", err)
-	}
-}
-
 // normalized is the value the host works with: a validated ceiling.
 func normalized(t *testing.T, grant policy.Grant) policy.Grant {
 	t.Helper()

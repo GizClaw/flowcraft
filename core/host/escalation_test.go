@@ -214,7 +214,7 @@ func escalatingHost(t *testing.T, grant policy.Grant, opts ...AgentsOption) (san
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", grant)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -507,14 +507,14 @@ func TestADelegatedChildCannotBorrowItsParentsDeclaration(t *testing.T) {
 	if err := agents.Add(parent, child); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	parentSession, err := agents.Open(t.Context(), "p1", "parent")
+	parentSession, err := agents.Open(t.Context(), "p1", "parent", grant)
 	if err != nil {
 		t.Fatalf("Open parent: %v", err)
 	}
 	if parentSession.grant.Escalate == nil {
 		t.Fatal("the parent declares no escalation, so this test would pass for the wrong reason")
 	}
-	childSession, err := agents.Open(t.Context(), "c1", "child", WithChain(identity.Chain{ID: "c", Depth: 1}))
+	childSession, err := agents.Open(t.Context(), "c1", "child", permissiveGrant("local"), WithChain(identity.Chain{ID: "c", Depth: 1}))
 	if err != nil {
 		t.Fatalf("Open child: %v", err)
 	}

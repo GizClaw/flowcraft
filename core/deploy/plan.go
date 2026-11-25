@@ -125,8 +125,6 @@ type Deployment struct {
 	Program PlannedProgram
 	// Limits are the session table's decisions, already validated.
 	Limits policy.Limits
-	// Grant is the authority its sessions run under, already validated.
-	Grant policy.Grant
 	// Hooks are the lifecycle policies attached to it, in declaration order. Each one carries
 	// its own settings because a hook without them cannot do anything: forge's seat memory
 	// needs a directory and a retention count.

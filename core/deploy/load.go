@@ -110,10 +110,8 @@ type agentEntry struct {
 	Name    string          `json:"name"`
 	Program programDocument `json:"program"`
 	// Limits are the session table's decisions: how long a conversation may sit idle and how
-	// many this agent may hold. They sit beside the grant rather than inside it because they
-	// are not permissions — a session does not limit itself.
+	// many this agent may hold. They are the table's policy, not a session's permission.
 	Limits policy.Limits  `json:"limits"`
-	Grant  policy.Grant   `json:"grant,omitempty"`
 	Hooks  []hookDocument `json:"hooks,omitempty"`
 }
 

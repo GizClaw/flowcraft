@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/model"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
 )
@@ -118,6 +119,25 @@ type toolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
+// manifestFor is manifestOf with the per-authority cache: two sessions opened with the same
+// grant run the same version combination, and hashing a tool schema per open would be paying for
+// the same answer twice. It is keyed by the grant's digest, which covers every field the
+// manifest reads.
+func (a *Agents) manifestFor(entry *deployment, grant policy.Grant, view tool.View) agent.Manifest {
+	key := grant.Digest()
+	entry.cacheMu.Lock()
+	cached, ok := entry.manifests[key]
+	entry.cacheMu.Unlock()
+	if ok {
+		return cached
+	}
+	manifest := a.manifestOf(entry.kind, grant.Models, view)
+	entry.cacheMu.Lock()
+	entry.manifests[key] = manifest
+	entry.cacheMu.Unlock()
+	return manifest
 }
 
 // manifestOf assembles one deployment's version combination from the process it runs in.

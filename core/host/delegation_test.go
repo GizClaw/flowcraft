@@ -97,7 +97,7 @@ func asyncHost(t *testing.T) (*Agents, *sessionProgram, *sessionProgram) {
 	if err := agents.Add(parent, child); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "p1", "parent"); err != nil {
+	if _, err := agents.Open(t.Context(), "p1", "parent", parentGrant); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })

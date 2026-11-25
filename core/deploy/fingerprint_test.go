@@ -5,16 +5,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/policy"
 )
 
 // deployment is one agent as a document resolves it, with only the facts the fingerprint
 // reads.
-func deployment(name, program string, grant policy.Grant, hooks ...string) deploy.Deployment {
+func deployment(name, program string, hooks ...string) deploy.Deployment {
 	dep := deploy.Deployment{
 		Name:    name,
 		Program: deploy.PlannedProgram{Impl: program},
-		Grant:   grant,
 	}
 	for _, hook := range hooks {
 		dep.Hooks = append(dep.Hooks, deploy.PlannedHook{Impl: hook})
@@ -28,8 +26,8 @@ func deployment(name, program string, grant policy.Grant, hooks ...string) deplo
 func TestFingerprintIsReproducible(t *testing.T) {
 	set := func() []deploy.Deployment {
 		return []deploy.Deployment{
-			deployment("forge", "graph", policy.Grant{Sandbox: "local"}, "audit"),
-			deployment("review", "a2a", policy.Grant{Sandbox: "local"}),
+			deployment("forge", "graph", "audit"),
+			deployment("review", "a2a"),
 		}
 	}
 	first := deploy.Fingerprint(set())
@@ -48,18 +46,14 @@ func TestFingerprintIsReproducible(t *testing.T) {
 func TestFingerprintCoversWhatResumeDependsOn(t *testing.T) {
 	base := func() []deploy.Deployment {
 		return []deploy.Deployment{
-			deployment("forge", "graph", policy.Grant{Sandbox: "local"}, "audit"),
-			deployment("review", "a2a", policy.Grant{Sandbox: "local"}),
+			deployment("forge", "graph", "audit"),
+			deployment("review", "a2a"),
 		}
 	}
 	reference := deploy.Fingerprint(base())
 	cases := map[string]func([]deploy.Deployment) []deploy.Deployment{
 		"program": func(deps []deploy.Deployment) []deploy.Deployment {
 			deps[0].Program.Impl = "a2a"
-			return deps
-		},
-		"grant": func(deps []deploy.Deployment) []deploy.Deployment {
-			deps[0].Grant.Sandbox = "bwrap"
 			return deps
 		},
 		"hook": func(deps []deploy.Deployment) []deploy.Deployment {
@@ -79,14 +73,22 @@ func TestFingerprintCoversWhatResumeDependsOn(t *testing.T) {
 			t.Errorf("changing the %s left the fingerprint alone", name)
 		}
 	}
+
+	// The session table's limits are not deployment identity: changing how long a conversation
+	// may sit idle must not make a checkpoint unusable.
+	relaxed := base()
+	relaxed[0].Limits.MaxSessions = 1
+	if got := deploy.Fingerprint(relaxed); got != reference {
+		t.Error("changing the session limits changed the fingerprint")
+	}
 }
 
 // TestFingerprintSeparatesItsParts is the collision the length prefix prevents: without a
 // separator, agent "ab" running program "c" and agent "a" running "bc" hash the same bytes,
 // and a task could resume under the wrong deployment.
 func TestFingerprintSeparatesItsParts(t *testing.T) {
-	left := deploy.Fingerprint([]deploy.Deployment{deployment("ab", "c", policy.Grant{})})
-	right := deploy.Fingerprint([]deploy.Deployment{deployment("a", "bc", policy.Grant{})})
+	left := deploy.Fingerprint([]deploy.Deployment{deployment("ab", "c")})
+	right := deploy.Fingerprint([]deploy.Deployment{deployment("a", "bc")})
 	if left == right {
 		t.Fatal("two different deployment sets hashed alike")
 	}
@@ -98,7 +100,7 @@ func TestFingerprintSeparatesItsParts(t *testing.T) {
 func TestFingerprintIsWhatTheCheckpointRecords(t *testing.T) {
 	asCheckpointField := func(fingerprint agent.Fingerprint) agent.Fingerprint { return fingerprint }
 	fingerprint := asCheckpointField(deploy.Fingerprint([]deploy.Deployment{
-		deployment("forge", "graph", policy.Grant{}),
+		deployment("forge", "graph"),
 	}))
 	if fingerprint == "" {
 		t.Fatal("the fingerprint is empty")

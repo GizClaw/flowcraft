@@ -13,6 +13,7 @@ import (
 	"iter"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -166,7 +167,7 @@ func open(ctx context.Context, dir string, impls *deploy.Impls, sim *simtools.So
 		_ = store.Close()
 		return nil, err
 	}
-	specs, err := deployments(ctx, impls, abs, options, res.Capabilities())
+	specs, err := deployments(ctx, impls, abs, options)
 	if err != nil {
 		_ = res.Close()
 		_ = store.Close()
@@ -189,7 +190,7 @@ func open(ctx context.Context, dir string, impls *deploy.Impls, sim *simtools.So
 	a.mgr = agents
 	for _, spec := range specs {
 		a.agents = append(a.agents, spec.Name)
-		info := describe(abs, spec, sim, a.res.Capabilities().ModelIDs())
+		info := describe(abs, spec, a.authority(spec.Name), sim, a.res.Capabilities().ModelIDs())
 		info.Label = cast.Label(spec.Name)
 		info.Director = cast.Director == spec.Name
 		a.infos[spec.Name] = info
@@ -423,7 +424,7 @@ func (a *App) Stream(ctx context.Context, name, text string) (iter.Seq2[agent.Ev
 	// A session is opened on first use and kept: the store makes the conversation durable, and the host
 	// refuses a second turn while one is in flight, which is what a busy session should report.
 	if _, ok := a.mgr.Session(id); !ok {
-		if _, err := a.mgr.Open(ctx, id, name); err != nil {
+		if _, err := a.mgr.Open(ctx, id, name, a.authority(name)); err != nil {
 			return nil, fmt.Errorf("agent %q: %w; have %s", name, err, strings.Join(a.agents, ", "))
 		}
 	}
@@ -554,8 +555,12 @@ func Inspect(dir string) ([]Info, []string, error) {
 		}
 		if i < len(facts) {
 			info.Graph = facts[i].Graph
-			info.Delegates = facts[i].Delegates
 			info.Hooks = facts[i].Hooks
+		}
+		// Authority is not in the document, so what an inspecting reader can know about
+		// delegation is what the cast says: the director reaches the speakers.
+		if cast.Director == name {
+			info.Delegates = slices.Clone(cast.Speakers)
 		}
 		info.Label = cast.Label(name)
 		info.Director = cast.Director == name
@@ -579,9 +584,32 @@ func openStore(dir string) (*checkpoint.SQLite, error) {
 	return store, nil
 }
 
+// authority is what forge lets one agent's session do.
+//
+// It is the application's statement, not the document's: the deployment says what runs, and this
+// says what it may touch. Every seat runs in the one backend this workspace configures with
+// unrestricted files — a local development store — and the director is the one agent that hands
+// work to the speakers and waits for the answer.
+func (a *App) authority(agent string) policy.Grant {
+	grant := policy.Grant{Sandbox: forgeSandbox}
+	if a.cast.Director != agent || len(a.cast.Speakers) == 0 {
+		return grant
+	}
+	// Sync delegation: a rule asks one seat and waits for its answer, which is what a
+	// turn-based table needs. Depth and concurrency keep the policy defaults.
+	grant.Delegation = &policy.Delegation{
+		Targets: slices.Clone(a.cast.Speakers),
+		Modes:   []policy.DelegationMode{policy.DelegationSync},
+	}
+	return grant
+}
+
+// forgeSandbox is the backend every scenario's process document configures.
+const forgeSandbox = "local"
+
 // describe projects one spec onto what a person reads: which agent, which
-// engine, which models the deployment may route to, and which tools it wires.
-func describe(dir string, spec deploy.Deployment, sim *simtools.Source, models []model.ModelID) Info {
+// engine, which models the session may route to, and which tools it may call.
+func describe(dir string, spec deploy.Deployment, authority policy.Grant, sim *simtools.Source, models []model.ModelID) Info {
 	info := Info{
 		Workspace: dir,
 		Agent:     spec.Name,
@@ -591,13 +619,13 @@ func describe(dir string, spec deploy.Deployment, sim *simtools.Source, models [
 	for _, id := range models {
 		info.Models = append(info.Models, id.Provider+":"+id.Name)
 	}
-	if delegation := spec.Grant.Delegation; delegation != nil {
+	if delegation := authority.Delegation; delegation != nil {
 		info.Delegates = append(info.Delegates, delegation.Targets...)
 	}
 	for _, hook := range spec.Hooks {
 		info.Hooks = append(info.Hooks, hook.Impl)
 	}
-	if allowed := spec.Grant.Tools.Allow; len(allowed) > 0 {
+	if allowed := authority.Tools.Allow; len(allowed) > 0 {
 		info.Tools = append(info.Tools, allowed...)
 	} else {
 		// Nothing is written down, so everything the process mounted is callable: a source is named as

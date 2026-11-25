@@ -66,7 +66,6 @@ func benchDeployment(b *testing.B, name string, grant policy.Grant, log *journal
 	b.Helper()
 	return deploy.Deployment{
 		Name:    name,
-		Grant:   grant,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &sessionProgram{log: log}, nil }},
 	}
 }
@@ -93,7 +92,7 @@ func BenchmarkOpenSession(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
 		id := "s" + string(rune('a'+i%26))
-		if _, err := agents.Open(context.Background(), id, "referee"); err != nil {
+		if _, err := agents.Open(context.Background(), id, "referee", permissiveGrant("local")); err != nil {
 			b.Fatalf("Open: %v", err)
 		}
 		if err := agents.CloseSession(context.Background(), id); err != nil {
@@ -213,13 +212,12 @@ func benchRunAgents(b *testing.B) *Agents {
 	agents := NewAgents(res)
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return streamingProgram{}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
 		b.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(context.Background(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(context.Background(), "s1", "referee", permissiveGrant("local")); err != nil {
 		b.Fatalf("Open: %v", err)
 	}
 	b.Cleanup(func() { _ = agents.Close(context.Background()) })

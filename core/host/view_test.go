@@ -54,12 +54,18 @@ func (v *statefulView) RecordCall(call message.ToolCall) {
 // viewRecorder is the seam under test: one factory per deployment, and every view it makes
 // kept so a test can assert which session saw which.
 type viewRecorder struct {
-	mu    sync.Mutex
+	mu sync.Mutex
+	// projections counts the exposure factories the host built: one per distinct authority.
+	projections int
+	// built counts the views handed to sessions: one per session.
 	built int
 	views []*statefulView
 }
 
 func (r *viewRecorder) factory(catalog tool.Catalog, allowed policy.ToolSet) (tool.ViewFactory, error) {
+	r.mu.Lock()
+	r.projections++
+	r.mu.Unlock()
 	return r.make, nil
 }
 
@@ -92,7 +98,6 @@ func viewHost(t *testing.T, recorder *viewRecorder) *Agents {
 	agents := NewAgents(res)
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &seenProgram{driver: &seenDriver{}}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
@@ -110,11 +115,11 @@ func TestEverySessionGetsItsOwnView(t *testing.T) {
 	recorder := &viewRecorder{}
 	agents := viewHost(t, recorder)
 
-	first, err := agents.Open(t.Context(), "s1", "referee")
+	first, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open s1: %v", err)
 	}
-	second, err := agents.Open(t.Context(), "s2", "referee")
+	second, err := agents.Open(t.Context(), "s2", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open s2: %v", err)
 	}
@@ -136,37 +141,36 @@ func TestEverySessionGetsItsOwnView(t *testing.T) {
 	}
 }
 
-// TestTheFactoryIsBuiltOnceAndAskedPerSession pins the shape the seam was meant to have: the
-// deployment builds the exposure (policy, shared index) once, and every session gets a view from
-// it. Rebuilding the exposure per session would rebuild the search index per session.
+// TestTheFactoryIsBuiltOnceAndAskedPerSession pins the shape the seam has: the exposure (policy,
+// shared index) is built once per authority, and every session opened with that authority gets
+// its own view from it. Rebuilding the exposure per session would rebuild the search index.
 func TestTheFactoryIsBuiltOnceAndAskedPerSession(t *testing.T) {
 	recorder := &viewRecorder{}
 	agents := viewHost(t, recorder)
-	entry := manifestEntry(t, agents, "referee")
-	if entry.newView == nil {
-		t.Fatal("the deployment holds no view factory")
-	}
 
 	sessions := []string{"s1", "s2", "s3"}
 	for _, id := range sessions {
-		if _, err := agents.Open(t.Context(), id, "referee"); err != nil {
+		if _, err := agents.Open(t.Context(), id, "referee", permissiveGrant("local")); err != nil {
 			t.Fatalf("Open %s: %v", id, err)
 		}
 	}
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
-	// One per session, plus the one the install-time manifest reads and discards: the manifest
-	// describes the exposure the deployment configures, and asking a session's view for it would
-	// describe that conversation's budget instead.
-	if want := len(sessions) + 1; recorder.built != want {
-		t.Fatalf("views built = %d, want %d (one per session plus the manifest's)", recorder.built, want)
+	// One projection for the one authority, and one view per session: the projection holds the
+	// policy and whatever index it shares, the view holds the conversation's state.
+	if recorder.projections != 1 {
+		t.Fatalf("projections = %d, want one for one authority", recorder.projections)
+	}
+	if want := len(sessions); recorder.built != want {
+		t.Fatalf("views built = %d, want one per session (%d)", recorder.built, want)
 	}
 }
 
-// TestAProjectionThatFailsIsRefusedAtInstall keeps the error where a reader can act on it: an
-// authority this process cannot project is a deployment that must not be installed, not a
-// session that opens and then panics on its first tool call.
-func TestAProjectionThatFailsIsRefusedAtInstall(t *testing.T) {
+// TestAProjectionThatFailsIsRefusedAtOpen keeps the error where a reader can act on it: an
+// authority this process cannot project is a session that must not open, not one that opens and
+// then panics on its first tool call. The projection is built lazily because the authority is
+// per session, so the refusal belongs to Open.
+func TestAProjectionThatFailsIsRefusedAtOpen(t *testing.T) {
 	refused := errors.New("this policy cannot be projected")
 	log := &journal{}
 	plan := deploy.ProcessPlan{
@@ -184,11 +188,13 @@ func TestAProjectionThatFailsIsRefusedAtInstall(t *testing.T) {
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &seenProgram{driver: &seenDriver{}}, nil }},
 	}
-	if err := agents.Add(dep); err == nil {
-		t.Fatal("a deployment whose authority cannot be projected was installed")
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err == nil {
+		t.Fatal("a session whose authority cannot be projected was opened")
 	} else if !errors.Is(err, refused) {
 		t.Fatalf("err = %v, want the projection's", err)
 	}
@@ -216,13 +222,12 @@ func TestAProjectionThatBuildsNothingIsRefused(t *testing.T) {
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &seenProgram{driver: &seenDriver{}}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(context.Background(), "s1", "referee"); err == nil {
+	if _, err := agents.Open(context.Background(), "s1", "referee", permissiveGrant("local")); err == nil {
 		t.Fatal("a session opened with no tool view")
 	}
 }

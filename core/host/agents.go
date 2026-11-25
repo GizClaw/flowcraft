@@ -26,15 +26,20 @@ import (
 // table is here and the process is a value it holds, rather than one object doing both.
 type Agents struct {
 	res *Resource
+	// caps is what this process offers, read once: it is fixed when the Resource is built and
+	// every open asks the same three questions of it (backends, models, enforcement).
+	caps deploy.Capabilities
 	// store keeps sessions' tasks; nil keeps them in memory only.
 	store agent.Store
 	// fingerprint names the deployment set this process was built from.
 	fingerprint agent.Fingerprint
 	// approval is the host's rule for starting a command; nil installs the backend undecorated.
 	approval *Approval
-	// escalator answers a widening request; nil means a session that declares an escalation
-	// cannot be widened, which its first refused command reports.
+	// escalator answers a widening request; nil means a refused command stays refused.
 	escalator Escalator
+	// delegationGrant resolves what a delegated child may do; nil means the child inherits
+	// the parent's authority, which is the one rule that cannot escalate.
+	delegationGrant func(ctx context.Context, parent, target string, authority policy.Grant) (policy.Grant, error)
 	// tenant and authority are the process facts a session's identity is made of.
 	tenant    string
 	authority string
@@ -69,37 +74,28 @@ type Agents struct {
 type deployment struct {
 	name    string
 	program agent.Program
+	// kind is the registered program implementation that runs the conversations. It is what the
+	// manifest records, so it outlives being resolved into a live program.
+	kind string
 	// limits are the session table's decisions: how long a conversation may sit idle and how
 	// many this agent may hold. They are the agent's, not a session's, so they never travel
 	// into a grant.
 	limits policy.Limits
-	grant  policy.Grant
 	// observability is the process's record level, held here because the turn path reaches it
 	// through the deployment. It is not a per-agent setting: the chain and the model access it
 	// controls are built once for the process.
 	observability deploy.Observability
-	// manifest is the version combination this deployment runs, assembled at install; the
-	// turn copies it into every run record and the driver writes it into its checkpoint.
-	manifest agent.Manifest
-	// manifestID is the manifest's identity, computed once at install. The turn records it
-	// instead of hashing the same deployment constant every turn, and the driver still gets
-	// the full manifest to write into its checkpoint.
-	manifestID string
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
-	// newView builds one session's view of this deployment's tool table: the grant's exposure over
-	// the process's catalog, plus the state one conversation accumulates. It is a factory rather
-	// than a value because that state — the discovery pool, its recency order, the budget a round
-	// has spent — belongs to the conversation, and two sessions sharing one view would interfere
-	// with each other. It is a closure so the host names no projection implementation.
-	newView tool.ViewFactory
-	// narrowed builds a view for a tool set other than the deployment's, which is what a session
-	// opened under a narrower grant needs. Nil when the process cannot build one, in which case a
-	// narrowed session runs with the deployment's exposure — that is refused at open instead
-	// (see viewFor), because showing more than the bind allows is the one direction that matters.
-	narrowed func(allowed policy.ToolSet) (tool.ViewFactory, error)
-	// live counts the open sessions, which is what the grant's limit is measured against.
+	// views and manifests cache what is derived from a session's authority, keyed by the
+	// authority itself: sessions opened with the same grant share one projection factory and
+	// one manifest, because building either is the expensive part and both are functions of
+	// the grant alone. cacheMu guards both maps; the factories they hand out are immutable.
+	cacheMu   sync.Mutex
+	views     map[string]tool.ViewFactory
+	manifests map[string]agent.Manifest
+	// live counts the open sessions, which is what the limits are measured against.
 	live int
 	// retired marks a deployment that a reload replaced: its program is closed when the last
 	// session opened under it goes away, because a session is pinned to what it was opened under.
@@ -113,6 +109,7 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 	}
 	a := &Agents{
 		res:      res,
+		caps:     res.Capabilities(),
 		entries:  map[string]*deployment{},
 		sessions: map[string]*Session{},
 		slots:    map[string]int{},
@@ -320,66 +317,65 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	if a.res.newView == nil {
 		return nil, errdefs.NotAvailablef("host: agent %q: this process has no tool projection", dep.Name)
 	}
-	newView, err := a.res.newView(a.res.tools, dep.Grant.Tools)
-	if err != nil {
-		return nil, errors.Join(fmt.Errorf("host: agent %q: tool exposure: %w", dep.Name, err), program.Close())
-	}
-	catalog := a.res.tools
-	narrowed := func(allowed policy.ToolSet) (tool.ViewFactory, error) {
-		return a.res.newView(catalog, allowed)
-	}
-	if newView == nil {
-		return nil, errors.Join(
-			fmt.Errorf("host: agent %q: tool exposure: the projection built nothing", dep.Name), program.Close())
-	}
-	// The manifest describes the exposure the deployment configures, so it is read from a fresh
-	// view: a session's view accumulates discovery and budget as it runs, and what one
-	// conversation has spent is not a property of the deployment.
-	manifest := a.manifestOf(dep.Program.Impl, dep.Grant.Models, newView())
 	return &deployment{
 		name:          dep.Name,
 		program:       program,
+		kind:          dep.Program.Impl,
 		limits:        dep.Limits,
-		grant:         dep.Grant,
 		observability: a.res.observability,
-		manifest:      manifest,
-		manifestID:    manifest.ID(),
 		hooks:         hooks,
-		newView:       newView,
-		narrowed:      narrowed,
+		views:         map[string]tool.ViewFactory{},
+		manifests:     map[string]agent.Manifest{},
 	}, nil
 }
 
-// viewFor builds one session's view for the tool set its bind allows.
+// viewFor builds one session's view for the tool set its authority allows.
 //
-// A session that was not narrowed asks for the deployment's own set, which is the factory built at
-// install: that is the common case and it shares the deployment's projection. A narrowed session
-// gets its own projection over the narrowed set — the exposure is part of the view's policy, so it
-// cannot be re-filtered afterwards — which costs a second search index lazily, only if that
-// session searches.
+// The projection's policy is part of the view, so a set cannot be re-filtered afterwards: a
+// session whose grant names other tools needs its own projection. That projection is cached by
+// the set, so the ordinary case — every session of an agent opened with the same authority —
+// builds one search index and shares it.
 func (d *deployment) viewFor(allowed policy.ToolSet, res *Resource) (tool.View, error) {
-	if sameToolSet(allowed, d.grant.Tools) || d.narrowed == nil {
-		return d.newView(), nil
-	}
-	factory, err := d.narrowed(allowed)
+	key, err := viewKey(allowed)
 	if err != nil {
 		return nil, err
 	}
-	if factory == nil {
+	d.cacheMu.Lock()
+	factory, cached := d.views[key]
+	d.cacheMu.Unlock()
+	if !cached {
+		built, buildErr := res.newView(res.tools, allowed)
+		if buildErr != nil {
+			return nil, buildErr
+		}
+		if built == nil {
+			return nil, errdefs.NotAvailablef("host: the tool projection built nothing")
+		}
+		// Another session may have built the same projection while this one was outside the
+		// lock; keep whichever landed first so every session shares one.
+		d.cacheMu.Lock()
+		if existing, raced := d.views[key]; raced {
+			factory = existing
+		} else {
+			d.views[key] = built
+			factory = built
+		}
+		d.cacheMu.Unlock()
+	}
+	view := factory()
+	if view == nil {
 		return nil, errdefs.NotAvailablef("host: the tool projection built nothing")
 	}
-	return factory(), nil
+	return view, nil
 }
 
-// sameToolSet reports whether two sets ask for the same exposure, which is what decides whether a
-// session can share the deployment's projection.
-func sameToolSet(left, right policy.ToolSet) bool {
-	leftJSON, leftErr := json.Marshal(left)
-	rightJSON, rightErr := json.Marshal(right)
-	if leftErr != nil || rightErr != nil {
-		return false
+// viewKey names one tool set for the projection cache.
+func viewKey(allowed policy.ToolSet) (string, error) {
+	body, err := json.Marshal(allowed)
+	if err != nil {
+		return "", errdefs.Internalf("host: encoding the tool set: %w", err)
 	}
-	return string(leftJSON) == string(rightJSON)
+	return string(body), nil
 }
 
 // drop removes one entry from the table. The caller holds the lock.

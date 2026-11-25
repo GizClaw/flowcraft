@@ -68,6 +68,19 @@ const (
 	modelName   = "fake-1"
 )
 
+// Authority is what the stack lets a session do.
+//
+// It stands where a real application's own policy would: a backend this process configures, the
+// model the fake provider declares, and the one tool the workspace writes through. The write set
+// is deliberately unconstrained, because the local backend has no OS boundary to enforce one.
+func Authority() policy.Grant {
+	return policy.Grant{
+		Sandbox: "local",
+		Models:  []model.ModelRef{{ID: model.ModelID{Provider: providerKey, Name: modelName}}},
+		Tools:   policy.ToolSet{Allow: []string{"write_file"}},
+	}
+}
+
 // Reply is one scripted model call.
 type Reply struct {
 	// ToolCall makes this call a request for a tool instead of an answer.
@@ -139,10 +152,7 @@ func (s *Stack) load(t *testing.T, graphPath string) (deploy.ProcessPlan, []depl
 	if err != nil {
 		t.Fatalf("stack: resolve the process document: %v", err)
 	}
-	// What the process offers is what a deployment may select: the backends the plan
-	// configured and the models the providers serve.
-	caps := deploy.Capabilities{Backends: plan.BackendNames(), Models: []string{ModelRef}}
-	deployments, err := loader.Deployments(t.Context(), caps,
+	deployments, err := loader.Deployments(t.Context(),
 		sources.Bytes("agent.yaml", rebase(t, "agent.yaml", s.Workspace, graphPath)))
 	if err != nil {
 		t.Fatalf("stack: resolve the agent document: %v", err)
@@ -193,7 +203,7 @@ func (s *Stack) Restart(t *testing.T) {
 // OpenSession opens one conversation on the current process.
 func (s *Stack) OpenSession(t *testing.T, id string) {
 	t.Helper()
-	if _, err := s.Agents.Open(t.Context(), id, AgentName); err != nil {
+	if _, err := s.Agents.Open(t.Context(), id, AgentName, Authority()); err != nil {
 		t.Fatalf("stack: open session %q: %v", id, err)
 	}
 }

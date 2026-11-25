@@ -105,59 +105,6 @@ func (g Grant) Validate() error {
 	return err
 }
 
-// Narrow produces a session's grant from an agent's ceiling plus a caller's
-// request. It only ever narrows: every field is compared against the ceiling and
-// refused when it exceeds it, and a request that cannot be honoured is an error
-// rather than a silently truncated grant — a permission that quietly lost a field
-// is indistinguishable from one that never had it.
-//
-// The request cannot reach files, network, sandbox or delegation: those are
-// decided by the host, which is the only layer that knows where the session
-// actually runs.
-func (g Grant) Narrow(req Request) (Grant, error) {
-	base, err := g.Normalized()
-	if err != nil {
-		return Grant{}, errdefs.Validationf("policy: the grant being narrowed is invalid: %w", err)
-	}
-
-	out := base
-	// An escalation is a declaration about the ceiling, so a bind does not carry
-	// it either: what a session may be widened to is the deployment's statement,
-	// and the host reads it from there when a command is refused.
-	out.Escalate = nil
-
-	if len(req.Models) > 0 {
-		for _, ref := range req.Models {
-			if !base.allowsModel(ref) {
-				return Grant{}, deny(CheckModels, "model %s is not granted", modelName(ref))
-			}
-		}
-		models, err := normalizeModels(req.Models)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Models = models
-	}
-
-	if req.Tools != nil {
-		tools, err := base.Tools.narrowedTo(*req.Tools)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Tools = tools
-	}
-
-	if req.Budget != nil {
-		budget, err := base.Tools.Budget.narrowedTo(*req.Budget)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Tools.Budget = budget
-	}
-
-	return out.Normalized()
-}
-
 // AllowsModel reports whether ref may be called. An empty model set grants every
 // model the process serves: what exists at all is a property of the process, the
 // same reason an empty tool allow-list means "all of them".
@@ -225,12 +172,4 @@ func normalizeModels(refs []model.ModelRef) ([]model.ModelRef, error) {
 		out = append(out, ref)
 	}
 	return out, nil
-}
-
-func modelName(ref model.ModelRef) string {
-	name := ref.ID.Provider + ":" + ref.ID.Name
-	if ref.Profile != "" {
-		name = ref.Profile + "/" + name
-	}
-	return name
 }

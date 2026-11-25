@@ -50,7 +50,6 @@ func Fingerprint(deployments []Deployment) agent.Fingerprint {
 	for _, dep := range deployments {
 		write(dep.Name)
 		write(dep.Program.Impl)
-		write(dep.Grant.Digest())
 		write(strconv.Itoa(len(dep.Hooks)))
 		for _, hook := range dep.Hooks {
 			write(hook.Impl)

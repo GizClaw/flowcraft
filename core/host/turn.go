@@ -228,8 +228,8 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Bodies: session.deploy.observability.Bodies,
 		// The full manifest stays on the request because a driver writes it into its
 		// checkpoint; the id travels beside it so the turn does not hash it again.
-		Manifest:   session.deploy.manifest,
-		ManifestID: session.deploy.manifestID,
+		Manifest:   session.manifest,
+		ManifestID: session.manifestID,
 		OnRun:      a.runSink,
 	}, nil
 }

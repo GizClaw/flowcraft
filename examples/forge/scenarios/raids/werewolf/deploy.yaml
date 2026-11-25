@@ -16,25 +16,8 @@ agents:
     # Sync delegation: a rule asks one seat and waits for its answer, which is
     # what a turn-based table needs. Depth and concurrency are the manager's.
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      delegation:
-        targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
-        modes: [sync]
-        timeout: 2m
-
   - name: seat_1
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -52,12 +35,6 @@ agents:
 
   - name: seat_2
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -75,12 +52,6 @@ agents:
 
   - name: seat_3
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -98,12 +69,6 @@ agents:
 
   - name: seat_4
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -121,12 +86,6 @@ agents:
 
   - name: seat_5
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -144,12 +103,6 @@ agents:
 
   - name: seat_6
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -167,12 +120,6 @@ agents:
 
   - name: seat_7
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:
@@ -190,12 +137,6 @@ agents:
 
   - name: seat_8
     limits: {idle: 30m, max_sessions: 64}
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
     program:
       impl: graph
       settings:

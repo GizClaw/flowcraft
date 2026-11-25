@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -24,19 +25,6 @@ type OpenOption func(*openOptions)
 
 type openOptions struct {
 	chain identity.Chain
-	// request is what the caller asks the session to be narrowed to. Nil means "the whole
-	// deployment grant", which is what a caller that has nothing to narrow keeps getting.
-	request *policy.Request
-}
-
-// WithRequest narrows the session under the deployment's grant.
-//
-// The deployment grant is the ceiling; this is the fact. It is the only way a host learns that a
-// caller may run with less — a protocol adapter that maps an untrusted peer's request, a UI that
-// offers a subset — and it is the reason [policy.Request] has no path field: what cannot be
-// expressed cannot be smuggled. A request outside the ceiling is refused at open, not truncated.
-func WithRequest(request policy.Request) OpenOption {
-	return func(o *openOptions) { o.request = &request }
 }
 
 // WithChain records the delegation lineage the session runs under.
@@ -61,11 +49,16 @@ type Session struct {
 	cell      *cell
 	binding   tool.Binding
 	driver    agent.Driver
-	// grant is the authority in force for this session: the deployment's grant, narrowed by
-	// whatever the caller asked for at open. bindID is its digest, computed once — the identity
-	// every span carries, and [policy.Grant.Digest] is not free.
+	// grant is the authority in force for this session: what the caller supplied at open.
+	// bindID is its digest, computed once — the identity every span carries, and
+	// [policy.Grant.Digest] is not free.
 	grant  policy.Grant
 	bindID string
+	// manifest is the version combination this session runs under: the deployment's program and
+	// build, plus the authority this conversation actually holds. It is per session because
+	// authority is, and the turn copies it into every run record.
+	manifest   agent.Manifest
+	manifestID string
 	// touch is when this session last did anything, in Unix nanos: idle eviction reads it from the
 	// table's goroutine while a turn writes it from its own, so it is atomic rather than guarded.
 	touch atomic.Int64
@@ -175,14 +168,20 @@ func (s *Session) Agent() string { return s.agent }
 // [tool.Dispatcher.Execute] and what the turn assembler copies into the request.
 func (s *Session) Binding() tool.Binding { return s.binding }
 
-// Open opens a conversation under a deployment.
+// Open opens a conversation under a deployment, with the authority its caller states.
 //
 // The deployment is named explicitly rather than inferred: a session belongs to exactly one agent,
-// and a host that guessed would be one that let a session drift between deployments.
+// and a host that guessed would be one that let a session drift between deployments. The grant is
+// a parameter for the same reason: a session with no stated authority has not been authorised by
+// anybody, so there is no default to inherit — the deployment document says what runs and how its
+// session table behaves, and the caller says what this conversation may do.
+//
+// A grant that names a sandbox or a model this process does not carry is refused with
+// [errdefs.NotAvailable]; one that does not validate is refused as the document error it is.
 //
 // Everything expensive — the backend instance, the file handles, the driver — happens outside the
 // table's lock, so opening one session never delays a turn in another.
-func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...OpenOption) (*Session, error) {
+func (a *Agents) Open(ctx context.Context, sessionID, agentName string, grant policy.Grant, opts ...OpenOption) (*Session, error) {
 	if sessionID == "" {
 		return nil, errdefs.Validationf("host: a session needs an id")
 	}
@@ -197,7 +196,7 @@ func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...
 		return nil, err
 	}
 
-	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy, opening)
+	session, _, err := a.buildSession(ctx, sessionID, agentName, deploy, grant, opening)
 	if err != nil {
 		return nil, err
 	}
@@ -257,30 +256,31 @@ func (a *Agents) admit(agentName, sessionID string) (*deployment, error) {
 }
 
 // buildSession builds one session's cell, binding and driver. It holds no lock.
-func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, deploy *deployment, opening openOptions) (*Session, trace.Span, error) {
+func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, entry *deployment, grant policy.Grant, opening openOptions) (*Session, trace.Span, error) {
 	// The span starts before the boundary is built, so a failure to build one is inside the session's
 	// own trace rather than a span of its own.
-	probe := &Session{id: sessionID, agent: agentName, tenant: a.tenant, authority: a.authority, deploy: deploy}
+	probe := &Session{id: sessionID, agent: agentName, tenant: a.tenant, authority: a.authority, deploy: entry}
 	ctx, span := startSessionSpan(ctx, probe)
 
-	factory, ok := a.res.backendFactory(deploy.grant.Sandbox)
-	if !ok {
-		err := errdefs.NotAvailablef("host: sandbox %q is not configured", deploy.grant.Sandbox)
+	bind, err := grant.Normalized()
+	if err != nil {
+		openErr := fmt.Errorf("host: session %q: %w", sessionID, err)
+		failSessionSpan(ctx, span, openErr)
+		return nil, span, openErr
+	}
+	// The process decides what can be enforced at all; the grant decides what this conversation
+	// asks for. Both questions are answered before anything is built.
+	if err := deploy.ValidateGrantForCaps(agentName, bind, a.caps); err != nil {
 		failSessionSpan(ctx, span, err)
 		return nil, span, err
 	}
-	// The session's grant is the deployment's ceiling narrowed by what the caller asked for. It is
-	// the same type and the same validator, so the bind digest and the authority digest have one
-	// source; what changes is the value in force for this conversation.
-	bind := deploy.grant
-	if opening.request != nil {
-		narrowed, err := deploy.grant.Narrow(*opening.request)
-		if err != nil {
-			openErr := fmt.Errorf("host: session %q: %w", sessionID, err)
-			failSessionSpan(ctx, span, openErr)
-			return nil, span, openErr
-		}
-		bind = narrowed
+	factory, ok := a.res.backendFactory(bind.Sandbox)
+	if !ok {
+		err := errdefs.NotAvailablef(
+			"host: agent %q: sandbox %q is not configured (this process runs %s)",
+			agentName, bind.Sandbox, a.res.sandboxNames())
+		failSessionSpan(ctx, span, err)
+		return nil, span, err
 	}
 	built, err := openCell(ctx, factory, bind)
 	if err != nil {
@@ -294,7 +294,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		policy:    a.approval,
 		agent:     agentName,
 		session:   sessionID,
-		widener:   widenerFor(deploy.grant, bind),
+		widener:   widenerFor(bind, bind),
 		factory:   factory,
 		escalator: a.escalator,
 		audit:     a.auditor(sessionID),
@@ -308,7 +308,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// session has discovered, how recently it used it and how much of its per-round budget it has
 	// spent are facts of this conversation. One view per session is cheap because the index behind
 	// it belongs to the deployment's factory and is shared.
-	view, viewErr := deploy.viewFor(bind.Tools, a.res)
+	view, viewErr := entry.viewFor(bind.Tools, a.res)
 	if viewErr != nil {
 		openErr := errors.Join(fmt.Errorf("host: session %q: tool exposure: %w", sessionID, viewErr), built.Close())
 		failSessionSpan(ctx, span, openErr)
@@ -324,7 +324,8 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	binding := tool.Bind(&sessionScratch{id: sessionID, values: map[string]any{}},
 		bind).WithView(view).WithCaps(capabilities)
 
-	driver, err := deploy.program.Open(agent.SessionInfo{
+	manifest := a.manifestFor(entry, bind, view)
+	driver, err := entry.program.Open(agent.SessionInfo{
 		Agent:     agentName,
 		SessionID: sessionID,
 	})
@@ -334,17 +335,19 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		return nil, span, openErr
 	}
 	session := &Session{
-		id:        sessionID,
-		agent:     agentName,
-		tenant:    a.tenant,
-		authority: a.authority,
-		deploy:    deploy,
-		cell:      built,
-		binding:   binding,
-		driver:    driver,
-		grant:     bind,
-		bindID:    bind.Digest(),
-		chain:     opening.chain,
+		id:         sessionID,
+		agent:      agentName,
+		tenant:     a.tenant,
+		authority:  a.authority,
+		deploy:     entry,
+		cell:       built,
+		binding:    binding,
+		driver:     driver,
+		grant:      bind,
+		bindID:     bind.Digest(),
+		manifest:   manifest,
+		manifestID: manifest.ID(),
+		chain:      opening.chain,
 	}
 	if err := a.announceSession(ctx, session); err != nil {
 		openErr := errors.Join(err, session.close())

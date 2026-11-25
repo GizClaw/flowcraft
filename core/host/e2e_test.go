@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
+	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -51,10 +52,14 @@ agents:
   - name: referee
     program: { impl: stub }
     limits: { idle: 30m, max_sessions: 64 }
-    grant:
-      sandbox: local
-      models: [{ id: { provider: "fake", name: "fake-1" } }]
 `
+
+// endToEndAuthority is what the opening caller states: the document describes the deployment,
+// the caller decides what its session may do.
+var endToEndAuthority = policy.Grant{
+	Sandbox: "local",
+	Models:  []model.ModelRef{{ID: model.ModelID{Provider: "fake", Name: "fake-1"}}},
+}
 
 // endToEndImpls is the implementation table this binary would carry. Names and kinds are
 // the document's; the values behind them are the test's.
@@ -88,10 +93,7 @@ func endToEndDocument(t *testing.T, driver *seenDriver) (deploy.ProcessPlan, []d
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
-	// What the process offers is what a deployment may select: the backends the plan
-	// configured and the models the providers serve.
-	caps := deploy.Capabilities{Backends: plan.BackendNames(), Models: []string{"fake/fake-1"}}
-	deployments, err := loader.Deployments(t.Context(), caps, sources.Bytes("agent.yaml", []byte(endToEndAgent)))
+	deployments, err := loader.Deployments(t.Context(), sources.Bytes("agent.yaml", []byte(endToEndAgent)))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
@@ -166,7 +168,7 @@ func openEndToEnd(t *testing.T, plan deploy.ProcessPlan, store agent.Store, fing
 	if err := agents.Add(deployments...); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", endToEndAuthority); err != nil {
 		t.Fatalf("Open session: %v", err)
 	}
 	return agents
@@ -185,13 +187,11 @@ func TestTheSameDocumentResolvesToTheSameFingerprint(t *testing.T) {
 		t.Fatal("the same documents resolved to two fingerprints, so a resume would never match")
 	}
 
-	// A different grant is a different deployment set: resuming a task under it would run
-	// the turn with authority the checkpoint was not written under.
-	widened := append([]deploy.Deployment(nil), first...)
-	widened[0].Grant.Models = append(widened[0].Grant.Models, model.ModelRef{
-		ID: model.ModelID{Provider: "fake", Name: "other"},
-	})
-	if deploy.Fingerprint(widened) == deploy.Fingerprint(first) {
-		t.Fatal("a widened grant kept the fingerprint, so a resume would run under a different authority")
+	// A changed deployment is a different set: resuming a task under it would hand the
+	// checkpoint to a program that does not read it the same way.
+	changed := append([]deploy.Deployment(nil), first...)
+	changed[0].Program.Impl = "other"
+	if deploy.Fingerprint(changed) == deploy.Fingerprint(first) {
+		t.Fatal("a changed program kept the fingerprint, so a resume would run under a different deployment")
 	}
 }
