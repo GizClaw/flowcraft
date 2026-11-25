@@ -26,6 +26,23 @@ func DriverSuite(t *testing.T, build ProgramFactory) {
 	t.Run("CloseIsIdempotent", func(t *testing.T) { driverCloseIdempotent(t, build) })
 	t.Run("OpenIsCheapAndRepeatable", func(t *testing.T) { programOpenRepeatable(t, build) })
 	t.Run("OpenIsSafeForConcurrentUse", func(t *testing.T) { programConcurrentOpen(t, build) })
+	t.Run("ResumeAndPausedAreDeclaredTogether", func(t *testing.T) { resumePairing(t, build) })
+}
+
+// resumePairing keeps the two halves of "the run can wait" in one driver.
+//
+// [agent.StateInputRequired] is a promise that a caller can continue the run, and [agent.Resumer] is
+// the only way to keep it. A driver that implements one without the other leaves its callers holding
+// a state they cannot leave — either a paused run nobody can resume, or a resume verb on a driver
+// that never pauses.
+func resumePairing(t *testing.T, build ProgramFactory) {
+	t.Helper()
+	driver := open(t, build(t), "resume-pairing")
+	_, resumer := driver.(agent.Resumer)
+	_, paused := driver.(agent.Paused)
+	if resumer != paused {
+		t.Fatalf("Resumer implemented = %v, Paused implemented = %v; they are one capability", resumer, paused)
+	}
 }
 
 // open is the one way the suite gets a driver: through the program, so a program that

@@ -142,7 +142,7 @@ func drain(t *testing.T, g *Graph, messages ...message.Message) ([]agent.Event, 
 
 // answer resumes a run with one reply, the way the runner does.
 func answer(ctx context.Context, run *Run, text string) iter.Seq2[agent.Event, error] {
-	return run.Answer(ctx, message.NewTextContent(text))
+	return run.Resume(ctx, message.NewTextContent(text))
 }
 
 func textOf(events []agent.Event) string {
@@ -228,7 +228,7 @@ func (askKind) Invoke(_ context.Context, in Invoke) (NodeStream, error) {
 	if err := json.Unmarshal(in.Config, &config); err != nil {
 		return nil, err
 	}
-	if answer := in.Answer.Text(); answer != "" {
+	if answer := in.Resume.Text(); answer != "" {
 		return Static(Result{State: []StateUpdate{{Key: config.Key, Value: Text(answer)}}}), nil
 	}
 	return Static(Result{

@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -55,11 +56,18 @@ type Agents struct {
 	hostTurnEvents HostTurnEvents
 	// delegationDelivery is told about a message the host could not put into a session.
 	delegationDelivery DelegationDelivery
+	// questions is where a session's ask_user questions go; nil when the application installed no
+	// outlet, which makes the tool refuse the call instead of suspending a turn nobody can answer.
+	questions func(ctx context.Context, sessionID string, question message.Content) bool
 
 	// deliveryMu guards the delivery queues and the steered messages waiting for a boundary.
 	deliveryMu sync.Mutex
 	delivery   map[string]*deliveryQueue
 	steers     map[string]map[agent.SteerID]trackedSteer
+	// sealed holds the sessions whose pending work was already released to the application. An
+	// enqueue that arrives after the release — a child finishing while its parent is closing —
+	// goes straight to the application instead of starting a worker that outlives the close.
+	sealed map[string]struct{}
 	// workers is the delivery workers in flight. A close waits for them: an application callback
 	// that runs after Close returned would run on a torn-down application.
 	workers sync.WaitGroup
@@ -132,6 +140,7 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		slots:         map[string]int{},
 		delivery:      map[string]*deliveryQueue{},
 		steers:        map[string]map[agent.SteerID]trackedSteer{},
+		sealed:        map[string]struct{}{},
 	}
 	for _, opt := range opts {
 		if opt != nil {

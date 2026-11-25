@@ -26,10 +26,10 @@ import (
 //
 // A graph is built once and serves every session, so everything that differs
 // between executions lives here. A run may suspend — a node asks the caller a
-// question — and Answer continues the same Run, which is what a protocol adapter
+// question — and Resume continues the same Run, which is what a protocol adapter
 // needs to expose: Run starts or continues, Resume answers.
 //
-// A Run is driven by one goroutine. Events, Answer, State and Value are not safe
+// A Run is driven by one goroutine. Events, Resume, State and Value are not safe
 // for concurrent use; two calls that both advance the run are a race, and Value
 // reads the state map without a lock.
 type Run struct {
@@ -118,7 +118,7 @@ type steerRequest struct {
 	kind    agent.SteerIntent
 }
 
-// Start begins a run. The caller then drains Events, or calls Answer if it
+// Start begins a run. The caller then drains Events, or calls Resume if it
 // suspends.
 //
 // The context bounds the store work a durable start does — restoring the
@@ -197,7 +197,7 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 }
 
 // Run starts a graph and streams it to completion. A run that suspends cannot
-// be answered from here; use Start with Answer, or NewRunner, which drives both.
+// be answered from here; use Start with Resume, or NewRunner, which drives both.
 func (g *Graph) Run(ctx context.Context, msg message.Message) iter.Seq2[agent.Event, error] {
 	run, err := g.Start(ctx, []message.Message{msg})
 	if err != nil {
@@ -231,10 +231,10 @@ func (r *Run) Events(ctx context.Context) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) { r.advance(ctx, yield) }
 }
 
-// Answer continues a suspended run with the caller's reply. It is the second
+// Resume continues a suspended run with the caller's reply. It is the second
 // half of the single entry a protocol adapter needs: the message that arrives
 // while the task waits for input is the answer, not a new request.
-func (r *Run) Answer(ctx context.Context, content message.Content) iter.Seq2[agent.Event, error] {
+func (r *Run) Resume(ctx context.Context, content message.Content) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
 		if r.state != agent.StateInputRequired {
 			yield(nil, fmt.Errorf("graph: run is %s, not waiting for input", r.state))
@@ -646,7 +646,7 @@ func (r *Run) runStep(
 			State:    func(key string) Value { return snapshot[key] },
 			Snapshot: func() Snapshot { return Snapshot{values: snapshot} },
 			Step:     r.step,
-			Answer:   r.answer,
+			Resume:   r.answer,
 			Lookup: func(hash string) (agent.LLMCallRecord, bool) {
 				return r.lookup(ctx, hash)
 			},

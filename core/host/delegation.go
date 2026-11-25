@@ -76,8 +76,14 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	}
 
 	// One child per delegation edge: the id is derived so two edges of one chain are distinguishable,
-	// and so a resumed parent's next edge does not collide with the one before it.
-	child := d.parent + "/" + target + "-" + strconv.FormatInt(d.agents.nextEdge(), 36)
+	// and carries a random suffix so an id is never reused — an edge counter restarts with the
+	// process, and a restarted parent would otherwise mint the id of a child whose task is still in
+	// the store, continuing somebody else's conversation.
+	edge, err := newEdgeID(d.agents.nextEdge())
+	if err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	child := d.parent + "/" + target + "-" + edge
 
 	// The first edge of a chain mints its id; every edge below it extends the one it was given.
 	// Without an id the lineage cannot be attached at all, which is what made max_depth inert and
@@ -354,6 +360,16 @@ func foldDelegated(outcome *platform.DelegationOutcome, folded *foldedStream, ev
 	}
 }
 
+// newEdgeID names one delegation edge: its number within this process, and four random bytes so two
+// processes never mint the same id.
+func newEdgeID(edge int64) (string, error) {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("host: mint a delegation edge: %w", err)
+	}
+	return strconv.FormatInt(edge, 36) + "-" + hex.EncodeToString(suffix[:]), nil
+}
+
 // nextEdge numbers delegation edges within this process, so two children of one parent get distinct
 // session ids without a clock or a random source in the identity.
 func (a *Agents) nextEdge() int64 { return a.edges.Add(1) }
@@ -444,7 +460,7 @@ func (d *delegator) Answer(ctx context.Context, session string, answer platform.
 	folded := &foldedStream{}
 	// The child's own identity and failure box, as on the other two run sites: the caller's context
 	// carries the parent's session and turn, and a resumed child must not appear as the parent.
-	for event, runErr := range d.agents.Run(nestedRunCtx(ctx), session, userMessage(text)) {
+	for event, runErr := range d.agents.Resume(nestedRunCtx(ctx), session, message.NewTextContent(text)) {
 		if runErr != nil {
 			// A failed resume ends the child's work as surely as a terminal status does; leaving it
 			// open would keep a cell for a conversation nobody will continue.
@@ -498,6 +514,13 @@ func (s *Session) answer(ctx context.Context, answer platform.DelegationAnswer) 
 		// decision, and a sentence would resume it with nothing decided.
 		return "", errdefs.Validationf(
 			"host: %q is waiting for a decision: approve, deny or escalate", s.id)
+	}
+	// A question that is not an approval takes the caller's text: the resumed tool call reads it
+	// back through the question route.
+	if s.questions != nil && s.questions.open() {
+		if err := s.questions.reply(message.NewTextContent(answer.Text)); err != nil {
+			return "", err
+		}
 	}
 	return answer.Text, nil
 }

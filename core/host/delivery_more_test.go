@@ -195,7 +195,7 @@ func TestAHostTurnStopsWaitingWhenTheSessionCloses(t *testing.T) {
 	if done := session.beginClose(); done != nil {
 		<-done
 	}
-	if err := session.claim(t.Context(), turnDelivery, true); !errdefs.IsNotAvailable(err) {
+	if err := session.claim(t.Context(), turnDelivery, claimHost); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("claim = %v, want NotAvailable once the session is closing", err)
 	}
 	close(driver.hold)

@@ -39,6 +39,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/platform"
 	"github.com/GizClaw/flowcraft/core/tool/projection"
 	"github.com/GizClaw/flowcraft/sandbox/local"
+	"github.com/GizClaw/flowcraft/tool/builtin/ask"
+	"github.com/GizClaw/flowcraft/tool/builtin/delegation"
+	"github.com/GizClaw/flowcraft/tool/builtin/exec"
 	"github.com/GizClaw/flowcraft/tool/builtin/files"
 	tooldispatch "github.com/GizClaw/flowcraft/tool/dispatch"
 )
@@ -81,6 +84,21 @@ func Authority() policy.Grant {
 	}
 }
 
+// DelegatingAuthority is what a session needs to delegate to itself and to run commands: the
+// child of a delegation is a session of the same agent, so one deployment serves both sides.
+func DelegatingAuthority() policy.Grant {
+	grant := Authority()
+	grant.Tools = policy.ToolSet{Allow: []string{
+		"write_file", "bash", "ask_user", "delegate", "delegation_answer",
+		"delegation_status", "delegation_cancel",
+	}}
+	grant.Delegation = &policy.Delegation{
+		Targets: []string{AgentName},
+		Modes:   []policy.DelegationMode{policy.DelegationSync},
+	}
+	return grant
+}
+
 // Reply is one scripted model call.
 type Reply struct {
 	// ToolCall makes this call a request for a tool instead of an answer.
@@ -105,9 +123,22 @@ type Stack struct {
 	// Agents is the process currently serving the stack.
 	Agents *host.Agents
 
+	config      Config
 	plan        deploy.ProcessPlan
 	deployments []deploy.Deployment
 	fingerprint agent.Fingerprint
+}
+
+// Config selects the documents and host options a stack runs with.
+//
+// The defaults are the file-tool stack every test starts from; a case that needs another
+// document (the delegation graph) or a host option (an approval policy) names it here rather
+// than growing a second fixture.
+type Config struct {
+	// Graph is the graph document's name under testdata; empty means "graph.yaml".
+	Graph string
+	// Agents are the host options the process is opened with.
+	Agents []host.AgentsOption
 }
 
 // Open assembles one process from the shipped documents.
@@ -117,6 +148,15 @@ type Stack struct {
 // every call with "ok".
 func Open(t *testing.T, replies ...Reply) *Stack {
 	t.Helper()
+	return OpenConfig(t, Config{}, replies...)
+}
+
+// OpenConfig is Open with the documents and host options a case needs.
+func OpenConfig(t *testing.T, config Config, replies ...Reply) *Stack {
+	t.Helper()
+	if config.Graph == "" {
+		config.Graph = "graph.yaml"
+	}
 	if len(replies) == 0 {
 		replies = []Reply{{Text: "ok"}}
 	}
@@ -124,11 +164,11 @@ func Open(t *testing.T, replies ...Reply) *Stack {
 	// The graph document is compiled from a path, so it is written into the workspace: the
 	// loader, the engine and the process document all resolve it the way a deployment does.
 	graphPath := filepath.Join(workspace, "graph.yaml")
-	if err := os.WriteFile(graphPath, rebase(t, "graph.yaml", workspace, graphPath), 0o644); err != nil {
+	if err := os.WriteFile(graphPath, rebase(t, config.Graph, workspace, graphPath), 0o644); err != nil {
 		t.Fatalf("stack: write the graph document: %v", err)
 	}
 
-	s := &Stack{Workspace: workspace, Model: &Model{replies: replies}}
+	s := &Stack{Workspace: workspace, Model: &Model{replies: replies}, config: config}
 	s.plan, s.deployments = s.load(t, graphPath)
 
 	store, err := checkpoint.Open(filepath.Join(workspace, "state.db"))
@@ -181,7 +221,11 @@ func (s *Stack) start(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stack: open the process: %v", err)
 	}
-	s.Agents = host.NewAgents(res, host.WithStore(s.Store), host.WithFingerprint(s.fingerprint))
+	options := append([]host.AgentsOption{
+		host.WithStore(s.Store),
+		host.WithFingerprint(s.fingerprint),
+	}, s.config.Agents...)
+	s.Agents = host.NewAgents(res, options...)
 	if err := s.Agents.Add(s.deployments...); err != nil {
 		_ = res.Close()
 		t.Fatalf("stack: install the deployment: %v", err)
@@ -203,7 +247,13 @@ func (s *Stack) Restart(t *testing.T) {
 // OpenSession opens one conversation on the current process.
 func (s *Stack) OpenSession(t *testing.T, id string) {
 	t.Helper()
-	if _, err := s.Agents.Open(t.Context(), id, AgentName, Authority()); err != nil {
+	s.OpenSessionWith(t, id, Authority())
+}
+
+// OpenSessionWith opens one conversation under a grant the test names.
+func (s *Stack) OpenSessionWith(t *testing.T, id string, grant policy.Grant) {
+	t.Helper()
+	if _, err := s.Agents.Open(t.Context(), id, AgentName, grant); err != nil {
 		t.Fatalf("stack: open session %q: %v", id, err)
 	}
 }
@@ -220,6 +270,33 @@ func (s *Stack) Run(t *testing.T, id, text string) []agent.Event {
 		t.Fatalf("stack: turn %q ended in %q, want completed; events: %v", text, state, events)
 	}
 	return events
+}
+
+// Resume answers a session that stopped to ask, and drains the turn it starts.
+func (s *Stack) Resume(t *testing.T, id, text string) []agent.Event {
+	t.Helper()
+	var events []agent.Event
+	for event, err := range s.Agents.Resume(context.Background(), id, message.NewTextContent(text)) {
+		if err != nil {
+			t.Fatalf("stack: resume %q: %v", id, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+// TerminalState is the last terminal status a turn reached, exported for the e2e assertions.
+func TerminalState(events []agent.Event) agent.TaskState { return terminalState(events) }
+
+// LastState is the last status a turn reported, terminal or not — what a paused turn ends on.
+func LastState(events []agent.Event) agent.TaskState {
+	state := agent.TaskState("")
+	for _, event := range events {
+		if status, ok := event.(agent.Status); ok {
+			state = status.State
+		}
+	}
+	return state
 }
 
 // RunErr drains one turn and returns its error, for the tests that inject one.
@@ -259,6 +336,16 @@ func (m *Model) Requests() []inference.GenerateRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]inference.GenerateRequest(nil), m.asked...)
+}
+
+// Set replaces one scripted reply, for a test that only learns an argument (a child session id,
+// say) after an earlier turn has run.
+func (m *Model) Set(index int, reply Reply) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if index >= 0 && index < len(m.replies) {
+		m.replies[index] = reply
+	}
 }
 
 // Calls is how many times the model was called.
@@ -353,6 +440,16 @@ func (c catalog) Describe(id model.ModelID) (model.ModelDescriptor, bool) {
 	return model.ModelDescriptor{}, false
 }
 
+// execSource is the command tools as one source: the shell tool and the session tools share a
+// process table, so they are published together.
+type execSource struct{}
+
+func (execSource) Tools() []tool.Tool {
+	return append([]tool.Tool{exec.NewCommand()}, exec.NewSession().Tools()...)
+}
+
+func (execSource) LazyTools() []tool.LazyTool { return nil }
+
 // graphSettings is the graph kind's document surface, as this binary defines it.
 type graphSettings struct {
 	Path string `json:"path"`
@@ -379,6 +476,18 @@ func impls(scripted *Model) *deploy.Impls {
 		}) (tool.Source, error) {
 			return files.New(), nil
 		})).
+		// The command tool and the delegation verbs are here for the approval case: a child that
+		// must ask its parent before running a command, and the parent that answers it.
+		ToolSource(deploy.Impl("exec", func(struct{}) (tool.Source, error) {
+			return execSource{}, nil
+		})).
+		ToolSource(deploy.Impl("delegation", func(struct{}) (tool.Source, error) {
+			return delegation.New(), nil
+		})).
+		// The question tool: a turn that stops to ask, and the answer the application gives.
+		ToolSource(deploy.Impl("ask", func(struct{}) (tool.Source, error) {
+			return ask.New(), nil
+		})).
 		Program(deploy.Impl("graph", func(settings graphSettings) (agent.Program, error) {
 			compiled, err := nodes.Open(context.Background(), settings.Path, config.File(settings.Path))
 			if err != nil {
@@ -397,6 +506,7 @@ func capabilities() *tool.CapSet {
 	platform.ProcessSlot.Provide(set, nil)
 	platform.SkillsSlot.Provide(set, nil)
 	platform.DelegationSlot.Provide(set, nil)
+	platform.AskSlot.Provide(set, nil)
 	return set
 }
 

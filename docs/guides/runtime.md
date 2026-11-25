@@ -120,18 +120,23 @@ host.Run → Agents.request → agent.RunTurn → Driver (graph, a2a)
     → finish: metrics, checkpoint, run record, hooks
 ```
 
-| Step             | What it does                                                                                                                                  |
-| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Run`     | Claims the turn slot — a second run is `Conflict`, a closing session `NotAvailable` — then derives the run context from the session identity. |
-| `Agents.request` | Counts the ordinal, loads the session's latest task, mints a task id when the last one is terminal, and assembles the `agent.Request`.        |
-| `agent.RunTurn`  | Installs the failure box, puts the trace level in the context, opens `agent.turn`, runs `BeforeTurn`, then folds the driver's stream.         |
-| the driver       | Calls the routed provider and the dispatcher; every tool call reaches `sandbox.Exec` through the session's runner.                            |
-| `agent.finish`   | Classifies the outcome, records metrics, writes the terminal checkpoint, reports the run record, then runs `AfterTurn`.                       |
+| Step             | What it does                                                                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Agents.Run`     | Claims the turn slot — a second run is `Conflict`, a closing session `NotAvailable`, a paused session `Conflict` naming `Resume` — then derives the run context from the session identity. |
+| `Agents.Resume`  | The same, for the answer to a question the run stopped on: it takes the slot a paused session holds, and the turn runs `agent.ResumeTurn` instead.                                         |
+| `Agents.request` | Counts the ordinal, loads the session's latest task, mints a task id when the last one is terminal, and assembles the `agent.Request`.                                                     |
+| `agent.RunTurn`  | Installs the failure box, puts the trace level in the context, opens `agent.turn`, runs `BeforeTurn`, then folds the driver's stream.                                                      |
+| the driver       | Calls the routed provider and the dispatcher; every tool call reaches `sandbox.Exec` through the session's runner.                                                                         |
+| `agent.finish`   | Classifies the outcome, records metrics, writes the terminal checkpoint, reports the run record, then runs `AfterTurn`.                                                                    |
 
 Three properties are load-bearing:
 
 - **One turn per session.** `Session.claim` refuses a second caller, which is what lets
   `Steer` and `Cancel` address the turn in flight without an id.
+- **A paused session is not an idle one.** A turn that ends `input-required` records the
+  pause on the session; `Run` refuses it (a message would be taken as the answer), `Resume`
+  takes it, and a turn the host starts on its own waits for it. A session restored from a
+  checkpoint that says `input-required` opens paused.
 - **The terminal save happens on every path** — a normal finish, a panic, a
   consumer that stopped, and a `BeforeTurn` that refused. A turn that never started
   still leaves a terminal checkpoint.
@@ -178,6 +183,11 @@ A middleware factory declares `AtTrace` — the least level it is worth installi
 that, instead of building one that turns itself off per call.
 
 ## Two command rules
+
+**Questions.** `ask_user` asks the conversation's user, and `WithQuestions` is where the
+question goes — a prompt, a chat message, a ticket. The tool's pre-flight suspends the
+turn; the answer arrives with `Agents.Resume`. A deployment with no outlet refuses the
+call instead of suspending a turn nobody can answer.
 
 A command reaches the backend through `platform.ProcessSlot`, which the host fills
 with the session's runner decorated by the process's command rules.

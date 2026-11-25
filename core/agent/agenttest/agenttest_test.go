@@ -259,3 +259,60 @@ func TestScriptedDriverReportsARunCount(t *testing.T) {
 		t.Fatalf("Steer after Close = %v, want ErrRunEnded", err)
 	}
 }
+
+// TestScriptedSuspendsAndResumes keeps the fixture's half of the resume contract honest: the
+// scripted driver is what host tests use to put a conversation into input-required, so it has to
+// behave the way the real drivers do — Run refuses, Resume continues, Paused reports it.
+func TestScriptedSuspendsAndResumes(t *testing.T) {
+	program := agenttest.NewScripted(agent.Text{Text: "thinking"}, agent.Text{Text: "done"})
+	program.SuspendAt = 1
+	program.Question = "which seat?"
+	driver, err := program.Open(agent.SessionInfo{SessionID: "s1"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = driver.Close() })
+
+	var asked bool
+	for event, runErr := range driver.Run(context.Background(), agent.Request{}) {
+		if runErr != nil {
+			t.Fatalf("Run: %v", runErr)
+		}
+		if status, ok := event.(agent.Status); ok && status.State == agent.StateInputRequired {
+			asked = true
+		}
+	}
+	if !asked {
+		t.Fatal("the scripted driver never reported input-required")
+	}
+	resumer, ok := driver.(agent.Resumer)
+	if !ok {
+		t.Fatal("the scripted driver cannot resume")
+	}
+	pauser, ok := driver.(agent.Paused)
+	if !ok || !pauser.Paused() {
+		t.Fatal("the scripted driver did not report the pause")
+	}
+	var refused error
+	for _, runErr := range driver.Run(context.Background(), agent.Request{}) {
+		refused = runErr
+	}
+	if !errors.Is(refused, agent.ErrAwaitingResume) {
+		t.Fatalf("Run while paused = %v, want ErrAwaitingResume", refused)
+	}
+	var resumed int
+	for event, runErr := range resumer.Resume(context.Background(), agent.Request{}) {
+		if runErr != nil {
+			t.Fatalf("Resume: %v", runErr)
+		}
+		if event != nil {
+			resumed++
+		}
+	}
+	if resumed == 0 {
+		t.Fatal("the resume produced no events")
+	}
+	if pauser.Paused() {
+		t.Fatal("the resume left the driver paused")
+	}
+}
