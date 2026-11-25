@@ -51,35 +51,41 @@ means declaration order.
 ```yaml
 inference:
   providers:
-    - name: luna # deployment identity, secret-free
-      driver: openai # a name the host compiled in
-      settings: # the driver's own written form (see below)
+    - name: luna # this deployment's identity for the account; the grant selects by it
+      impl: openai # a kind the process compiled in (`Loader` is given the implementation table)
+      settings: # the driver's own written form; `openai.Document` is the authority on it
         base_url: https://api.openai.com/v1
-        api_key: "${OPENAI_API_KEY}"
-        api: responses
-  models:
-    - provider: luna
-      model: gpt-5
-      weight: 100
-      # Fill in only what the driver's catalog does not declare; a
-      # contradiction is an assembly error, not an override.
-      capabilities: { inputs: [text, image], outputs: [text] }
-      limits: { max_input_tokens: 200000, max_output_tokens: 32000 }
-  route:
-    selector: weighted # a name the host registered
+        api_key: "${env:OPENAI_API_KEY}" # a host that injects credentials may override it
+        api: responses # responses (default) | chat
+        timeout: 2m
+        retries: 2
+        models: # the line-up this provider serves — the only source of models
+          - id: { provider: luna, name: gpt-5 }
+            # `capabilities` is a model fact, not a driver setting: `inputs` is a hard
+            # declaration (the route will not send a part the model did not declare), and
+            # `outputs` is a routing preference (a target that can produce the request's
+            # output is tried first, never to the exclusion of the others).
+            capabilities: { inputs: [text, image], outputs: [text] }
+            limits: { max_input_tokens: 200000, max_output_tokens: 32000 }
+  route: # how one call fails over; core has no per-provider retry of its own
     attempts_per_target: 2
     max_targets: 3
     base_delay: 200ms
     max_delay: 2s
 ```
 
-| Block                  | Rule                                                                                                        |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `providers[].name`     | The deployment's identity for the account or endpoint; it is what `models[].provider` refers to.            |
-| `providers[].driver`   | Must be registered on the `Runtime`; an unknown one fails with the offered names.                           |
-| `providers[].settings` | Opaque to core: the driver's constructor decodes it.                                                        |
-| `models[]`             | Position is priority — the first model is tried first. Declaring a model is the only way one exists.        |
-| `route`                | Optional. `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`, `selector`, `selector_settings`. |
+`models` lives inside `providers[].settings`, not beside it: a provider's line-up is what that
+provider serves, and core treats `settings` as opaque bytes for the driver to decode. The
+descriptor is `model.ModelDescriptor` as written — `id`, `label`, `capabilities`, `limits`,
+`lifecycle` — so anything the type can state, a document can state.
+
+| Block                      | Rule                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `providers[].name`         | This deployment's identity for the account or endpoint; a grant names it in `models[].id.provider`.                                              |
+| `providers[].impl`         | Must be registered on the `Loader`; an unknown one fails with the offered names.                                                                 |
+| `providers[].settings`     | Opaque to core: the driver's constructor decodes it.                                                                                             |
+| `models[]` (in `settings`) | The line-up this provider serves. Declaring a model is the only way one exists; the route picks among targets, not among models in one provider. |
+| `route`                    | Optional. `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. A selector is the host's, not the document's.                         |
 
 ## Drivers and their settings
 
@@ -114,38 +120,44 @@ Two sources meet here:
 
 - the **driver's catalog** (`Settings.Models`) — the facts the driver knows about
   a model it serves;
-- the **document's `models[]`** — the facts this deployment wants to publish.
+- the **provider's declared `models[]`** — the facts this deployment wants to publish.
 
 A contradiction between them is an assembly error, not an override. What the
 document adds and the catalog omits becomes the published descriptor
 (`model.ModelDescriptor`: id, label, capabilities, limits, lifecycle).
 
-### Limits are promises, not clamps
+### Declared limits are facts, not clamps
 
-A `Generate` request whose `max_output_tokens` exceeds the target's declared
-maximum is rejected **before** the driver is opened, and the rejection is
-transport-safe — so a routed request falls back to a target that declares room for
-it instead of failing. The caller's budget is never silently lowered, and an
-undeclared limit rejects nothing.
+A descriptor's `limits` (`max_input_tokens`, `max_output_tokens`, `max_input_bytes`) is what the
+provider declared about a model. **Core does not enforce them**: nothing in the route or the
+pipeline rejects a request whose `max_output_tokens` exceeds the declaration, and nothing trims a
+prompt to fit `max_input_tokens` — there is no tokenizer here, and an approximate count would be
+worse than none.
 
-`max_input_tokens` is not enforced: the module has no tokenizer, and an
-approximate count would be worse than none. A host that owns the conversation
-history reads the declared window from the catalog and trims where it already
-trims.
+A host that owns the conversation history reads the declared window from the catalog and trims
+where it already trims; a request that asks for more output than a model can produce fails at the
+provider, with the provider's own error. If that sentence used to read "rejected before the driver
+is opened", it described a mechanism that was never implemented — a declared limit is evidence for
+the caller, not a gate.
 
-### Capabilities route the call
+### Capabilities: inputs are a gate, outputs are a preference
 
-Declared capabilities are consulted on both the selection and the fallback path:
-a target whose declared output kinds cannot serve the request intent is skipped,
-while a model with undeclared capabilities is treated as undeclared — not
-unsupported — and the request is attempted. The provider's own validation remains
-the final arbiter.
+The two lists mean different things, and the difference is the point:
 
-A capability declaration is also a promise checked per surface: a model declaring
-toggleable reasoning must accept `reasoning_enabled=false` on that surface, and one
-declaring `always` must reject it. Discovery bits such as hosted web search ride on
-the descriptor, so a host can surface per-model options without vendor-specific
-knowledge.
+- **`inputs` is a hard declaration.** A target whose declared input kinds do not cover every part
+  the request carries is dropped before selection, so a text-only model is never handed an image
+  and left to fail on the wire where the error reads like a provider fault. If no candidate carries
+  the request, the call fails with `inference.UnsupportedFeature` naming the part and the first
+  candidate — a fleet with no model that reads audio is a configuration fact, not a provider error.
+- **`outputs` is a routing preference.** Among the candidates, a target that declares it can
+  produce the request's `output` kind is tried first; nothing is dropped because of `outputs`, so a
+  fleet that declares none keeps its declaration order and an image request still runs on a
+  text-only model when that is all there is.
+- **Empty means undeclared**, in both directions: an empty list asserts nothing, and a declaration
+  that asserts nothing filters nothing.
+
+The provider's own validation remains the final arbiter for everything the declaration does not
+cover.
 
 ## Routing
 

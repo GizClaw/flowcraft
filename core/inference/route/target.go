@@ -167,9 +167,10 @@ func dispatch[Req, Res any](
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
+	prefer func([]Target) []Target,
 ) (Res, error) {
 	ctx, call := startRoute(ctx, operation)
-	response, err := dispatchTargets(ctx, call, targets, selector, request, modelOf, withTarget, invoke, retry)
+	response, err := dispatchTargets(ctx, call, targets, selector, request, modelOf, withTarget, invoke, retry, prefer)
 	call.finish(err)
 	return response, err
 }
@@ -186,6 +187,7 @@ func dispatchTargets[Req, Res any](
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
+	prefer func([]Target) []Target,
 ) (Res, error) {
 	var zero Res
 
@@ -200,6 +202,9 @@ func dispatchTargets[Req, Res any](
 			return zero, err
 		}
 		ordered = selected
+	}
+	if prefer != nil {
+		ordered = prefer(ordered)
 	}
 	call.selectTargets(ordered)
 	if len(ordered) == 0 {

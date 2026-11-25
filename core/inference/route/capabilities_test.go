@@ -93,3 +93,42 @@ func TestDeclaredInputsAreAHardFilter(t *testing.T) {
 		})
 	}
 }
+
+// TestOutputsAreAPreferenceNotAPermission is the half of the capabilities comment that must never
+// turn into a rejection: a target that declares only text still runs an image request when nothing
+// better exists, and a fleet that declares no outputs keeps its declaration order.
+func TestOutputsAreAPreferenceNotAPermission(t *testing.T) {
+	textOut := targetDeclaring("text-out")
+	textOut.Provider.Catalog = testCatalog{models: []model.ModelDescriptor{{
+		ID:           textOut.Model,
+		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartText}},
+	}}}
+	imageOut := targetDeclaring("image-out")
+	imageOut.Provider.Catalog = testCatalog{models: []model.ModelDescriptor{{
+		ID:           imageOut.Model,
+		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartText, message.PartImage}},
+	}}}
+	undeclared := targetDeclaring("undeclared")
+
+	for _, tc := range []struct {
+		name    string
+		targets []Target
+		want    inference.Output
+		first   string
+	}{
+		{"image intent prefers the image model", []Target{textOut, imageOut}, inference.OutputImage, "t-image-out"},
+		{"text intent keeps declaration order", []Target{textOut, imageOut}, inference.OutputText, "t-text-out"},
+		{"undeclared covers everything", []Target{undeclared, textOut}, inference.OutputImage, "t-undeclared"},
+		{"nothing is dropped", []Target{textOut, imageOut}, inference.OutputImage, "t-image-out"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ordered := preferOutputs(tc.targets, tc.want)
+			if len(ordered) != len(tc.targets) {
+				t.Fatalf("preferOutputs dropped %d of %d targets", len(tc.targets)-len(ordered), len(tc.targets))
+			}
+			if ordered[0].Name != tc.first {
+				t.Fatalf("first = %q, want %q", ordered[0].Name, tc.first)
+			}
+		})
+	}
+}

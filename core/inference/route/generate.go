@@ -14,7 +14,8 @@ func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest
 		return inference.GenerateResponse{}, err
 	}
 	return dispatch(ctx, operationGenerate, targets, r.policy.Generate, request,
-		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry)
+		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry,
+		func(ordered []Target) []Target { return preferOutputs(ordered, request.Output) })
 }
 
 // GenerateStream routes the opening of one stream.
@@ -45,6 +46,7 @@ func (r *Router) openStream(ctx context.Context, call *routeCall, request infere
 		}
 		ordered = selected
 	}
+	ordered = preferOutputs(ordered, request.Output)
 	call.selectTargets(ordered)
 
 	policy := r.policy.Retry.effective(len(ordered))
