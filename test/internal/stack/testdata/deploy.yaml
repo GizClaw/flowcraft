@@ -23,4 +23,6 @@ tools:
       impl: exec
     - name: delegation
       impl: delegation
+    - name: ask
+      impl: ask
 observability: { trace: run, bodies: false }

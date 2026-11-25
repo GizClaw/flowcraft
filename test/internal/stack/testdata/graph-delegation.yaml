@@ -30,7 +30,7 @@ nodes:
       request:
         model: {provider: fake, name: fake-1}
         system: Do the work you are asked for. You may delegate to writer, answer a delegated agent, or run a command.
-        tools: {names: [write_file, bash, delegate, delegation_answer, delegation_status]}
+        tools: {names: [write_file, bash, delegate, delegation_answer, delegation_status, ask_user]}
   - id: tools
     kind: tool
     config:

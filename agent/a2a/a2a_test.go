@@ -3,6 +3,7 @@ package a2a_test
 import (
 	"context"
 	"errors"
+	"iter"
 	"strings"
 	"testing"
 	"time"
@@ -319,4 +320,46 @@ func withStore(req agent.Request, store agent.Store) agent.Request {
 	req.Store = store
 	req.Fingerprint = "sha256:deployment"
 	return req
+}
+
+// TestAPausedTaskThroughTheTurnDecorator is the pairing the host relies on: a paused a2a task is
+// refused by RunTurn and continued by ResumeTurn, with the same identity, failure box and
+// checkpoint the host's turn puts around it.
+func TestAPausedTaskThroughTheTurnDecorator(t *testing.T) {
+	server, _ := peer(t,
+		agent.Status{State: agent.StateWorking},
+		agent.Status{State: agent.StateInputRequired},
+	)
+	store := agenttest.NewMemStore()
+	driver := connect(t, server.URL, "conv-1")
+	req := withStore(request("conv-1", "hi"), store)
+
+	turn := func(start func(context.Context, agent.Request, agent.Driver) iter.Seq2[agent.Event, error]) turnResult {
+		var got turnResult
+		for event, err := range start(context.Background(), req, driver) {
+			if err != nil {
+				if got.err == nil {
+					got.err = err
+				}
+				continue
+			}
+			switch typed := event.(type) {
+			case agent.Text:
+				got.answer.WriteString(typed.Text)
+			case agent.Status:
+				got.status = typed
+			}
+		}
+		return got
+	}
+
+	if got := turn(agent.RunTurn); got.err != nil {
+		t.Fatalf("first turn: %v", got.err)
+	}
+	if got := turn(agent.RunTurn); !errors.Is(got.err, agent.ErrAwaitingResume) {
+		t.Fatalf("RunTurn on a paused task = %v, want ErrAwaitingResume", got.err)
+	}
+	if got := turn(agent.ResumeTurn); got.err != nil {
+		t.Fatalf("ResumeTurn: %v", got.err)
+	}
 }

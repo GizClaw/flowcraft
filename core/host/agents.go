@@ -64,6 +64,10 @@ type Agents struct {
 	deliveryMu sync.Mutex
 	delivery   map[string]*deliveryQueue
 	steers     map[string]map[agent.SteerID]trackedSteer
+	// sealed holds the sessions whose pending work was already released to the application. An
+	// enqueue that arrives after the release — a child finishing while its parent is closing —
+	// goes straight to the application instead of starting a worker that outlives the close.
+	sealed map[string]struct{}
 	// workers is the delivery workers in flight. A close waits for them: an application callback
 	// that runs after Close returned would run on a torn-down application.
 	workers sync.WaitGroup
@@ -136,6 +140,7 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		slots:         map[string]int{},
 		delivery:      map[string]*deliveryQueue{},
 		steers:        map[string]map[agent.SteerID]trackedSteer{},
+		sealed:        map[string]struct{}{},
 	}
 	for _, opt := range opts {
 		if opt != nil {

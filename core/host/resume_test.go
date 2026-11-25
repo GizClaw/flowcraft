@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"iter"
 	"strings"
 	"sync"
@@ -233,5 +234,61 @@ func TestADeliveryWaitsOutThePause(t *testing.T) {
 	// into an "undeliverable" is the dropped delivery this test exists for.
 	if len(undelivered) != 0 {
 		t.Fatalf("the delivery was reported undeliverable instead of held: %v", undelivered)
+	}
+}
+
+// TestADeliveryAfterTheCloseDoesNotStartAWorker keeps the release closed: a child that finishes
+// while its parent is closing enqueues after the session's work was already handed over, and a
+// worker started then would call the application after the caller was told the session is gone.
+func TestADeliveryAfterTheCloseDoesNotStartAWorker(t *testing.T) {
+	var delivered []string
+	agents := hostFor(t, func() (agent.Program, error) {
+		return &deliveryProgram{driver: &deliveryDriver{accepts: true}}, nil
+	}, WithDelegationDelivery(func(_ context.Context, id string, msg message.Message) bool {
+		delivered = append(delivered, id+": "+msg.Content.Text())
+		return true
+	}))
+	if err := agents.CloseSession(t.Context(), "s1"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	agents.deliver(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "late"))
+	if len(delivered) != 1 || delivered[0] != "s1: late" {
+		t.Fatalf("delivered = %v, want the late message handed to the application", delivered)
+	}
+	agents.deliveryMu.Lock()
+	queues := len(agents.delivery)
+	agents.deliveryMu.Unlock()
+	if queues != 0 {
+		t.Fatalf("a closed session started %d delivery queues", queues)
+	}
+}
+
+// TestSteeringAPausedSessionReportsIdle keeps the input slot's vocabulary: a paused run takes no
+// steer (the message would be taken as the answer), and the caller is told the run is idle rather
+// than losing the message.
+func TestSteeringAPausedSessionReportsIdle(t *testing.T) {
+	agents, _ := suspendHost(t, "may I?")
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	steer := agent.SteerInput{
+		Message: message.NewTextMessage(message.RoleUser, "steer"),
+		Intent:  agent.SteerDeliver,
+	}
+	if _, err := agents.Steer(t.Context(), "s1", steer); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Fatalf("Steer on a paused session = %v, want ErrSessionIdle", err)
+	}
+}
+
+// TestCancellingAPausedSessionReportsIdle: there is no turn to stop, and the session stays open so
+// its answer can still arrive.
+func TestCancellingAPausedSessionReportsIdle(t *testing.T) {
+	agents, _ := suspendHost(t, "may I?")
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	if err := agents.Cancel(t.Context(), "s1", "stop"); !errors.Is(err, agent.ErrSessionIdle) {
+		t.Fatalf("Cancel on a paused session = %v, want ErrSessionIdle", err)
+	}
+	if _, open := agents.Session("s1"); !open {
+		t.Fatal("a cancelled paused session was closed; it can still be answered")
 	}
 }

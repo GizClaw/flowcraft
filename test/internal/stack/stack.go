@@ -39,6 +39,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/platform"
 	"github.com/GizClaw/flowcraft/core/tool/projection"
 	"github.com/GizClaw/flowcraft/sandbox/local"
+	"github.com/GizClaw/flowcraft/tool/builtin/ask"
 	"github.com/GizClaw/flowcraft/tool/builtin/delegation"
 	"github.com/GizClaw/flowcraft/tool/builtin/exec"
 	"github.com/GizClaw/flowcraft/tool/builtin/files"
@@ -88,7 +89,8 @@ func Authority() policy.Grant {
 func DelegatingAuthority() policy.Grant {
 	grant := Authority()
 	grant.Tools = policy.ToolSet{Allow: []string{
-		"write_file", "bash", "delegate", "delegation_answer", "delegation_status", "delegation_cancel",
+		"write_file", "bash", "ask_user", "delegate", "delegation_answer",
+		"delegation_status", "delegation_cancel",
 	}}
 	grant.Delegation = &policy.Delegation{
 		Targets: []string{AgentName},
@@ -268,6 +270,33 @@ func (s *Stack) Run(t *testing.T, id, text string) []agent.Event {
 		t.Fatalf("stack: turn %q ended in %q, want completed; events: %v", text, state, events)
 	}
 	return events
+}
+
+// Resume answers a session that stopped to ask, and drains the turn it starts.
+func (s *Stack) Resume(t *testing.T, id, text string) []agent.Event {
+	t.Helper()
+	var events []agent.Event
+	for event, err := range s.Agents.Resume(context.Background(), id, message.NewTextContent(text)) {
+		if err != nil {
+			t.Fatalf("stack: resume %q: %v", id, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+// TerminalState is the last terminal status a turn reached, exported for the e2e assertions.
+func TerminalState(events []agent.Event) agent.TaskState { return terminalState(events) }
+
+// LastState is the last status a turn reported, terminal or not — what a paused turn ends on.
+func LastState(events []agent.Event) agent.TaskState {
+	state := agent.TaskState("")
+	for _, event := range events {
+		if status, ok := event.(agent.Status); ok {
+			state = status.State
+		}
+	}
+	return state
 }
 
 // RunErr drains one turn and returns its error, for the tests that inject one.
@@ -454,6 +483,10 @@ func impls(scripted *Model) *deploy.Impls {
 		})).
 		ToolSource(deploy.Impl("delegation", func(struct{}) (tool.Source, error) {
 			return delegation.New(), nil
+		})).
+		// The question tool: a turn that stops to ask, and the answer the application gives.
+		ToolSource(deploy.Impl("ask", func(struct{}) (tool.Source, error) {
+			return ask.New(), nil
 		})).
 		Program(deploy.Impl("graph", func(settings graphSettings) (agent.Program, error) {
 			compiled, err := nodes.Open(context.Background(), settings.Path, config.File(settings.Path))

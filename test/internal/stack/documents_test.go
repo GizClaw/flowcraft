@@ -33,5 +33,6 @@ const (
 	delegationPrompt = "Do the work you are asked for. You may delegate to writer, answer a delegated " +
 		"agent, or run a command."
 	baseTools       = "tools: {names: [write_file]}"
-	delegationTools = "tools: {names: [write_file, bash, delegate, delegation_answer, delegation_status]}"
+	delegationTools = "tools: {names: [write_file, bash, delegate, delegation_answer, delegation_status, " +
+		"ask_user]}"
 )

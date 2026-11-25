@@ -413,6 +413,10 @@ func (a *Agents) Open(ctx context.Context, sessionID, agentName string, grant po
 		return nil, errors.Join(
 			errdefs.Conflictf("host: session %q is already open", sessionID), session.close())
 	}
+	// A reopened id starts unsealed: the release belonged to the previous conversation.
+	a.deliveryMu.Lock()
+	delete(a.sealed, sessionID)
+	a.deliveryMu.Unlock()
 	a.sessions[sessionID] = session
 	a.slots[sessionID] = len(a.byAge)
 	a.byAge = append(a.byAge, session)

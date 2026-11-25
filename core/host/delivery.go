@@ -157,6 +157,11 @@ func (a *Agents) steerDelivery(ctx context.Context, session *Session, msg messag
 // enqueueDelivery queues msg for a turn the host will start, and makes sure a worker is draining.
 func (a *Agents) enqueueDelivery(ctx context.Context, sessionID string, msg message.Message) {
 	a.deliveryMu.Lock()
+	if _, closed := a.sealed[sessionID]; closed {
+		a.deliveryMu.Unlock()
+		a.undelivered(ctx, sessionID, msg, "the session closed")
+		return
+	}
 	queue, ok := a.delivery[sessionID]
 	if !ok {
 		queue = &deliveryQueue{}
@@ -328,6 +333,7 @@ func (a *Agents) requeueDropped(ctx context.Context, sessionID string) {
 // neither re-offered by a later turn (there is none) nor handed to the application.
 func (a *Agents) forgetDelivery(ctx context.Context, sessionID string) {
 	a.deliveryMu.Lock()
+	a.sealed[sessionID] = struct{}{}
 	queue := a.delivery[sessionID]
 	delete(a.delivery, sessionID)
 	pending := a.steers[sessionID]

@@ -127,3 +127,52 @@ func call(t *testing.T, id, name string, args map[string]any) message.ToolCall {
 	}
 	return built
 }
+
+// TestAQuestionReachesTheApplicationThroughTheToolNode is ask_user end to end: the model calls the
+// tool, the real tool node suspends before it runs anything, the application is told, and the
+// answer arrives as the call's result on the resumed turn.
+func TestAQuestionReachesTheApplicationThroughTheToolNode(t *testing.T) {
+	ask := call(t, "q1", "ask_user", map[string]any{"question": "which seat?"})
+	var asked []string
+	s := stack.OpenConfig(t, stack.Config{
+		Graph: "graph-delegation.yaml",
+		Agents: []host.AgentsOption{host.WithQuestions(
+			func(_ context.Context, _ string, question message.Content) bool {
+				asked = append(asked, question.Text())
+				return true
+			})},
+	},
+		stack.Reply{ToolCall: &ask},
+		stack.Reply{Text: "seat 14A is yours"},
+	)
+	s.OpenSessionWith(t, stack.SessionID, stack.DelegatingAuthority())
+
+	first, err := s.RunErr(stack.SessionID, "book a seat")
+	if err != nil {
+		t.Fatalf("the turn failed instead of pausing: %v", err)
+	}
+	if state := stack.LastState(first); state != agent.StateInputRequired {
+		t.Fatalf("first turn ended %q, want input-required", state)
+	}
+	if len(asked) != 1 || asked[0] != "which seat?" {
+		t.Fatalf("the application was told %v, want the question", asked)
+	}
+
+	answered := s.Resume(t, stack.SessionID, "14A")
+	if state := stack.LastState(answered); state != agent.StateCompleted {
+		t.Fatalf("the resumed turn ended %q, want completed", state)
+	}
+	if len(asked) != 1 {
+		t.Fatalf("the question was put to the application %d times", len(asked))
+	}
+	// The answer reached the model as the tool's result, not as a new user message.
+	var sawAnswer bool
+	for _, event := range answered {
+		if result, ok := event.(agent.ToolResult); ok && strings.Contains(result.Result.Content.Text(), "14A") {
+			sawAnswer = true
+		}
+	}
+	if !sawAnswer {
+		t.Fatal("the answer never reached the conversation as the tool's result")
+	}
+}
