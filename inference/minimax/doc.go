@@ -66,14 +66,14 @@
 //
 // # Retries
 //
-// The settings accept a poll interval for the video task pipeline, an HTTP
-// client or timeout, and a retries count. Retries are left at zero by default
-// so the route Router owns the whole budget; a non-zero value belongs to a
-// deployment whose gateway is the only retry layer.
+// The driver makes one attempt per call. Retry and failover are the route
+// Router's decision — its RetryPolicy (AttemptsPerTarget, MaxTargets) is the
+// one place the attempt budget is spent — so the settings carry no retries
+// count for a deployment to set.
 //
-// The budget only covers reads. Every paid surface here is a create — a video
-// task and a speech synthesis — and both are billed per call, so re-sending one
-// after a transient failure would buy the work twice: the server may already
-// have accepted the request when the response was lost. The video task poll is
-// a read and does retry, which is where the budget earns its keep.
+// Every paid surface here is a create — a video task and a speech synthesis —
+// and both are billed per call, so re-sending one after a transient failure
+// would buy the work twice: the server may already have accepted the request
+// when the response was lost. Video task polling is a read, so it is the one
+// surface the router's budget can repeat without buying anything twice.
 package minimax
