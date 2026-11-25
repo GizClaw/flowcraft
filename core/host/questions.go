@@ -46,6 +46,9 @@ type posedQuestion struct {
 	asked time.Time
 }
 
+// questionTTL is how long an open question waits for its answer. It is the approval window's: a
+// session that has been waiting longer than that has been abandoned, not paused.
+
 // newQuestionsRoute builds the route a session's ask_user calls travel.
 func newQuestionsRoute(sessionID string, sink func(context.Context, string, message.Content) bool) *questionsRoute {
 	return &questionsRoute{

@@ -140,16 +140,27 @@ const (
 func (s *Session) claim(ctx context.Context, kind turnKind, mode claimMode) error {
 	for {
 		s.turnMu.Lock()
+		if mode == claimResume && !s.running && !s.paused {
+			// The host's mirror is a cache, the driver is the authority — but asking it takes the
+			// driver's lock, so it happens outside the turn lock. A turn that ended without a
+			// status leaves the mirror behind; the driver saying it is paused is what counts.
+			driver := s.driver
+			s.turnMu.Unlock()
+			if paused, ok := driver.(agent.Paused); ok && paused.Paused() {
+				s.turnMu.Lock()
+				if !s.closing && !s.running && !s.paused {
+					s.paused = true
+				}
+				s.turnMu.Unlock()
+				continue
+			}
+			return errdefs.Conflictf("host: session %q is not waiting for an answer", s.id)
+		}
 		switch {
 		case s.closing:
 			s.turnMu.Unlock()
 			return errdefs.NotAvailablef("host: session %q is closing", s.id)
-		case !s.running && (mode == claimResume || !s.paused) && s.mayTake(mode):
-			if mode == claimResume && !s.paused {
-				// The host's mirror is a cache, the driver is the authority. A turn that ended without
-				// a status leaves the mirror behind; the driver saying it is paused is what counts.
-				s.paused = true
-			}
+		case !s.running && (mode == claimResume || !s.paused):
 			s.running = true
 			s.turnKind = kind
 			s.turnDone = make(chan struct{})
@@ -169,11 +180,8 @@ func (s *Session) claim(ctx context.Context, kind turnKind, mode claimMode) erro
 			// the message it carries is not one. Falling through to a conflict here delivered the
 			// queue to the application instead of holding it, which is a dropped delivery.
 		case !s.running:
-			// Paused, and a caller's or a resume's turn that cannot take it.
+			// Paused, and a caller's turn: the message would be taken as the answer.
 			s.turnMu.Unlock()
-			if mode == claimResume {
-				return errdefs.Conflictf("host: session %q is not waiting for an answer", s.id)
-			}
 			return errdefs.Conflictf(
 				"host: session %q is waiting for an answer; use Resume", s.id)
 		case mode != claimHost:
@@ -197,18 +205,6 @@ func (s *Session) claim(ctx context.Context, kind turnKind, mode claimMode) erro
 	}
 }
 
-// mayTake reports whether a free slot may be taken.
-//
-// Every mode but a resume may take it; a resume needs something to resume, which is either the
-// pause the host recorded or — when a turn ended without a status — the driver's own answer.
-func (s *Session) mayTake(mode claimMode) bool {
-	if mode != claimResume || s.paused {
-		return true
-	}
-	paused, ok := s.driver.(agent.Paused)
-	return ok && paused.Paused()
-}
-
 // claimMode says how a caller takes the turn slot.
 type claimMode int
 
@@ -222,6 +218,17 @@ const (
 	// claimResume is the answer to the question: it takes the slot a paused session is holding.
 	claimResume
 )
+
+// restorePause puts back the pause a resume took, when the turn it was for never started.
+func (s *Session) restorePause() {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	if s.closing || s.running || s.paused {
+		return
+	}
+	s.paused = true
+	s.pauseDone = make(chan struct{})
+}
 
 // choose prefers the terminal state a turn reached, and falls back to the last status it saw.
 func choose(terminal, last agent.TaskState) agent.TaskState {
@@ -719,6 +726,9 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		if err := session.close(); err != nil {
 			errs = append(errs, err)
 		}
+		// Eviction is a close: the session's queued deliveries belong to the application now, and
+		// leaving them in the table would outlive the session they were addressed to.
+		a.forgetDelivery(ctx, session.id)
 	}
 	for _, entry := range drained {
 		if err := entry.close(); err != nil {

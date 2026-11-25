@@ -157,6 +157,45 @@ func TestResumeOfAnIdleSessionIsRefused(t *testing.T) {
 	}
 }
 
+// TestAResumeThatCannotStartKeepsThePause is the failure path: the slot was taken and the pause
+// cleared, then the request could not be assembled — without putting the pause back, the session
+// could neither resume nor run.
+func TestAResumeThatCannotStartKeepsThePause(t *testing.T) {
+	agents, _ := suspendHost(t, "may I?")
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+	// A closing session is the cheapest way to make the request fail after the claim: the close
+	// takes the driver, and the resume that follows cannot assemble a turn.
+	agents.mu.Lock()
+	session, _ := agents.sessions["s1"]
+	session.turnMu.Lock()
+	session.closing = true
+	session.turnMu.Unlock()
+	agents.mu.Unlock()
+	defer func() {
+		agents.mu.Lock()
+		session.turnMu.Lock()
+		session.closing = false
+		session.turnMu.Unlock()
+		agents.mu.Unlock()
+	}()
+	var err error
+	for _, runErr := range agents.Resume(t.Context(), "s1", message.NewTextContent("yes")) {
+		if runErr != nil {
+			err = runErr
+		}
+	}
+	if err == nil {
+		t.Fatal("the resume started on a closing session")
+	}
+	session.turnMu.Lock()
+	paused := session.paused
+	session.turnMu.Unlock()
+	if !paused {
+		t.Fatal("the failed resume consumed the pause")
+	}
+}
+
 // TestADeliveryWaitsOutThePause is the bug this split fixes: a delegated result offered while the
 // parent is waiting for an answer is not taken as that answer, and is delivered once the parent
 // resumes.

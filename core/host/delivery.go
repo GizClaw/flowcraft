@@ -84,6 +84,9 @@ type deliveryQueue struct {
 	mu       sync.Mutex
 	items    []deliveryItem
 	draining bool
+	// done is closed when the queue's worker returns. A close waits on it, so an application
+	// callback never runs after the caller was told the session is gone.
+	done chan struct{}
 }
 
 // deliveryItem is one message waiting for a turn.
@@ -177,13 +180,18 @@ func (a *Agents) enqueueDelivery(ctx context.Context, sessionID string, msg mess
 	queue.draining = true
 	queue.mu.Unlock()
 
+	queue.mu.Lock()
+	queue.done = make(chan struct{})
+	done := queue.done
+	queue.mu.Unlock()
 	a.workers.Add(1)
-	go a.drainDelivery(sessionID, queue)
+	go a.drainDelivery(sessionID, queue, done)
 }
 
 // drainDelivery runs the queued messages of one session in order.
-func (a *Agents) drainDelivery(sessionID string, queue *deliveryQueue) {
+func (a *Agents) drainDelivery(sessionID string, queue *deliveryQueue, done chan struct{}) {
 	defer a.workers.Done()
+	defer close(done)
 	for {
 		queue.mu.Lock()
 		if len(queue.items) == 0 {
@@ -330,7 +338,15 @@ func (a *Agents) forgetDelivery(ctx context.Context, sessionID string) {
 	for _, steer := range pending {
 		dropped = append(dropped, steer.msg)
 	}
+	// The worker is waited for, so the messages it held are reported before the caller returns and
+	// no application callback runs after the session is gone.
 	if queue != nil {
+		queue.mu.Lock()
+		done := queue.done
+		queue.mu.Unlock()
+		if done != nil {
+			<-done
+		}
 		queue.mu.Lock()
 		for _, item := range queue.items {
 			dropped = append(dropped, item.msg)
