@@ -18,7 +18,7 @@ import (
 type fake struct {
 	request   platform.DelegationRequest
 	addressed string
-	answered  string
+	answered  platform.DelegationAnswer
 	outcome   platform.DelegationOutcome
 	err       error
 }
@@ -33,7 +33,8 @@ func (f *fake) Status(_ context.Context, session string) (platform.DelegationOut
 	return f.outcome, f.err
 }
 
-func (f *fake) Answer(_ context.Context, session, answer string) (platform.DelegationOutcome, error) {
+func (f *fake) Answer(_ context.Context, session string, answer platform.DelegationAnswer,
+) (platform.DelegationOutcome, error) {
 	f.addressed, f.answered = session, answer
 	return f.outcome, f.err
 }
@@ -215,8 +216,8 @@ func TestTheFollowUpToolsAddressTheChild(t *testing.T) {
 			if capability.addressed != "main/seat_1-1" {
 				t.Fatalf("addressed %q", capability.addressed)
 			}
-			if name == Answer && capability.answered != "yes" {
-				t.Fatalf("answer = %q", capability.answered)
+			if name == Answer && capability.answered.Text != "yes" {
+				t.Fatalf("answer = %q", capability.answered.Text)
 			}
 		})
 	}
@@ -237,5 +238,24 @@ func TestStringRendersTheEdgeAndNotThePayload(t *testing.T) {
 	}
 	if strings.Contains(got, "secret") {
 		t.Fatalf("String = %q, want no payload", got)
+	}
+}
+
+// TestADecisionReachesTheCapability pins the one field the approval flow depends on: a decision the
+// model typed has to arrive as a decision, not as free text.
+func TestADecisionReachesTheCapability(t *testing.T) {
+	capability := &fake{outcome: platform.DelegationOutcome{Status: "working"}}
+	if _, err := (answerTool{}).Execute(context.Background(), bindingFor(capability),
+		`{"session":"main/seat_1-1","decision":"approve","answer":"because"}`); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if capability.addressed != "main/seat_1-1" {
+		t.Fatalf("session = %q", capability.addressed)
+	}
+	if capability.answered.Decision != platform.DecisionApprove || capability.answered.Text != "because" {
+		t.Fatalf("answer = %+v", capability.answered)
+	}
+	if _, err := (answerTool{}).Execute(context.Background(), bindingFor(capability), `{"session":"x"}`); !errdefs.IsValidation(err) {
+		t.Fatalf("empty answer = %v, want Validation", err)
 	}
 }

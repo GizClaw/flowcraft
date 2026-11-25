@@ -98,7 +98,7 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	if err != nil {
 		return platform.DelegationOutcome{}, err
 	}
-	if _, err := d.agents.Open(ctx, child, target, childGrant, WithChain(chain)); err != nil {
+	if _, err := d.agents.Open(ctx, child, target, childGrant, withChain(chain)); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
 
@@ -123,9 +123,6 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		outcome.Status = string(agent.StateSubmitted)
 		go func() {
 			defer span.End()
-			// WithoutCancel: the close must land even when the asking turn has ended, and the
-			// session id is the only thing it needs.
-			defer func() { _ = d.agents.CloseSession(context.WithoutCancel(bgCtx), child) }()
 
 			// The child's own events go to the host's sink, and the fold here is what the parent is
 			// told when the run ends. A hand-off is the one delegation nobody waits for, so the
@@ -152,6 +149,14 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 				run()
 			}
 			final.Content = folded.content()
+			// WithoutCancel: the close must land even when the asking turn has ended, and the
+			// session id is the only thing it needs. A child that paused is kept open — its
+			// question is answered later, by the parent, and closing it here would erase the state
+			// the question was asked from. It is closed when the answer ends its turn, or by a
+			// cancel.
+			if final.Status != string(agent.StateInputRequired) {
+				_ = d.agents.CloseSession(context.WithoutCancel(bgCtx), child)
+			}
 			// Detached: the child's turn is over, and the parent's delivery is its own work.
 			d.agents.deliver(context.WithoutCancel(bgCtx), d.parent, deliveryMessage(final))
 		}()
@@ -159,8 +164,15 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	}
 
 	// A sync edge is a request: the child exists for as long as this call, and the caller's
-	// context is the one that bounds it.
-	defer func() { _ = d.agents.CloseSession(ctx, child) }()
+	// context is the one that bounds it — except when it paused to ask. A paused child is kept
+	// open so the caller can answer it with delegation_answer, which is what makes a sync edge
+	// two-phase instead of blocked.
+	defer func() {
+		if outcome.Status == string(agent.StateInputRequired) {
+			return
+		}
+		_ = d.agents.CloseSession(ctx, child)
+	}()
 
 	release, err := d.acquire(ctx)
 	if err != nil {
@@ -212,26 +224,27 @@ func (d *delegator) childAuthority(ctx context.Context, target string) (policy.G
 func admitDelegation(d *policy.Delegation, target, mode string, chain identity.Chain) error {
 	switch {
 	case d == nil || len(d.Targets) == 0:
-		return errdefs.Forbiddenf("host: this session may not delegate")
+		return &policy.Denial{Check: policy.CheckDelegation, Reason: "this session may not delegate"}
 	case target == "":
 		return errdefs.Validationf("host: delegation needs a target agent")
 	case !slices.Contains(d.Targets, target):
-		return errdefs.Forbiddenf(
-			"host: delegation to %q is not in this session's policy (it may reach %s)",
-			target, strings.Join(d.Targets, ", "))
+		return &policy.Denial{Check: policy.CheckDelegation, Reason: fmt.Sprintf(
+			"delegation to %q is not in this session's policy (it may reach %s)",
+			target, strings.Join(d.Targets, ", "))}
 	}
 	if d.MaxDepth > 0 && chain.Depth+1 > d.MaxDepth {
-		return errdefs.Forbiddenf(
-			"host: delegation would be %d edges deep, and the policy allows %d", chain.Depth+1, d.MaxDepth)
+		return &policy.Denial{Check: policy.CheckDelegation, Reason: fmt.Sprintf(
+			"a delegation %d edges deep is beyond what the policy allows (%d)",
+			chain.Depth+1, d.MaxDepth)}
 	}
 	allowed := make([]string, 0, len(d.Modes))
 	for _, permitted := range d.Modes {
 		allowed = append(allowed, string(permitted))
 	}
 	if len(allowed) > 0 && !slices.Contains(allowed, mode) {
-		return errdefs.Forbiddenf(
-			"host: delegation mode %q is not in this session's policy (it allows %s)",
-			mode, strings.Join(allowed, ", "))
+		return &policy.Denial{Check: policy.CheckDelegation, Reason: fmt.Sprintf(
+			"delegation mode %q is not in this session's policy (it allows %s)",
+			mode, strings.Join(allowed, ", "))}
 	}
 	return nil
 }
@@ -407,28 +420,105 @@ func (d *delegator) Status(ctx context.Context, session string) (platform.Delega
 }
 
 // Answer continues a paused child and folds what it produced next.
-func (d *delegator) Answer(ctx context.Context, session, answer string) (platform.DelegationOutcome, error) {
+//
+// Two kinds of pause are answered here. An approval question takes a decision, which is recorded
+// against the command it was asked about and then applied by the child's own pre-flight; anything
+// else takes the caller's text. Either way the child resumes as a turn of its own, with what the
+// caller decided as the message it continues from — the child's model sees the decision in its
+// conversation, which is what lets it retry a granted command or plan around a refused one.
+func (d *delegator) Answer(ctx context.Context, session string, answer platform.DelegationAnswer,
+) (platform.DelegationOutcome, error) {
 	if err := d.child(session); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
-	outcome := platform.DelegationOutcome{Session: session}
+	child, ok := d.agents.Session(session)
+	if !ok {
+		return platform.DelegationOutcome{}, errdefs.NotAvailablef(
+			"host: delegation %q is not open in this process", session)
+	}
+	text, err := child.answer(ctx, answer)
+	if err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	outcome := platform.DelegationOutcome{Session: session, Agent: child.agent, Depth: child.chain.Depth, Chain: child.chain.ID}
 	folded := &foldedStream{}
-	for event, err := range d.agents.Run(ctx, session, userMessage(answer)) {
-		if err != nil {
-			return outcome, err
+	// The child's own identity and failure box, as on the other two run sites: the caller's context
+	// carries the parent's session and turn, and a resumed child must not appear as the parent.
+	for event, runErr := range d.agents.Run(nestedRunCtx(ctx), session, userMessage(text)) {
+		if runErr != nil {
+			// A failed resume ends the child's work as surely as a terminal status does; leaving it
+			// open would keep a cell for a conversation nobody will continue.
+			_ = d.agents.CloseSession(context.WithoutCancel(ctx), session)
+			return outcome, runErr
 		}
 		foldDelegated(&outcome, folded, event)
 	}
 	outcome.Content = folded.content()
+	// A child that finished its work is closed; one that paused again stays open for the next
+	// answer. Closing a paused child here would erase the state its question was asked from.
+	if outcome.Status != string(agent.StateInputRequired) {
+		_ = d.agents.CloseSession(context.WithoutCancel(ctx), session)
+	}
 	return outcome, nil
 }
 
+// answer turns a delegation answer into the text the child continues from.
+func (s *Session) answer(ctx context.Context, answer platform.DelegationAnswer) (string, error) {
+	if answer.Decision != "" {
+		if s.approvals == nil {
+			return "", errdefs.Validationf(
+				"host: %q was not asked for an approval", s.id)
+		}
+		question, err := s.approvals.decide(ctx, answer.Decision, answer.Text)
+		if err != nil {
+			return "", err
+		}
+		command := strings.Join(question.request.Argv, " ")
+		switch answer.Decision {
+		case platform.DecisionApprove:
+			recordDelegationDecision(ctx, s.agent, platform.DecisionApprove)
+			return "[approval] the parent approved this command; run it again:\n" + command, nil
+		case platform.DecisionEscalate:
+			recordDelegationDecision(ctx, s.agent, platform.DecisionEscalate)
+		case platform.DecisionDeny:
+			recordDelegationDecision(ctx, s.agent, platform.DecisionDeny)
+		}
+		if granted, ok := s.approvals.lookup(question.digest); ok && granted.approve {
+			return "[approval] the deployment's approver granted this command; run it again:\n" + command, nil
+		}
+		return "[approval] this command was refused and the refusal is final; do not retry it and do " +
+			"not ask for an escalation:\n" + command, nil
+	}
+	if strings.TrimSpace(answer.Text) == "" {
+		return "", errdefs.Validationf(
+			"host: an answer needs a decision or a reply")
+	}
+	if s.approvals != nil && s.approvals.open() {
+		// Free text cannot answer "may this command run": the child's tool node is suspended on a
+		// decision, and a sentence would resume it with nothing decided.
+		return "", errdefs.Validationf(
+			"host: %q is waiting for a decision: approve, deny or escalate", s.id)
+	}
+	return answer.Text, nil
+}
+
 // Cancel stops a child.
+//
+// A child that paused for an answer has no run in flight, so there is nothing to interrupt: the
+// cancel is what closes it. Reporting "the session is idle" and leaving it open would leave a cell,
+// a driver and a boundary alive for a conversation the parent gave up on.
 func (d *delegator) Cancel(ctx context.Context, session, reason string) error {
 	if err := d.child(session); err != nil {
 		return err
 	}
-	return d.agents.Cancel(ctx, session, reason)
+	if err := d.agents.Cancel(ctx, session, reason); err != nil &&
+		!errors.Is(err, agent.ErrSessionIdle) && !errdefs.IsNotFound(err) {
+		return err
+	}
+	if _, open := d.agents.Session(session); !open {
+		return nil
+	}
+	return d.agents.CloseSession(context.WithoutCancel(ctx), session)
 }
 
 // WithDelegationGrant installs the rule that decides what a delegated child may do.

@@ -130,7 +130,7 @@ host.Run → Agents.request → agent.RunTurn → Driver (graph, a2a)
 
 Three properties are load-bearing:
 
-- **One turn per session.** `beginTurn` refuses a second claim, which is what lets
+- **One turn per session.** `Session.claim` refuses a second caller, which is what lets
   `Steer` and `Cancel` address the turn in flight without an id.
 - **The terminal save happens on every path** — a normal finish, a panic, a
   consumer that stopped, and a `BeforeTurn` that refused. A turn that never started
@@ -189,6 +189,12 @@ by word; an empty entry matches nothing), and everything else goes to the
 and an approver error is not a denial and also refuses. A process with no policy
 installs the starter undecorated, so approval stays opt-in.
 
+A session a delegation opened does not ask the `Approver` first: its commands are
+put to the parent's model, which either answers, refuses, or escalates back to the
+same `Approver`. The turn suspends on the question instead of blocking, and the
+parent answers with `delegation_answer` — see
+[delegation.md](delegation.md#approvals).
+
 **Escalation** answers "may this one command exceed the boundary". Only a command
 the backend already refused with `sandbox.ErrConfineDenied` is offered, and there is
 exactly one retry:
@@ -218,7 +224,7 @@ With no escalator installed the refusal stands: the feature is opt-in, like appr
 
 | Call                                     | Use                                                                                                                                                               |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                                     |
+| `Agents.Open`                            | Admit a session under the grant the caller states. The delegation lineage is the host's to attach, not an option: a session a caller opens is nobody's child.     |
 | `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                                 |
 | `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                      |
 | `Agents.EvictIdle(agent, now)`           | Evict by the agent's `limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |

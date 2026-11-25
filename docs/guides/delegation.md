@@ -69,12 +69,12 @@ the application — never under authority borrowed from somewhere the parent cou
 `platform.Delegation` is the seam. It has exactly four verbs, and the host's
 implementation of each is what a tool call reaches:
 
-| Verb       | Tool                | Use                                                                                  |
-| ---------- | ------------------- | ------------------------------------------------------------------------------------ |
-| `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off. |
-| `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                         |
-| `Answer`   | `delegation_answer` | Continue a child that paused for input.                                              |
-| `Cancel`   | `delegation_cancel` | Stop a child. A child that already finished reports nil.                             |
+| Verb       | Tool                | Use                                                                                             |
+| ---------- | ------------------- | ----------------------------------------------------------------------------------------------- |
+| `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off.            |
+| `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                                    |
+| `Answer`   | `delegation_answer` | Continue a child that paused: a decision for an approval, text for anything else.               |
+| `Cancel`   | `delegation_cancel` | Stop a child, including one paused for an answer. A child that is already gone is not an error. |
 
 There is no steer verb. `delegation_answer` continues a child that stopped and asked a
 question; feeding a _running_ turn is `host.Agents.Steer`, which the host owns and a
@@ -116,14 +116,15 @@ distinguishable and a resumed parent's next edge does not collide with the one b
 it; nothing dedupes two `Delegate` calls for the same input, because each call is a new
 child.
 
-The child is opened with `host.WithChain`, and the first edge of a chain **mints** its
-id (`chain-` and eight random bytes); every edge below it keeps that id and adds one to
-the depth. Without an id the lineage cannot be attached at all, which is why the host
-mints one before opening.
+The host opens the child with the lineage it just minted, and the first edge of a chain
+**mints** its id (`chain-` and eight random bytes); every edge below it keeps that id
+and adds one to the depth. Without an id the lineage cannot be attached at all, which is
+why the host mints one before opening.
 
 **Sync** runs the child on the caller's context, bounded by `max_concurrent` (a slot the
 parent holds for the run) and by `timeout`; the child session exists for the length of
-the call and is closed when it returns. The answer, the question and the terminal state
+the call and is closed when it returns — unless it paused, see [Approvals](#approvals).
+The answer, the question and the terminal state
 are folded from the child's event stream into the outcome. A child that outlives
 `timeout` is cancelled rather than abandoned, and the caller sees `DeadlineExceeded`.
 
@@ -131,26 +132,25 @@ are folded from the child's event stream into the outcome. A child that outlives
 `Status: submitted` and the session id. The run outlives the turn that asked for it, so
 it gets a root span of its own linked to the asking turn — a child of a span that has
 already ended would be a trace nobody can read — and the goroutine closes the session
-when the run ends.
+when the run ends, unless the child paused to ask.
 
 The follow-up verbs address the child by session id: `Status` reads the state its
 checkpoint recorded (a host with no `agent.Store` refuses it with `NotAvailable`),
 `Answer` runs the child again on the caller's context and folds what it produced next,
 and `Cancel` stops it. `Answer` and `Cancel` go through the session table, so they reach
-a child this process still holds open; one it has closed is `NotFound`. A session may
-only address the edges it opened: the check is a prefix test on the id, so a caller
-cannot reach another conversation's child, or its own parent.
+a child this process still holds open; one it has closed is `NotAvailable` for
+`Answer` and `NotFound` for `Cancel`. A session may only address the edges it opened, and
+their descendants: the check is a prefix test on the id, so a caller cannot reach
+another conversation's child, or its own parent.
 
 ## Lineage
 
-```go
-agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: depth}))
-```
-
-- `host.WithChain` is the only way a session learns it is somebody's child: a session a
-  caller opens has no chain, and a delegated edge is the only thing that knows the
-  lineage. Without it the depth `max_depth` counts would always be zero, so the limit
-  would never fire.
+- The lineage is the host's to attach, not the caller's to state: delegation is the only
+  code path that opens a child, and it is the only place that knows the parent, the
+  chain id and the depth. There is no `Open` option for it, because a chain a caller
+  supplied would be a delegation edge that never happened — and three things read it:
+  `max_depth` counts its depth, the approval route asks its last element for a decision,
+  and the spans name it.
 - The lineage lives on `identity.Run` (`ChainID`, `Depth`) and is attached per run by the
   session, after the session facts, through `inject.Chain`. Every span a layer beneath
   opens carries it, so a whole chain is one trace.
@@ -199,9 +199,9 @@ Rules that make the three channels predictable:
 - **A program that cannot take a message between turns cannot be delivered to.** A graph
   needs an `input` state slot; a driver reports it through `agent.InputSink`.
 - **A delivery turn and a caller's `Run` never overlap.** One session has one turn. A delivery
-  waits for a caller's turn to finish — waiting and taking the slot are one step, so the two
-  cannot race — while a caller that arrives during a delivery gets a conflict naming it, and
-  retrying is the answer.
+  waits for a caller's turn to finish: taking the slot is one decision, made under the session's
+  lock, and a waiting delivery re-checks and waits again. A caller that arrives during a delivery
+  gets a conflict naming it, and retrying is the answer.
 
 The delivered message is a **user turn** — the conversation gained a message, and the
 platform does not fabricate an assistant turn the model never wrote. Its text names the
@@ -215,6 +215,39 @@ for an application that must not parse a sentence:
 | `delegation.chain`   | the delegation chain the run belongs to           |
 | `delegation.depth`   | how many edges above the child                    |
 | `delegation.status`  | the child's task state when the delivery was made |
+
+## Approvals
+
+A child that runs a command its deployment does not whitelist asks **its parent** before
+it runs, not a person. The agent that delegated the work holds the conversation that
+made the command make sense; a prompt to an operator would throw that away and ask
+about `git push` with no idea what is being pushed.
+
+The question is a pre-flight, not a retry. When the child's tool node is about to run a
+batch it first asks each call's tool whether it needs an answer (`tool.Asker`, reached
+through the dispatcher's `Ask`). A question suspends the child's step **before anything
+executes**, so the command does not run twice when the child resumes; the turn ends with
+`input-required` and the question reaches the parent — as the tool result of a sync
+`delegate`, or as a delivered message for an async one. The child session stays open.
+
+The parent answers with `delegation_answer`:
+
+| `decision` | What happens                                                                           |
+| ---------- | -------------------------------------------------------------------------------------- |
+| `approve`  | The command runs when the child retries it.                                            |
+| `deny`     | It does not run, and the refusal is final: the child is told not to retry or escalate. |
+| `escalate` | The deployment's `Approver` — a person or a service — decides; there is no one else.   |
+
+An answer is bound to one command and one directory (a digest of the argv and the
+workdir) for fifteen minutes. An approval of `git status` is therefore not an approval
+of `git push`, the same command in another checkout is another question, and a decision
+nobody used does not stay in force for the rest of the session.
+
+A session a caller opened has no parent, so it keeps the old behaviour:
+`Approval.Approver` is asked on the turn's goroutine. A refusal from either side is a
+`policy.Denial` with `CheckApproval`, which is what a model reads to correct itself and
+what a dashboard counts. A delegation the parent's grant does not permit is a denial
+with `CheckDelegation`.
 
 ## What the child inherits, and what it does not
 

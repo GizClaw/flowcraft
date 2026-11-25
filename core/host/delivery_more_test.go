@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -246,5 +247,121 @@ func TestACallersTurnNamesADelegatedRun(t *testing.T) {
 	close(driver.hold)
 	if conflict == nil || !strings.Contains(conflict.Error(), "delegated run") {
 		t.Fatalf("err = %v, want a conflict naming the delegated run", conflict)
+	}
+}
+
+// perSessionProgram gives every session its own driver, which is what a real program does. The
+// shared-driver fixture hides a steer id collision: two graph-backed sessions both mint "graph-1".
+type perSessionProgram struct {
+	hold    chan struct{}
+	started chan *deliveryDriver
+}
+
+func (p *perSessionProgram) Open(agent.SessionInfo) (agent.Driver, error) {
+	driver := &deliveryDriver{hold: p.hold, started: make(chan struct{})}
+	go func() {
+		<-driver.started
+		p.started <- driver
+	}()
+	return driver, nil
+}
+
+func (p *perSessionProgram) Close() error { return nil }
+
+// TestTwoSessionsKeepTheirOwnSteers is the collision the table-wide map hid: a steer id is minted by
+// a driver, and a driver is per session, so the first steer of every graph session is "graph-1".
+// Keyed by id alone, one session's bookkeeping overwrote the other's and the message it lost was
+// never re-offered — it had already been counted as steered.
+func TestTwoSessionsKeepTheirOwnSteers(t *testing.T) {
+	hold := make(chan struct{})
+	program := &perSessionProgram{hold: hold, started: make(chan *deliveryDriver, 4)}
+	var delivered sync.Map // session → message text
+	agents := hostFor(t, func() (agent.Program, error) { return program, nil },
+		WithDelegationDelivery(func(_ context.Context, sessionID string, msg message.Message) bool {
+			delivered.Store(sessionID, msg.Content.Text())
+			return true
+		}))
+
+	for _, id := range []string{"a", "b"} {
+		if _, err := agents.Open(t.Context(), id, "referee", permissiveGrant("local")); err != nil {
+			t.Fatalf("Open %s: %v", id, err)
+		}
+	}
+	for _, id := range []string{"a", "b"} {
+		go func() {
+			for range agents.Run(t.Context(), id, message.NewTextMessage(message.RoleUser, "start")) {
+			}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-program.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("a session never started its turn")
+		}
+	}
+	agents.deliver(t.Context(), "a", message.NewTextMessage(message.RoleUser, "for a"))
+	agents.deliver(t.Context(), "b", message.NewTextMessage(message.RoleUser, "for b"))
+
+	agents.deliveryMu.Lock()
+	tracked := 0
+	for _, pending := range agents.steers {
+		tracked += len(pending)
+	}
+	agents.deliveryMu.Unlock()
+	if tracked != 2 {
+		t.Fatalf("%d steered messages are tracked, want 2 (a driver-local id collided)", tracked)
+	}
+
+	// Both turns end without reaching a boundary, so both messages are re-offered. The program cannot
+	// take a message between turns, so the application is the one told — which is where the payload
+	// says whether the right session kept its own message.
+	close(hold)
+	waitFor(t, "both re-offers", func() bool {
+		_, a := delivered.Load("a")
+		_, b := delivered.Load("b")
+		return a && b
+	})
+	for _, id := range []string{"a", "b"} {
+		text, _ := delivered.Load(id)
+		if want := "for " + id; text != want {
+			t.Fatalf("session %s was told %q, want %q", id, text, want)
+		}
+	}
+}
+
+// TestAClosedSessionReportsItsPendingWork keeps a close from swallowing a delivery: the queue and the
+// tracked steers of a closed session are handed to the application instead of outliving it.
+func TestAClosedSessionReportsItsPendingWork(t *testing.T) {
+	driver := &deliveryDriver{accepts: false, hold: make(chan struct{}), started: make(chan struct{})}
+	var (
+		deliveryMu sync.Mutex
+		delivered  []string
+	)
+	agents := hostFor(t, func() (agent.Program, error) { return &deliveryProgram{driver: driver}, nil },
+		WithDelegationDelivery(func(_ context.Context, _ string, msg message.Message) bool {
+			deliveryMu.Lock()
+			defer deliveryMu.Unlock()
+			delivered = append(delivered, msg.Content.Text())
+			return true
+		}))
+	close(driver.hold)
+
+	agents.enqueueDelivery(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "queued"))
+	agents.trackSteer("s1", "graph-1", message.NewTextMessage(message.RoleUser, "steered"))
+
+	if err := agents.CloseSession(t.Context(), "s1"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+	waitFor(t, "the pending work", func() bool {
+		deliveryMu.Lock()
+		defer deliveryMu.Unlock()
+		return len(delivered) == 2
+	})
+	agents.deliveryMu.Lock()
+	queues, steers := len(agents.delivery), len(agents.steers)
+	agents.deliveryMu.Unlock()
+	if queues != 0 || steers != 0 {
+		t.Fatalf("the closed session left %d queues and %d steer maps behind", queues, steers)
 	}
 }

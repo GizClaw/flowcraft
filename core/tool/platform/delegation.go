@@ -7,6 +7,31 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
+// The decisions a parent can give a delegated child that asked for approval.
+const (
+	// DecisionApprove lets the child run the command it asked about.
+	DecisionApprove = "approve"
+	// DecisionDeny refuses it. A denial is final: the child cannot escalate it afterwards.
+	DecisionDeny = "deny"
+	// DecisionEscalate hands the question to the deployment's approver, which is where a parent
+	// that does not want to judge its own child's command sends it.
+	DecisionEscalate = "escalate"
+)
+
+// DelegationAnswer is what a caller sends back to a paused child.
+//
+// A child pauses for two reasons, and they are answered differently: an approval question takes a
+// [DecisionApprove], [DecisionDeny] or [DecisionEscalate], while any other question takes the text
+// the child continues from. The two are one value because the tool that sends them is one tool, and
+// a model should not have to know which kind of pause it is answering before it can call it.
+type DelegationAnswer struct {
+	// Decision is one of the Decision constants, empty for a free-text answer.
+	Decision string
+	// Text is the answer to a question that is not an approval, or the reason a parent gives
+	// beside its decision.
+	Text string
+}
+
 // Delegation is how a tool hands work to another agent.
 //
 // It is a capability rather than a host reference for the same reason every other slot is: a tool may
@@ -26,9 +51,11 @@ type Delegation interface {
 	Delegate(ctx context.Context, req DelegationRequest) (DelegationOutcome, error)
 	// Status reports where a child stands, by the session Delegate returned.
 	Status(ctx context.Context, session string) (DelegationOutcome, error)
-	// Answer continues a child that paused for input.
-	Answer(ctx context.Context, session, answer string) (DelegationOutcome, error)
-	// Cancel stops a child. A child that already finished reports nil.
+	// Answer continues a child that paused for input: an approval decision, or the text the child
+	// asked for.
+	Answer(ctx context.Context, session string, answer DelegationAnswer) (DelegationOutcome, error)
+	// Cancel stops a child, including one paused for an answer. A child that is already gone
+	// reports nil: the caller's intent is satisfied either way.
 	Cancel(ctx context.Context, session, reason string) error
 }
 

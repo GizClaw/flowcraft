@@ -31,6 +31,7 @@ import (
 // construction. The chain is immutable afterwards, so an Executor is safe for
 // concurrent use by construction.
 type Executor struct {
+	catalog  tool.Catalog
 	dispatch tool.Dispatch
 	// allows caches each tool's declared needs, which cannot change between calls.
 	// Narrowing to a cached allowance is a field assignment, so the per-call path
@@ -45,7 +46,7 @@ func New(catalog tool.Catalog, mws ...tool.Middleware) *Executor {
 	if catalog == nil {
 		panic("dispatch.New: catalog is nil")
 	}
-	e := &Executor{}
+	e := &Executor{catalog: catalog}
 	e.allow = func(t tool.Tool) tool.Allow {
 		name := t.Definition().Name
 		if cached, ok := e.allows.Load(name); ok {
@@ -79,6 +80,27 @@ func (e *Executor) Execute(ctx context.Context, b tool.Binding, request message.
 			fmt.Sprintf("tool %q panicked: %v", request.Name, rv))
 	}()
 	return e.dispatch(ctx, b, request)
+}
+
+// Ask asks the call's tool whether it needs an answer before it runs.
+//
+// It deliberately bypasses the middleware chain: asking is a read of the tool's own policy, and a
+// middleware that counts, paces or audits executions must not see one that never happened. The
+// authority checks are also skipped, because a refusal is reported by Execute where the call is
+// actually attempted; an Ask for an unknown or refused tool simply has no question.
+func (e *Executor) Ask(ctx context.Context, b tool.Binding, call message.ToolCall) (*message.Content, error) {
+	if !b.Valid() || !b.Grant.Tools.Allows(call.Name) {
+		return nil, nil
+	}
+	t, ok := e.catalog.Get(call.Name)
+	if !ok {
+		return nil, nil
+	}
+	asker, ok := t.(tool.Asker)
+	if !ok {
+		return nil, nil
+	}
+	return asker.Ask(ctx, narrow(b, e.allow(t), call.Name), call.Arguments.String())
 }
 
 // ExecuteAll runs every call concurrently through the chain and returns results in
@@ -177,7 +199,10 @@ func coreDispatch(catalog tool.Catalog, allow func(tool.Tool) tool.Allow) tool.D
 	}
 }
 
-var _ tool.Dispatcher = (*Executor)(nil)
+var (
+	_ tool.Dispatcher    = (*Executor)(nil)
+	_ tool.AskDispatcher = (*Executor)(nil)
+)
 
 // narrow returns the binding narrowed to the needs one tool declared, with its
 // scratch space partitioned by tool name.

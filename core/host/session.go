@@ -28,12 +28,21 @@ type openOptions struct {
 	chain identity.Chain
 }
 
-// WithChain records the delegation lineage the session runs under.
+// withChain records the delegation lineage the session runs under.
 //
-// It is the only way a session learns it is somebody's child: a caller-opened session has no
-// chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
-// delegation's max_depth counts was always zero, so the limit never fired.
-func WithChain(chain identity.Chain) OpenOption {
+// It is deliberately not an [OpenOption] an application can pass. A lineage is not something a
+// caller states, it is something the host *did*: [delegator.Delegate] is the only code that opens a
+// child, and it is the only code that knows the parent, the chain id and the depth it just minted.
+//
+// Three invariants read this value and all of them assume it. `max_depth` counts the depth, so a
+// caller-set chain could reset it. The approval route asks the lineage's last element for a
+// decision, so a chain whose parent never asked for the session is a question nobody can answer —
+// the child's turn would stop at input-required with no one to resume it. And the spans and run
+// records name the chain, so a fabricated one is an audit trail for a delegation that never
+// happened. Nothing outside this package needs it: an application that wants a session's lineage
+// reads it from the host, and a resume after a restart will read the chain the checkpoint recorded
+// rather than a value the caller supplies.
+func withChain(chain identity.Chain) OpenOption {
 	return func(o *openOptions) { o.chain = chain }
 }
 
@@ -90,6 +99,9 @@ type Session struct {
 	// turnDone is closed when the turn in flight ends. A close waits on it before releasing the
 	// driver and the boundary the turn is using.
 	turnDone chan struct{}
+	// approvals routes this session's command questions to its parent. It is nil for a session a
+	// caller opened: nothing above it asked, so the deployment's approver answers inline.
+	approvals *approvalRoute
 }
 
 // turnKind names who started a turn.
@@ -193,7 +205,7 @@ func (s *Session) isRunning() bool {
 // setCancel records the running turn's cancellation, or clears it when the turn ends.
 //
 // A cancellation installed after a close has already decided to stop the session is applied
-// immediately: otherwise a close that arrived between beginTurn and this call would wait for a
+// immediately: otherwise a close that arrived between claim and this call would wait for a
 // turn nobody had told to stop.
 func (s *Session) setCancel(cancel context.CancelFunc) {
 	s.turnMu.Lock()
@@ -362,6 +374,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 
 	capabilities := tool.NewCapSet()
 	platform.TreeSlot.Provide(capabilities, built.tree)
+	approvals := a.approvalRouteFor(sessionID, agentName, opening.chain)
 	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
 		policy:    a.approval,
 		agent:     agentName,
@@ -370,6 +383,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		factory:   factory,
 		escalator: a.escalator,
 		audit:     a.auditor(sessionID),
+		route:     approvals,
 	}))
 	// The catalog is the process's: every session of this deployment searches the same discovery.
 	if a.res.skills != nil {
@@ -422,6 +436,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		manifestID: manifest.ID(),
 		models:     models,
 		chain:      opening.chain,
+		approvals:  approvals,
 	}
 	if err := a.announceSession(ctx, session); err != nil {
 		openErr := errors.Join(err, session.close())
@@ -521,6 +536,9 @@ func (a *Agents) CloseSession(ctx context.Context, sessionID string) error {
 	if drained != nil {
 		err = errors.Join(err, drained.close())
 	}
+	// After the close, so a worker that was waiting for the slot has already been released and the
+	// messages it did not deliver are the queue's to report.
+	a.forgetDelivery(ctx, sessionID)
 	return err
 }
 

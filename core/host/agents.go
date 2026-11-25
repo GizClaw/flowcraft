@@ -59,7 +59,10 @@ type Agents struct {
 	// deliveryMu guards the delivery queues and the steered messages waiting for a boundary.
 	deliveryMu sync.Mutex
 	delivery   map[string]*deliveryQueue
-	steers     map[agent.SteerID]trackedSteer
+	steers     map[string]map[agent.SteerID]trackedSteer
+	// workers is the delivery workers in flight. A close waits for them: an application callback
+	// that runs after Close returned would run on a torn-down application.
+	workers sync.WaitGroup
 
 	mu       sync.Mutex
 	entries  map[string]*deployment
@@ -128,7 +131,7 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		sessions:      map[string]*Session{},
 		slots:         map[string]int{},
 		delivery:      map[string]*deliveryQueue{},
-		steers:        map[agent.SteerID]trackedSteer{},
+		steers:        map[string]map[agent.SteerID]trackedSteer{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -293,10 +296,14 @@ func (a *Agents) Close(ctx context.Context) error {
 		if err := session.close(); err != nil {
 			errs = append(errs, err)
 		}
+		a.forgetDelivery(ctx, session.id)
 	}
 	for agentName, count := range perAgent {
 		recordSessionsClosed(ctx, agentName, count)
 	}
+	// The workers finish before the close returns: a queued delivery that is still being turned into
+	// a turn would otherwise call the application's sink after it was told the host is gone.
+	a.workers.Wait()
 	for _, entry := range deployments {
 		if err := entry.close(); err != nil {
 			errs = append(errs, err)
