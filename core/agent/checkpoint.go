@@ -129,9 +129,14 @@ type Checkpoint struct {
 	// untouched.
 	ServerVersion int64 `json:"server_version,omitempty"`
 	// Fingerprint is the deployment that wrote this checkpoint.
-	Fingerprint Fingerprint                `json:"fingerprint"`
-	Task        Task                       `json:"task"`
-	Sections    map[string]json.RawMessage `json:"sections,omitempty"`
+	Fingerprint Fingerprint `json:"fingerprint"`
+	// Manifest is the authority-and-build combination it ran under. A resume compares it when
+	// both sides carry one: a task continued under different authority is not the same task. A
+	// checkpoint written before this field existed leaves it empty, and the comparison is
+	// skipped rather than guessed at.
+	Manifest string                     `json:"manifest,omitempty"`
+	Task     Task                       `json:"task"`
+	Sections map[string]json.RawMessage `json:"sections,omitempty"`
 }
 
 // EventRecord is one appended fact of a task.

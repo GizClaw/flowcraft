@@ -29,7 +29,6 @@ var documentTypes = []any{
 	policy.NetPolicy{},
 	policy.NetRule{},
 	policy.MITMPolicy{},
-	policy.Escalation{},
 	policy.Change{},
 }
 

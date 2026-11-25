@@ -8,10 +8,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 )
 
-// digestView is the part of a Grant that decides what a session may do.
+// digestView is the part of a Grant that decides what a session may do: every field of one.
 //
-// It is a separate type rather than "marshal the Grant" so that adding a field to
-// Grant is a deliberate decision about whether it belongs to a session's identity.
+// It is a separate type so that the two field sets are checked against each other. A field added to
+// Grant without one here does not compile, which is the decision being made deliberately rather
+// than a new setting silently entering — or silently missing — a session's identity.
 // Limits are deliberately absent: they are the session table's policy, and
 // changing an idle timeout must not invalidate a checkpoint.
 type digestView struct {
@@ -38,16 +39,7 @@ func (g Grant) Digest() string {
 	if err != nil {
 		normalized = g
 	}
-	payload, err := json.Marshal(digestView{
-		Sandbox:    normalized.Sandbox,
-		Files:      normalized.Files,
-		Net:        normalized.Net,
-		Exec:       normalized.Exec,
-		Resources:  normalized.Resources,
-		Models:     normalized.Models,
-		Tools:      normalized.Tools,
-		Delegation: normalized.Delegation,
-	})
+	payload, err := json.Marshal(digestView(normalized))
 	if err != nil {
 		return ""
 	}

@@ -40,14 +40,6 @@ type Grant struct {
 	// Delegation is the authority to hand work to another agent. Nil means
 	// none.
 	Delegation *Delegation `json:"delegation,omitempty" yaml:"delegation,omitempty"`
-	// Escalate is how far an operator let this ceiling be widened, for one
-	// command at a time, when a backend refuses it. Nil means nothing: the
-	// session runs in its bind and a refused command stays refused.
-	//
-	// It sits above the ceiling rather than inside it, which is why a bind does
-	// not carry it (see [Grant.Narrow]): narrowing a session has to mean
-	// something, and a widening that reached back to the ceiling would undo it.
-	Escalate *Escalation `json:"escalate,omitempty" yaml:"escalate,omitempty"`
 }
 
 // Normalized returns the canonical form and rejects a grant that cannot be
@@ -88,14 +80,6 @@ func (g Grant) Normalized() (Grant, error) {
 	out.Tools = tools
 	out.Models = models
 	out.Delegation = g.Delegation.Clone()
-	// The escalation is checked against the grant it sits on, which is the only
-	// value that can tell whether it widens anything.
-	if g.Escalate != nil {
-		if err := g.Escalate.Validate(out); err != nil {
-			return Grant{}, err
-		}
-		out.Escalate = g.Escalate.Clone()
-	}
 	return out, nil
 }
 

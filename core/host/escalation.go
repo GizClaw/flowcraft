@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/identity"
@@ -54,22 +54,36 @@ type EscalationRequest struct {
 	Command string
 	// WorkDir is the absolute directory it would run in.
 	WorkDir string
-	// From is the authority in force; To is the widest the deployment's declaration allows.
-	// An escalator may answer with anything between them and nothing outside.
+	// From is the authority in force for this session. An answer must keep every permit in it and
+	// may only widen files.write, net and exec.env — [policy.Grant.Widen] is what enforces that,
+	// and [policy.Diff] renders the difference once the operator has proposed one.
 	From policy.Grant
-	To   policy.Grant
-	// Changes is the difference dimension by dimension, already rendered for a prompt.
-	Changes []policy.Change
 }
 
-// WithEscalation installs the escalator a session's declared escalation asks.
+// WithEscalation installs the operator a refused command may be put to.
 //
-// It is separate from [WithApproval] because the two answer different questions and a deployment
-// may have either without the other. Declaring an escalation and installing no escalator is a
-// failure at the first refused command ([errdefs.NotAvailable]) rather than a silent narrow
-// retry: unlike approval, which stays opt-in, the declaration is a promise somebody made.
+// It is separate from [WithApproval] because the two answer different questions — whether the
+// command may run at all, and whether the boundary may be widened for it — and a process may have
+// either without the other. Both are opt-in: with no escalator installed a command outside the
+// session's authority stays refused.
 func WithEscalation(escalator Escalator) AgentsOption {
 	return func(a *Agents) { a.escalator = escalator }
+}
+
+// DefaultEscalationTTL is how long a widened cell may live when the process states no preference.
+//
+// A temporary cell has to end: a widening with no lifetime is a new authority, not one command.
+// The value is short because the command it covers is one command, and the caller's own deadline
+// still applies underneath.
+const DefaultEscalationTTL = 5 * time.Minute
+
+// WithEscalationTTL bounds how long a widened cell may live.
+func WithEscalationTTL(ttl time.Duration) AgentsOption {
+	return func(a *Agents) {
+		if ttl > 0 {
+			a.escalationTTL = ttl
+		}
+	}
 }
 
 // The outcomes host.escalations counts, as the series labels them.
@@ -78,13 +92,11 @@ const (
 	escalationApproved = "approved"
 	// escalationDenied is a widening an operator refused.
 	escalationDenied = "denied"
-	// escalationExhausted is a refusal by the session's own budget: max_per_session is spent,
-	// so nobody was asked.
-	escalationExhausted = "exhausted"
-	// escalationUnavailable is a declared escalation on a process with no escalator installed.
+	// escalationUnavailable is a widening that was granted but ran nothing: the temporary cell
+	// never started the command, or the process could not build it.
 	escalationUnavailable = "unavailable"
-	// escalationUnauthorized is an answer outside the declaration: the escalator granted more
-	// than the deployment allows, so nothing ran.
+	// escalationUnauthorized is an answer that is not a widening of the session's authority, so
+	// nothing ran.
 	escalationUnauthorized = "unauthorized"
 )
 
@@ -94,10 +106,8 @@ const spanEscalated = "host.escalated"
 
 // recordEscalation counts one widening attempt by what became of it.
 //
-// Exhausted and unavailable are counted because they are the two outcomes nobody asked about: a
-// session that keeps hitting its boundary is a deployment whose declaration is too narrow, and one
-// that hits it with no escalator installed is a deployment that promised something it did not
-// carry.
+// Unavailable is counted because nobody asked about it: a widening the operator granted that then
+// ran nothing is the one outcome a reader has to reconstruct from two places.
 func recordEscalation(ctx context.Context, agentName, outcome string) {
 	meter := telemetry.MeterWithSuffix("host")
 	if counter, err := meter.Int64Counter("host.escalations",
@@ -197,58 +207,34 @@ func (a *Agents) auditEscalation(ctx context.Context, sessionID string, record e
 	}
 }
 
-// widener is one session's escalation state: what the deployment declared, what the session is
-// bound by, and how many widenings it has already spent.
+// widener is one session's escalation state: the authority it runs under and how long a widened
+// cell may live.
 //
-// It is a value the decorator holds per session, because max_per_session is a fact about one
-// conversation: a budget shared by a deployment would let one caller spend another's.
+// It is a value the decorator holds per session because the authority is the session's.
 type widener struct {
-	declaration *policy.Escalation
-	bind        policy.Grant
-	used        atomic.Int64
+	bind policy.Grant
+	ttl  time.Duration
 }
 
-// take reports whether this session may still ask, and counts the attempt when it may.
-//
-// The count happens before the question rather than after the answer: a caller that fails, times
-// out or refuses still consumed the operator's attention, and a budget that only counted
-// approvals would let a model summon prompts without limit.
-func (w *widener) take() bool {
-	limit := int64(w.declaration.MaxPerSession)
-	for {
-		current := w.used.Load()
-		if limit > 0 && current >= limit {
-			return false
-		}
-		if w.used.CompareAndSwap(current, current+1) {
-			return true
-		}
-	}
-}
-
-// request builds the question, and the grant it proposes.
+// request builds the question: the command, and the authority it needs widened.
 func (w *widener) request(agentName, sessionID string, spec sandbox.SessionSpec) EscalationRequest {
-	to := w.declaration.Widest(w.bind)
 	return EscalationRequest{
 		Agent:     agentName,
 		SessionID: sessionID,
 		Command:   strings.Join(spec.Argv, " "),
 		WorkDir:   spec.Opts.WorkDir,
 		From:      w.bind,
-		To:        to,
-		Changes:   policy.Diff(w.bind, to),
 	}
 }
 
-// attempt bounds one widened retry by the declaration's lifetime.
+// attempt bounds one widened retry by the process's lifetime for a widened cell.
 //
-// A temporary cell has to end, and the deadline the command already had is not it: the declaration
-// says how long a widening may last. The caller's own deadline still applies underneath, because
-// shortening what a caller asked for is the one direction this layer may move in. The returned
-// cancel belongs to the temporary cell — closing the session runs it, and so does a cell that never
-// started a command.
+// The deadline the command already had is not the bound: a temporary cell has to end whatever the
+// command asked for. The caller's own deadline still applies underneath, because shortening what a
+// caller asked for is the one direction this layer may move in. The returned cancel belongs to the
+// temporary cell — closing the session runs it, and so does a cell that never started a command.
 func (w *widener) attempt(ctx context.Context, spec sandbox.SessionSpec) (context.Context, sandbox.SessionSpec, context.CancelFunc) {
-	ttl := w.declaration.TTL.Std()
+	ttl := w.ttl
 	if ttl <= 0 {
 		return ctx, spec, func() {}
 	}
@@ -259,16 +245,16 @@ func (w *widener) attempt(ctx context.Context, spec sandbox.SessionSpec) (contex
 	return bounded, spec, cancel
 }
 
-// widenerFor is one session's escalation state, or nil when its deployment declares none.
-//
-// The declaration is the ceiling's, never a parent session's: a delegated child is opened under its
-// own deployment and is therefore widened — or not — by what that deployment said. Borrowing the
-// parent's would let a child reach authority its own document never granted.
-func widenerFor(ceiling, bind policy.Grant) *widener {
-	if ceiling.Escalate == nil {
+// widenerFor is one session's escalation state, or nil when the process installed no escalator.
+func (a *Agents) widenerFor(bind policy.Grant) *widener {
+	if a.escalator == nil {
 		return nil
 	}
-	return &widener{declaration: ceiling.Escalate, bind: bind}
+	ttl := a.escalationTTL
+	if ttl <= 0 {
+		ttl = DefaultEscalationTTL
+	}
+	return &widener{bind: bind, ttl: ttl}
 }
 
 // auditor writes the escalation records of one session.

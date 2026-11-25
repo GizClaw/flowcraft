@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -37,6 +38,8 @@ type Agents struct {
 	approval *Approval
 	// escalator answers a widening request; nil means a refused command stays refused.
 	escalator Escalator
+	// escalationTTL bounds the lifetime of a widened cell.
+	escalationTTL time.Duration
 	// delegationGrant resolves what a delegated child may do; nil means the child inherits
 	// the parent's authority, which is the one rule that cannot escalate.
 	delegationGrant func(ctx context.Context, parent, target string, authority policy.Grant) (policy.Grant, error)
@@ -108,11 +111,12 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		panic("host.NewAgents: a resource is required")
 	}
 	a := &Agents{
-		res:      res,
-		caps:     res.Capabilities(),
-		entries:  map[string]*deployment{},
-		sessions: map[string]*Session{},
-		slots:    map[string]int{},
+		res:           res,
+		caps:          res.Capabilities(),
+		escalationTTL: DefaultEscalationTTL,
+		entries:       map[string]*deployment{},
+		sessions:      map[string]*Session{},
+		slots:         map[string]int{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
