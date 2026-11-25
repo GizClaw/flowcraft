@@ -114,7 +114,9 @@ func readProfile(path, prefix string) (map[string]Package, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	// Read-only: a close failure cannot lose anything, and it is named so a reader
+	// knows the omission is a decision rather than a miss.
+	defer func() { _ = file.Close() }()
 
 	blocks := map[string]block{}
 	scanner := bufio.NewScanner(file)
@@ -195,7 +197,7 @@ func readFloors(path string) (map[string]float64, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	floors := map[string]float64{}
 	scanner := bufio.NewScanner(file)
@@ -244,7 +246,10 @@ func checkFloors(measured map[string]Package, floors map[string]float64, floorPa
 	}
 	sort.Strings(names)
 
-	var failures []string
+	var (
+		failures []string
+		report   strings.Builder
+	)
 	for _, name := range names {
 		pkg := measured[name]
 		floor, ok := floors[name]
@@ -255,10 +260,10 @@ func checkFloors(measured map[string]Package, floors map[string]float64, floorPa
 			continue
 		}
 		if floor == noFloorValue {
-			fmt.Fprintf(stdout, "  %-34s %6.1f%%  (no floor)\n", name, pkg.Percent())
+			fmt.Fprintf(&report, "  %-34s %6.1f%%  (no floor)\n", name, pkg.Percent())
 			continue
 		}
-		fmt.Fprintf(stdout, "  %-34s %6.1f%%  floor %5.1f%%\n", name, pkg.Percent(), floor)
+		fmt.Fprintf(&report, "  %-34s %6.1f%%  floor %5.1f%%\n", name, pkg.Percent(), floor)
 		if pkg.Percent() < floor {
 			failures = append(failures, fmt.Sprintf(
 				"%s: %.1f%% is below its floor of %.1f%% (%d/%d statements); "+
@@ -282,6 +287,13 @@ func checkFloors(measured map[string]Package, floors map[string]float64, floorPa
 			name, floorPath))
 	}
 
+	// One write, checked: a report that scrolled past a broken pipe is a gate the
+	// developer believes ran. (strings.Builder cannot fail, so building the report is
+	// what keeps this to a single error to handle.)
+	if _, err := io.WriteString(stdout, report.String()); err != nil {
+		return fmt.Errorf("write the coverage report: %w", err)
+	}
+
 	if len(failures) > 0 {
 		sort.Strings(failures)
 		return fmt.Errorf("%d coverage failure(s):\n  %s", len(failures), strings.Join(failures, "\n  "))
@@ -302,7 +314,7 @@ func writeFloors(path string, measured map[string]Package, previous map[string]f
 	}
 	sort.Strings(names)
 
-	var out strings.Builder
+	var out, summary strings.Builder
 	out.WriteString("# Statement-coverage floors for core, one per package.\n")
 	out.WriteString("#\n")
 	out.WriteString("# A floor is what the package reached when it was last touched, rounded down to a\n")
@@ -331,7 +343,10 @@ func writeFloors(path string, measured map[string]Package, previous map[string]f
 		// Rounded down, not to nearest: a floor is what the package reached, and
 		// rounding 82.9 up to 83 fails the very next run that reads the same code.
 		fmt.Fprintf(&out, "%-34s %.0f\n", name, math.Floor(pkg.Percent()))
-		fmt.Fprintf(stdout, "  %-34s %6.1f%%\n", name, pkg.Percent())
+		fmt.Fprintf(&summary, "  %-34s %6.1f%%\n", name, pkg.Percent())
+	}
+	if _, err := io.WriteString(stdout, summary.String()); err != nil {
+		return fmt.Errorf("write the floor summary: %w", err)
 	}
 	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
 		return err

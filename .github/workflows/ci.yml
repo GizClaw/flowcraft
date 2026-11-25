@@ -20,6 +20,8 @@ jobs:
     outputs:
       lint: ${{ steps.matrix.outputs.lint }}
       lint_enabled: ${{ steps.matrix.outputs.lint_enabled }}
+      lint_scripts: ${{ steps.matrix.outputs.lint_scripts }}
+      lint_scripts_enabled: ${{ steps.matrix.outputs.lint_scripts_enabled }}
       test: ${{ steps.matrix.outputs.test }}
       test_enabled: ${{ steps.matrix.outputs.test_enabled }}
     steps:
@@ -112,6 +114,12 @@ jobs:
               return out
 
           lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
+          # The repository's own tooling is a module too, one per directory under
+          # scripts/, and it builds with GOWORK=off against pinned releases. It lints in
+          # its own lane: no go.work entry resolves it, and a module nobody names is a
+          # module nothing checks — which is how both of these went unlinted. The list is
+          # a glob, like the Makefile's, so a third one is covered when it lands.
+          lint_scripts = sorted(p.parent.as_posix() for p in pathlib.Path("scripts").glob("*/go.mod"))
           test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
           # The workspace mode travels with the entry: a consumer is built the
           # way a reader builds it, outside this workspace.
@@ -127,6 +135,9 @@ jobs:
                           for d in test
                       ]
                   },
+                  "lint_scripts": {
+                      "include": [{"module": d, "gowork": "off"} for d in lint_scripts]
+                  },
               },
               open("matrix.json", "w"),
           )
@@ -136,9 +147,13 @@ jobs:
               # refuses rather than treating as "nothing to do": a docs-only
               # change selects no module, and that job must be skipped.
               output.write(f"test_enabled={'true' if test else 'false'}\n")
+              output.write(
+                  f"lint_scripts_enabled={'true' if lint_scripts else 'false'}\n"
+              )
           PY
           echo "lint=$(jq -c .lint matrix.json)" >> "$GITHUB_OUTPUT"
           echo "test=$(jq -c .test matrix.json)" >> "$GITHUB_OUTPUT"
+          echo "lint_scripts=$(jq -c .lint_scripts matrix.json)" >> "$GITHUB_OUTPUT"
 
   release-intent:
     name: Validate release intent
@@ -260,6 +275,32 @@ jobs:
           version: v2.12.2
           working-directory: ${{ matrix.module }}
           args: --new-from-rev=${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
+
+  lint-scripts:
+    name: Lint (${{ matrix.module }})
+    needs: [compute-matrix]
+    if: needs.compute-matrix.outputs.lint_scripts_enabled == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix: ${{ fromJson(needs.compute-matrix.outputs.lint_scripts) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # GOWORK=off: the scripts modules pin released versions through their own go.mod
+      # and are deliberately outside the workspace, so the workspace's resolutions are
+      # not theirs — the same reason `make lint-scripts` passes it.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: ${{ matrix.module }}
+          args: --new-from-rev=${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
+        env:
+          GOWORK: "off"
 
   hygiene:
     name: Hygiene
@@ -469,6 +510,7 @@ jobs:
       - check-consumers
       - compute-matrix
       - lint
+      - lint-scripts
       - hygiene
       - fuzz
       - test-shuffle
@@ -487,6 +529,7 @@ jobs:
             "${{ needs.check-consumers.result }}" \
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \
+            "${{ needs.lint-scripts.result }}" \
             "${{ needs.hygiene.result }}" \
             "${{ needs.fuzz.result }}" \
             "${{ needs.test-shuffle.result }}" \

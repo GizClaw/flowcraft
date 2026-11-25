@@ -34,6 +34,12 @@ MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
 MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) test/e2e
 
+# The repository's own tooling is a module too — one per directory under scripts/ — and it
+# builds with GOWORK=off against pinned releases, so vet and lint need the same treatment.
+# The list is a glob because a module nobody names is a module nothing checks, and that is
+# how both of these went unlinted until now.
+SCRIPT_MODULES := $(patsubst %/go.mod,%,$(wildcard scripts/*/go.mod))
+
 # `go mod tidy` resolves the core version a module pins against the module proxy.
 # The three implementation modules pin a core that is only a commit on main so
 # far, so `make release-preflight` is what tidies them, with a temporary local
@@ -109,6 +115,7 @@ VET_TAGS = -tags integration_bwrap
 vet:
 	@$(call GO_FOREACH,$(MODULES_TEST),vet,go vet $(VET_TAGS) ./...)
 	@$(call GO_FOREACH,$(MODULES_CONSUMER),vet-consumer,GOWORK=off go vet $(VET_TAGS) ./...)
+	@$(call GO_FOREACH,$(SCRIPT_MODULES),vet-script,GOWORK=off go vet ./...)
 
 # The race detector is on by default, because the merge gate runs it: a local `make test`
 # that skipped it reported green on the failures CI then caught, which is the whole reason
@@ -127,9 +134,17 @@ test:
 fmt:
 	@$(call GO_FOREACH,$(ALL_MODULES),fmt,gofmt -s -w .)
 
-.PHONY: lint
-lint:
+# `lint` is every module, in the two modes they need: the workspace's modules resolve
+# each other through go.work, the scripts modules resolve pinned releases through their own
+# go.mod. `lint-workspace` is the half CI runs per module in its own job.
+.PHONY: lint lint-workspace lint-scripts
+lint: lint-workspace lint-scripts
+
+lint-workspace:
 	@$(call GO_FOREACH,$(MODULES_LINT),lint,golangci-lint run --timeout 5m ./...)
+
+lint-scripts:
+	@$(call GO_FOREACH,$(SCRIPT_MODULES),lint-script,GOWORK=off golangci-lint run --timeout 5m ./...)
 
 .PHONY: tidy
 tidy:
