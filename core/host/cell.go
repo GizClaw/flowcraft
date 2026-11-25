@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/core/fsx"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -56,6 +57,82 @@ func openCell(ctx context.Context, factory BackendFactory, grant policy.Grant) (
 	}
 	c.tree = tree
 	return c, nil
+}
+
+// widenedSession is a command running in a cell built for one widened grant.
+//
+// Closing it closes the session and then the cell, which is the whole point: the boundary the
+// command was let out of exists only for that command, so it cannot outlive the session that used
+// it. Closing twice is a no-op, because a caller that closes what it was handed and then unwinds
+// an error must not close the backend under a live session.
+type widenedSession struct {
+	sandbox.Session
+	cell *cell
+	// cancel releases the temporary cell's deadline; it is a no-op when the declaration has no
+	// lifetime to apply.
+	cancel context.CancelFunc
+	once   sync.Once
+	close  error
+}
+
+// Close releases the session first — it holds a process the runner knows about — and then the
+// boundary that process was confined by.
+func (s *widenedSession) Close() error {
+	s.once.Do(func() {
+		s.close = errors.Join(
+			closeFailure("host: closing the widened session", s.Session.Close()),
+			s.cell.Close())
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
+	return s.close
+}
+
+// temporaryCell starts spec in a cell built from a widened grant and hands back the session, with
+// the cell's lifetime tied to it.
+//
+// It is one function rather than an open/start/defer-close sequence so the close cannot be
+// forgotten at a second call site, and so the failure path is closed too: a command that never
+// started — a confine the backend refuses, a cancelled context, a backend that panics while
+// starting — leaves no cell behind. The caller owns the returned session and its Close is what
+// ends the widened boundary.
+func temporaryCell(ctx context.Context, cancel context.CancelFunc, factory BackendFactory, grant policy.Grant, spec sandbox.SessionSpec) (session sandbox.Session, err error) {
+	built, err := openCell(ctx, factory, grant)
+	if err != nil {
+		if cancel != nil {
+			cancel()
+		}
+		return nil, err
+	}
+	defer func() {
+		// A panic unwinds through here with session still nil, which is why the condition is
+		// "nothing was handed back" and not "an error was returned".
+		if session == nil {
+			err = errors.Join(err, built.Close())
+			if cancel != nil {
+				cancel()
+			}
+		}
+	}()
+	started, err := built.runner.Start(ctx, spec)
+	if err != nil {
+		return nil, err
+	}
+	if started == nil {
+		// A backend that returns neither a session nor an error has not started anything; the
+		// cell is all there is to release.
+		return nil, errors.New("host: sandbox: the widened cell started nothing")
+	}
+	return &widenedSession{Session: started, cell: built, cancel: cancel}, nil
+}
+
+// closeFailure names a release failure without replacing the cause.
+func closeFailure(label string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", label, err)
 }
 
 // confineOf projects the grant onto the backend's construction-time posture.

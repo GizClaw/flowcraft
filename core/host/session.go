@@ -290,8 +290,15 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 
 	capabilities := tool.NewCapSet()
 	platform.TreeSlot.Provide(capabilities, built.tree)
-	platform.ProcessSlot.Provide(capabilities,
-		starterFor(built.runner, a.approval, agentName, sessionID))
+	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
+		policy:    a.approval,
+		agent:     agentName,
+		session:   sessionID,
+		widener:   widenerFor(deploy.grant, bind),
+		factory:   factory,
+		escalator: a.escalator,
+		audit:     a.auditor(sessionID),
+	}))
 	// The catalog is the process's: every session of this deployment searches the same discovery.
 	if a.res.skills != nil {
 		platform.SkillsSlot.Provide(capabilities, a.res.skills)

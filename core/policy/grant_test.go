@@ -232,15 +232,14 @@ func TestDigestIgnoresLimitsButNotPermissions(t *testing.T) {
 	}
 }
 
-// TestDenialChecksAreTheDocumentedFive keeps the enumeration honest: the
-// recording layer switches on these values, so a sixth one is an API change.
-func TestDenialChecksAreTheDocumentedFive(t *testing.T) {
-	checks := []policy.Check{
-		policy.CheckClamp,
-		policy.CheckVisibility,
-		policy.CheckWrites,
-		policy.CheckModels,
-		policy.CheckBudget,
+// TestDenialChecksAreEnumerated keeps the enumeration honest: the recording
+// layer switches on these values, so a check that is added without being listed
+// is counted under no name at all, and one that is listed twice collides with
+// another rule in every dashboard.
+func TestDenialChecksAreEnumerated(t *testing.T) {
+	checks := policy.Checks()
+	if len(checks) != 7 {
+		t.Fatalf("Checks() = %v, want the seven rules the package can refuse by", checks)
 	}
 	seen := make(map[policy.Check]bool, len(checks))
 	for _, check := range checks {

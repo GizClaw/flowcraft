@@ -103,6 +103,17 @@ const (
 	// slow save asks.
 	AttrCheckpointEvents = "checkpoint.events"
 
+	// ----- Escalation -----
+
+	// AttrEscalationFromBind is the digest of the grant a session was confined by when a
+	// backend refused one of its commands. It pairs with AttrEscalationToBind: the two
+	// digests say which authority was in force and which one the retried command ran under,
+	// and neither says what the command was.
+	AttrEscalationFromBind = "escalation.from_bind"
+
+	// AttrEscalationToBind is the digest of the widened grant the temporary cell ran under.
+	AttrEscalationToBind = "escalation.to_bind"
+
 	// ----- A2A peers -----
 
 	// AttrA2APeerTaskID identifies the task at the far end of a proxied run. The local

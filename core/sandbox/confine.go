@@ -1,6 +1,8 @@
 package sandbox
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -33,6 +35,28 @@ type Confine struct {
 	// Resources is the ceiling for one command, in the same shape a call uses to
 	// ask for less.
 	Resources policy.Resources
+}
+
+// ErrConfineDenied reports that a backend refused a command because running it
+// would exceed the confine the instance was built for: a write outside the write
+// set, a destination the egress posture forbids.
+//
+// It is the one refusal a host can act on. The command has not run, the boundary
+// is intact, and the difference between "this command is outside what this
+// session may do" and "this command ran and failed" is the difference between a
+// rule and a bug — so the backend says which one it is instead of leaving the
+// host to read a message.
+var ErrConfineDenied = errors.New("sandbox: the command is outside this session's confine")
+
+// Deniedf builds a confine refusal, naming what the command would have exceeded.
+//
+// The result answers two questions at once: [ErrConfineDenied] says the boundary
+// refused before anything ran, and [errdefs.IsPolicyDenied] says a rule refused
+// rather than an execution failing. Neither caller has to parse the message, and
+// a backend that returns it does not have to import the host's vocabulary or the
+// policy package's typed denial to be understood.
+func Deniedf(format string, args ...any) error {
+	return fmt.Errorf("%w: %w", ErrConfineDenied, errdefs.PolicyDeniedf(format, args...))
 }
 
 // ValidateConfine reports whether the backend can enforce what the instance was
