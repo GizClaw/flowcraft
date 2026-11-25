@@ -6,7 +6,7 @@ package telemetry
 // learn what to filter on.
 //
 // One family is deliberately not here: the identity a run carries (tenant.id,
-// agent.name, session.id, agent.grant.id, task.id, turn, chain.id, chain.depth).
+// agent.name, session.id, session.bind.id, task.id, turn, chain.id, chain.depth).
 // It belongs to core/identity, beside the carrier that renders it, because every
 // layer below the assembly reads the identity to start a span and should not have
 // to depend on this package for eight strings. That package does not exist yet;

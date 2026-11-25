@@ -41,15 +41,15 @@ const (
 	// AttrAgentName names the deployed agent: the logical identity that outlives
 	// one session.
 	AttrAgentName = "agent.name"
-	// AttrAuthorityID is the digest of the agent's grant: what this run may do at
-	// its widest.
+	// AttrAuthorityID names the authority service a run belongs to, when the host
+	// stated one. It is not a permission: what the run may do is AttrBindID.
 	AttrAuthorityID = "agent.authority.id"
 	// AttrSessionID identifies the conversation. It is the checkpoint key and the
 	// one identity a resumed run keeps.
 	AttrSessionID = "session.id"
-	// AttrBindID is the digest of the session's narrowed grant: the permission
-	// actually in force. It answers "can this resume" as precisely as the
-	// checkpoint fingerprint does.
+	// AttrBindID is the digest of the session's grant: the permission in force for
+	// this conversation. It is what a widening records on both sides, and what
+	// makes two sessions of one agent tell apart when they hold different authority.
 	AttrBindID = "session.bind.id"
 	// AttrTaskID identifies the task a step belongs to.
 	AttrTaskID = "task.id"

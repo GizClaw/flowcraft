@@ -95,9 +95,10 @@ type entryDocument struct {
 // A fleet is described once and then tuned per seat, and a document with a single agent is
 // just a list of one — so there is no "single agent" variant to keep in step.
 //
-// It has no runtime section on purpose: what an agent may use is its grant, not a private copy
-// of the process. The program section names an implementation registered on the process; the grant is
-// policy's own type, decoded and validated by it.
+// It has no runtime section on purpose: what an agent may use is the process's, not a private copy
+// of it. It has no permission section either: authority is stated by whoever opens a session. The
+// program section names an implementation registered on the process, and `limits` is policy's own
+// type, decoded and validated by it.
 type agentDocument struct {
 	Version int          `json:"version"`
 	Agents  []agentEntry `json:"agents"`

@@ -27,8 +27,7 @@ type digestView struct {
 }
 
 // Digest is the stable identity of a permission set: the value a span renders as
-// agent.grant.id (a ceiling) or session.grant.id (a session's facts), and the
-// value a checkpoint compares to decide whether a session can resume.
+// session.bind.id, and the value an approval records on both sides of a widening.
 //
 // Only the normalized form is hashed, so two spellings of the same permission —
 // ["/srv", "/srv/work"] and ["/srv"], or ["/"] and omitted — produce the same id.

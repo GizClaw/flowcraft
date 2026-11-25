@@ -26,10 +26,10 @@ one owns:
 | a process document | what _this process_ carries: the sandbox backends, the model targets, the tool sources, the skill roots, and how much of a turn it records |
 | an agent document  | what _one agent_ is: its name, its program, its session table, its hooks                                                                   |
 
-A session selects from the process's resources through the `policy.Grant` its
-caller states when it is opened; a document cannot add a provider or a backend. Adding a resource means editing the process
-document and restarting — a different action from deploying an agent, and the
-error messages keep the two apart.
+A session selects from the process's resources through the `policy.Grant` its caller
+states when it is opened; a document cannot add a provider or a backend. Adding a
+resource means editing the process document and restarting — a different action from
+deploying an agent, and the error messages keep the two apart.
 
 `examples/forge` calls the process document `runtime.yaml` and the agent document
 `deploy.yaml`. The names are the application's, not the loader's: the loader takes
@@ -138,6 +138,7 @@ and the code that enforces it agree by construction.
 | `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **every model the process serves**.                             |
 | `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                       |
 | `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                          |
+
 Three defaults are deliberately equal, and the equality is the design: files are
 open because a read is recoverable and auditable; tools are open because which
 tools exist is a property of the process; models are open because which models
@@ -208,7 +209,7 @@ impls := deploy.NewImpls().
     // because that is what the host builds and what its catalog reports models from.
     Provider(deploy.Impl("openai", buildOpenAI)).
     // A backend is built for one session's confine, so the factory receives it. This one
-    // declares no enforcement, which is why nothing can be escalated on it.
+    // declares no enforcement, which is why a session that narrows writes onto it is refused.
     Backend(deploy.BackendImpl("local", func(_ struct{}, confine sandbox.Confine) (sandbox.Runner, error) {
         return local.New(confine)
     })).
@@ -327,6 +328,7 @@ deploy: every agent needs a name
 deploy: agent "assistant" must state limits (idle, and optionally max_sessions)
 deploy: agent "assistant" selects sandbox "bwrap", which this process does not configure (local)
 deploy: agent "assistant" names model "openai/gpt-5", which this process does not serve (openai/gpt-4o-mini)
+# the last two are raised when a session is opened: the document no longer names either
 deploy: observability.trace is required (none, run, call or node)
 deploy: observability.bodies is required (true or false)
 ```
@@ -369,14 +371,16 @@ for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 A reload retires the old program and closes it when its last session is gone: a
 session runs against what it was opened under.
 
-`deploy.Fingerprint(deployments)` is the identity of a deployment set — name,
-program kind and hook kinds, per deployment, in order. Authority is deliberately
-not in it: a deployment no longer carries one, and the checkpoint records the
-manifest a session ran under instead. It lives
-in `deploy` because two processes must compute it identically to be comparable at
-all; a checkpoint written under a different fingerprint is refused on resume. The
-observability settings and the model manifest are deliberately outside it: a
-record level decides how much evidence a run leaves, not whether it can continue.
+`deploy.Fingerprint(deployments)` is the identity of a deployment set — name, program
+kind and hook kinds, per deployment, in order. It lives in `deploy` because two
+processes must compute it identically to be comparable at all; a checkpoint written
+under a different fingerprint is refused on resume.
+
+Two things are deliberately outside it. **Authority**, because a deployment no longer
+carries one: the checkpoint records the manifest the session ran under instead, and
+that is what refuses a conversation that changed authority. And the **observability
+settings**, because a record level decides how much evidence a run leaves, not whether
+it can continue.
 
 ## Where each piece lives
 

@@ -81,13 +81,13 @@ type Options struct {
 	// the document asked for. The application supplies it: which executor runs a call is a decision
 	// about this binary, not about a deployment document.
 	Dispatcher func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher
-	// View builds one deployment's exposure over the tool table, from the tool set its grant
-	// allows, and returns the factory every session asks for its own view.
+	// View builds an exposure over the tool table from the tool set one authority allows, and
+	// returns the factory a session asks for its own view.
 	//
-	// The two halves are separate for a reason: what may be shown is the grant's, so it is
-	// built once per deployment, while the discovery pool, its recency order and the budget a
-	// round has spent belong to one conversation. An implementation that returns a single view
-	// for every session would let two sessions evict each other's tools.
+	// The two halves are separate for a reason: what may be shown is the authority's, so it is
+	// built once per tool set and shared, while the discovery pool, its recency order and the
+	// budget a round has spent belong to one conversation. An implementation that returned a
+	// single view for every session would let two sessions evict each other's tools.
 	//
 	// A policy the projection refuses is reported here, at install, rather than at the first
 	// session: a deployment whose authority cannot be projected is not deployable at all.

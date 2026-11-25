@@ -13,15 +13,15 @@ import (
 	"github.com/goccy/go-json"
 )
 
-// The manifest is assembled here, once per deployment, at install.
+// The manifest is assembled here, once per authority.
 //
-// Not per turn, because it is a deployment fact and hashing seven short strings per turn
-// would be paying for the same answer again; and not in `deploy`, because two of its
-// inputs only exist after the process is built: what the providers say they serve, and
-// what the tool table exposes once the grant and the decorators have been applied. Values
-// the document determines (the driver kind) and values the host owns (the deployment
-// fingerprint, the build identity) are combined with those, so the manifest describes the
-// deployment that actually runs rather than the bytes that described it.
+// Not per turn, because it is a fixed fact for a session and hashing a tool schema per turn
+// would be paying for the same answer again; and not in `deploy`, because two of its inputs
+// only exist after the process is built: what the providers say they serve, and what the tool
+// table exposes once the authority and the decorators have been applied. Values the authority
+// determines (the models and tools), the deployment decides (the driver kind) and the host owns
+// (the fingerprint, the build identity) are combined with those, so the manifest describes what
+// actually ran rather than the bytes that described it.
 
 // manifestHash renders one manifest component as a stable identity.
 //
@@ -142,9 +142,9 @@ func (a *Agents) manifestFor(entry *deployment, grant policy.Grant, view tool.Vi
 
 // manifestOf assembles one deployment's version combination from the process it runs in.
 //
-// Inputs come from three owners: the document (the driver kind, and the grant that decides
-// which models and tools this agent has), the process (what the providers declare and what
-// the tool table exposes), and the host (the deployment fingerprint and the build identity).
+// Inputs come from three owners: the deployment (the driver kind), the session's authority (which
+// models and tools it holds), the process (what the providers declare and what the tool table
+// exposes), and the host (the deployment fingerprint and the build identity).
 func (a *Agents) manifestOf(driver string, granted []model.ModelRef, view tool.View) agent.Manifest {
 	return agent.Manifest{
 		Schema:     agent.ManifestSchema,

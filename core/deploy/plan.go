@@ -81,7 +81,7 @@ type PlannedHook struct {
 
 // PlannedProvider is one model target, resolved but not built.
 type PlannedProvider struct {
-	// Name addresses the target, both from an agent's grant and from a route policy.
+	// Name addresses the target, both from a session's grant and from a route policy.
 	Name string
 	// Impl is the registered implementation the document's kind selected.
 	Impl string

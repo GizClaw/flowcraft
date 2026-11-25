@@ -424,12 +424,6 @@ func buildHooks(planned []deploy.PlannedHook) (agent.Hooks, error) {
 	return agent.Chain(hooks...), nil
 }
 
-// projectionPolicy is the grant's tool visibility as the projection understands it.
-//
-// The exposure levels are the deployment's, not the process's: two agents on one process can show
-// different tools, which is why the projection is per deployment while the catalog it reads is
-// shared.
-
 // closeAll releases the deployments a refused Add or Reload built. The close errors are returned
 // joined rather than dropped: a program that cannot be released is the second problem, and the caller
 // is the only one who can report it.

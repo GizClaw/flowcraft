@@ -26,7 +26,7 @@ one per entry in the process document. Verify a new backend with
 One chain, and each link owns exactly one decision:
 
 ```text
-policy.Grant              the agent's ceiling, narrowed by the caller's request
+policy.Grant              what the caller stated for this session
   → sandbox.Confine       the projection: files, net, env, resources — nothing invented
   → host.BackendFactory   func(sandbox.Confine) (sandbox.Runner, error), one instance per session
   → sandbox.ValidateConfine   refused here if the backend cannot enforce it
@@ -41,7 +41,7 @@ impls.Backend(deploy.BackendImpl("local", func(_ struct{}, confine sandbox.Confi
 }))
 ```
 
-At open the host projects the session's bind onto a `sandbox.Confine` — `Files`, `Net`,
+At open the host projects the session's grant onto a `sandbox.Confine` — `Files`, `Net`,
 `Exec.Env` and `Resources`, the grant's own values and nothing invented — builds the
 runner from it, and re-runs `sandbox.ValidateConfine(confine,
 runner.Capabilities().Policy)` so a backend that skipped its own check cannot hand a
@@ -210,9 +210,9 @@ backend must gate its `MemoryCap`/`CPUCap` declaration on instead of hardcoding 
 
 ## What a deployment says
 
-A backend is chosen in the process document, by name; an agent selects one with
-`grant.sandbox`. There is no per-session sandbox block: what one session may touch is
-its grant.
+A backend is chosen in the process document, by name; a session selects one with its
+grant's `sandbox` field (empty picks the process's only backend). There is no per-agent
+sandbox block: what one session may touch is its grant.
 
 ```yaml
 # the process document: the backends this binary carries
@@ -290,8 +290,8 @@ The previous `core/sandbox/engine` package is gone: the `Exec` decorator stack
 `ClassifySafeReadOnly`), `ValidateExecPolicy` and the safe-read-only classifier. So is
 `core/permission` — its `Policy`/`Writes` per-call permission is now the grant's `files`
 and the session's confine — and the `sandbox.backend/writes/net/journal` deployment
-block, which became `sandbox[]` in the process document plus `grant.files`/`net`/`exec`/
-`resources` on the agent. The file journal (`OpenJournal`, the watch set, the gap
+block, which became `sandbox[]` in the process document plus `files`/`net`/`exec`/
+`resources` on the session's grant. The file journal (`OpenJournal`, the watch set, the gap
 vocabulary) went with it. Approval and escalation did not disappear, they moved to
 `core/host`; the one-shot form did not disappear either, it is now
 `sandbox.Exec` over a `SessionStarter`, with no decorator chain to keep in step.

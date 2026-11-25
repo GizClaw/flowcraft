@@ -7,17 +7,18 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 )
 
-// Grant is the permission value: the ceiling an agent may reach, and — after
-// [Grant.Narrow] — the facts of one session.
+// Grant is the permission value: what one session may do, stated by whoever opens
+// it.
 //
-// Both uses share one type on purpose. Two types with the same fields would mean
-// two validators, two digests and two renderings of the same facts, and the first
-// thing two representations do is disagree; the only real difference is "is this
-// the ceiling or the result", which the call site already knows.
+// It is a value rather than a gate. The host reads it to build the boundary, and a
+// tool reads it to refuse a call with a message the model can correct itself with.
+// There is no second representation, because two of them would mean two validators,
+// two digests and two renderings of the same facts — and the first thing two
+// representations do is disagree.
 //
-// A validated Grant is immutable. [Grant.Normalized] returns independent copies
-// of the slices a narrowing could touch, so a caller mutating its own
-// configuration after the fact cannot widen a running session.
+// A validated Grant is immutable. [Grant.Normalized] returns independent copies of
+// the slices it owns, so a caller mutating its own configuration after the fact
+// cannot change a running session.
 type Grant struct {
 	// Sandbox names the isolation template the runtime offers. Empty means the
 	// runtime's default; a runtime with no templates and a named sandbox is a
@@ -43,8 +44,8 @@ type Grant struct {
 }
 
 // Normalized returns the canonical form and rejects a grant that cannot be
-// enforced. It is the load-time gate: a grant that reaches [Grant.Narrow] has
-// already passed here.
+// enforced. It runs where the grant enters — at open for a session, at build for an
+// approval — so everything downstream may assume it passed.
 func (g Grant) Normalized() (Grant, error) {
 	files, err := g.Files.Normalized()
 	if err != nil {

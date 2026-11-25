@@ -31,9 +31,9 @@ type Escalator interface {
 	// ApproveWidening answers one request with the grant the temporary cell may run under, or
 	// an error that refuses it.
 	//
-	// A grant outside the deployment's declaration is refused by the host rather than trusted:
-	// an approval widens one boundary within the declaration, it does not replace the
-	// declaration. Returning the zero grant is a refusal like any other.
+	// An answer is checked by [policy.Grant.Widen] rather than trusted: it must keep every permit
+	// the session already had and change nothing but files.write, net and exec.env. An answer that
+	// replaces the session's authority is refused, and so is the zero grant.
 	//
 	// It is called on the turn's goroutine and must return promptly: the model is blocked for
 	// as long as it runs, which is what an operator answering a prompt looks like from the
