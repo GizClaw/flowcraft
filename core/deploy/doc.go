@@ -26,9 +26,10 @@
 // # Two kinds of failure
 //
 // A document that does not hold together is a [errdefs.Validation] error: unknown field,
-// wrong type, missing required value, an implementation nobody registered. A document that holds
-// together but asks for something this process does not have is [errdefs.NotAvailable]:
-// a sandbox backend that is not configured here, a model that is not wired, a hook that is
-// not registered. The first is fixed by editing the document, the second by changing how
-// the process was started.
+// wrong type, missing required value, a kind nobody registered — including an unregistered hook or
+// program, because the name is the document's own claim and no process can honour a name it has
+// never heard of. A document that holds together but asks for something this process does not have
+// is [errdefs.NotAvailable]: a sandbox backend that is not configured here, a model that is not
+// wired, a middleware link the process filtered out. The first is fixed by editing the document,
+// the second by changing how the process was started.
 package deploy

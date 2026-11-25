@@ -142,7 +142,10 @@ type Checkpoint struct {
 type EventRecord struct {
 	// Seq is assigned by the store, monotonic per task.
 	Seq int64
-	// Kind names the fact: "message", "state", "artifact".
+	// Kind names the fact. The decorator writes "state", "interrupted", "artifact" and
+	// "message"; a driver adds its own vocabulary beside those ("llm.call", "graph.effect",
+	// "script.run", "a2a.call"), and a reader that does not know a kind must show the payload
+	// rather than drop it.
 	Kind string
 	// Payload is the fact itself.
 	Payload json.RawMessage

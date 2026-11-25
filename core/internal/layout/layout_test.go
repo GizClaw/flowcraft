@@ -322,14 +322,20 @@ func TestOptionalImplementationsAreNotImported(t *testing.T) {
 	}
 }
 
-// TestCoreDoesNotImportSiblingModules keeps the module graph pointing one way: sandbox and
-// inference are built on core, so core may not be built on them. This is what makes the
-// split a split rather than a cycle spread across go.mod files.
+// TestCoreDoesNotImportSiblingModules keeps the module graph pointing one way: every
+// implementation module is built on core, so core may not be built on any of them. This is what
+// makes the split a split rather than a cycle spread across go.mod files.
+//
+// The list is the four modules the workspace carries. It used to name `driver`, a module the
+// split retired, and to omit `agent` and `tool`, so half of the graph was unguarded — an import
+// of either would have compiled on a developer's machine (the go.work resolves it) and failed
+// only for a module consumer.
 func TestCoreDoesNotImportSiblingModules(t *testing.T) {
 	siblings := []string{
-		"github.com/GizClaw/flowcraft/sandbox",
+		"github.com/GizClaw/flowcraft/agent",
 		"github.com/GizClaw/flowcraft/inference",
-		"github.com/GizClaw/flowcraft/driver",
+		"github.com/GizClaw/flowcraft/sandbox",
+		"github.com/GizClaw/flowcraft/tool",
 	}
 	for _, pkg := range packages(t) {
 		for _, imported := range pkg.External {
