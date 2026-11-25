@@ -76,9 +76,24 @@ func main() {
 	os.Exit(runCLI(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// say writes to the command's own output and ignores the error.
+//
+// The destination is the process's stdout or stderr. A failed write there means the
+// console is gone — a closed pipe ends the command through SIGPIPE on its own — so a
+// returned error would add a branch at every call site that nobody could act on. Naming
+// the omission once is what makes the rest of the command readable.
+func say(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
+// sayLine is say with a trailing newline.
+func sayLine(w io.Writer, args ...any) {
+	_, _ = fmt.Fprintln(w, args...)
+}
+
 func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: releasegate <validate|plan|changelog|preflight> [options]")
+		sayLine(stderr, "usage: releasegate <validate|plan|changelog|preflight> [options]")
 		return 2
 	}
 
@@ -92,14 +107,14 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if flags.NArg() != 0 {
-			fmt.Fprintln(stderr, "validate does not accept positional arguments")
+			sayLine(stderr, "validate does not accept positional arguments")
 			return 2
 		}
 		if err := validateRepo(*repo, *base); err != nil {
-			fmt.Fprintf(stderr, "releasegate validate: %v\n", err)
+			say(stderr, "releasegate validate: %v\n", err)
 			return 1
 		}
-		fmt.Fprintln(stdout, "changesets valid")
+		sayLine(stdout, "changesets valid")
 		return 0
 
 	case "plan":
@@ -111,29 +126,29 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if flags.NArg() != 0 {
-			fmt.Fprintln(stderr, "plan does not accept positional arguments")
+			sayLine(stderr, "plan does not accept positional arguments")
 			return 2
 		}
 		plan, err := buildPlan(*repo)
 		if err != nil {
-			fmt.Fprintf(stderr, "releasegate plan: %v\n", err)
+			say(stderr, "releasegate plan: %v\n", err)
 			return 1
 		}
 		if *jsonOutput {
 			encoder := json.NewEncoder(stdout)
 			encoder.SetIndent("", "  ")
 			if err := encoder.Encode(plan); err != nil {
-				fmt.Fprintf(stderr, "releasegate plan: encode JSON: %v\n", err)
+				say(stderr, "releasegate plan: encode JSON: %v\n", err)
 				return 1
 			}
 			return 0
 		}
 		if len(plan.Modules) == 0 {
-			fmt.Fprintln(stdout, "no pending releases")
+			sayLine(stdout, "no pending releases")
 			return 0
 		}
 		for _, item := range plan.Modules {
-			fmt.Fprintf(stdout, "%s: %s -> %s (%s), tag %s\n", item.Module, item.Current, item.Next, item.Bump, item.Tag)
+			say(stdout, "%s: %s -> %s (%s), tag %s\n", item.Module, item.Current, item.Next, item.Bump, item.Tag)
 		}
 		return 0
 
@@ -147,40 +162,40 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if flags.NArg() != 0 {
-			fmt.Fprintln(stderr, "changelog does not accept positional arguments")
+			sayLine(stderr, "changelog does not accept positional arguments")
 			return 2
 		}
 		if *check && *write {
-			fmt.Fprintln(stderr, "changelog --check and --write are mutually exclusive")
+			sayLine(stderr, "changelog --check and --write are mutually exclusive")
 			return 2
 		}
 		content, err := buildChangelog(*repo)
 		if err != nil {
-			fmt.Fprintf(stderr, "releasegate changelog: %v\n", err)
+			say(stderr, "releasegate changelog: %v\n", err)
 			return 1
 		}
 		path := filepath.Join(*repo, "CHANGELOG.md")
 		if *check {
 			current, err := os.ReadFile(path)
 			if err != nil {
-				fmt.Fprintf(stderr, "releasegate changelog: read CHANGELOG.md: %v\n", err)
+				say(stderr, "releasegate changelog: read CHANGELOG.md: %v\n", err)
 				return 1
 			}
 			if !bytes.Equal(current, content) {
-				fmt.Fprintln(stderr, "releasegate changelog: CHANGELOG.md is out of date; run changelog --write")
+				sayLine(stderr, "releasegate changelog: CHANGELOG.md is out of date; run changelog --write")
 				return 1
 			}
 			return 0
 		}
 		if *write {
 			if err := atomicWriteFile(path, content); err != nil {
-				fmt.Fprintf(stderr, "releasegate changelog: %v\n", err)
+				say(stderr, "releasegate changelog: %v\n", err)
 				return 1
 			}
 			return 0
 		}
 		if _, err := stdout.Write(content); err != nil {
-			fmt.Fprintf(stderr, "releasegate changelog: write output: %v\n", err)
+			say(stderr, "releasegate changelog: write output: %v\n", err)
 			return 1
 		}
 		return 0
@@ -194,17 +209,17 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		if flags.NArg() != 0 {
-			fmt.Fprintln(stderr, "preflight does not accept positional arguments")
+			sayLine(stderr, "preflight does not accept positional arguments")
 			return 2
 		}
 		if err := preflightRepo(*repo, *write, stdout); err != nil {
-			fmt.Fprintf(stderr, "releasegate preflight: %v\n", err)
+			say(stderr, "releasegate preflight: %v\n", err)
 			return 1
 		}
 		return 0
 
 	default:
-		fmt.Fprintf(stderr, "unknown command %q; usage: releasegate <validate|plan|changelog|preflight> [options]\n", args[0])
+		say(stderr, "unknown command %q; usage: releasegate <validate|plan|changelog|preflight> [options]\n", args[0])
 		return 2
 	}
 }
@@ -272,7 +287,7 @@ func preflightRepo(repo string, write bool, stdout io.Writer) error {
 		return err
 	}
 	if len(plan.Modules) == 0 {
-		fmt.Fprintln(stdout, "no pending releases")
+		sayLine(stdout, "no pending releases")
 		return nil
 	}
 	byModule := make(map[string]ModulePlan, len(plan.Modules))
@@ -285,9 +300,9 @@ func preflightRepo(repo string, write bool, stdout io.Writer) error {
 			return err
 		}
 		if write && changed {
-			fmt.Fprintf(stdout, "%s: updated go.mod/go.sum\n", item.Module)
+			say(stdout, "%s: updated go.mod/go.sum\n", item.Module)
 		} else {
-			fmt.Fprintf(stdout, "%s: preflight tidy OK\n", item.Module)
+			say(stdout, "%s: preflight tidy OK\n", item.Module)
 		}
 	}
 	return nil
@@ -326,7 +341,9 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 	if err != nil {
 		return false, fmt.Errorf("module %s: create temp dir: %w", item.Module, err)
 	}
-	defer os.RemoveAll(tempDir)
+	// The directory is this process's scratch; a failed removal leaves something for the
+	// OS to reclaim and is not a reason to fail a preflight that otherwise succeeded.
+	defer func() { _ = os.RemoveAll(tempDir) }()
 	tempMod := filepath.Join(tempDir, "modfile.mod")
 	tempSum := filepath.Join(tempDir, "modfile.sum")
 	replaceBlock, paths, err := batchReplaceBlock(repo, item.Module,
@@ -1129,13 +1146,13 @@ func updatePublishedState(changelog string, modules []ModulePlan) (string, error
 			cells[2] = " `" + tag + "` "
 			lines[index] = strings.Join(cells, "|")
 		default:
-			return "", fmt.Errorf("Current Published State row for module %s has no version cell", module)
+			return "", fmt.Errorf("current published state row for module %s has no version cell", module)
 		}
 		updated[module] = true
 	}
 	for module := range tags {
 		if !updated[module] {
-			return "", fmt.Errorf("Current Published State has no row for module %s", module)
+			return "", fmt.Errorf("current published state has no row for module %s", module)
 		}
 	}
 	return strings.Join(lines, "\n"), nil
@@ -1151,17 +1168,17 @@ func atomicWriteFile(path string, content []byte) error {
 		return fmt.Errorf("create temporary changelog: %w", err)
 	}
 	tempPath := file.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := file.Chmod(info.Mode().Perm()); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fmt.Errorf("set temporary changelog permissions: %w", err)
 	}
 	if _, err := file.Write(content); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fmt.Errorf("write temporary changelog: %w", err)
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
+		_ = file.Close()
 		return fmt.Errorf("sync temporary changelog: %w", err)
 	}
 	if err := file.Close(); err != nil {

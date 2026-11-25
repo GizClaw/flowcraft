@@ -2,6 +2,8 @@ package telemetrytest
 
 import (
 	"context"
+	"slices"
+	"sort"
 	"sync"
 	"testing"
 
@@ -54,9 +56,14 @@ func (r *MetricRecorder) Collect(t *testing.T) Instruments {
 	if err := r.reader.Collect(r.ctx, &collected); err != nil {
 		t.Fatalf("collect metrics: %v", err)
 	}
-	out := Instruments{sums: map[string][]Point{}, histograms: map[string][]HistogramPoint{}}
+	out := Instruments{
+		sums:       map[string][]Point{},
+		histograms: map[string][]HistogramPoint{},
+		shapes:     map[string]Definition{},
+	}
 	for _, scope := range collected.ScopeMetrics {
 		for _, instrument := range scope.Metrics {
+			out.shapes[instrument.Name] = shapeOf(instrument)
 			switch data := instrument.Data.(type) {
 			case metricdata.Sum[int64]:
 				for _, point := range data.DataPoints {
@@ -83,6 +90,147 @@ func (r *MetricRecorder) Collect(t *testing.T) Instruments {
 type Instruments struct {
 	sums       map[string][]Point
 	histograms map[string][]HistogramPoint
+	shapes     map[string]Definition
+}
+
+// Definition is one instrument's declared shape: the part of a metric that no data point
+// carries and every operator's query, alert threshold and dashboard axis depends on.
+//
+// It exists because a test that asserts the value of a series cannot see the difference
+// between "duration in seconds" and "duration in milliseconds": both record a number, and
+// only one of them is what the panel says.
+type Definition struct {
+	// Name is the instrument name as the meter declares it.
+	Name string
+	// Description is what the instrument counts, in the author's words.
+	Description string
+	// Unit is the declared unit ("s", "By", "{token}"), empty when none was declared.
+	Unit string
+	// Kind is the instrument kind, in the words the meter's constructors use.
+	Kind string
+	// Bounds are the histogram's bucket boundaries; empty for a non-histogram.
+	Bounds []float64
+}
+
+// Definition returns the declared shape of one instrument, and whether it was part of this
+// collection. An instrument that was created but never recorded is not in the collection:
+// collection reports what was observed, not what exists.
+func (i Instruments) Definition(name string) (Definition, bool) {
+	shape, ok := i.shapes[name]
+	return shape, ok
+}
+
+// Definitions lists every instrument in the collection, sorted by name, for a failure
+// message that says what was there instead of only what was missing.
+func (i Instruments) Definitions() []Definition {
+	out := make([]Definition, 0, len(i.shapes))
+	for _, shape := range i.shapes {
+		out = append(out, shape)
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
+	return out
+}
+
+// Bounds returns a histogram's bucket boundaries.
+//
+// An instrument that is not a histogram carries none, and neither does one whose
+// boundaries were left to the SDK default: both answers are "there is nothing to read
+// here", which is what the second result says.
+func (i Instruments) Bounds(name string) ([]float64, bool) {
+	shape, ok := i.shapes[name]
+	if !ok || len(shape.Bounds) == 0 {
+		return nil, false
+	}
+	return shape.Bounds, true
+}
+
+// RequireShape asserts an instrument's declared kind and unit.
+//
+// The description is not pinned: it is prose that improves, and a test that fails on a
+// better sentence is a test somebody deletes. What is pinned is what a query and an axis
+// depend on — the kind (a counter and a gauge with the same name are two different
+// questions) and the unit (a duration in seconds and one in milliseconds are the same
+// number, one of them wrong).
+//
+// A histogram must also carry bucket boundaries: the SDK's default set is built for
+// milliseconds, so a seconds-valued duration left on it reports every call above ten
+// seconds as one bucket.
+func (i Instruments) RequireShape(t *testing.T, name, kind, unit string) {
+	t.Helper()
+	shape, ok := i.shapes[name]
+	if !ok {
+		t.Fatalf("instrument %q was not emitted; this collection has %v", name, i.Names())
+	}
+	if shape.Kind != kind {
+		t.Errorf("instrument %q is a %s, want a %s", name, shape.Kind, kind)
+	}
+	if shape.Unit != unit {
+		t.Errorf("instrument %q declares unit %q, want %q", name, shape.Unit, unit)
+	}
+	if shape.Description == "" {
+		t.Errorf("instrument %q has no description", name)
+	}
+	if kind == "histogram" && len(shape.Bounds) == 0 {
+		t.Errorf("histogram %q has no bucket boundaries", name)
+	}
+}
+
+// RequireBounds pins a histogram's bucket boundaries.
+//
+// It is separate from RequireShape because the boundaries are a decision about the data,
+// not about the instrument: a test names them when the distribution is what it is watching.
+func (i Instruments) RequireBounds(t *testing.T, name string, want []float64) {
+	t.Helper()
+	shape, ok := i.shapes[name]
+	if !ok {
+		t.Fatalf("instrument %q was not emitted; this collection has %v", name, i.Names())
+	}
+	if !slices.Equal(shape.Bounds, want) {
+		t.Errorf("histogram %q has bounds %v, want %v", name, shape.Bounds, want)
+	}
+}
+
+// shapeOf reads one collected metric's declaration.
+func shapeOf(instrument metricdata.Metrics) Definition {
+	shape := Definition{Name: instrument.Name, Description: instrument.Description, Unit: instrument.Unit}
+	switch data := instrument.Data.(type) {
+	case metricdata.Sum[int64]:
+		shape.Kind = kindOf(data.IsMonotonic, true)
+	case metricdata.Sum[float64]:
+		shape.Kind = kindOf(data.IsMonotonic, true)
+	case metricdata.Gauge[int64]:
+		shape.Kind = "gauge"
+	case metricdata.Gauge[float64]:
+		shape.Kind = "gauge"
+	case metricdata.Histogram[int64]:
+		shape.Kind = "histogram"
+		shape.Bounds = boundsOf(data.DataPoints)
+	case metricdata.Histogram[float64]:
+		shape.Kind = "histogram"
+		shape.Bounds = boundsOf(data.DataPoints)
+	}
+	return shape
+}
+
+// kindOf names a sum the way the meter's constructors do: monotonic is the counter, and
+// non-monotonic is the up-down counter.
+func kindOf(monotonic, synchronous bool) string {
+	if !synchronous {
+		return "observable"
+	}
+	if monotonic {
+		return "counter"
+	}
+	return "updowncounter"
+}
+
+// boundsOf is the first data point's bucket boundaries: they are a property of the
+// instrument, and two points with different boundaries would be two instruments.
+func boundsOf[T int64 | float64](points []metricdata.HistogramDataPoint[T]) []float64 {
+	if len(points) == 0 {
+		return nil
+	}
+	return points[0].Bounds
 }
 
 // Point is one sum data point.

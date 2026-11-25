@@ -85,9 +85,12 @@ configure it. Cross-reference with one line; never copy.
 
 The independently versioned library modules are `core` (the platform) and
 `driver` (provider inference adapters).
-The Go workspace also includes `examples/forge` and `examples/parallel` (runnable
-consumers, not released: each pins released module versions), while
-`tools/releasegate` builds with `GOWORK=off` against pinned releases.
+The Go workspace also includes `test/e2e` (the stack test: the only module that imports
+the platform and every implementation at once, so it can run a real backend, real
+tools and the real engine together; never released, no changeset and no tag) and
+`examples/forge` (a runnable consumer, not released: it pins released module
+versions). `examples/parallel` is a consumer outside the workspace, and
+`scripts/releasegate` builds with `GOWORK=off` against pinned releases.
 
 Module dependency order:
 
@@ -208,7 +211,8 @@ are still missing.
 
 ## Working in the workspace
 
-- `make ci` runs `vet` + `test` across `core`, `driver` and `examples/forge`.
+- `make ci` runs `vet` + `test` (under the race detector) + the coverage ratchet
+  across every workspace member.
 - `make lint` is the golangci-lint lane over `core` and `driver`; CI runs it
   separately from `make ci`.
 - `make check-consumers` builds every example from its own `go.mod` with

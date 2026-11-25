@@ -1,0 +1,19 @@
+# The process: which implementations this binary carries. Every name here is a real
+# implementation from the workspace — the local sandbox, the file tools, the graph
+# engine — except the model provider, which is the test's: a stack test that dialled
+# a vendor would be a test that fails when the network does.
+version: 1
+sandbox:
+  - name: local
+    impl: local
+inference:
+  providers:
+    - name: fake
+      impl: fake
+      settings: { model: "fake-1" }
+tools:
+  sources:
+    - name: files
+      impl: files
+      settings: { images: false }
+observability: { trace: run, bodies: false }

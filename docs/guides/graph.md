@@ -110,8 +110,8 @@ nodes:
       key: answer
 
 edges:
-  - { from: model, to: tools, when: "len(pending) > 0" }
-  - { from: model, to: done, when: "len(pending) == 0" }
+  - { from: model, to: tools, when: "len(state.pending) > 0" }
+  - { from: model, to: done, when: "len(state.pending) == 0" }
   - { from: tools, to: model }
 
 output:
@@ -240,7 +240,7 @@ Evaluates an expression and writes the branch it took.
 ```yaml
 - id: done
   kind: condition
-  config: { key: answer, when: "answer != nil", then: yes, else: no }
+  config: { key: answer, when: "state.answer != nil", then: yes, else: no }
 ```
 
 ### `script`
@@ -255,8 +255,16 @@ when the step started, plus `step`:
 
 ```yaml
 skip: "step > 10"
-when: "pending != nil and len(pending) > 0"
+when: "state.pending != nil and len(state.pending) > 0"
 ```
+
+The state keys live under `state`, not at the top level: a key named `count` or
+`len` would otherwise resolve to an expr builtin instead of the value, so the
+environment is `{state: {...}, step: n}`. A key written without the prefix is
+not a load error — the environment is a map, so an unknown name reads as `nil`,
+and a condition on it is silently false. That is the shape a graph takes when its
+conditions were written from memory: `len(pending) > 0` compiles, never fires,
+and the run takes the other branch.
 
 They are compiled once at build, so a typo is a load error rather than a
 run-time surprise, and a step evaluates its skip conditions and its edges against

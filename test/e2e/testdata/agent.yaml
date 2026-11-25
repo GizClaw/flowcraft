@@ -1,0 +1,21 @@
+# The agent: one grant, one program.
+#
+# The grant names no file subtree on purpose. A narrowed write set is a permission the
+# backend has to be able to enforce, and sandbox/local declares no filesystem bounds — it
+# runs with the process user's own authority. The loader therefore refuses a session that
+# narrows writes onto it, which is the contract working: "nobody said this backend bounds
+# writes" and "it bounds writes" are different answers. A deployment that needs the
+# narrower grant selects a backend that reports the bound.
+version: 1
+agents:
+  - name: writer
+    program:
+      impl: graph
+      settings:
+        path: "<graph>"
+        model: { provider: fake, name: fake-1 }
+    grant:
+      sandbox: local
+      models: [{ id: { provider: fake, name: fake-1 } }]
+      tools: { allow: [write_file] }
+      limits: { idle: 5m, max_sessions: 4 }

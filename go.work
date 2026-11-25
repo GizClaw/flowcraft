@@ -17,6 +17,7 @@ go 1.26.0
 use (
 	./agent
 	./core
+	./test/e2e
 	./examples/forge
 	./inference
 	./sandbox

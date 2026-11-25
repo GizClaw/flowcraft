@@ -204,3 +204,25 @@ func routeCounterSum(t *testing.T, collected metricdata.ResourceMetrics, name st
 	t.Fatalf("metric %q not recorded", name)
 	return 0
 }
+
+// TestRouteMetricsDeclareTheirShape pins the routing series' unit and buckets. The
+// duration is recorded in seconds, so the default boundaries — built for milliseconds —
+// would report every route above ten seconds as one bucket.
+func TestRouteMetricsDeclareTheirShape(t *testing.T) {
+	recorder := telemetrytest.Meters(t)
+
+	router, err := New([]Target{generateTarget("a", &fakeGenerator{
+		reply: func(int) (inference.GenerateResponse, error) { return okResponse("ok"), nil },
+	})}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := router.Generate(context.Background(), generationRequest()); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	got := recorder.Collect(t)
+	got.RequireShape(t, "executions.total", "counter", "")
+	got.RequireShape(t, "duration.seconds", "histogram", "s")
+	got.RequireBounds(t, "duration.seconds", telemetry.DurationBoundsSeconds())
+}

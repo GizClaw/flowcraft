@@ -167,7 +167,9 @@ func (c *routeCall) recordMetrics(duration time.Duration, status, kind string) {
 			operation, attribute.String("status", status)))
 	}
 	if histogram, err := meter.Float64Histogram("duration.seconds",
-		metric.WithDescription("Routing duration, including failover waits")); err == nil {
+		metric.WithDescription("Routing duration, including failover waits"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 		histogram.Record(c.ctx, duration.Seconds(), metric.WithAttributes(operation))
 	}
 	if c.fallbacks > 0 {

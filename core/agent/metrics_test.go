@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/outcome"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
@@ -62,4 +63,29 @@ func TestFailedTurnCountsAsFailed(t *testing.T) {
 	if value, ok := got.SumWhere("agent.turn.errors", map[string]string{"error.kind": "timeout"}); !ok || value != 1 {
 		t.Fatalf("timeout errors = %v (ok=%v)", value, ok)
 	}
+}
+
+// TestTurnMetricsDeclareTheirShape is the half of a metric a value assertion cannot see.
+//
+// "duration" in seconds and "duration" in milliseconds record the same number, and only
+// one of them matches the axis the panel draws. The bucket boundaries are the same kind of
+// fact: the SDK's default set is built for milliseconds, so a seconds-valued histogram left
+// on it puts every turn above ten seconds in one bucket and the p99 is a guess. Pinning the
+// unit and the buckets here makes an accidental change a failing test rather than a silent
+// change of what the dashboard means.
+func TestTurnMetricsDeclareTheirShape(t *testing.T) {
+	recorder := telemetrytest.Meters(t)
+	driver := agenttest.NewScripted(
+		agent.UsageEvent{Usage: outcome.Usage{InputTokens: 10, OutputTokens: 4}},
+		agenttest.Completed(),
+	).OpenDriver()
+	if _, err := collect(agent.RunTurn(sessionCtx(t), request(nil), driver)); err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+
+	got := recorder.Collect(t)
+	got.RequireShape(t, "agent.turns", "counter", "")
+	got.RequireShape(t, "agent.turn.duration", "histogram", "s")
+	got.RequireShape(t, "agent.tokens", "counter", "{token}")
+	got.RequireBounds(t, "agent.turn.duration", telemetry.DurationBoundsSeconds())
 }

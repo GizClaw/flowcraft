@@ -618,7 +618,9 @@ func recordLoadMetrics(ctx context.Context, name, status string, duration time.D
 			attribute.String("status", status)))
 	}
 	if histogram, err := meter.Float64Histogram("load.duration.seconds",
-		metric.WithDescription("Deferred tool load duration")); err == nil {
+		metric.WithDescription("Deferred tool load duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 		histogram.Record(ctx, duration.Seconds(), nameAttr)
 	}
 }

@@ -15,10 +15,6 @@ var (
 	disabled   atomic.Bool
 )
 
-func init() {
-	loggerName.Store("")
-}
-
 // SetLoggerName sets the scope name for the convenience log functions.
 func SetLoggerName(name string) {
 	loggerName.Store(strings.TrimSpace(name))

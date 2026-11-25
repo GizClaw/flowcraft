@@ -123,7 +123,9 @@ func recordToolMetrics(
 			attribute.String("status", status)))
 	}
 	if histogram, err := meter.Float64Histogram("duration.seconds",
-		metric.WithDescription("Tool execution duration")); err == nil {
+		metric.WithDescription("Tool execution duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 		histogram.Record(ctx, duration.Seconds(), nameAttr)
 	}
 	if kind != "" {

@@ -38,9 +38,9 @@ nodes:
       parallelism: 4
 
 edges:
-  - {from: model, to: tools, when: "len(pending) > 0"}
+  - {from: model, to: tools, when: "len(state.pending) > 0"}
   - {from: tools, to: model}
-  - {from: model, to: END, when: "len(pending) == 0"}
+  - {from: model, to: end, when: "len(state.pending) == 0"}
 
 output:
   key: answer
