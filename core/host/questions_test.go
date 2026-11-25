@@ -53,12 +53,53 @@ func TestAQuestionIsPosedAndItsAnswerTaken(t *testing.T) {
 	if answered := route.Ask(context.Background(), question); answered != nil {
 		t.Fatalf("Ask after the answer = %q, want none", answered.Text())
 	}
-	answer, ok := route.Take(context.Background())
+	answer, ok := route.Take(context.Background(), question)
 	if !ok || answer.Text() != "14A" {
 		t.Fatalf("Take = %q, %v", answer.Text(), ok)
 	}
-	if _, ok := route.Take(context.Background()); ok {
+	if _, ok := route.Take(context.Background(), question); ok {
 		t.Fatal("the answer was taken twice")
+	}
+}
+
+// TestAnAnswerReachesOnlyItsOwnQuestion is the binding: a reply is keyed by the question's text, so
+// a later, different question is not answered by it.
+func TestAnAnswerReachesOnlyItsOwnQuestion(t *testing.T) {
+	route := newQuestionsRoute("s1", nil)
+	first := message.NewTextContent("which seat?")
+	route.Ask(context.Background(), first)
+	if err := route.reply(message.NewTextContent("14A")); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	second := message.NewTextContent("which meal?")
+	if question := route.Ask(context.Background(), second); question == nil {
+		t.Fatal("the second question was answered by the first question's reply")
+	}
+	if _, ok := route.Take(context.Background(), second); ok {
+		t.Fatal("the first answer was served to the second question")
+	}
+	if answer, ok := route.Take(context.Background(), first); !ok || answer.Text() != "14A" {
+		t.Fatalf("Take(first) = %q, %v", answer.Text(), ok)
+	}
+}
+
+// TestAnExpiredAnswerDoesNotWedgeTheSession: the reply is dropped, and what the caller does next is
+// resume — the pre-flight asks again rather than the session staying paused with an answer nobody
+// will take.
+func TestAnExpiredAnswerDoesNotWedgeTheSession(t *testing.T) {
+	route := newQuestionsRoute("s1", nil)
+	question := message.NewTextContent("which seat?")
+	route.Ask(context.Background(), question)
+	route.mu.Lock()
+	for _, posed := range route.posed {
+		posed.asked = time.Now().Add(-questionTTL - time.Second)
+	}
+	route.mu.Unlock()
+	if err := route.reply(message.NewTextContent("14A")); err != nil {
+		t.Fatalf("reply on an expired question = %v, want it dropped", err)
+	}
+	if again := route.Ask(context.Background(), question); again == nil {
+		t.Fatal("the question was not asked again after the reply expired")
 	}
 }
 
@@ -68,21 +109,6 @@ func TestAnAnswerWithoutAQuestionIsRefused(t *testing.T) {
 	route := newQuestionsRoute("s1", nil)
 	if err := route.reply(message.NewTextContent("14A")); !errdefs.IsValidation(err) {
 		t.Fatalf("reply = %v, want Validation", err)
-	}
-}
-
-// TestAnExpiredQuestionIsAskedAgain keeps a stale question from being answered minutes later.
-func TestAnExpiredQuestionIsAskedAgain(t *testing.T) {
-	route := newQuestionsRoute("s1", nil)
-	route.Ask(context.Background(), message.NewTextContent("which seat?"))
-	route.mu.Lock()
-	route.posed.asked = time.Now().Add(-questionTTL - time.Second)
-	route.mu.Unlock()
-	if err := route.reply(message.NewTextContent("14A")); !errdefs.IsValidation(err) {
-		t.Fatalf("reply = %v, want Validation for an expired question", err)
-	}
-	if again := route.Ask(context.Background(), message.NewTextContent("which seat?")); again == nil {
-		t.Fatal("an expired question was not asked again")
 	}
 }
 

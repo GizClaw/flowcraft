@@ -27,7 +27,7 @@ func (r *route) Ask(_ context.Context, question message.Content) *message.Conten
 	return &text
 }
 
-func (r *route) Take(context.Context) (message.Content, bool) {
+func (r *route) Take(context.Context, message.Content) (message.Content, bool) {
 	r.consumed++
 	if r.answer == nil {
 		return message.Content{}, false
@@ -104,10 +104,15 @@ func TestNoOutletIsAnError(t *testing.T) {
 	}
 }
 
-// TestAQuestionIsRequired keeps an empty ask from suspending a turn nobody can answer.
+// TestAQuestionIsRequired keeps an empty ask from suspending a turn nobody can answer: the
+// pre-flight stays silent and Execute reports the mistake as a tool result the model can correct.
 func TestAQuestionIsRequired(t *testing.T) {
 	questions := &route{}
-	if _, err := (askTool{}).Ask(context.Background(), bindingFor(questions), args("")); !errdefs.IsValidation(err) {
-		t.Fatalf("Ask = %v, want Validation", err)
+	question, err := (askTool{}).Ask(context.Background(), bindingFor(questions), args(""))
+	if err != nil || question != nil {
+		t.Fatalf("Ask = %v, %v; want no question and no run failure", question, err)
+	}
+	if _, err := (askTool{}).Execute(context.Background(), bindingFor(questions), args("")); !errdefs.IsValidation(err) {
+		t.Fatalf("Execute = %v, want Validation", err)
 	}
 }

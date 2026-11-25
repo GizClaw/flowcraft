@@ -77,7 +77,9 @@ func (askTool) Ask(ctx context.Context, binding tool.Binding, arguments string) 
 	}
 	question, err := decode(arguments)
 	if err != nil {
-		return nil, err
+		// A malformed call is Execute's to report as a tool result: failing the pre-flight would
+		// fail the whole run for a call the model could correct.
+		return nil, nil
 	}
 	return questions.Ask(ctx, question), nil
 }
@@ -88,10 +90,11 @@ func (askTool) Execute(ctx context.Context, binding tool.Binding, arguments stri
 	if err != nil {
 		return message.Content{}, err
 	}
-	if _, err := decode(arguments); err != nil {
+	question, err := decode(arguments)
+	if err != nil {
 		return message.Content{}, err
 	}
-	answer, ok := questions.Take(ctx)
+	answer, ok := questions.Take(ctx, question)
 	if !ok {
 		// The pre-flight guarantees this: a call only runs on a turn whose Ask returned nil, and
 		// Ask returns nil only when the session holds an answer.

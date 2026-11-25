@@ -21,8 +21,11 @@ type Questions interface {
 	// Ask records the question and reports the text the turn suspends on, or nil when the session
 	// already holds an answer and the call may run.
 	Ask(ctx context.Context, question message.Content) *message.Content
-	// Take consumes the answer the session is holding, once.
-	Take(ctx context.Context) (message.Content, bool)
+	// Take consumes the answer to this question, once.
+	//
+	// The question is part of the call because an answer belongs to the question it answered: a
+	// route that served whatever it had would let a reply to one question run a different call.
+	Take(ctx context.Context, question message.Content) (message.Content, bool)
 }
 
 // AskSlot is the capability a tool declares in [tool.Tool.Needs] to ask the user.
