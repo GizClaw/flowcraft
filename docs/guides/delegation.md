@@ -5,14 +5,14 @@ title: Delegation
 
 # Delegation Guide
 
-Delegation is a permission, not a service. `policy.Delegation`, written as
-`grant.delegation` on an agent, says which agents a session may reach, in which modes,
-how deep and how large an input may be. A session whose bind carries a non-nil
-`Delegation` is given one capability — `platform.DelegationSlot`, filled by the host —
-and `tool/builtin/delegation` exposes the four tools that read it:
+Delegation is a permission, not a service. `policy.Delegation`, a block on the grant a
+session is opened with, says which agents it may reach, in which modes, how deep and
+how large an input may be. A session whose grant carries a non-nil `Delegation` is
+given one capability — `platform.DelegationSlot`, filled by the host — and
+`tool/builtin/delegation` exposes the four tools that read it:
 
 ```text
-grant.delegation (policy.Delegation)
+Grant.Delegation (policy.Delegation)
     → host fills platform.DelegationSlot with *host.delegator
     → tool/builtin/delegation reads it from tool.Binding.Caps, per call
 ```
@@ -97,7 +97,7 @@ state, its answer or its question, and the lineage:
 `Delegate` is strict about its preconditions, because each one is a fact that would
 otherwise become a wrong answer somewhere else:
 
-1. **A parent session with a policy.** The parent's bind carries `grant.delegation`, and
+1. **A parent session with a policy.** The parent's grant carries a `Delegation`, and
    the target is in `targets`. A session that may not delegate has no capability at all,
    so the tool is refused before the call.
 2. **The mode is allowed** by the same grant.
@@ -160,8 +160,10 @@ agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: d
 ## What the child inherits, and what it does not
 
 The child is **a session of its own**: its own task, its own checkpoint, its own hooks
-(with `Agent` naming the target's deployment), its own grant — the target deployment's,
-not the parent's bind — and its own sandbox configuration.
+and its own program (both from the target's deployment), and its own cell. Its
+**authority** is inherited from the parent unless the application installed
+`host.WithDelegationGrant`, which is what keeps delegation from manufacturing authority:
+the default cannot escalate, and a resolver is trusted host code that narrows.
 
 What crosses is the lineage and nothing else. The host runs the child on
 `identity.Detach` plus `agent.WithoutFailureBox`: without the first, the child would
@@ -169,18 +171,18 @@ carry the parent's conversation, bind and span attributes; without the second, t
 parent's first-wins failure box would record the child's model error as the parent
 turn's reason.
 
-Core derives no policy for the child, and in particular no boundary: `grant.delegation`
+Core derives no authority for the child, and in particular no boundary: `Delegation`
 bounds delegation (who, how many, how deep, how large) and says nothing about the
-child's write boundary, network posture or approval mode. A deployment that confines or
-gates work per session decides that in the child's own grant, or in a hook that
-recognises the child.
+child's write boundary, network posture or approval mode. An application that confines
+or gates work per target does that in its `WithDelegationGrant` resolver, or in a hook
+that recognises the child.
 
 ## What this replaced
 
 `core/delegation` is gone: its `Service` (a value that bound a policy to the host's
 session table), its own `Policy`, an async `Job` in a `Store` with `MemStore`, and a
 `Tools(service)` source. So is the run-identity carrier the lineage used to be stamped
-into. What replaced each part is one existing thing: the policy is `grant.delegation` on
+into. What replaced each part is one existing thing: the policy is `Grant.Delegation` on
 a `policy.Grant`, the verbs are `core/tool/platform`'s `Delegation` capability, the
 tools are a `tool.Source` in the `tool` module, the child is a session of
 `host.Agents`, and the lineage is `identity.Chain`. The behaviour that mattered — a
