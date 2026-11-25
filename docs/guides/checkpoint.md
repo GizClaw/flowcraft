@@ -110,11 +110,12 @@ editing the graph invalidates the checkpoints taken under the old one.
 
 ## Who writes what
 
-| Writer             | Boundary                                               | Notes                                                                                                        |
-| ------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------ |
-| `core/agent-graph` | every step, plus a base every `checkpoint.every` steps | A base carries the whole state; the interval is the price paid for a short replay. See [graph.md](graph.md). |
-| `core/agent-a2a`   | every task state transition                            | the remote task id and the already-seen message ids ride in the payload                                      |
-| `core/agent-host`  | every turn                                             | the session table resumes a conversation with `LatestForSession`                                             |
+| Writer          | Boundary                                               | Notes                                                                                                                                            |
+| --------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `agent/graph`   | every step, plus a base every `checkpoint.every` steps | A base carries the whole state; the interval is the price paid for a short replay. See [graph.md](graph.md).                                     |
+| `agent/a2a`     | one save per round trip to the peer                    | the peer's task and context ids, and the record of the call, ride in the driver's own section and events                                         |
+| `agent.RunTurn` | every turn: one terminal save, on every path           | finish, panic, a consumer that stopped and a refused `BeforeTurn` all leave one; with no store, nothing is kept. See [runtime.md](runtime.md)    |
+| `host.Agents`   | — (the reader)                                         | `request` resumes a conversation with `Store.LatestForSession`: a non-terminal task continues under its own id, a terminal one starts a new task |
 
 ## Durability
 

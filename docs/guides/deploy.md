@@ -1,490 +1,436 @@
 ---
 layout: default
-title: Deployment Assembly
+title: Deployment Documents
 ---
 
-# Deployment Assembly Guide
+# Deployment Documents Guide
 
-`core/deploy` is the document and kind layer: it turns a deployment file into
-`[]deploy.Spec` and decides which engine, protocol, hook and layer-source kinds a
-host may name. It does not run anything. The process-level `Manager`, the session
-table and the host bindings live in `core/agent-host`.
+`core/deploy` turns deployment documents into _values_: settings and closures,
+never handles. It decodes both document shapes strictly, validates every entry
+against the implementation table the application registered, and answers the two
+questions a deployment can get wrong before anything is built — "does this
+document hold together" and "can this process serve it".
 
-The split is deliberate: a document is data, a kind is a registration, and
-neither needs a process to be validated. A host can lint a deployment in CI with
-the same `Loader` it uses to start one.
+Whoever builds is `core/host`, and only the host closes what it built. That is not
+ceremony: a loader that returned handles would own their lifecycle, and "only the
+assembly layer holds the process" would stop being true the first time a test
+called `Load`.
 
-## The unit is the deployment, not the process
+## Two documents
 
-One document declares one or more agents. Each agent is an engine plus the
-substrate that engine runs on, and optionally an external surface:
+A process is described twice, and neither document can name a resource the other
+one owns:
+
+| Document           | Says                                                                                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| a process document | what _this process_ carries: the sandbox backends, the model targets, the tool sources, the skill roots, and how much of a turn it records |
+| an agent document  | what _one agent_ is: its name, its program, its grant, its hooks                                                                           |
+
+An agent selects from the process's resources through its `policy.Grant`; it
+cannot add a provider or a backend. Adding a resource means editing the process
+document and restarting — a different action from deploying an agent, and the
+error messages keep the two apart.
+
+`examples/forge` calls the process document `runtime.yaml` and the agent document
+`deploy.yaml`. The names are the application's, not the loader's: the loader takes
+a file for what it is by decoding it as one or the other.
+
+### The process document
 
 ```yaml
 version: 1
+
+sandbox:
+  - name: local
+    impl: local
+
+inference:
+  providers:
+    - name: openai
+      impl: openai
+      settings: { api_key: "${env:OPENAI_API_KEY}" }
+  route:
+    attempts_per_target: 2
+    max_targets: 1
+    base_delay: 250ms
+    max_delay: 5s
+
+tools:
+  sources:
+    - { name: files, impl: files }
+    - { name: exec, impl: exec }
+  middleware:
+    - { name: telemetry, impl: telemetry }
+
+skills:
+  roots: ["/srv/agent/skills"]
+
+# Both fields are required: "we record nothing" and "nobody said" are different
+# facts, and the second one is how a deployment ends up with no trace at all.
+observability: { trace: call, bodies: false }
+```
+
+| Section                 | Rule                                                                                                                        |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `version`               | Must be `1` (`deploy.SupportedVersion`). Another version is refused instead of read optimistically.                         |
+| `sandbox[]`             | `{name, impl, settings}`. `name` is what an agent's `grant.sandbox` selects; `impl` is a backend registered on the process. |
+| `inference.providers[]` | `{name, impl, settings}`. `name` is what a grant's models are checked against, `impl` a registered provider.                |
+| `inference.route`       | `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. Selectors are Go values and stay out of the document.      |
+| `tools.sources[]`       | `{name, impl, settings}`. Every source is aggregated into one tool table for the process.                                   |
+| `tools.middleware[]`    | `{name, impl, settings}`. The chain every tool call passes through, outermost first.                                        |
+| `skills.roots[]`        | Absolute directories scanned for `SKILL.md`. Discovered once for the process, so a session is not paying for it per turn.   |
+| `observability.trace`   | Required. `none`, `run`, `call` or `node`.                                                                                  |
+| `observability.bodies`  | Required, `true` or `false`. Retention of model response bytes, not a level.                                                |
+
+Duplicate names within a section are refused: a name is how an agent selects the
+resource, so two entries answering to one name would make the selection ambiguous.
+
+The `settings` block is opaque here on purpose: its schema belongs to the factory
+the application registered, which is the only thing that knows what a backend or a
+provider needs. The loader hands each block to its factory's `Plan` at load time,
+so a typo inside one is a document error with the rest of them.
+
+### The agent document
+
+```yaml
+version: 1
+
 agents:
-  - name: forge
-    engine:
-      kind: graph
-      settings: { ... } # decoded by the kind
-    runtime:
-      layers:
-        - priority: 0
-          source: { kind: file, settings: { path: base.yaml } }
-        - priority: 10
-          source: { kind: file, settings: { path: local.yaml } }
-    catalog:
-      scope: run
-    protocol:
-      kind: a2a
-      settings: { ... }
-    delegation:
-      targets: [forge-review]
-      modes: [sync]
-    observability:
-      trace: node
-      bodies: false
+  - name: assistant
+    program:
+      impl: graph
+      settings:
+        model: { provider: openai, name: gpt-4o-mini }
+        path: /srv/agent/graphs/assistant.yaml
+    grant:
+      sandbox: bwrap # the process must configure it; escalate needs a boundary
+      files:
+        read: [/srv/agent]
+        write: [/srv/agent/out]
+      net: { mode: allow_list, allow_hosts: [api.openai.com] }
+      exec: { timeout: 60s }
+      resources: { cpu_millicores: 2000, memory_bytes: 2147483648 }
+      models:
+        - id: { provider: openai, name: gpt-4o-mini }
+      tools: { allow: [read_file, write_file, exec] }
+      escalate:
+        # Every dimension a declaration widens must cover what the grant already
+        # allows; on a restricted write set that means restating its roots.
+        files: { write: [/srv/agent/out, /srv/agent/cache] }
+        net: { mode: allow_list, allow_hosts: [api.openai.com, "*.github.com"] }
+        ttl: 5m
+        max_per_session: 3
+      limits: { idle: 30m, max_sessions: 8 }
     hooks:
-      - kind: audit
-        settings: { ... }
+      - impl: memory
+        settings: { dir: /srv/agent/memory, retain: 40 }
 ```
 
-| Field                    | Rule                                                                                                              |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `version`                | Must be `1`. Anything else is rejected instead of being read as a coincidence.                                    |
-| `agents[].name`          | Required, unique within the document, and what a caller addresses.                                                |
-| `agents[].engine`        | Required. `kind` has no default: an agent that does not say what it is cannot be deployed meaningfully.           |
-| `agents[].runtime`       | A stack of layers, at least one; each names where its bytes come from. Absent only for a remote engine.           |
-| `agents[].catalog`       | `scope: run` (default) or `session`: how far a tool projection is scoped.                                         |
-| `agents[].protocol`      | Absent means the agent is not exposed. `kind` is required when the block is present.                              |
-| `agents[].delegation`    | Absent means the agent gets no delegation tools at all — not "unrestricted".                                      |
-| `agents[].observability` | Absent fields fall back to the host's bindings, which is why the written form keeps "silent" distinct from "off". |
-| `agents[].hooks`         | Chained in declaration order, before the host's own hooks.                                                        |
+| Field              | Rule                                                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------------------------- |
+| `version`          | Must be `1`.                                                                                              |
+| `agents[].name`    | Required, unique in the document, and what a host addresses the agent by. Layer merging also keys on it.  |
+| `agents[].program` | Required. `impl` names a registered program (`graph` in `examples/forge`); `settings` are that program's. |
+| `agents[].grant`   | The agent's `policy.Grant`: its ceiling. Validated at load (see [The grant](#the-grant)).                 |
+| `agents[].hooks`   | `{impl, settings}`, chained in declaration order. An impl nobody registered is a document error.          |
 
-`version` stays `1` while the field-level tombstones name the replacement: a bump
-would tell a reader "this build reads 2" and nothing about what to write.
+The document has no runtime section on purpose: what an agent may use is its
+grant, not a private copy of the process. An agent that needs a second backend or
+a second provider is an agent the process cannot serve, and saying so at load is
+the whole point of this layer.
 
-Unknown fields, duplicate agent names and unregistered kinds are load errors. A
-kind the document names but the host did not register fails with the registered
-names in the error — never by being skipped.
+## The grant
 
-### Layering the document
+`policy.Grant` is the ceiling an agent's sessions run under. It is decoded and
+validated by `core/policy`, not by `deploy`, so the document and the runtime
+enforce one rule set:
 
-A host that ships a default deployment a project and then a user refines does not
-have to merge YAML itself. `Loader.LoadLayers` is the same entry over a stack of
-documents, the way `runtime.LoadLayers` is over a stack of runtime documents:
+| Field        | Meaning                                                                                                               | Zero value                                                                  |
+| ------------ | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `sandbox`    | The backend this agent's sessions run in, by the name the process gave it.                                            | The runtime's default; a name the process does not carry is `NotAvailable`. |
+| `files`      | `read[]`, `write[]`, `readonly`. Absolute roots, no globs, no symlink resolution.                                     | Neither side restricted.                                                    |
+| `net`        | `mode` (`default`, `deny_all`, `allow_list`, `proxy`), `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`. | `default`: the host decides.                                                |
+| `exec`       | `timeout`, `env`, `shell`.                                                                                            | No timeout, the host's environment, the backend's shell.                    |
+| `resources`  | `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.                                                   | Unbounded — and a backend that cannot enforce a non-zero value must refuse. |
+| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **none**: a model call spends money, so there is no "all".      |
+| `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                       |
+| `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                          |
+| `escalate`   | A declared widening: `files.write[]`, `net`, `exec.env`, `ttl`, `max_per_session`.                                    | Absent means a refused command stays refused.                               |
+| `limits`     | `idle`, `max_sessions`.                                                                                               | **Required**: an agent must state `limits.idle`.                            |
+
+Three defaults are deliberately different, and the difference is the design:
+files are open because a read is recoverable and auditable; tools are open because
+which tools exist is a property of the process; models are closed because a call
+names a resource and there is no "everything" spelling for it.
+
+`Grant.Normalized()` is the load-time gate and the canonical form at once. It
+normalizes `files`, `tools` and `net`, validates `exec`, `resources`, `limits` and
+`delegation`, de-duplicates models while keeping declaration order (that order is
+the failover priority), deep-copies the slices a narrowing could touch, and checks
+`escalate` against the grant it sits on.
+
+Three `files` invariants are refused rather than repaired:
+
+- `readonly: true` together with a non-empty `write`;
+- a narrowed read set beside an unrestricted write set — "you may look here and
+  write anywhere" is never what an author meant;
+- a write root that no read root covers.
+
+A root must be absolute, non-empty, free of surrounding whitespace and not a glob.
+`/` collapses a side to "unrestricted", because listing everything and saying
+nothing are the same permission and must produce the same digest. Normalization is
+lexical: nothing is resolved, so a symlink and its target are two different roots.
+
+`readonly` is a _tool-level_ permission, not a mount: `exec("echo x > /tmp/f")`
+does not go through `fsx`. A stronger promise has to come from a backend that
+mounts read-only, or from one that refuses a write-restricting confine it cannot
+enforce — which is what the shipped backends do.
+
+### `escalate`: declared widening
+
+`grant.escalate` is what an operator allowed above the ceiling for one command at
+a time. It is a second layer, not a second ceiling: a caller that narrowed a
+session through `policy.Request` cannot have the whole ceiling handed back by a
+refused command.
+
+```yaml
+grant:
+  sandbox: bwrap # a backend that can confine writes
+  files: { read: [/srv/agent], write: [/srv/agent/out] }
+  net: { mode: allow_list, allow_hosts: [api.openai.com] }
+  exec: { env: { allow: [PATH] } }
+  escalate:
+    files: { write: [/srv/agent/out, /srv/agent/cache] }
+    net: { mode: allow_list, allow_hosts: [api.openai.com, "*.github.com"] }
+    exec: { env: { allow: [PATH, HTTPS_PROXY] } }
+    ttl: 5m
+    max_per_session: 3
+```
+
+- Only three dimensions widen: `files.write`, `net` and `exec.env`. Widening
+  anything else would change what the session _is_, not where one command runs.
+- `files.read` and `files.readonly` are refused, and so is a `files.write` root
+  outside the grant's read roots.
+- Every dimension the declaration names must **cover** what the grant already
+  allows — an escalation only widens. On a grant with a restricted write set that
+  means `escalate.files.write` restates the grant's own roots and adds to them; a
+  declaration that lists three dimensions while the grant restricts files must
+  still name the write set.
+- `ttl` and `max_per_session` are required and must be positive: a widening with
+  no end is a new ceiling, and an uncapped one lets a model turn the confine into
+  a prompt it can summon.
+- The declaration is checked against the selected backend at load. A backend that
+  does not report write confinement has no boundary to widen, so the deployment is
+  `NotAvailable` — better than a success signal that means nothing.
+
+A session never carries the declaration: `Grant.Narrow` clears it, and only the
+host's escalation path reads it, when a backend refused a command with
+`sandbox.ErrConfineDenied`.
+
+## Registering implementations
+
+Core carries no implementation table: the shipped providers, backends, tool
+sources and middleware live in the `inference`, `sandbox` and `tool` modules, and
+`core` is forbidden from importing them. The application registers what it
+compiles in:
 
 ```go
-specs, err := loader.LoadLayers(ctx, []config.Layer{
-    {Priority: 0, Name: "defaults.yaml", Source: config.File("deploy/defaults.yaml")},
-    {Priority: 10, Name: "project.yaml", Source: config.File(projectPath)},
-    {Priority: 20, Name: userPath, Source: config.File(userPath)},
+impls := deploy.NewImpls().
+    // A provider factory's Plan decodes the written settings; Make returns *inference.Provider,
+    // because that is what the host builds and what its catalog reports models from.
+    Provider(deploy.Impl("openai", buildOpenAI)).
+    // A backend is built for one session's confine, so the factory receives it. This one
+    // declares no enforcement, which is why nothing can be escalated on it.
+    Backend(deploy.BackendImpl("local", func(_ struct{}, confine sandbox.Confine) (sandbox.Runner, error) {
+        return local.New(confine)
+    })).
+    ToolSource(deploy.Impl("files", builtinFiles)).
+    Middleware(deploy.MiddlewareImpl("telemetry", func(struct{}, tool.Catalog) (tool.Middleware, error) {
+        return middleware.Telemetry(), nil
+    }).AtTrace(telemetry.TraceCall)).
+    Hook(deploy.Impl("memory", newMemory)).
+    Program(deploy.Impl("graph", graphProgram))
+if err := impls.Err(); err != nil { /* a name was registered twice, or was empty */ }
+
+loader := deploy.NewLoader(impls)
+```
+
+`buildOpenAI`, `builtinFiles`, `newMemory` and `graphProgram` are the application's
+settings-plus-constructor pairs; `examples/forge/internal/app` is a complete table
+written this way.
+
+Six groups exist — provider, backend, tool_source, middleware, hook, program — and
+a name only means something inside its group: an implementation called `local` is
+a different thing as a provider and as a backend. `deploy.Group.String()` is how a
+document section spells each one.
+
+A `Factory` is split into the two phases a deployment needs. `Plan` decodes the
+settings strictly and must have no side effects; `Make` builds the object from what
+`Plan` returned. Keeping them apart is what lets a document be validated in a test
+or a CI job without dialling anything.
+
+Two registration-wide declarations travel with the factory:
+
+| Declaration | Answers                                                                                                                                                                                                                                                                                                                                                          |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AtTrace`   | The least trace level the link is worth installing at. A middleware below the process's level is left out of the plan, not built and disabled.                                                                                                                                                                                                                   |
+| `Enforcing` | What a backend can enforce on this platform, as a `sandbox.Enforcement`. The loader reads it while loading a document, because the per-session instance does not exist yet — and a backend that declares nothing is one nothing can be escalated on. `sandbox/local` is that case: it reports no filesystem bounds, so `grant.escalate` on it is `NotAvailable`. |
+
+## Loading
+
+```go
+ctx := context.Background()
+
+// A process: what this binary carries.
+plan, err := loader.Process(ctx, sources.File("/srv/agent/runtime.yaml"))
+
+res, err := host.Open(ctx, plan, host.Options{
+    Capabilities: capSet,     // the slots this process can hand a tool
+    Dispatcher:   dispatcher, // the tool executor this binary compiles in
+    View:         view,       // the projection: one per deployment, one view per session
 })
+defer res.Close()
+
+// Then the agents, resolved against what the built process reports.
+deployments, err := loader.Deployments(ctx, res.Capabilities(),
+    sources.File("/srv/agent/deploy.yaml"))
 ```
 
-`Loader.Load` is the one-layer case: both read the same document format, run the
-same validation (`version`, a non-empty agent list, unique names, every `agent()`
-check) and share the resolvers in `Loader.LoadOptions`. The stack merges before
-that validation, so a layered load is never looser than a single-body one.
+`Loader.Process` returns a `deploy.ProcessPlan`: for every entry the decoded
+settings and the factory that will build it. `Loader.Deployments` returns
+`[]deploy.Deployment`: name, planned program, validated grant, planned hooks.
+Neither builds anything, and both take `config.Layer` values, so one file on disk
+and a stack of overrides go through the same code.
 
-The merge is `core/config`'s, which means its rules are the document's rules:
-layers apply in ascending priority, priorities must be distinct, mappings merge
-key by key, and **a sequence is replaced whole**. Two consequences are worth
-stating because they are the ones a layered host trips on:
+`deploy.Capabilities` is the process's answer to an agent document, and it holds
+only what the _process_ decides — `Backends`, `Enforcement` and `Models` as
+`"provider/name"`. Registered implementation names are checked against the kind
+table instead, which the loader already holds.
 
-- `agents` is a sequence, so a higher layer replaces the agent list instead of
-  patching one entry: an agent it wants to change has to be written out in full
-  there, and agents the higher layer does not repeat are gone. There is no
-  per-agent overlay.
-- `agent.runtime.layers` is a sequence too, so "defaults ship one layer and the
-  project appends another" restates the whole list rather than adding to it.
+### Layers and placeholders
 
-Placeholders are expanded once, after the merge, so a value the winning layer
-overrides is never looked up — a dangling reference in a losing layer is not an
-error. That is also why this entry exists rather than a host merging YAML and
-calling `Load` again: the second pass would expand a resolved value that happens
-to contain `${`.
-
-The merge's own errors name the layer: a layer that will not parse, two layers at
-one priority, a source that will not read. An error the merged _document_ raises —
-an unresolved placeholder, an unknown field, a check in `agent()` — names the
-document or the agent instead, because by then the value could have come from any
-layer.
-
-`Loader.RequiredPlaceholders` still asks one body: a startup checklist over a stack
-is not wired yet.
-
-## Kinds
-
-A kind is a name, a decoder and a builder. Four kinds exist, one per thing a
-document can name:
+Layers are `core/config`'s. `deploy/sources` is the four constructors over
+`config.Layer` — `File`, `Bytes`, `FS`, `Func` — plus `Over` for priority:
 
 ```go
-type EngineKind struct {
-    Name   string
-    Local  bool                     // local: runs here, needs a runtime; remote: has a peer
-    Decode func(ctx context.Context, settings json.RawMessage, sources SourceOpener) (any, error)
-    // Fingerprint is the non-secret part of the settings. Nil means the whole
-    // canonical settings object — wrong for anything carrying a credential.
-    Fingerprint func(ctx context.Context, settings json.RawMessage, sources SourceOpener) string
-    Build      func(ctx context.Context, deps EngineDeps) (agent.RunnerFactory, error)
-}
-
-type ProtocolKind struct {
-    Name   string
-    Decode func(json.RawMessage) (any, error)
-    Build  func(ctx context.Context, deps ProtocolDeps) (Protocol, error)
-}
-
-type HookKind struct {
-    Name   string
-    Decode func(json.RawMessage) (any, error)
-    Build  func(ctx context.Context, deps HookDeps) (agent.Hooks, error)
+layers := []config.Layer{
+    sources.File("base.yaml"),
+    sources.Over(sources.Bytes("local.yaml", override), 10),
 }
 ```
 
-An engine is the only kind whose settings are validated at load time by reading a
-document, and whose bytes are part of the deployment's identity, so its `Decode`
-and `Fingerprint` receive the source table — and `EngineDeps.Sources` carries the
-same opener to `Build`. (A hook can read a document of its own too, but through
-`HookDeps.LoadOptions`, which is host wiring rather than a source reference.) The
-table is the same one runtime layers resolve through
-(see [Layer sources](#layer-sources)), which is why the two cannot disagree
-about what a source kind means.
+- Layers merge in ascending priority; duplicate priorities are refused.
+- Mappings merge key by key, **sequences are replaced whole**, scalars are
+  replaced. An `agents` list in a higher layer replaces the list, so an agent it
+  wants to change is written out in full; there is no per-agent overlay.
+- Placeholders are resolved once, after the merge, so a value an overriding layer
+  replaced is never looked up. Forms: `${NAME}`, `${NAME:-fallback}` (both the
+  built-in `env` scheme) and `${scheme:args}` for a resolver the application
+  registered with `config.WithResolver`.
+- `$$` is a literal `$`. A `<<` merge key is expanded when the layer is parsed.
 
-`Decode` runs twice by design: once at load, so a typo in a settings block fails
-before any resource is built, and once inside `Build` to get the typed value. It
-is the kind's only validation hook, and it is why an unregistered field inside
-`settings` is a load error rather than a silently ignored line.
-
-`Local` is what the loader checks instead of the kind's name: a local engine must
-have a runtime, a remote one must not (`ValidateEngineSpec`). `ProtocolDeps`
-carries no deployment internals — name, store, fingerprint, an artifact resolver
-and the agent's session table — because a protocol drives sessions directly and
-should not need the manager.
-
-### Layer sources
-
-A runtime layer names the kind its bytes come from instead of a path the document
-interprets:
-
-```yaml
-runtime:
-  layers:
-    - priority: 0
-      source: { kind: file, settings: { path: ./runtime.yaml } }
-    - priority: 10
-      source: { kind: assets, settings: { name: runtime/prod.yaml } }
-```
+Resolvers travel with the load, not with a document:
 
 ```go
-type SourceKind struct {
-    Name string
-    Open func(ctx context.Context, settings json.RawMessage) (Source, error)
-}
-
-type Source struct {
-    Name string        // what errors and provenance report
-    Body config.Source // config.File, config.Bytes, config.FS or config.Func
-}
+loader := deploy.NewLoader(impls).
+    WithConfigOptions(config.WithResolver("workspace", resolveWorkspace))
 ```
 
-A source has one hook rather than two, because it runs while the document is
-loaded: the layers are merged then, so `Open` is the only place a typo can be
-caught, and there is nothing left to build afterwards.
-
-`file` and `inline` are the two registrations `deploy/builtin` ships, and the
-reason is the same for both: the document states the whole address, a path or the
-text itself. Everything else needs a value only the host has — an `fs.FS` from
-`//go:embed`, a vault client, a table handle — so `deploy/sources` offers a factory
-instead of a registration:
-
-```go
-//go:embed assets
-var assets embed.FS
-
-// {"kind": "assets", "settings": {"name": "runtime/base.yaml"}}
-kinds := builtin.Kinds().WithSources(sources.FS("assets", assets))
-```
-
-`deploy/sources` is the whole family, one factory per `config.Source`:
-
-| Source                     | Settings        | Comes from                                                           |
-| -------------------------- | --------------- | -------------------------------------------------------------------- |
-| `file`                     | `{path}`        | `config.File` — a registration                                       |
-| `inline`                   | `{name?, body}` | `config.Bytes` — a registration, for generated deployments and tests |
-| a host name, e.g. `assets` | `{name}`        | `config.FS` — `sources.FS(name, fsys)`                               |
-| a host name, e.g. `vault`  | `{name}`        | `config.Func` — `sources.Func(name, load)`                           |
-
-An `inline` body is expanded once as part of the deploying document and again as a
-layer, so a `${…}` inside one becomes layer source text: a body that carries a
-reference has to escape its `$` one level deeper.
-
-There is no HTTP, vault or database source in the platform, and that is the
-point: each of those is a policy — TLS, retries, a size limit, credentials — and
-`sources.Func` turns any of them into five lines the host owns rather than a
-feature that decides them for every deployment.
-
-A factory names its layers `<kind>:<reference>` (`assets:runtime/base.yaml`,
-`vault:openai/luna`), so an error or a provenance entry says which store the
-layer came from. The two registrations name themselves differently: `file` uses
-the path it reads, because that is already a location, and `inline` uses its
-`name` setting, defaulting to `inline` — which is why two anonymous inline layers
-in one stack are a load error.
-
-A source is opened more than once for one deployment (to validate, for the
-engine's identity, to compile), so it must return the same bytes each time: a
-loader that rotates a token per call makes the recorded identity advisory rather
-than a description of what ran.
-
-`Body` is the same `config.Source` a layer stack has always used, so nothing below
-this seam changes: merge, placeholder expansion, provenance and `runtime.Digest`
-read bytes. `Source.Name` is what errors and provenance report, which is why
-it exists at all — a layer read from an embedded tree has no path to print.
-
-An engine can name a document the same way. The graph engine's settings are a
-source reference and nothing else:
-
-```yaml
-engine:
-  kind: graph
-  settings:
-    source: { kind: assets, settings: { name: graphs/react.yaml } }
-```
-
-It goes through the same `Kinds.Sources` table, which is the point: a host
-registers `assets` once and both its runtime layers and its graph documents come
-from the embedded tree. The engine opens the source at load (to validate the
-document), for the fingerprint (the bytes are part of the deployment's identity)
-and once more when the graph is compiled.
-
-The deployment document itself is the third user: `Loader.LoadSource` takes the
-same reference, which is what makes `LoadFile` sugar over
-`{kind: file, settings: {path: ...}}` rather than a second rule about where a
-document may live. `Loader.Load` stays the entry for a body the host already
-holds.
-
-### What ships
-
-```go
-deploy/builtin — Kinds()
-// Engines:      a2a (deploy/engines/a2a, core/agent-a2a client), graph (deploy/engines/graph, core/agent-graph)
-// Protocols:    a2a (deploy/protocols/a2a, which holds the server and the kind)
-// Sources: file and inline (deploy/sources); the FS and Func factories are the host's to register
-// Hooks:        none — a host's policy is the host's
-```
-
-A hook is the one kind core ships none of, and the reason is what the four kinds
-are. An engine, a protocol and a layer source are mechanisms: a way to run a
-graph, to speak A2A, to read bytes. A hook is a policy attached to an agent's
-life — memory, an audit trail, a seat binding — and building one means reading
-the host's own store, workspace and session table. The platform ships the seam
-(declaration order, `HookDeps`, load-time validation through `Decode`) and no
-policy, so nothing decides how a deployment behaves on the host's behalf.
-Everything hook-shaped that core already has is a binding instead:
-`Bindings.OnEvent`, `Bindings.OnRun`, the delegation service, the sandbox
-journal. `examples/forge` is what a real one looks like: `WithHooks(memory.Kind())`,
-registered by the host that owns the memory.
-
-Each registration ships beside the package that implements it, and `deploy`
-itself imports none of them: a host that runs one engine should not link the
-other, which a hardcoded table in `deploy` would make impossible. The opt-in
-packages mirror the four tables of `deploy.Kinds` — `deploy/engines/<kind>`,
-`deploy/protocols/<kind>`, `deploy/sources` for the sources and
-`deploy/builtin` for the whole set — and the asymmetry between them is content,
-not shape.
-An engine kind is a registration only, because its implementation is a lower
-layer (`core/agent-graph`, `core/agent-a2a`) that must not import `deploy`. The
-A2A protocol kind has no such lower home: it is driven by a deployment, so the
-server travels with its registration. The payoff is an import closure a host
-chooses:
-
-```go
-import (
-    "github.com/GizClaw/flowcraft/core/deploy"
-    enginesgraph "github.com/GizClaw/flowcraft/core/deploy/engines/graph"
-    "github.com/GizClaw/flowcraft/core/deploy/sources"
-)
-
-// A document is read through the source table, so a host that builds its own
-// table names at least one source: the deployment document itself comes through
-// it too.
-kinds := deploy.Kinds{}.
-    WithEngines(enginesgraph.Engine()).
-    WithSources(sources.File())
-```
-
-`deploy/builtin` is the convenience trade for a host that wants every kind in one
-line: it imports every registration, so the binary carries the graph runtime and
-the A2A client and server. `deploy` alone is the document format and nothing
-else.
-
-Extend with copies, never by mutating the shared tables:
-
-```go
-kinds := builtin.Kinds().
-    WithEngines(myEngine()).
-    WithHooks(myHook()).
-    WithProtocols(myProtocol())
-```
-
-A manager handed a zero `deploy.Kinds` registers nothing and deploys nothing — a
-document then fails to load with the offered names in the error. Pass
-`builtin.Kinds()` to start from the shipped set.
-
-## Placeholders
-
-Every string in the document may name a placeholder. Three forms:
-
-| Form                | Resolves through                                 |
-| ------------------- | ------------------------------------------------ |
-| `${NAME}`           | the built-in `env` scheme (`SchemeEnv`)          |
-| `${NAME:-fallback}` | `env`, with a default when unset                 |
-| `${scheme:arg:arg}` | a resolver registered with `config.WithResolver` |
-
-Arguments after the scheme are split on `:` and handed to the resolver
-untouched — `${secret:openai:luna}` reaches the `secret` resolver as
-`["openai", "luna"]`. Whether those name a vault path, an environment variable or
-a row in a table is the host's business; `deploy` never interprets them.
-
-Expansion happens once, on the parsed document, before decoding, so a secret can
-appear in `peer`, `auth`, a card or `settings` with the same rule. `Loader`
-applies the same mechanism to the outer document that a runtime layer uses
-internally.
+Only `${env:…}` is built in. `examples/forge` registers `${workspace:root}` so one
+workspace directory stays relocatable; a key is `settings.api_key: ${env:OPENAI_API_KEY}`.
 
 To print a startup checklist instead of a restart loop, ask first:
 
 ```go
-req, err := loader.RequiredPlaceholdersFile(ctx, "deploy.yaml")
-// req lists every unset reference in one pass; Load stops at the first.
+req, err := config.RequiredPlaceholders(ctx, layers...)
+missing := req.Missing(os.LookupEnv) // every unset variable, in one pass
 ```
 
-### A document an engine reads of its own
+## Two kinds of failure
 
-An engine may name a document beside the deployment's settings, and the graph
-engine does: its node config. That document is expanded by the same code and the
-same resolvers, so `${secret:agent:prompt}` in a node config resolves like one in
-`settings`.
+| Class          | Means                                                                                                                                                                           | Fixed by                          |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `Validation`   | The document does not hold together: unknown field, wrong type, missing required value, a duplicate name, a name nobody registered, a grant that cannot be enforced.            | Editing the document.             |
+| `NotAvailable` | The document holds together but asks for something this process lacks: a backend it does not configure, a model it does not serve, an escalation on a backend with no boundary. | Changing how the process started. |
 
-The wiring takes two lines because the resolver is needed at two moments. The
-loader validates the graph document while decoding the deployment's settings, and
-`EngineKind.Decode` carries no `LoadOptions` — so the resolvers reach it at
-construction, on the engine kind. A `Spec` composed in code never goes through
-the loader at all, so the same slice is handed to the bindings for the build:
+```text
+deploy: an agent document needs at least one agent
+deploy: every agent needs a name
+deploy: agent "assistant" must state grant.limits (idle, and optionally max_sessions)
+deploy: agent "assistant" selects sandbox "bwrap", which this process does not configure (local)
+deploy: agent "assistant" names model "openai/gpt-5", which this process does not serve (openai/gpt-4o-mini)
+deploy: agent "assistant" declares grant.escalate on sandbox "local", which does not confine writes; there is no boundary to widen
+deploy: observability.trace is required (none, run, call or node)
+deploy: observability.bodies is required (true or false)
+```
+
+Use `errdefs.IsValidation` / `errdefs.IsNotAvailable` to branch, which is what the
+skill's validator does.
+
+## Installing and running deployments
+
+`host` turns values into live objects:
 
 ```go
-resolvers := []config.Option{config.WithResolver("secret", vault.Resolve)}
-kinds := builtin.Kinds().WithEngines(
-    enginesgraph.Engine(nodes.WithConfigOptions(resolvers...)),
+agents := host.NewAgents(res,
+    host.WithStore(store),                    // nil keeps a turn in memory only
+    host.WithFingerprint(deploy.Fingerprint(deployments)),
+    host.WithHarness("forge@1.2.3"),
+    host.WithApproval(approval),              // the policy that decides a command
+    host.WithEscalation(escalator),           // who agrees to a declared widening
+    host.WithRunSink(func(record agent.RunRecord) { ... }),
 )
-host.New(kinds, host.Bindings{LoadOptions: resolvers})
+if err := agents.Add(deployments...); err != nil { ... }
+defer agents.Close(ctx)
+
+session, err := agents.Open(ctx, sessionID, "assistant", host.WithRequest(request))
+for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
-A host that only deploys documents can leave the bindings entry out; one that
-only composes specs can leave the engine option out. A graph document is expanded
-before it is decoded either way, so a node config never receives a literal
-`${...}` — an unregistered scheme is a load error listing the schemes that are
-registered.
+| Call                                           | Use                                                                                                   |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                        |
+| `Agents.Open`                                  | Admit a session: `WithRequest` narrows the grant, `WithChain` attaches a delegation lineage.          |
+| `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                            |
+| `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                   |
+| `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                    |
+| `Agents.EvictIdle`                             | Evict by the grant's `limits.idle`. Explicit, and it skips a running session however long it has run. |
+| `Agents.Names` / `Deployed`                    | What is installed.                                                                                    |
+| `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                          |
 
-A load that cannot expand the graph document names every reference it makes, not
-just the one it stopped at, so the failure a host prints at startup is the whole
-checklist. `nodes.RequiredPlaceholders` answers the same question on demand, for
-a host that holds the document before it loads it:
+A reload retires the old program and closes it when its last session is gone: a
+session runs against what it was opened under.
 
-```go
-requirement, err := nodes.RequiredPlaceholders(ctx, path, config.File(path))
-// requirement.Required mixes environment variables with "scheme:args" names;
-// Requirement.Missing covers the environment variables only.
-```
-
-## From document to spec
-
-```go
-loader := deploy.Loader{
-    Kinds:       kinds,
-    LoadOptions: []config.Option{config.WithResolver("secret", vault.Resolve)},
-}
-
-// The document itself is read through the same source table as everything else.
-specs, err := loader.LoadSource(ctx, &deploy.SourceDocument{
-    Kind:     "assets",
-    Settings: json.RawMessage(`{"name":"deploy.yaml"}`),
-})
-
-// The four entries, in order of how much the host has already done:
-//   LoadSource  — the host names a source kind; the loader reads it.
-//   LoadFile    — LoadSource with the file source: {kind: file, settings: {path}}.
-//   Load        — the host already holds the bytes (HTTP, a database, a test).
-//   LoadLayers  — the host hands the stack; the merge runs before validation.
-```
-
-A `deploy.Spec` is the validated form of one agent:
-
-| Field                        | Meaning                                                                                                           |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `Name`                       | The agent's address.                                                                                              |
-| `Engine`                     | Kind plus raw settings; the kind decodes them again when it builds.                                               |
-| `Protocol`                   | Nil when the agent is not exposed.                                                                                |
-| `Runtime`                    | A resolved `runtime.Config` — layers already merged and expanded. Absent for a remote engine.                     |
-| `Catalog`                    | Validated projection scope.                                                                                       |
-| `Delegation`                 | Nil when the document declared none.                                                                              |
-| `Observability`              | "Silent" is an empty `Trace` and a nil `Bodies`, not zero values.                                                 |
-| `Hooks`                      | In declaration order.                                                                                             |
-| `IdleTimeout`, `MaxSessions` | Host decisions, not document fields: a session lives in the store, so eviction is a cache concern, not data loss. |
-
-Errors are `errdefs.Validation` and name the location, e.g.
-`agents[forge].engine: kind "grpah" is not registered; offered: a2a, graph`.
-
-## Running the specs
-
-`core/agent-host` turns specs into deployed agents:
-
-```go
-manager := host.New(kinds, host.Bindings{
-    Store:           sqliteStore,         // nil keeps sessions in memory only
-    RuntimeOptions:  []runtime.Option{runtime.WithDrivers(driver)},
-    SandboxBackends: backends.All(),      // the sandbox implementations this process ships
-    LoadOptions:    []config.Option{config.WithResolver("secret", vault.Resolve)},
-    OnEvent:        func(agentName, sessionID string, event agent.Event) { ... },
-    Trace:          telemetry.TraceRun,   // for agents whose document is silent
-    Harness:        "forge@1.2.3",
-})
-
-names, err := manager.Deploy(ctx, specs...)
-
-sess, _ := manager.Session("forge", sessionID)
-for event, err := range sess.Run(ctx, message.NewTextMessage(message.RoleUser, "hi")) { ... }
-```
-
-| Call                         | Use                                                               |
-| ---------------------------- | ----------------------------------------------------------------- |
-| `Deploy`                     | Add or replace a batch of specs.                                  |
-| `Add` / `Replace` / `Remove` | Single-agent management.                                          |
-| `Handler(name)`              | The protocol's `http.Handler`, for `net/http`.                    |
-| `Session(name, id)`          | The session table entry: `Run`, `State`, `Cancel`, `Result`.      |
-| `Drain` / `Close`            | Stop accepting, then tear down. `Drain` finishes what is running. |
-
-Callbacks run synchronously on the run's goroutine, so they must be fast and
-non-blocking: a slow `OnEvent` stalls the run and its protocol stream.
+`deploy.Fingerprint(deployments)` is the identity of a deployment set — name,
+program kind, `Grant.Digest()` and hook kinds, per deployment, in order. It lives
+in `deploy` because two processes must compute it identically to be comparable at
+all; a checkpoint written under a different fingerprint is refused on resume. The
+observability settings and the model manifest are deliberately outside it: a
+record level decides how much evidence a run leaves, not whether it can continue.
 
 ## Where each piece lives
 
-| Package                     | Role                                                                                            |
-| --------------------------- | ----------------------------------------------------------------------------------------------- |
-| `core/deploy`               | Documents, specs, the kind tables, loading, placeholders. `deploy/builtin` is the whole set.    |
-| `core/deploy/engines/graph` | Registration of the `graph` engine.                                                             |
-| `core/deploy/engines/a2a`   | Registration of the `a2a` engine (a peer driven as an engine).                                  |
-| `core/deploy/protocols/a2a` | The `a2a` protocol kind: registration, server, executor and task store.                         |
-| `core/agent-graph`          | The graph engine's implementation; see [graph.md](graph.md).                                    |
-| `core/agent-a2a`            | The A2A client, which the `a2a` engine wraps.                                                   |
-| `core/agent-host`           | Manager, bindings, session table, deployment lifecycle.                                         |
-| `core/runtime`              | The substrate one agent runs on; see [runtime.md](runtime.md).                                  |
-| `core/delegation`           | Target discovery and handoff behind the `delegation` block. See [delegation.md](delegation.md). |
+| Package               | Role                                                                                                      |
+| --------------------- | --------------------------------------------------------------------------------------------------------- |
+| `core/deploy`         | Both document shapes, the implementation table, loading, plans, `Fingerprint`. Imports no implementation. |
+| `core/deploy/sources` | `File`, `Bytes`, `FS`, `Func`, `Over`: the four constructors over `config.Layer`.                         |
+| `core/host`           | `Resource` (one process), `Agents` (one deployment table), `Session` (one conversation), one turn.        |
+| `core/policy`         | `Grant`, `Request`, `Narrow`, `Widen`, `Denial`: authority in one value.                                  |
+| `core/config`         | The layer stack, the merge, placeholders and provenance.                                                  |
+| `core/agent`          | The turn decorator, the driver contract, the checkpoint and record shapes.                                |
+| `agent/graph`         | The `graph` program's implementation and its document; see [graph.md](graph.md).                          |
+| `sandbox/…`           | The backends (`local`, `remote`) and the confine they enforce.                                            |
+| `inference/…`         | The providers and the request pipeline.                                                                   |
+| `tool/…`              | The tool sources and the dispatch/middleware chain.                                                       |
 
 ## What was removed, and why
 
-The previous assembly model — `resources: {kind, impl, deps}`, a dependency DAG
-and a `Build` phase over it — is gone. It made every policy a resource and every
-resource a factory, which meant a deployment could not be read without running
-its dependency graph in your head. The current model has four kinds, each of
-which is a thing a document can name, and one `Loader` that validates them
-without building anything.
+The previous assembly model — one `deploy.yaml` with `engine`, `runtime.layers`,
+`catalog`, `protocol` and `delegation` per agent, a `Loader.Load` returning
+`[]deploy.Spec`, and a `core/agent-host` builder over a `runtime.Config` — is
+gone, together with the `runtime` and `correlation` packages and the
+`deploy/protocols/a2a` kind. Each agent carried its own substrate, so two agents
+in one process could disagree about which backend existed, and a document could
+only be understood by reading its layer stack. The current model has two
+documents, one implementation table per process, and a grant as the only thing an
+agent says about what it may touch.
