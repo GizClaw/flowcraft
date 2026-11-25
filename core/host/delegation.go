@@ -82,16 +82,9 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		}
 		chain.ID = minted
 	}
-	// The child's authority is resolved here, from the trusted side: a delegation must never be
-	// able to manufacture authority the parent did not hold, so the default is to inherit the
-	// parent's grant and the application may only narrow it.
-	childGrant := parent.grant
-	if resolve := d.agents.delegationGrant; resolve != nil {
-		resolved, err := resolve(ctx, d.parent.agent, target, parent.grant)
-		if err != nil {
-			return platform.DelegationOutcome{}, err
-		}
-		childGrant = resolved
+	childGrant, err := d.childAuthority(ctx, target)
+	if err != nil {
+		return platform.DelegationOutcome{}, err
 	}
 	if _, err := d.agents.Open(ctx, child, target, childGrant, WithChain(chain)); err != nil {
 		return platform.DelegationOutcome{}, err
@@ -163,6 +156,21 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	}
 	outcome.Content = folded.content()
 	return outcome, nil
+}
+
+// childAuthority resolves what a delegated child may do.
+//
+// It happens on the trusted side: a delegation must never manufacture authority the parent did not
+// hold, so the default is to inherit the parent's grant. An application that needs per-target
+// authority installs [WithDelegationGrant], and the answer is taken as given — like an escalator,
+// the resolver is host code and attenuation is its job.
+func (d *delegator) childAuthority(ctx context.Context, target string) (policy.Grant, error) {
+	inherited := d.parent.lineage().grant
+	resolve := d.agents.delegationGrant
+	if resolve == nil {
+		return inherited, nil
+	}
+	return resolve(ctx, d.parent.agent, target, inherited)
 }
 
 // lineageView is what a delegation needs from its parent: the policy that permits it and the chain it

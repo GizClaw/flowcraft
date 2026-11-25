@@ -151,3 +151,66 @@ func TestStatusWithoutAStoreIsRefused(t *testing.T) {
 		t.Fatalf("Status = %v, want NotAvailable", err)
 	}
 }
+
+// TestAChildInheritsItsParentsAuthority is the default rule: a delegation cannot manufacture
+// authority, so with no resolver the child runs under exactly what the parent held.
+func TestAChildInheritsItsParentsAuthority(t *testing.T) {
+	agents, _, _ := asyncHost(t)
+	parent, _ := agents.Session("p1")
+	d := &delegator{agents: agents, parent: parent}
+
+	inherited, err := d.childAuthority(t.Context(), "child")
+	if err != nil {
+		t.Fatalf("childAuthority: %v", err)
+	}
+	if inherited.Digest() != parent.grant.Digest() {
+		t.Fatalf("child authority = %s, want the parent's %s", inherited.Digest(), parent.grant.Digest())
+	}
+}
+
+// TestTheApplicationDecidesAChildsAuthority is the override: an application that needs per-target
+// authority answers, and the host takes the answer as given.
+func TestTheApplicationDecidesAChildsAuthority(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	narrow := permissiveGrant("local")
+	narrow.Tools = policy.ToolSet{Allow: []string{"read_file"}}
+
+	var askedTarget string
+	var askedAuthority policy.Grant
+	agents := hostWith(t, backend, WithDelegationGrant(func(_ context.Context, parent, target string, authority policy.Grant) (policy.Grant, error) {
+		askedTarget = target
+		askedAuthority = authority
+		if parent != "parent" {
+			t.Errorf("parent = %q, want the asking agent", parent)
+		}
+		return narrow, nil
+	}))
+	parentGrant := permissiveGrant("local")
+	parentGrant.Delegation = &policy.Delegation{
+		Targets: []string{"child"},
+		Modes:   []policy.DelegationMode{policy.DelegationAsync},
+	}
+	parent, _ := sessionDeployment(t, "parent", parentGrant, log, backend)
+	child, _ := sessionDeployment(t, "child", permissiveGrant("local"), log, backend)
+	if err := agents.Add(parent, child); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := agents.Open(t.Context(), "p1", "parent", parentGrant); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+	session, _ := agents.Session("p1")
+
+	got, err := (&delegator{agents: agents, parent: session}).childAuthority(t.Context(), "child")
+	if err != nil {
+		t.Fatalf("childAuthority: %v", err)
+	}
+	if got.Digest() != narrow.Digest() {
+		t.Fatalf("authority = %s, want the resolver's %s", got.Digest(), narrow.Digest())
+	}
+	if askedTarget != "child" || askedAuthority.Digest() != parentGrant.Digest() {
+		t.Fatalf("resolver asked about %q with %s, want the target and the parent's authority",
+			askedTarget, askedAuthority.Digest())
+	}
+}

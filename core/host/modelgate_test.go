@@ -2,6 +2,7 @@ package host
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -154,3 +155,55 @@ type generatorProgram struct{}
 
 func (generatorProgram) Open(agent.SessionInfo) (agent.Driver, error) { return nil, nil }
 func (generatorProgram) Close() error                                 { return nil }
+
+// embedder is a provider seam that reports itself when reached.
+type embedder struct{}
+
+func (embedder) Embed(context.Context, inference.EmbedRequest) (inference.EmbedResponse, error) {
+	return inference.EmbedResponse{}, errReached
+}
+
+// decider is the same for judgments.
+type decider struct{}
+
+func (decider) Decide(context.Context, inference.DecisionRequest) (inference.DecisionResponse, error) {
+	return inference.DecisionResponse{}, errReached
+}
+
+// errReached means the call passed the gate and arrived at the process provider.
+var errReached = errors.New("reached")
+
+// TestEveryModelSeamIsGated is the completeness rule: a session that may not call a model cannot
+// embed with it or ask it to judge either, so the gate covers all three seams rather than the one a
+// turn happens to use.
+func TestEveryModelSeamIsGated(t *testing.T) {
+	base := &inference.Provider{
+		Generator: generator{},
+		Embedder:  embedder{},
+		Decider:   decider{},
+	}
+	grant := policy.Grant{Models: []model.ModelRef{{ID: modelID("openai", "gpt-4o-mini")}}}
+	gated := gateModels(base, grant)
+
+	ungranted := model.ModelRef{ID: modelID("openai", "gpt-4o")}
+	granted := model.ModelRef{ID: modelID("openai", "gpt-4o-mini")}
+
+	if _, err := gated.Embedder.Embed(context.Background(), inference.EmbedRequest{Model: ungranted}); !isDenial(err) {
+		t.Fatalf("embed with an ungranted model = %v, want a denial", err)
+	}
+	if _, err := gated.Embedder.Embed(context.Background(), inference.EmbedRequest{Model: granted}); !errors.Is(err, errReached) {
+		t.Fatalf("embed with a granted model = %v, want the provider", err)
+	}
+	if _, err := gated.Decider.Decide(context.Background(), inference.DecisionRequest{Model: ungranted}); !isDenial(err) {
+		t.Fatalf("decide with an ungranted model = %v, want a denial", err)
+	}
+	if _, err := gated.Decider.Decide(context.Background(), inference.DecisionRequest{Model: granted}); !errors.Is(err, errReached) {
+		t.Fatalf("decide with a granted model = %v, want the provider", err)
+	}
+}
+
+// isDenial reports whether err is a model refusal.
+func isDenial(err error) bool {
+	denial, ok := policy.AsDenial(err)
+	return ok && denial.Check == policy.CheckModels
+}

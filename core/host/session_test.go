@@ -133,7 +133,7 @@ func permissiveGrant(sandboxName string) policy.Grant {
 }
 
 // hostWith builds an Agents over a resource whose single backend is b.
-func hostWith(t *testing.T, backend *boundary) *Agents {
+func hostWith(t *testing.T, backend *boundary, opts ...AgentsOption) *Agents {
 	t.Helper()
 	res, err := Open(t.Context(), deploy.ProcessPlan{
 		Backends: []deploy.PlannedBackend{boundBackend("local", backend)},
@@ -142,7 +142,7 @@ func hostWith(t *testing.T, backend *boundary) *Agents {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = res.Close() })
-	return NewAgents(res)
+	return NewAgents(res, opts...)
 }
 
 // TestOpenSessionBuildsAndClosesEverything is the session's lifecycle: opening builds the driver and
@@ -933,5 +933,45 @@ func TestCompactionKeepsTheIndexAndTheOrder(t *testing.T) {
 	}
 	if got := agents.Sessions("referee"); len(got) != len(live)-1 {
 		t.Fatalf("Sessions = %v, want %d entries", got, len(live)-1)
+	}
+}
+
+// TestAnUnstatedSandboxNeedsOneBackend covers the rule that makes an empty grant usable: an empty
+// sandbox name asks for the runtime's default, and a process with none or several has none to give.
+func TestAnUnstatedSandboxNeedsOneBackend(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	// One backend, no name: it is the default.
+	if _, err := agents.Open(t.Context(), "s1", "referee", policy.Grant{}); err != nil {
+		t.Fatalf("Open with one backend and no name: %v", err)
+	}
+
+	// Two backends, no name: the process cannot guess, and the error says what it runs.
+	two, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
+		boundBackend("local", backend),
+		boundBackend("bwrap", backend),
+	}}, testOptions(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = two.Close() })
+	ambiguous := NewAgents(two)
+	if err := ambiguous.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = ambiguous.Close(t.Context()) })
+	_, err = ambiguous.Open(t.Context(), "s1", "referee", policy.Grant{})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("err = %v, want NotAvailable", err)
+	}
+	if !strings.Contains(err.Error(), "local") || !strings.Contains(err.Error(), "bwrap") {
+		t.Fatalf("error %q does not say which backends this process runs", err)
 	}
 }

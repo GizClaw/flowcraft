@@ -205,3 +205,115 @@ func contains(values []string, value string) bool {
 	}
 	return false
 }
+
+// TestWidenComparesNetworkPostures covers the network half of containment: a widening may admit a
+// destination, an inspection posture or a proxy the session did not have, and may never lose one it
+// did. Every comparison here is a decision [Grant.Widen] makes on the answer an operator returned.
+func TestWidenComparesNetworkPostures(t *testing.T) {
+	base := func() policy.Grant {
+		g := confined()
+		g.Net = policy.NetPolicy{
+			Mode:        policy.NetAllowList,
+			AllowHosts:  []string{"api.example.com"},
+			UnixSockets: []string{"/run/agent.sock"},
+			MITM:        &policy.MITMPolicy{Enabled: true, Hosts: []string{"api.example.com"}},
+		}
+		return g
+	}
+	from := normalized(t, base())
+
+	cases := map[string]struct {
+		net    policy.NetPolicy
+		accept bool
+	}{
+		"another allowed host": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: []string{"api.example.com", "cdn.example.com"}, UnixSockets: from.Net.UnixSockets, MITM: from.Net.MITM},
+			accept: true,
+		},
+		"a subdomain of an allowed host": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: []string{"api.example.com", "assets.cdn.example.com"}, UnixSockets: from.Net.UnixSockets, MITM: from.Net.MITM},
+			accept: true,
+		},
+		"stopping inspection": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: from.Net.AllowHosts, UnixSockets: from.Net.UnixSockets},
+			accept: true,
+		},
+		"another socket": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: from.Net.AllowHosts, UnixSockets: []string{"/run/agent.sock", "/run/proxy.sock"}, MITM: from.Net.MITM},
+			accept: true,
+		},
+		"a narrower allow-list": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: []string{"cdn.example.com"}, UnixSockets: from.Net.UnixSockets, MITM: from.Net.MITM},
+			accept: false,
+		},
+		"a tighter mode": {
+			net:    policy.NetPolicy{Mode: policy.NetDenyAll, UnixSockets: from.Net.UnixSockets, MITM: from.Net.MITM},
+			accept: false,
+		},
+		"a different rule list": {
+			net: policy.NetPolicy{
+				Mode:        policy.NetAllowList,
+				AllowHosts:  from.Net.AllowHosts,
+				Rules:       []policy.NetRule{{Action: policy.NetAllow, Host: "cdn.example.com"}},
+				UnixSockets: from.Net.UnixSockets,
+				MITM:        from.Net.MITM,
+			},
+			accept: false,
+		},
+		"a dropped socket": {
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: from.Net.AllowHosts, MITM: from.Net.MITM},
+			accept: false,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			to := from
+			to.Net = tc.net
+			_, err := from.Widen(to)
+			if tc.accept && err != nil {
+				t.Fatalf("Widen = %v, want the posture accepted", err)
+			}
+			if !tc.accept && err == nil {
+				t.Fatal("Widen accepted a posture that drops a destination")
+			}
+		})
+	}
+}
+
+// TestWidenComparesEnvironments is the third dimension: a nil allow-list means "inherit the host's",
+// which is the widest statement there is, so a widening may go from a list to nil but never the
+// other way.
+func TestWidenComparesEnvironments(t *testing.T) {
+	from := normalized(t, confined()) // HOME only
+
+	cases := map[string]struct {
+		env    policy.EnvPolicy
+		accept bool
+	}{
+		"one more variable":  {env: policy.EnvPolicy{Allow: []string{"HOME", "PATH"}}, accept: true},
+		"inherit everything": {env: policy.EnvPolicy{}, accept: true},
+		"a shorter list":     {env: policy.EnvPolicy{Allow: []string{"PATH"}}, accept: false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			to := from
+			to.Exec.Env = tc.env
+			_, err := from.Widen(to)
+			if tc.accept && err != nil {
+				t.Fatalf("Widen = %v, want the environment accepted", err)
+			}
+			if !tc.accept && err == nil {
+				t.Fatal("Widen accepted an environment that hides a variable")
+			}
+		})
+	}
+
+	// From nil, nothing can be a widening except nil: a list is narrower than the host's whole
+	// environment.
+	inheriting := normalized(t, policy.Grant{})
+	shorter := inheriting
+	shorter.Exec.Env = policy.EnvPolicy{Allow: []string{"HOME"}}
+	if _, err := inheriting.Widen(shorter); err == nil {
+		t.Fatal("Widen accepted a list where the session inherited the host environment")
+	}
+}
