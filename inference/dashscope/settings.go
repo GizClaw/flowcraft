@@ -30,8 +30,10 @@ const DefaultBaseURL = "https://dashscope.aliyuncs.com"
 // polling adds negligible load while keeping latency low.
 const defaultPollInterval = 5 * time.Second
 
-// Spec is the provider-level configuration surface. It is credential-free:
-// secrets resolve per profile and never appear here.
+// Spec is the value the driver takes for one deployment. [Document] is its
+// written form: a standalone deployment writes the api_key there, and the host
+// may override the value — DashScope keys are bound to the region they were
+// created in — before the driver is built.
 type Spec struct {
 	// BaseURL is the DashScope API host (no /api/v1 suffix; paths are
 	// appended). Defaults to DefaultBaseURL.
@@ -55,10 +57,12 @@ type Spec struct {
 	// source of models: the driver ships none, and nothing is inherited.
 	Models []ModelSpec `json:"models,omitempty"`
 
-	// APIKey authenticates every call. It is resolved by the host before the
-	// driver is built.
-	APIKey string `json:"-"`
-	// HTTPClient overrides the transport. Nil builds one from the timeout.
+	// APIKey authenticates every call. A document writes it (Document.APIKey);
+	// the host may override the value after decoding.
+	APIKey string `json:"api_key"`
+	// Timeout bounds one wire call. Zero keeps defaultTimeout (ten minutes).
+	Timeout time.Duration `json:"timeout"`
+	// HTTPClient overrides the transport. Nil builds one from Timeout.
 	HTTPClient *http.Client `json:"-"`
 }
 
@@ -816,6 +820,14 @@ func (s Spec) pollInterval() time.Duration {
 		return defaultPollInterval
 	}
 	return time.Duration(s.PollIntervalMillis) * time.Millisecond
+}
+
+// timeout bounds one wire call; the default is ten minutes.
+func (s Spec) timeout() time.Duration {
+	if s.Timeout <= 0 {
+		return defaultTimeout
+	}
+	return s.Timeout
 }
 
 // validateURL rejects anything that is not an http(s) URL.

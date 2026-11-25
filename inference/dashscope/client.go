@@ -23,8 +23,8 @@ const (
 	headerWorkspace = "X-DashScope-WorkSpace"
 )
 
-// defaultTimeout bounds one wire call. A media task is answered immediately, but
-// a long transcription poll is not.
+// defaultTimeout bounds one wire call when the spec sets no Timeout. A media
+// task is answered immediately, but a long transcription poll is not.
 const defaultTimeout = 10 * time.Minute
 
 // ProfileSpec overrides provider-level transport facts for one credential
@@ -86,7 +86,7 @@ func newMediaClient(key, base, workspace string, spec Spec) *mediaClient {
 	}
 	transport := spec.HTTPClient
 	if transport == nil {
-		transport = &http.Client{Timeout: defaultTimeout}
+		transport = &http.Client{Timeout: spec.timeout()}
 	}
 	return &mediaClient{
 		api: httpx.New(httpx.Config{
