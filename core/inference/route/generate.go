@@ -9,7 +9,11 @@ import (
 
 // Generate routes one unary generation.
 func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest) (inference.GenerateResponse, error) {
-	return dispatch(ctx, operationGenerate, r.targets, r.policy.Generate, request,
+	targets, err := acceptContent(r.targets, request.Input.Content)
+	if err != nil {
+		return inference.GenerateResponse{}, err
+	}
+	return dispatch(ctx, operationGenerate, targets, r.policy.Generate, request,
 		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry)
 }
 
@@ -28,7 +32,11 @@ func (r *Router) GenerateStream(ctx context.Context, request inference.GenerateR
 
 // openStream runs the failover-on-open loop without closing the route span.
 func (r *Router) openStream(ctx context.Context, call *routeCall, request inference.GenerateRequest) (inference.Stream, error) {
-	candidates := filterTargets(r.targets, modelNameOfGenerate(request))
+	eligible, err := acceptContent(r.targets, request.Input.Content)
+	if err != nil {
+		return nil, err
+	}
+	candidates := filterTargets(eligible, modelNameOfGenerate(request))
 	ordered := candidates
 	if r.policy.Generate != nil {
 		selected, err := r.policy.Generate.Select(ctx, request, candidates)
