@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -319,6 +321,90 @@ func TestEvictIdleClosesTheSessionsPastTheLimit(t *testing.T) {
 	}
 	if _, ok := agents.Session("new"); !ok {
 		t.Fatal("the recent session was evicted")
+	}
+}
+
+// TestSessionsKeepInsertionOrderThroughInterleavedLifecycles is the age index's invariant: after
+// however many opens, closes and idle sweeps interleave, Sessions returns exactly the live sessions
+// in insertion order. The expectation is a slice the test maintains itself, so a tombstone that is
+// skipped, a slot that is reused, or a compaction that reorders the survivors fails here.
+func TestSessionsKeepInsertionOrderThroughInterleavedLifecycles(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	grant := permissiveGrant("local")
+	grant.Limits.Idle = policy.Duration(time.Minute)
+	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	rng := rand.New(rand.NewSource(7))
+	now := time.Now()
+	old := now.Add(-2 * time.Minute)
+	var want []string
+	next := 0
+	for step := range 600 {
+		switch rng.Intn(3) {
+		case 0: // Open
+			id := fmt.Sprintf("s%d", next)
+			next++
+			if _, err := agents.Open(t.Context(), id, "referee"); err != nil {
+				t.Fatalf("step %d: Open(%s): %v", step, id, err)
+			}
+			want = append(want, id)
+		case 1: // CloseSession
+			if len(want) == 0 {
+				continue
+			}
+			i := rng.Intn(len(want))
+			if err := agents.CloseSession(t.Context(), want[i]); err != nil {
+				t.Fatalf("step %d: CloseSession(%s): %v", step, want[i], err)
+			}
+			want = slices.Delete(want, i, i+1)
+		case 2: // EvictIdle over a scattered subset past the horizon
+			aged := make(map[string]bool, len(want)/4)
+			for i, id := range want {
+				if i%3 != 0 || rng.Intn(2) != 0 {
+					continue
+				}
+				session, open := agents.Session(id)
+				if !open {
+					t.Fatalf("step %d: session %s is expected to be live but is not", step, id)
+				}
+				session.touchNow(old)
+				aged[id] = true
+			}
+			evicted, err := agents.EvictIdle(t.Context(), "referee", now)
+			if err != nil {
+				t.Fatalf("step %d: EvictIdle: %v", step, err)
+			}
+			if len(evicted) != len(aged) {
+				t.Fatalf("step %d: evicted %v, want the %d sessions past the horizon", step, evicted, len(aged))
+			}
+			for _, id := range evicted {
+				if !aged[id] {
+					t.Fatalf("step %d: evicted %s, which was not past the horizon", step, id)
+				}
+			}
+			want = slices.DeleteFunc(want, func(id string) bool { return aged[id] })
+		}
+		if got := agents.Sessions("referee"); !slices.Equal(got, want) {
+			t.Fatalf("step %d: Sessions = %v, want %v", step, got, want)
+		}
+	}
+	// The index must name every live session's own slot: a stale entry would make a later close
+	// tombstone somebody else, which the ordering check cannot see.
+	if len(agents.slots) != len(want) {
+		t.Fatalf("index holds %d ids, want the %d live sessions", len(agents.slots), len(want))
+	}
+	for slot, session := range agents.byAge {
+		if session == nil {
+			continue
+		}
+		if got := agents.slots[session.id]; got != slot {
+			t.Fatalf("index has %s at slot %d, but it sits at %d", session.id, got, slot)
+		}
 	}
 }
 
@@ -812,5 +898,56 @@ func TestASessionWithoutARequestKeepsTheCeiling(t *testing.T) {
 	}
 	if session.bindID != ceiling.Digest() {
 		t.Fatalf("bind id = %q, want the ceiling's", session.bindID)
+	}
+}
+
+// TestCompactionKeepsTheIndexAndTheOrder is the part of the age index that a random interleaving
+// will not reliably reach: compaction. Tombstoned slots are collapsed once they outnumber the live
+// ones, and that re-indexing is the only place the position map can drift from the slice. The test
+// forces the condition instead of hoping for it, then checks both that `Sessions` still reports
+// insertion order and that every live session is still addressable — a stale index would show up
+// as a close that reports "not open" for a session that is.
+func TestCompactionKeepsTheIndexAndTheOrder(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	// Open a batch, close every other one — more tombstones than survivors, so the next close
+	// triggers a compaction.
+	const batch = 40
+	var live []string
+	for i := range batch {
+		id := fmt.Sprintf("s%02d", i)
+		if _, err := agents.Open(t.Context(), id, "referee"); err != nil {
+			t.Fatalf("Open(%s): %v", id, err)
+		}
+		if i%2 == 0 {
+			live = append(live, id)
+			continue
+		}
+		if err := agents.CloseSession(t.Context(), id); err != nil {
+			t.Fatalf("CloseSession(%s): %v", id, err)
+		}
+	}
+
+	// Order survives: the survivors are still in insertion order.
+	if got := agents.Sessions("referee"); !slices.Equal(got, live) {
+		t.Fatalf("Sessions = %v, want %v", got, live)
+	}
+	// And every survivor is still addressable through the index: closing one must find it.
+	first := live[0]
+	if err := agents.CloseSession(t.Context(), first); err != nil {
+		t.Fatalf("CloseSession(%s) after compaction: %v", first, err)
+	}
+	if _, open := agents.Session(first); open {
+		t.Fatal("a closed session is still in the table")
+	}
+	if got := agents.Sessions("referee"); len(got) != len(live)-1 {
+		t.Fatalf("Sessions = %v, want %d entries", got, len(live)-1)
 	}
 }

@@ -227,6 +227,7 @@ func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...
 			errdefs.Conflictf("host: session %q is already open", sessionID), session.close())
 	}
 	a.sessions[sessionID] = session
+	a.slots[sessionID] = len(a.byAge)
 	a.byAge = append(a.byAge, session)
 	deploy.live++
 	a.mu.Unlock()
@@ -396,6 +397,9 @@ func (a *Agents) Sessions(agentName string) []string {
 	defer a.mu.Unlock()
 	ids := make([]string, 0, len(a.byAge))
 	for _, session := range a.byAge {
+		if session == nil {
+			continue
+		}
 		if session.agent == agentName {
 			ids = append(ids, session.id)
 		}
@@ -448,9 +452,15 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		a.mu.Unlock()
 		return nil, nil
 	}
+	// One pass over the age list: survivors keep their slots, expired sessions are tombstoned in
+	// place and released from the table. Forgetting each one through forgetLocked would splice the
+	// slice k times, which is the quadratic cost this scan exists to avoid.
 	var expired []*Session
 	var drained []*deployment
-	for _, session := range a.byAge {
+	for slot, session := range a.byAge {
+		if session == nil {
+			continue
+		}
 		if session.agent != agentName || now.Sub(session.lastTouch()) < idle {
 			continue
 		}
@@ -460,11 +470,14 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		if session.isRunning() {
 			continue
 		}
-		expired = append(expired, session)
-		if retired := a.forgetLocked(session); retired != nil {
+		a.tombstoneAgeLocked(slot)
+		delete(a.sessions, session.id)
+		if retired := a.releaseLocked(session); retired != nil {
 			drained = append(drained, retired)
 		}
+		expired = append(expired, session)
 	}
+	a.compactAgeIfNeededLocked()
 	a.mu.Unlock()
 	recordSessionsClosed(ctx, agentName, len(expired))
 	recordEvicted(ctx, agentName, len(expired))
@@ -485,19 +498,52 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 	return ids, errors.Join(errs...)
 }
 
-// forgetLocked removes a session from the indexes and gives its slot back.
+// forgetLocked removes a session from the indexes and gives its capacity back.
 //
 // It returns the deployment whose program can now be released, which happens when a reload retired
 // it and this was the last session opened under it. The caller closes it outside the lock. The
 // caller holds the lock.
 func (a *Agents) forgetLocked(session *Session) *deployment {
 	delete(a.sessions, session.id)
-	for i, existing := range a.byAge {
-		if existing == session {
-			a.byAge = append(a.byAge[:i], a.byAge[i+1:]...)
-			break
-		}
+	if slot, indexed := a.slots[session.id]; indexed {
+		a.tombstoneAgeLocked(slot)
+		a.compactAgeIfNeededLocked()
 	}
+	return a.releaseLocked(session)
+}
+
+// tombstoneAgeLocked empties one occupied slot and drops its index entry. The slot stays in place,
+// so every other session keeps the position that is its age.
+func (a *Agents) tombstoneAgeLocked(slot int) {
+	session := a.byAge[slot]
+	a.byAge[slot] = nil
+	delete(a.slots, session.id)
+	a.tombstones++
+}
+
+// compactAgeIfNeededLocked drops the tombstones once they outnumber the live slots, so the age
+// slice and the eviction scan stay linear in what is open rather than in what was ever opened. The
+// cost is amortized: every compaction is paid for by the removals that left the tombstones.
+func (a *Agents) compactAgeIfNeededLocked() {
+	if a.tombstones <= len(a.byAge)/2 {
+		return
+	}
+	survivors := a.byAge[:0]
+	for _, session := range a.byAge {
+		if session == nil {
+			continue
+		}
+		a.slots[session.id] = len(survivors)
+		survivors = append(survivors, session)
+	}
+	clear(a.byAge[len(survivors):])
+	a.byAge = survivors
+	a.tombstones = 0
+}
+
+// releaseLocked gives a forgotten session's capacity back and reports the retired deployment whose
+// last session it was, for the caller to close outside the lock. The caller holds the lock.
+func (a *Agents) releaseLocked(session *Session) *deployment {
 	if session.deploy.live > 0 {
 		session.deploy.live--
 	}

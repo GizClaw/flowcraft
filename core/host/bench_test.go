@@ -2,8 +2,10 @@ package host
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -98,6 +100,72 @@ func BenchmarkOpenSession(b *testing.B) {
 			b.Fatalf("CloseSession: %v", err)
 		}
 	}
+}
+
+// BenchmarkEvictIdle is the idle sweep over a large table: ten thousand open sessions with two
+// hundred of them past the horizon. It reports ns/sweep, the wall time EvictIdle spends across its
+// locked scan (the expired sessions carry no driver or boundary, so closing one is a nil check).
+// That scan is what every Open, Run and Steer waits behind. The setup outside the timer keeps the
+// measurement on the sweep; StopTimer would read the process's memory stats on every iteration and
+// drown the number in stop-the-world pauses.
+func BenchmarkEvictIdle(b *testing.B) {
+	const (
+		total   = 10_000
+		expired = 200
+	)
+	agents := benchAgents(b)
+	deploy := agents.entries["referee"]
+	now := time.Now()
+	old := now.Add(-2 * time.Minute)
+
+	// Sessions are seeded into the table directly rather than opened: ten thousand real
+	// boundaries would measure the sandbox, not the age index.
+	for i := range total {
+		session := &Session{id: fmt.Sprintf("s%d", i), agent: "referee", deploy: deploy}
+		session.touchNow(now)
+		agents.sessions[session.id] = session
+		agents.byAge = append(agents.byAge, session)
+	}
+	live := make([]*Session, 0, total)
+	aged := make([]*Session, 0, expired)
+
+	b.ReportAllocs()
+	var swept time.Duration
+	for range b.N {
+		// Age a batch scattered across the table, the shape a sweep finds after a period of
+		// opens. The swept sessions go back in as the next batch, so the table keeps both its
+		// size and its shape without allocating a session per iteration.
+		live = live[:0]
+		for _, session := range agents.byAge {
+			if session != nil {
+				live = append(live, session)
+			}
+		}
+		aged = aged[:0]
+		for k := range expired {
+			session := live[k*len(live)/expired]
+			session.touchNow(old)
+			aged = append(aged, session)
+		}
+
+		start := time.Now()
+		ids, err := agents.EvictIdle(context.Background(), "referee", now)
+		swept += time.Since(start)
+
+		if err != nil {
+			b.Fatalf("EvictIdle: %v", err)
+		}
+		if len(ids) != expired {
+			b.Fatalf("evicted %d sessions, want %d", len(ids), expired)
+		}
+		for _, session := range aged {
+			session.closing = false
+			session.touchNow(now)
+			agents.sessions[session.id] = session
+			agents.byAge = append(agents.byAge, session)
+		}
+	}
+	b.ReportMetric(float64(swept.Nanoseconds())/float64(b.N), "ns/sweep")
 }
 
 // streamingDriver yields a handful of events per turn, which is the shape a real turn has before any
