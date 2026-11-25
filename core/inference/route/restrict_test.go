@@ -323,3 +323,27 @@ func TestThePublishedCatalogObeysTheRestriction(t *testing.T) {
 		t.Fatalf("the unrestricted router published %d models, want both", got)
 	}
 }
+
+// TestAnUnnamedModelOnAnUnrestrictedRouterIsAConfigurationError is the last case: nothing
+// names a model and the router has no list to choose from — a grant that permits every
+// model cannot answer "which one", so the call stops here rather than at the vendor.
+func TestAnUnnamedModelOnAnUnrestrictedRouterIsAConfigurationError(t *testing.T) {
+	var calls []string
+	router, err := New([]Target{serving(t, "openai", "gpt-6", &calls, model.ModeText)}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := generationRequest()
+	request.Model = model.ModelRef{}
+	_, err = router.Generate(context.Background(), request)
+	var classified *inference.Error
+	if !errors.As(err, &classified) || classified.Kind != inference.InvalidRequest {
+		t.Fatalf("err = %v, want InvalidRequest", err)
+	}
+	if classified.Detail != "model.not_named" {
+		t.Fatalf("detail = %q, want model.not_named", classified.Detail)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("nothing should have run: %v", calls)
+	}
+}

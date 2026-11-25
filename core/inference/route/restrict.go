@@ -1,6 +1,7 @@
 package route
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -69,6 +70,15 @@ func (r *Router) Restrict(allow []Allow) *Router {
 // belongs to one of those providers.
 func (r *Router) resolve(operation string, requested model.ModelRef, modes []model.Mode, providers []string) (model.ModelRef, error) {
 	if len(r.allow) == 0 {
+		if requested.ID.Name == "" {
+			// Nothing to choose from and nothing named: the configuration is incomplete,
+			// and saying so beats sending an empty model to a provider that will report a
+			// missing one in its own vocabulary.
+			err := inference.NewError(inference.InvalidRequest, inference.FieldModel,
+				errors.New("route: no model was named and this router has no list to choose from"))
+			err.Detail = "model.not_named"
+			return model.ModelRef{}, err
+		}
 		return requested, nil
 	}
 	if requested.ID.Name != "" {
