@@ -172,17 +172,20 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 		return Deployment{}, errdefs.Validationf("deploy: every agent needs a name")
 	}
 	if err := entry.Grant.Validate(); err != nil {
-		return Deployment{}, errdefs.Validationf("deploy: agent %q: %w", name, err)
+		return Deployment{}, errdefs.Validationf("deploy: agent %q: grant: %w", name, err)
 	}
 	// The limits block is required: there is no inherited default, and a session table that
 	// silently keeps every conversation is not something a document may forget into.
-	if entry.Grant.Limits.IsZero() {
+	if entry.Limits.IsZero() {
 		return Deployment{}, errdefs.Validationf(
-			"deploy: agent %q must state grant.limits (idle, and optionally max_sessions)", name)
+			"deploy: agent %q must state limits (idle, and optionally max_sessions)", name)
 	}
-	if entry.Grant.Limits.Idle <= 0 {
+	if err := entry.Limits.Validate(); err != nil {
+		return Deployment{}, errdefs.Validationf("deploy: agent %q: limits: %w", name, err)
+	}
+	if entry.Limits.Idle <= 0 {
 		return Deployment{}, errdefs.Validationf(
-			"deploy: agent %q: grant.limits.idle must be a positive duration", name)
+			"deploy: agent %q: limits.idle must be a positive duration", name)
 	}
 
 	program, err := l.planProgram(entry.Program)
@@ -200,6 +203,7 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 	return Deployment{
 		Name:    name,
 		Program: program,
+		Limits:  entry.Limits,
 		Grant:   entry.Grant,
 		Hooks:   hooks,
 	}, nil

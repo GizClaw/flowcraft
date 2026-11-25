@@ -215,7 +215,7 @@ func (a *Agents) Open(ctx context.Context, sessionID, agentName string, opts ...
 	// The limit is checked again here, not only in admit: the build happens outside the lock, so
 	// two opens can both pass the first check and only this one is under the same lock as the
 	// insert.
-	if limit := current.grant.Limits.MaxSessions; limit > 0 && current.live >= limit {
+	if limit := current.limits.MaxSessions; limit > 0 && current.live >= limit {
 		a.mu.Unlock()
 		return nil, errors.Join(
 			errdefs.NotAvailablef("host: agent %q holds %d sessions, which is its limit", agentName, limit),
@@ -246,7 +246,7 @@ func (a *Agents) admit(agentName, sessionID string) (*deployment, error) {
 	if !ok {
 		return nil, errdefs.NotFoundf("host: agent %q is not deployed", agentName)
 	}
-	if limit := deploy.grant.Limits.MaxSessions; limit > 0 && deploy.live >= limit {
+	if limit := deploy.limits.MaxSessions; limit > 0 && deploy.live >= limit {
 		return nil, errdefs.NotAvailablef(
 			"host: agent %q holds %d sessions, which is its limit", agentName, limit)
 	}
@@ -454,7 +454,7 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		a.mu.Unlock()
 		return nil, errdefs.NotFoundf("host: agent %q is not deployed", agentName)
 	}
-	idle := deploy.grant.Limits.Idle.Std()
+	idle := deploy.limits.Idle.Std()
 	if idle <= 0 {
 		a.mu.Unlock()
 		return nil, nil

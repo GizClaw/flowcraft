@@ -14,8 +14,8 @@ agents:
       settings:
         path: "<graph>"
         model: { provider: fake, name: fake-1 }
+    limits: { idle: 5m, max_sessions: 4 }
     grant:
       sandbox: local
       models: [{ id: { provider: fake, name: fake-1 } }]
       tools: { allow: [write_file] }
-      limits: { idle: 5m, max_sessions: 4 }

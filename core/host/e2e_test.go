@@ -50,10 +50,10 @@ version: 1
 agents:
   - name: referee
     program: { impl: stub }
+    limits: { idle: 30m, max_sessions: 64 }
     grant:
       sandbox: local
       models: [{ id: { provider: "fake", name: "fake-1" } }]
-      limits: { idle: 30m, max_sessions: 64 }
 `
 
 // endToEndImpls is the implementation table this binary would carry. Names and kinds are

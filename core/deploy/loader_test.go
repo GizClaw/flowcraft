@@ -230,10 +230,10 @@ version: 1
 agents:
   - name: helper
     program: { impl: graph, settings: { graph: "main" } }
+    limits: { idle: 30m, max_sessions: 64 }
     grant:
       sandbox: local
       models: [{ id: { provider: "openai", name: "gpt-5" } }]
-      limits: { idle: 30m, max_sessions: 64 }
     hooks: [{ impl: audit }]
 `
 
@@ -422,13 +422,13 @@ version: 1
 agents:
   - name: referee
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err != nil {
@@ -471,10 +471,10 @@ version: 1
 agents:
   - name: twin
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: twin
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `
 	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "twin") {
@@ -500,12 +500,12 @@ version: 1
 agents:
   - name: referee
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_1
     program: { impl: graph }
+    limits: { idle: 30m }
     grant:
       models: [{ id: { provider: "openai", name: "gpt-5" } }]
-      limits: { idle: 30m }
 `
 	_, err = loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsNotAvailable(err) {
@@ -534,16 +534,16 @@ version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `)), 10)
 
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
@@ -575,13 +575,13 @@ version: 1
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m, max_sessions: 64 } }
+    limits: { idle: 30m, max_sessions: 64 }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m, max_sessions: 8 } }
+    limits: { idle: 30m, max_sessions: 8 }
 `)), 10)
 
 	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
@@ -591,8 +591,8 @@ agents:
 	if len(deployments) != 1 {
 		t.Fatalf("deployments = %d, want the one agent both layers name", len(deployments))
 	}
-	if deployments[0].Grant.Limits.MaxSessions != 8 {
-		t.Fatalf("max_sessions = %d, want the overlay's value", deployments[0].Grant.Limits.MaxSessions)
+	if deployments[0].Limits.MaxSessions != 8 {
+		t.Fatalf("max_sessions = %d, want the overlay's value", deployments[0].Limits.MaxSessions)
 	}
 }
 
@@ -689,7 +689,7 @@ version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
     hooks:
       - impl: audit
         settings: { dir: /var/memory }
@@ -724,7 +724,7 @@ version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
     hooks: [{ impl: nobody-registered-this }]
 `
 	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
@@ -783,7 +783,7 @@ version: 1
 agents:
   - name: a
     program: { impl: graph }
-    grant: { limits: { idle: 0s } }
+    limits: { idle: 0s }
 `,
 	} {
 		if _, err := loader.Deployments(context.Background(), caps, sources.Bytes("a.yaml", []byte(platformRoots(doc)))); err == nil || !errdefs.IsValidation(err) {

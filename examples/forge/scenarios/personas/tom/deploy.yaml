@@ -10,6 +10,7 @@ agents:
         # What a node calls when the graph names no model.
         model: {provider: openai, name: gpt-4o-mini}
         path: ${workspace:root}/graphs/persona.yaml
+    limits: {idle: 30m, max_sessions: 4}
     grant:
       sandbox: local
       # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
@@ -17,4 +18,3 @@ agents:
       # deployment registers a backend that can confine — bwrap or seatbelt — and writes the set down.
       files: {}
       net: {mode: default}
-      limits: {idle: 30m, max_sessions: 4}

@@ -16,8 +16,8 @@ func ref(provider, name string) model.ModelRef {
 	return model.ModelRef{ID: model.ModelID{Provider: provider, Name: name}}
 }
 
-// ceiling is a plausible agent authority: two models, three tools, a definition
-// budget, and limits that belong to the session table rather than the session.
+// ceiling is a plausible agent authority: two models, three tools and a
+// definition budget.
 func ceiling() policy.Grant {
 	return policy.Grant{
 		Sandbox: "locked",
@@ -28,7 +28,6 @@ func ceiling() policy.Grant {
 			Exposure: map[string]policy.Exposure{"exec": policy.ExposureDeferred},
 			Budget:   policy.Budget{MaxDefinitions: 10, MaxBytes: 4096},
 		},
-		Limits: policy.Limits{Idle: policy.Duration(10 * time.Minute), MaxSessions: 8},
 	}
 }
 
@@ -46,9 +45,6 @@ func TestNarrowOfNothingKeepsTheCeiling(t *testing.T) {
 	}
 	if got.Files.Read[0] != pathtest.Clean("srv/w") {
 		t.Fatalf("files = %+v, want the ceiling's", got.Files)
-	}
-	if !got.Limits.IsZero() {
-		t.Fatalf("Limits = %+v, want cleared: a session does not limit itself", got.Limits)
 	}
 }
 
@@ -199,14 +195,8 @@ func TestDigestIsTheSameForTheSamePermission(t *testing.T) {
 	}
 }
 
-func TestDigestIgnoresLimitsButNotPermissions(t *testing.T) {
+func TestDigestCoversEveryPermission(t *testing.T) {
 	base := ceiling()
-
-	withLimits := base
-	withLimits.Limits = policy.Limits{Idle: policy.Duration(time.Second), MaxSessions: 1}
-	if withLimits.Digest() != base.Digest() {
-		t.Fatal("changing an idle timeout changed the permission identity")
-	}
 
 	cases := map[string]func(*policy.Grant){
 		"files":     func(g *policy.Grant) { g.Files = policy.Files{ReadOnly: true} },

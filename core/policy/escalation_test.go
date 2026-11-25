@@ -33,7 +33,6 @@ func confined() policy.Grant {
 			TTL:           policy.Duration(time.Minute),
 			MaxPerSession: 3,
 		},
-		Limits: policy.Limits{Idle: policy.Duration(time.Minute)},
 	}
 }
 

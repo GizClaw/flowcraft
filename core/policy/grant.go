@@ -48,10 +48,6 @@ type Grant struct {
 	// not carry it (see [Grant.Narrow]): narrowing a session has to mean
 	// something, and a widening that reached back to the ceiling would undo it.
 	Escalate *Escalation `json:"escalate,omitempty" yaml:"escalate,omitempty"`
-	// Limits are the session-table decisions. They are parsed with the grant but
-	// they are not permissions: [Grant.Narrow] clears them and the digest
-	// ignores them.
-	Limits Limits `json:"limits,omitempty" yaml:"limits,omitempty"`
 }
 
 // Normalized returns the canonical form and rejects a grant that cannot be
@@ -74,9 +70,6 @@ func (g Grant) Normalized() (Grant, error) {
 		return Grant{}, err
 	}
 	if err := g.Resources.Validate(); err != nil {
-		return Grant{}, err
-	}
-	if err := g.Limits.Validate(); err != nil {
 		return Grant{}, err
 	}
 	if g.Delegation != nil {
@@ -128,9 +121,6 @@ func (g Grant) Narrow(req Request) (Grant, error) {
 	}
 
 	out := base
-	// Limits belong to the agent's session table; a session does not limit
-	// itself.
-	out.Limits = Limits{}
 	// An escalation is a declaration about the ceiling, so a bind does not carry
 	// it either: what a session may be widened to is the deployment's statement,
 	// and the host reads it from there when a command is refused.

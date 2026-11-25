@@ -69,7 +69,11 @@ type Agents struct {
 type deployment struct {
 	name    string
 	program agent.Program
-	grant   policy.Grant
+	// limits are the session table's decisions: how long a conversation may sit idle and how
+	// many this agent may hold. They are the agent's, not a session's, so they never travel
+	// into a grant.
+	limits policy.Limits
+	grant  policy.Grant
 	// observability is the process's record level, held here because the turn path reaches it
 	// through the deployment. It is not a per-agent setting: the chain and the model access it
 	// controls are built once for the process.
@@ -335,6 +339,7 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 	return &deployment{
 		name:          dep.Name,
 		program:       program,
+		limits:        dep.Limits,
 		grant:         dep.Grant,
 		observability: a.res.observability,
 		manifest:      manifest,

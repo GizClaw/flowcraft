@@ -123,6 +123,8 @@ type Deployment struct {
 	Name string
 	// Program is what runs the conversations.
 	Program PlannedProgram
+	// Limits are the session table's decisions, already validated.
+	Limits policy.Limits
 	// Grant is the authority its sessions run under, already validated.
 	Grant policy.Grant
 	// Hooks are the lifecycle policies attached to it, in declaration order. Each one carries

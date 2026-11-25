@@ -20,10 +20,10 @@ version: 1
 agents:
   - name: helper
     program: { impl: graph, settings: { graph: "main" } }
+    limits: { idle: 30m }
     grant:
       sandbox: local
       files: { read: ["/srv/w"], write: ["/srv/w/out"] }
-      limits: { idle: 30m }
       escalate:
         files: { write: ["/srv/w/out", "/srv/w/tmp"] }
         ttl: 60s

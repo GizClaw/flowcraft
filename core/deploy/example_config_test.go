@@ -115,6 +115,7 @@ agents:
     program:
       impl: graph
       settings: {path: "/srv/graphs/referee.yaml"}
+    limits: {idle: 30m, max_sessions: 64}
     grant:
       sandbox: hardened
       files:
@@ -139,7 +140,6 @@ agents:
         targets: ["seat_1", "seat_2"]
         modes: ["sync"]
         max_depth: 2
-      limits: {idle: 30m, max_sessions: 64}
     hooks:
       - impl: seat-memory
         settings: {dir: ".forge/memory", keep: 12}
@@ -148,13 +148,13 @@ agents:
     program:
       impl: graph
       settings: {path: "/srv/graphs/seat_1.yaml"}
+    limits: {idle: 10m}
     grant:
       sandbox: hardened
       files: {read: ["/srv/work"], write: ["/srv/work"]}
       net: {mode: deny_all}
       models:
         - id: {provider: openai, name: "gpt-5"}
-      limits: {idle: 10m}
 `
 
 // TestTheDocumentedConfigLoads is the example above, run.
@@ -236,13 +236,13 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	if referee.Name != "referee" || referee.Program.Impl != "graph" {
 		t.Fatalf("referee = %+v", referee)
 	}
-	if referee.Grant.Sandbox != "hardened" || referee.Grant.Limits.MaxSessions != 64 {
-		t.Fatalf("referee grant = %+v", referee.Grant)
+	if referee.Grant.Sandbox != "hardened" || referee.Limits.MaxSessions != 64 {
+		t.Fatalf("referee = %+v, limits = %+v", referee.Grant, referee.Limits)
 	}
 	if len(referee.Hooks) != 1 || referee.Hooks[0].Impl != "seat-memory" {
 		t.Fatalf("referee hooks = %+v", referee.Hooks)
 	}
-	if deployments[1].Grant.Limits.MaxSessions != 0 {
-		t.Fatalf("seat_1 limits = %+v, want the omitted max_sessions as unbounded", deployments[1].Grant.Limits)
+	if deployments[1].Limits.MaxSessions != 0 {
+		t.Fatalf("seat_1 limits = %+v, want the omitted max_sessions as unbounded", deployments[1].Limits)
 	}
 }

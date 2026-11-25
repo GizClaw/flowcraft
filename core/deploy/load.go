@@ -109,8 +109,12 @@ type agentEntry struct {
 	// to decide which entry an overlay is rewriting.
 	Name    string          `json:"name"`
 	Program programDocument `json:"program"`
-	Grant   policy.Grant    `json:"grant,omitempty"`
-	Hooks   []hookDocument  `json:"hooks,omitempty"`
+	// Limits are the session table's decisions: how long a conversation may sit idle and how
+	// many this agent may hold. They sit beside the grant rather than inside it because they
+	// are not permissions — a session does not limit itself.
+	Limits policy.Limits  `json:"limits"`
+	Grant  policy.Grant   `json:"grant,omitempty"`
+	Hooks  []hookDocument `json:"hooks,omitempty"`
 }
 
 // hookDocument is one lifecycle policy: an implementation and its settings.

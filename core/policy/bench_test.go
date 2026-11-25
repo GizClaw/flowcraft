@@ -20,8 +20,7 @@ func BenchmarkGrantNarrow(b *testing.B) {
 			Allow:  []string{"read_file", "write_file", "exec", "grep"},
 			Budget: policy.Budget{MaxDefinitions: 16, MaxBytes: 8192},
 		},
-		Exec:   policy.ExecPolicy{Timeout: policy.Duration(30 * time.Second)},
-		Limits: policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 8},
+		Exec: policy.ExecPolicy{Timeout: policy.Duration(30 * time.Second)},
 	}
 	request := policy.Request{
 		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},

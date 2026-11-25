@@ -104,12 +104,25 @@ func (p *sessionProgram) Close() error {
 	return nil
 }
 
+// defaultLimits is the session table a test deployment declares unless the test is
+// about the limit itself.
+func defaultLimits() policy.Limits {
+	return policy.Limits{Idle: policy.Duration(time.Minute)}
+}
+
 // sessionDeployment is a deployment with one backend and a program that opens drivers.
 func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journal, backend *boundary) (deploy.Deployment, *sessionProgram) {
+	t.Helper()
+	return sessionDeploymentWith(t, name, grant, defaultLimits(), log, backend)
+}
+
+// sessionDeploymentWith is sessionDeployment with an explicit session table.
+func sessionDeploymentWith(t *testing.T, name string, grant policy.Grant, limits policy.Limits, log *journal, backend *boundary) (deploy.Deployment, *sessionProgram) {
 	t.Helper()
 	program := &sessionProgram{log: log}
 	return deploy.Deployment{
 		Name:    name,
+		Limits:  limits,
 		Grant:   grant,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
 	}, program
@@ -118,10 +131,7 @@ func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journ
 // permissiveGrant allows everything and names the backend the deployment configured. Files are
 // unrestricted, so no directory has to exist for most tests.
 func permissiveGrant(sandboxName string) policy.Grant {
-	return policy.Grant{
-		Sandbox: sandboxName,
-		Limits:  policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 0},
-	}
+	return policy.Grant{Sandbox: sandboxName}
 }
 
 // hostWith builds an Agents over a resource whose single backend is b.
@@ -228,9 +238,9 @@ func TestMaxSessionsIsEnforced(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.MaxSessions = 1
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	limits := defaultLimits()
+	limits.MaxSessions = 1
+	dep, _ := sessionDeploymentWith(t, "referee", permissiveGrant("local"), limits, log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -299,9 +309,7 @@ func TestEvictIdleClosesTheSessionsPastTheLimit(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -336,9 +344,7 @@ func TestSessionsKeepInsertionOrderThroughInterleavedLifecycles(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -662,9 +668,9 @@ func TestTheSessionLimitHoldsUnderConcurrentOpens(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.MaxSessions = 1
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	limits := defaultLimits()
+	limits.MaxSessions = 1
+	dep, _ := sessionDeploymentWith(t, "referee", permissiveGrant("local"), limits, log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -775,12 +781,13 @@ func TestEvictIdleSkipsARunningTurn(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Millisecond)
+	limits := defaultLimits()
+	limits.Idle = policy.Duration(time.Millisecond)
 	blocked := &turnDriver{log: log, block: make(chan struct{})}
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   grant,
+		Limits:  limits,
+		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &turnProgram{driver: blocked}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {

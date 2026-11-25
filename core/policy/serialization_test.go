@@ -137,7 +137,6 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 			Budget:   policy.Budget{MaxDefinitions: 8, MaxBytes: 2048},
 		},
 		Delegation: &policy.Delegation{Targets: []string{"other"}, Modes: []policy.DelegationMode{policy.DelegationSync}, MaxDepth: 1},
-		Limits:     policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 4},
 	}
 
 	payload, err := json.Marshal(grant)
@@ -154,7 +153,6 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 		`"models"`, `"provider"`, `"name"`,
 		`"tools"`, `"exposure"`, `"budget"`, `"max_definitions"`, `"max_bytes"`,
 		`"delegation"`, `"targets"`, `"modes"`, `"max_depth"`,
-		`"limits"`, `"idle":"1m0s"`, `"max_sessions"`,
 	} {
 		if !strings.Contains(text, key) {
 			t.Errorf("marshalled grant is missing %s\n%s", key, text)
@@ -178,8 +176,8 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 	if back.Digest() != grant.Digest() {
 		t.Fatal("a JSON round trip changed the grant's identity")
 	}
-	if back.Exec.Timeout != grant.Exec.Timeout || back.Limits.Idle != grant.Limits.Idle {
-		t.Fatalf("durations did not round-trip: %v / %v", back.Exec.Timeout, back.Limits.Idle)
+	if back.Exec.Timeout != grant.Exec.Timeout {
+		t.Fatalf("durations did not round-trip: %v", back.Exec.Timeout)
 	}
 }
 

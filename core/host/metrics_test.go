@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
@@ -64,9 +63,7 @@ func TestEvictionIsCounted(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
