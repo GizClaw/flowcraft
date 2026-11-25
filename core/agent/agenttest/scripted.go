@@ -24,6 +24,12 @@ type Scripted struct {
 	// applies it.
 	SteerAt int
 
+	// SuspendAt makes the driver stop after this many steps and report input-required, until
+	// Resume is called. -1 (the default) never suspends.
+	SuspendAt int
+	// Question is what a suspension asks.
+	Question string
+
 	mu      sync.Mutex
 	drivers int
 	closed  bool
@@ -36,7 +42,7 @@ type step struct {
 
 // NewScripted builds a program that plays events in order.
 func NewScripted(events ...agent.Event) *Scripted {
-	s := &Scripted{SteerAt: -1}
+	s := &Scripted{SteerAt: -1, SuspendAt: -1}
 	for _, event := range events {
 		s.steps = append(s.steps, step{event: event})
 	}
@@ -94,6 +100,7 @@ type ScriptedDriver struct {
 	program *Scripted
 
 	mu      sync.Mutex
+	paused  bool
 	pending []pendingSteer
 	applied []agent.Interruption
 	nextID  int
@@ -101,34 +108,78 @@ type ScriptedDriver struct {
 	closed  bool
 }
 
-// Run implements agent.Driver.
+// Run implements agent.Driver. A driver that is waiting for an answer refuses it: the message
+// would be taken as the answer, which is the pair of verbs this fixture exists to exercise.
 func (d *ScriptedDriver) Run(ctx context.Context, _ agent.Request) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		d.mu.Lock()
-		d.runs++
-		steerAt := d.program.SteerAt
-		steps := d.program.steps
-		d.mu.Unlock()
-
-		for i, one := range steps {
-			if err := ctx.Err(); err != nil {
-				yield(nil, err)
-				return
-			}
-			if i == steerAt {
-				if !d.drain(ctx, i, yield) {
-					return
-				}
-			}
-			if one.err != nil {
-				yield(nil, one.err)
-				return
-			}
-			if !yield(one.event, nil) {
-				return
-			}
+		if d.Paused() {
+			yield(nil, agent.ErrAwaitingResume)
+			return
+		}
+		if !d.play(ctx, yield) {
+			return
 		}
 	}
+}
+
+// Resume implements agent.Resumer.
+func (d *ScriptedDriver) Resume(ctx context.Context, _ agent.Request) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		d.mu.Lock()
+		paused := d.paused
+		d.paused = false
+		d.mu.Unlock()
+		if !paused {
+			yield(nil, agent.ErrAwaitingResume)
+			return
+		}
+		d.play(ctx, yield)
+	}
+}
+
+// Paused implements agent.Paused.
+func (d *ScriptedDriver) Paused() bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.paused
+}
+
+// play runs the script, stopping to ask where the program says so.
+func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error) bool) bool {
+	d.mu.Lock()
+	d.runs++
+	steerAt := d.program.SteerAt
+	suspendAt := d.program.SuspendAt
+	question := d.program.Question
+	steps := d.program.steps
+	d.mu.Unlock()
+
+	for i, one := range steps {
+		if err := ctx.Err(); err != nil {
+			yield(nil, err)
+			return false
+		}
+		if i == steerAt {
+			if !d.drain(ctx, i, yield) {
+				return false
+			}
+		}
+		if i == suspendAt {
+			// The step stops here: nothing after it runs until Resume.
+			d.mu.Lock()
+			d.paused = true
+			d.mu.Unlock()
+			return yield(agent.Status{State: agent.StateInputRequired, Reason: question}, nil)
+		}
+		if one.err != nil {
+			yield(nil, one.err)
+			return false
+		}
+		if !yield(one.event, nil) {
+			return false
+		}
+	}
+	return true
 }
 
 // drain yields one Interrupted per queued input and records what it applied.
