@@ -40,9 +40,12 @@ func generateTarget(name string, gen inference.Generator) Target {
 	return Target{Name: name, Provider: inference.Provider{Generator: gen}}
 }
 
+// generationRequest asks by model name only: the dispatch tests are about the loop, and
+// a name-only request is the question a target with no declared line-up can answer.
+// Provider pinning has its own tests below.
 func generationRequest() inference.GenerateRequest {
 	return inference.GenerateRequest{
-		Model: model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}},
+		Model: model.ModelRef{ID: model.ModelID{Name: "m"}},
 		Input: inference.GenerateInput{Content: message.NewTextContent("hi")},
 	}
 }
@@ -57,7 +60,7 @@ func decisionRequest(questions int) inference.DecisionRequest {
 		})
 	}
 	return inference.DecisionRequest{
-		Model:     model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}},
+		Model:     model.ModelRef{ID: model.ModelID{Name: "m"}},
 		Input:     message.NewTextContent("material"),
 		Questions: input,
 	}
@@ -191,5 +194,129 @@ func TestProviderPublishesOnlyServedSeams(t *testing.T) {
 	}
 	if provider.Decider == nil {
 		t.Error("a router with a decider published no Decider")
+	}
+}
+
+// declaring builds a target whose catalog lists one model id.
+func declaring(name string, gen inference.Generator, id model.ModelID) Target {
+	return Target{
+		Name:     name,
+		Provider: inference.Provider{Generator: gen, Catalog: testCatalog{models: []model.ModelDescriptor{{ID: id}}}},
+	}
+}
+
+// TestFailoverDoesNotCrossVendors is the provider half of "one model id": two vendors
+// may serve a model with the same name, and a caller that named one of them must not be
+// answered by the other — not even when the named one fails.
+func TestFailoverDoesNotCrossVendors(t *testing.T) {
+	mine := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+		return inference.GenerateResponse{}, inference.NewError(
+			inference.UnknownModel, inference.FieldModel, errors.New("down"))
+	}}
+	theirs := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+		t.Error("a target from another vendor was tried")
+		return inference.GenerateResponse{}, nil
+	}}
+	router, err := New([]Target{
+		declaring("mine", mine, model.ModelID{Provider: "openai", Name: "shared"}),
+		declaring("theirs", theirs, model.ModelID{Provider: "anthropic", Name: "shared"}),
+	}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	request := generationRequest()
+	request.Model = model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "shared"}}
+	if _, err := router.Generate(context.Background(), request); err == nil {
+		t.Fatal("Generate = nil error, want the named target's failure")
+	}
+	if mine.calls != 1 {
+		t.Fatalf("the named target ran %d times, want once", mine.calls)
+	}
+	if theirs.calls != 0 {
+		t.Fatalf("another vendor's target ran %d times, want never", theirs.calls)
+	}
+}
+
+// TestANameOnlyRequestStillRoutes keeps the looser question working: a caller that
+// names no provider is asking for any target that serves the model by name.
+func TestANameOnlyRequestStillRoutes(t *testing.T) {
+	for _, vendor := range []string{"openai", "anthropic"} {
+		gen := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+			return inference.GenerateResponse{
+				Message:      message.Message{Role: message.RoleAssistant, Content: message.NewTextContent("ok")},
+				FinishReason: inference.FinishStop,
+			}, nil
+		}}
+		router, err := New([]Target{declaring(vendor, gen, model.ModelID{Provider: vendor, Name: "shared"})}, Policy{})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		request := generationRequest()
+		request.Model = model.ModelRef{ID: model.ModelID{Name: "shared"}}
+		if _, err := router.Generate(context.Background(), request); err != nil {
+			t.Fatalf("%s: Generate: %v", vendor, err)
+		}
+	}
+}
+
+// TestADeclaredTargetModelPinsItsVendor is the same rule for a deployment that names
+// the model on the target itself.
+func TestADeclaredTargetModelPinsItsVendor(t *testing.T) {
+	first := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+		return inference.GenerateResponse{}, inference.NewError(
+			inference.UnknownModel, inference.FieldModel, errors.New("down"))
+	}}
+	second := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+		t.Error("a declared target with another vendor was tried")
+		return inference.GenerateResponse{}, nil
+	}}
+	router, err := New([]Target{
+		{Name: "a", Provider: inference.Provider{Generator: first}, Model: model.ModelID{Provider: "openai", Name: "shared"}},
+		{Name: "b", Provider: inference.Provider{Generator: second}, Model: model.ModelID{Provider: "anthropic", Name: "shared"}},
+	}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := generationRequest()
+	request.Model = model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "shared"}}
+	if _, err := router.Generate(context.Background(), request); err == nil {
+		t.Fatal("Generate = nil error, want the named target's failure")
+	}
+	if second.calls != 0 {
+		t.Fatalf("the other vendor's declared target ran %d times, want never", second.calls)
+	}
+}
+
+// TestAnUndeclaredLineUpServesOnlyWhatItIsNamedFor is the second half of provider
+// pinning: a target that publishes no line-up cannot prove it serves a model, so it is a
+// candidate for a name-only request and for one that names it — not for every vendor.
+func TestAnUndeclaredLineUpServesOnlyWhatItIsNamedFor(t *testing.T) {
+	gen := &fakeGenerator{reply: func(int) (inference.GenerateResponse, error) {
+		return inference.GenerateResponse{
+			Message:      message.Message{Role: message.RoleAssistant, Content: message.NewTextContent("ok")},
+			FinishReason: inference.FinishStop,
+		}, nil
+	}}
+	router, err := New([]Target{{Name: "openai", Provider: inference.Provider{Generator: gen}}}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// Named for it: the target answers.
+	request := generationRequest()
+	request.Model = model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "m"}}
+	if _, err := router.Generate(context.Background(), request); err != nil {
+		t.Fatalf("Generate for the named provider: %v", err)
+	}
+
+	// Pinned to another vendor: it is not a candidate, so nothing runs.
+	before := gen.calls
+	request.Model = model.ModelRef{ID: model.ModelID{Provider: "anthropic", Name: "m"}}
+	if _, err := router.Generate(context.Background(), request); err == nil {
+		t.Fatal("Generate = nil error, want no candidate")
+	}
+	if gen.calls != before {
+		t.Fatalf("the undeclared target ran %d times for another vendor", gen.calls-before)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // Generate routes one unary generation.
@@ -14,7 +15,7 @@ func (r *Router) Generate(ctx context.Context, request inference.GenerateRequest
 		return inference.GenerateResponse{}, err
 	}
 	return dispatch(ctx, operationGenerate, targets, r.policy.Generate, request,
-		modelNameOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry,
+		modelOfGenerate, withGenerateTarget, invokeGenerate, r.policy.Retry,
 		func(ordered []Target) []Target { return preferOutputs(ordered, request.Output) })
 }
 
@@ -37,7 +38,7 @@ func (r *Router) openStream(ctx context.Context, call *routeCall, request infere
 	if err != nil {
 		return nil, err
 	}
-	candidates := filterTargets(eligible, modelNameOfGenerate(request))
+	candidates := filterTargets(eligible, request.Model)
 	ordered := candidates
 	if r.policy.Generate != nil {
 		selected, err := r.policy.Generate.Select(ctx, request, candidates)
@@ -82,7 +83,7 @@ func (r *Router) openStream(ctx context.Context, call *routeCall, request infere
 
 // modelNameOfGenerate is the model the caller asked for; routing fills the
 // provider from the target it picks.
-func modelNameOfGenerate(request inference.GenerateRequest) string { return request.Model.ID.Name }
+func modelOfGenerate(request inference.GenerateRequest) model.ModelRef { return request.Model }
 
 // withGenerateTarget stamps the chosen target onto the request.
 func withGenerateTarget(request inference.GenerateRequest, target Target) inference.GenerateRequest {

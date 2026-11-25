@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // Decide routes one judgment call.
@@ -15,11 +16,11 @@ import (
 // refusal from one with an answer from another.
 func (r *Router) Decide(ctx context.Context, request inference.DecisionRequest) (inference.DecisionResponse, error) {
 	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request,
-		modelNameOfDecide, withDecideTarget, invokeDecide, r.policy.Retry, nil)
+		modelOfDecide, withDecideTarget, invokeDecide, r.policy.Retry, nil)
 }
 
-// modelNameOfDecide is the model the caller asked to judge.
-func modelNameOfDecide(request inference.DecisionRequest) string { return request.Model.ID.Name }
+// modelOfDecide is the model the caller asked to judge.
+func modelOfDecide(request inference.DecisionRequest) model.ModelRef { return request.Model }
 
 // withDecideTarget stamps the chosen target onto the request.
 func withDecideTarget(request inference.DecisionRequest, target Target) inference.DecisionRequest {

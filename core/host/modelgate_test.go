@@ -3,10 +3,12 @@ package host
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -206,4 +208,98 @@ func TestEveryModelSeamIsGated(t *testing.T) {
 func isDenial(err error) bool {
 	denial, ok := policy.AsDenial(err)
 	return ok && denial.Check == policy.CheckModels
+}
+
+// recordingGenerator reports which vendor served a call, so a test can see the
+// router reach the right one.
+type recordingGenerator struct {
+	vendor string
+	served *[]string
+}
+
+func (g recordingGenerator) Generate(context.Context, inference.GenerateRequest) (inference.GenerateResponse, error) {
+	*g.served = append(*g.served, g.vendor)
+	return inference.GenerateResponse{}, nil
+}
+
+func (g recordingGenerator) GenerateStream(context.Context, inference.GenerateRequest) (inference.Stream, error) {
+	*g.served = append(*g.served, g.vendor)
+	return nil, errReached
+}
+
+// TestASessionCallsModelsFromDifferentProviders is the cross-vendor case: one
+// session's grant may name models two providers serve, and the gate must not care
+// which vendor answers. The value the session holds is the process's *router*, which
+// keeps the targets whose catalog lists the requested model.
+func TestASessionCallsModelsFromDifferentProviders(t *testing.T) {
+	var served []string
+	planned := func(vendor, name string) deploy.PlannedProvider {
+		return deploy.PlannedProvider{Name: vendor, Impl: "fake",
+			New: func() (*inference.Provider, error) {
+				return &inference.Provider{
+					Generator: recordingGenerator{vendor: vendor, served: &served},
+					Catalog:   catalog{models: []model.ModelDescriptor{{ID: modelID(vendor, name)}}},
+				}, nil
+			}}
+	}
+	log := &journal{}
+	res, err := Open(t.Context(), deploy.ProcessPlan{
+		Providers: []deploy.PlannedProvider{
+			planned("openai", "gpt6-2"),
+			planned("anthropic", "opus-5"),
+		},
+		Backends: []deploy.PlannedBackend{boundBackend("local", &boundary{log: log, filesystemBounds: true})},
+	}, testOptions(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = res.Close() })
+
+	agents := NewAgents(res)
+	dep, _ := sessionDeployment(t, "referee", policy.Grant{}, log, &boundary{log: log, filesystemBounds: true})
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	authority := policy.Grant{Models: []model.ModelRef{
+		{ID: modelID("openai", "gpt6-2")},
+		{ID: modelID("anthropic", "opus-5")},
+	}}
+	session, err := agents.Open(t.Context(), "s1", "referee", authority)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	for _, ref := range authority.Models {
+		if _, err := session.models.Generate(t.Context(), inference.GenerateRequest{Model: ref}); err != nil {
+			t.Fatalf("generate %s: %v", ref.ID.Name, err)
+		}
+	}
+	if want := []string{"openai", "anthropic"}; !slices.Equal(served, want) {
+		t.Fatalf("served by %v, want %v: each model reached its own provider", served, want)
+	}
+
+	// A model the grant does not name never reaches either provider, whichever
+	// vendor serves it.
+	before := len(served)
+	for _, ref := range []model.ModelRef{
+		{ID: modelID("openai", "gpt6-3")},
+		{ID: modelID("anthropic", "opus-6")},
+	} {
+		_, err := session.models.Generate(t.Context(), inference.GenerateRequest{Model: ref})
+		if !isDenial(err) {
+			t.Fatalf("generate %s = %v, want a denial", ref.ID.Name, err)
+		}
+	}
+	if len(served) != before {
+		t.Fatalf("an ungranted model reached a provider: %v", served)
+	}
+
+	// And the catalog a session may enumerate is the union of both providers, still
+	// filtered by the grant.
+	visible := session.models.Catalog.Models()
+	if len(visible) != 2 {
+		t.Fatalf("visible models = %+v, want both granted ones", visible)
+	}
 }

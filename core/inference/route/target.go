@@ -163,7 +163,7 @@ func dispatch[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
-	modelOf func(Req) string,
+	modelOf func(Req) model.ModelRef,
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
@@ -183,7 +183,7 @@ func dispatchTargets[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
-	modelOf func(Req) string,
+	modelOf func(Req) model.ModelRef,
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
@@ -256,11 +256,17 @@ func dispatchTargets[Req, Res any](
 
 // filterTargets keeps the targets whose catalog serves the requested model.
 //
+// The request names a model, and a model id is provider plus name: when the caller
+// names a provider, a target that declares the same model name under another provider
+// is not a candidate. That is what stops failover from crossing vendors — a session
+// granted one vendor's model must not be answered by another vendor that happens to
+// use the same name.
+//
 // A target with no catalog, or one that declares no models, is kept: absence of
 // information is not evidence of absence, and the driver's own UnknownModel is
 // still the fallback classification.
-func filterTargets(targets []Target, name string) []Target {
-	if name == "" {
+func filterTargets(targets []Target, want model.ModelRef) []Target {
+	if want.ID.Name == "" {
 		return targets
 	}
 	kept := make([]Target, 0, len(targets))
@@ -269,33 +275,61 @@ func filterTargets(targets []Target, name string) []Target {
 		// target is for. Without one, fall back to the catalog, and with no
 		// catalog either the target stays a candidate and the driver decides.
 		if target.Model.Name != "" {
-			if target.Model.Name == name {
+			if servesID(target.Model, want.ID) && servesProfile(target.Profile, want.Profile) {
 				kept = append(kept, target)
 			}
 			continue
 		}
-		if servesModel(target, name) {
+		if servesModel(target, want.ID) && servesProfile(target.Profile, want.Profile) {
 			kept = append(kept, target)
 		}
 	}
 	return kept
 }
 
-func servesModel(target Target, name string) bool {
+// servesID reports whether a declared model id can serve want.
+//
+// A caller that names no provider is asking by model name, which is the looser
+// question and the one a name-only configuration has always answered; naming a
+// provider pins the vendor.
+func servesID(declared, want model.ModelID) bool {
+	if declared.Name != want.Name {
+		return false
+	}
+	// A request that names no provider asks by model name, and a declaration that
+	// names none makes no vendor claim; only two stated providers can disagree.
+	return want.Provider == "" || declared.Provider == "" || declared.Provider == want.Provider
+}
+
+// servesProfile reports whether a target can serve the requested deployment identity.
+// An unnamed profile on either side is not a constraint.
+func servesProfile(declared, want string) bool {
+	return want == "" || declared == "" || declared == want
+}
+
+func servesModel(target Target, want model.ModelID) bool {
 	catalog := target.Provider.Catalog
 	if catalog == nil {
-		return true
+		return servesUnlisted(target, want)
 	}
 	models := catalog.Models()
 	if len(models) == 0 {
-		return true
+		return servesUnlisted(target, want)
 	}
 	for _, descriptor := range models {
-		if descriptor.ID.Name == name {
+		if servesID(descriptor.ID, want) {
 			return true
 		}
 	}
 	return false
+}
+
+// servesUnlisted answers for a target that declares no line-up: it cannot say what it
+// serves, so it is a candidate for a request that names no provider, and for one that
+// names this target's provider. Anything else would let it absorb a call meant for a
+// vendor it never claimed — which is exactly what a request's provider is for.
+func servesUnlisted(target Target, want model.ModelID) bool {
+	return want.Provider == "" || target.Name == want.Provider
 }
 
 // kindOf extracts the classified kind, if the failure carries one.

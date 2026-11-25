@@ -180,6 +180,21 @@ one), the model it serves, and the deployment profile it belongs to. Dispatch
 stamps the winning target's model identity onto the request, so a caller names a
 model and the answer carries the provider that actually served it.
 
+Candidates are filtered before selection, and the filter reads the **model id** —
+provider plus name — not just the name:
+
+- a target that declares a model is a candidate only for that id;
+- otherwise its catalog is asked, and an entry must match the requested id;
+- a target that declares no line-up at all cannot answer the question, so it is a
+  candidate for a request that names no provider and for one that names it (its
+  `Target.Name`), and for nothing else.
+
+Two consequences follow. A caller that names no provider still gets the loose,
+name-only question. And failover never crosses vendors: a session granted one
+vendor's model is not answered by another vendor that happens to use the same
+name — which is what makes a grant's `models[].id.provider` a real constraint
+rather than a comment.
+
 | Field                               | Meaning                                                              |
 | ----------------------------------- | -------------------------------------------------------------------- |
 | `Generate`, `Decision`              | One selector per seam; a nil selector means every target in order.   |
