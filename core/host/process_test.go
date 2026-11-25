@@ -454,7 +454,7 @@ func TestNilCapabilitiesRefusesCapabilityTools(t *testing.T) {
 // testOptions is the process an application would open: a dispatcher and a projection from outside the
 // host. The stub is deliberate — core cannot reach for the real ones, and a host that needed them would
 // depend on the engine it is supposed to run.
-func testOptions(t *testing.T) Options {
+func testOptions(t testing.TB) Options {
 	t.Helper()
 	return Options{
 		Dispatcher: func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher {

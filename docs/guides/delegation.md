@@ -156,6 +156,65 @@ agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: d
   opens carries it, so a whole chain is one trace.
 - Both fields are zero for a run that was never delegated, and `Run.Pairs` omits what is
   unset rather than rendering an empty attribute.
+- `Chain.Lineage` lists the session ids above the child, root first and the immediate parent
+  last. A decision that has to go back up the line — a subagent asking the agent that
+  delegated to it — needs the ids; the child id encodes its parent, but a prefix is a naming
+  accident rather than a contract.
+
+## Delivery: how a hand-off reports back
+
+A synchronous edge returns the child's answer as the tool result, so there is nothing to
+deliver. An **asynchronous** edge is a hand-off: the caller is gone when the child finishes,
+and the result reaches the parent through the first channel that can take it.
+
+| Channel             | When                                                                                     | Who reads the events                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Steer**           | the parent has a turn in flight and its driver can take input                            | the caller already consuming that turn's iterator — no second source |
+| **A host turn**     | the parent is idle, or its driver cannot be steered but can take a message between turns | `host.WithHostTurnEvents`; without it the record only                |
+| **The application** | the parent is gone, or its program cannot take a message between turns                   | `host.WithDelegationDelivery`                                        |
+
+```go
+agents := host.NewAgents(res,
+    host.WithHostTurnEvents(func(ctx context.Context, sessionID string, kind host.HostTurnKind, ev agent.Event, err error) bool {
+        // kind is host.HostTurnDelivery or host.HostTurnDelegation
+        render(sessionID, ev)
+        return true
+    }),
+    host.WithDelegationDelivery(func(ctx context.Context, sessionID string, msg message.Message) bool {
+        // nothing could put this into the conversation; queue it, persist it, or drop it
+        return true
+    }),
+)
+```
+
+Rules that make the three channels predictable:
+
+- **One event, one consumer.** The sink is called only for turns the host started itself;
+  a turn the application began through `Agents.Run` is read from its own iterator and the
+  sink sees nothing of it.
+- **The sink must not block and must not call `Run` for the same session.** It runs on the
+  goroutine driving the turn, and different sessions may deliver concurrently.
+- **A steer is only delivered once it is applied.** If the turn ends before a boundary, the
+  host re-offers the message as a turn of its own.
+- **A program that cannot take a message between turns cannot be delivered to.** A graph
+  needs an `input` state slot; a driver reports it through `agent.InputSink`.
+- **A delivery turn and a caller's `Run` never overlap.** One session has one turn. A delivery
+  waits for a caller's turn to finish — waiting and taking the slot are one step, so the two
+  cannot race — while a caller that arrives during a delivery gets a conflict naming it, and
+  retrying is the answer.
+
+The delivered message is a **user turn** — the conversation gained a message, and the
+platform does not fabricate an assistant turn the model never wrote. Its text names the
+agent, the child session, the status and the answer; its metadata carries the same facts
+for an application that must not parse a sentence:
+
+| Attribute            | Value                                             |
+| -------------------- | ------------------------------------------------- |
+| `delegation.session` | the child session id                              |
+| `delegation.agent`   | the deployment the child ran                      |
+| `delegation.chain`   | the delegation chain the run belongs to           |
+| `delegation.depth`   | how many edges above the child                    |
+| `delegation.status`  | the child's task state when the delivery was made |
 
 ## What the child inherits, and what it does not
 

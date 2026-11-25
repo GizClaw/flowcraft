@@ -93,58 +93,118 @@ func WithFingerprint(fingerprint agent.Fingerprint) AgentsOption {
 // that varies. That split is why a driver never sees a Resource, a table or a session id.
 //
 // One session has at most one turn in flight — the rule the session table states and [Agents.Steer]
-// depends on — so a second concurrent Run is refused instead of queued.
+// depends on — so a second concurrent Run is refused instead of queued. A turn the host started
+// itself holds the slot in exactly the same way, and the refusal names which one it is.
 func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		session, ok := a.Session(sessionID)
-		if !ok {
-			yield(nil, errdefs.NotFoundf("host: session %q is not open", sessionID))
-			return
-		}
-		if err := session.beginTurn(); err != nil {
+		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, false)
+		if err != nil {
 			yield(nil, err)
 			return
 		}
-		defer session.endTurn()
+		run(yield, nil)
+	}
+}
 
-		runCtx, cancel := context.WithCancel(session.identity(ctx))
+// turn runs a turn the host started, forwarding its events to sink.
+//
+// The claim is answered before this returns, which is what lets a caller that competes for the slot
+// — the delivery worker — tell "busy" from "failed" without starting anything. The returned
+// function runs the turn; calling it is the caller's decision.
+func (a *Agents) turn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, sink HostTurnEvents) (func(), error) {
+	run, err := a.claimTurn(ctx, sessionID, msg, kind, true)
+	if err != nil {
+		return nil, err
+	}
+	return func() { run(nil, sink) }, nil
+}
+
+// claimTurn takes the session's turn slot and assembles the request, or reports why it cannot.
+//
+// Everything that can fail before the driver runs happens here, so a host turn can refuse without
+// half-running: the session exists, the slot is free, the request assembled.
+func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, wait bool) (func(yield func(agent.Event, error) bool, sink HostTurnEvents), error) {
+	session, ok := a.Session(sessionID)
+	if !ok {
+		return nil, errdefs.NotFoundf("host: session %q is not open", sessionID)
+	}
+	if err := session.claim(ctx, kind, wait); err != nil {
+		return nil, err
+	}
+	runCtx, cancel := context.WithCancel(session.identity(ctx))
+	req, err := a.request(runCtx, session, msg)
+	if err != nil {
+		session.endTurn()
+		cancel()
+		return nil, err
+	}
+	return func(yield func(agent.Event, error) bool, sink HostTurnEvents) {
+		defer session.endTurn()
 		session.setCancel(cancel)
 		defer func() {
 			session.setCancel(nil)
 			cancel()
 			session.touchNow(time.Now())
+			a.requeueDropped(ctx, session.id)
 		}()
+		a.executeTurn(runCtx, session, req, yield, sink, kind)
+	}, nil
+}
 
-		req, err := a.request(runCtx, session, msg)
+// executeTurn drives one claimed turn and writes its events to yield, or to sink when the host is
+// the one that started it.
+func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent.Request, yield func(agent.Event, error) bool, sink HostTurnEvents, kind turnKind) {
+	// The failure box is installed before the run span opens, not inside RunTurn, so both
+	// spans of this turn read the same classification: the decorator reuses a box it finds
+	// rather than making a second one.
+	runCtx = agent.WithFailureBox(runCtx)
+	spanCtx, span := startRunSpan(runCtx, session)
+	defer span.End()
+
+	emit := yield
+	switch {
+	case sink != nil:
+		emit = func(event agent.Event, err error) bool {
+			return sink(spanCtx, session.id, hostTurnKind(kind), event, err)
+		}
+	case emit == nil:
+		emit = func(agent.Event, error) bool { return true }
+	}
+
+	state, failures := agent.TaskState(""), 0
+	for event, err := range agent.RunTurn(spanCtx, req, session.driver) {
+		if status, ok := event.(agent.Status); ok && status.State.Terminal() {
+			state = status.State
+		}
+		if applied, ok := event.(agent.Interrupted); ok {
+			// The steered message reached a boundary: it is in the transcript, so the delivery
+			// worker must not offer it again when this turn ends.
+			a.steerApplied(applied.ID)
+		}
 		if err != nil {
-			yield(nil, err)
+			failures++
+		}
+		if !emit(event, err) {
+			finishRunSpan(spanCtx, span, state, failures)
 			return
 		}
-
-		// The failure box is installed before the run span opens, not inside RunTurn, so both
-		// spans of this turn read the same classification: the decorator reuses a box it finds
-		// rather than making a second one.
-		runCtx = agent.WithFailureBox(runCtx)
-		spanCtx, span := startRunSpan(runCtx, session)
-		defer span.End()
-		state, failures := agent.TaskState(""), 0
-		for event, err := range agent.RunTurn(spanCtx, req, session.driver) {
-			if status, ok := event.(agent.Status); ok && status.State.Terminal() {
-				state = status.State
-			}
-			if err != nil {
-				failures++
-			}
-			if !yield(event, err) {
-				finishRunSpan(spanCtx, span, state, failures)
-				return
-			}
-			if err != nil {
-				finishRunSpan(spanCtx, span, state, failures)
-				return
-			}
+		if err != nil {
+			finishRunSpan(spanCtx, span, state, failures)
+			return
 		}
-		finishRunSpan(spanCtx, span, state, failures)
+	}
+	finishRunSpan(spanCtx, span, state, failures)
+}
+
+// hostTurnKind names a claimed turn in the vocabulary the event sink speaks.
+func hostTurnKind(kind turnKind) HostTurnKind {
+	switch kind {
+	case turnDelivery:
+		return HostTurnDelivery
+	case turnDelegation:
+		return HostTurnDelegation
+	default:
+		return ""
 	}
 }
 
@@ -264,7 +324,8 @@ func (a *Agents) Steer(ctx context.Context, sessionID string, in agent.SteerInpu
 		recordSteer(ctx, in, steerIdle)
 		return "", agent.ErrSessionIdle
 	}
-	steerer, ok := session.driver.(agent.Steerer)
+	driver, _ := session.driverSnapshot()
+	steerer, ok := driver.(agent.Steerer)
 	if !ok {
 		recordSteer(ctx, in, steerUnsupported)
 		return "", agent.ErrNotSteerable
@@ -309,7 +370,8 @@ func (a *Agents) Cancel(ctx context.Context, sessionID, reason string) error {
 	}
 	cancel()
 	outcome := cancelContext
-	if canceller, ok := session.driver.(agent.Canceller); ok {
+	driver, _ := session.driverSnapshot()
+	if canceller, ok := driver.(agent.Canceller); ok {
 		if err := canceller.Cancel(ctx, reason); err != nil {
 			span.SetAttributes(attribute.String(telemetry.AttrErrorKind, string(agent.FailureUnclassified)))
 			span.SetStatus(codes.Error, "peer_refused")

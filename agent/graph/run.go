@@ -887,6 +887,7 @@ func (r *Run) applySteer(yield func(agent.Event, error) bool) (bool, error) {
 		return false, fmt.Errorf("graph: apply steer: %w", err)
 	}
 	interruption := agent.Interruption{
+		ID:       request.id,
 		Intent:   request.kind,
 		Boundary: r.step + 1,
 	}

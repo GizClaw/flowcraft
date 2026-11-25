@@ -51,7 +51,7 @@ func seenHost(t *testing.T, opts ...AgentsOption) (*Agents, *seenDriver) {
 
 // hostFor opens one session under a program the test supplies, which is how a case drives a
 // specific behaviour through the whole host path: process, deployment, session and turn.
-func hostFor(t *testing.T, program func() (agent.Program, error), opts ...AgentsOption) *Agents {
+func hostFor(t testing.TB, program func() (agent.Program, error), opts ...AgentsOption) *Agents {
 	t.Helper()
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}

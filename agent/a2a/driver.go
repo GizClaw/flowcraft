@@ -77,6 +77,10 @@ var (
 
 // Round reports how far the peer's task has got, as the number of lifecycle transitions it
 // reported. The turn decorator writes it into the projection because a proxy has no other answer.
+// AcceptsInput reports whether a message offered between turns reaches the conversation: for a
+// peer, a new turn is a new request in the same task.
+func (d *driver) AcceptsInput() bool { return true }
+
 func (d *driver) Round() int {
 	d.mu.Lock()
 	defer d.mu.Unlock()

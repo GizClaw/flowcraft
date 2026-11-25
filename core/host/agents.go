@@ -50,6 +50,16 @@ type Agents struct {
 	runSink func(agent.RunRecord)
 	// harness names the build this process is, so a manifest can say which binary ran it.
 	harness string
+	// hostTurnEvents receives the events of the turns this process starts itself; nil discards
+	// them and leaves the run record and the checkpoint.
+	hostTurnEvents HostTurnEvents
+	// delegationDelivery is told about a message the host could not put into a session.
+	delegationDelivery DelegationDelivery
+
+	// deliveryMu guards the delivery queues and the steered messages waiting for a boundary.
+	deliveryMu sync.Mutex
+	delivery   map[string]*deliveryQueue
+	steers     map[agent.SteerID]trackedSteer
 
 	mu       sync.Mutex
 	entries  map[string]*deployment
@@ -117,6 +127,8 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		entries:       map[string]*deployment{},
 		sessions:      map[string]*Session{},
 		slots:         map[string]int{},
+		delivery:      map[string]*deliveryQueue{},
+		steers:        map[agent.SteerID]trackedSteer{},
 	}
 	for _, opt := range opts {
 		if opt != nil {

@@ -82,13 +82,19 @@ func (s *Scripted) OpenDriver() *ScriptedDriver {
 	return driver.(*ScriptedDriver)
 }
 
+// pendingSteer is one queued input and the handle Steer returned for it.
+type pendingSteer struct {
+	id    agent.SteerID
+	input agent.SteerInput
+}
+
 // ScriptedDriver is one session's driver: the queue and the run counter belong here, not to
 // the program, because they are per conversation.
 type ScriptedDriver struct {
 	program *Scripted
 
 	mu      sync.Mutex
-	pending []agent.SteerInput
+	pending []pendingSteer
 	applied []agent.Interruption
 	nextID  int
 	runs    int
@@ -131,8 +137,8 @@ func (d *ScriptedDriver) drain(_ context.Context, boundary int, yield func(agent
 	pending := d.pending
 	d.pending = nil
 	d.mu.Unlock()
-	for _, input := range pending {
-		applied := agent.Interruption{Intent: input.Intent, Boundary: boundary}
+	for _, queued := range pending {
+		applied := agent.Interruption{ID: queued.id, Intent: queued.input.Intent, Boundary: boundary}
 		d.mu.Lock()
 		d.applied = append(d.applied, applied)
 		d.mu.Unlock()
@@ -151,8 +157,9 @@ func (d *ScriptedDriver) Steer(input agent.SteerInput) (agent.SteerID, error) {
 		return "", agent.ErrRunEnded
 	}
 	d.nextID++
-	d.pending = append(d.pending, input)
-	return agent.SteerID("steer-" + itoa(d.nextID)), nil
+	id := agent.SteerID("steer-" + itoa(d.nextID))
+	d.pending = append(d.pending, pendingSteer{id: id, input: input})
+	return id, nil
 }
 
 // Unsteer implements agent.Steerer: it withdraws a queued input, and reports ErrSteerUnknown
@@ -161,7 +168,7 @@ func (d *ScriptedDriver) Unsteer(id agent.SteerID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for i := range d.pending {
-		if agent.SteerID("steer-"+itoa(d.nextID-len(d.pending)+i+1)) != id {
+		if d.pending[i].id != id {
 			continue
 		}
 		d.pending = append(d.pending[:i], d.pending[i+1:]...)
