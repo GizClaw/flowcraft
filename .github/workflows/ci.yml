@@ -38,7 +38,7 @@ jobs:
               # One entry per module the checkout builds. The three implementation
               # modules are siblings of core, not packages inside it; a provider or a
               # backend is a package there, so the list does not recurse.
-              return sorted({"core", "sandbox", "inference", "agent", "tool", "examples/forge"})
+              return sorted({"core", "sandbox", "inference", "agent", "tool", "e2e", "examples/forge"})
 
           dirs = module_dirs()
           # The lint gate skips a module that is built the way a reader builds it:
@@ -225,6 +225,21 @@ jobs:
       - name: Check the deployment skill
         run: make check-skill
 
+  coverage:
+    name: Coverage ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      # Per-package floors, not a total: a total moves by two points when a
+      # well-tested file is split, and it hides the package that lost its tests
+      # behind the package that gained some. `make cover-write` is the only way
+      # to raise a floor, and the floors live in core/coverage-floor.txt where a
+      # reviewer sees a lowered number in the diff.
+      - run: make cover-check
+
   lint:
     name: Lint (${{ matrix.module }})
     needs: [compute-matrix]
@@ -311,9 +326,21 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      # A short fixed budget per target: enough to catch a panic on an edge
-      # input, not a real hunt (FUZZTIME extends it locally).
-      - run: FUZZTIME=15s scripts/fuzz.sh
+      # A fixed budget per target: enough to catch a panic on an edge input, not a
+      # real hunt (FUZZTIME extends it locally). The seed corpus lives next to each
+      # target and `make test` replays it, so what this job adds is the search, not
+      # the regressions.
+      #
+      # The build cache is where the engine keeps the inputs that expanded coverage
+      # without failing. It is per-machine, so without a cache every run starts from
+      # the committed seeds and the search never accumulates.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/go-build
+          key: fuzz-${{ hashFiles('**/testdata/fuzz/**') }}-${{ github.run_id }}
+          restore-keys: |
+            fuzz-${{ hashFiles('**/testdata/fuzz/**') }}-
+      - run: FUZZTIME=60s scripts/fuzz.sh
 
   bench:
     name: Benchmarks
@@ -331,7 +358,7 @@ jobs:
       - run: make bench-check
 
   test-shuffle:
-    name: Shuffle (core)
+    name: Shuffle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -340,9 +367,10 @@ jobs:
           go-version: "1.26"
       # Order-dependent tests are invisible under the default order; three
       # shuffled runs are cheap and catch shared state in the table and the
-      # stores.
-      - run: go test -shuffle=on -count=3 ./...
-        working-directory: core
+      # stores. The make target is what runs, not a hand-written loop over
+      # `core`: the modules it covers are the workspace's, and a lane that
+      # names one module stops covering the others the day a module is added.
+      - run: make test-shuffle
 
   test:
     name: Test (${{ matrix.module }})
@@ -437,6 +465,7 @@ jobs:
     needs:
       - release-intent
       - gofmt
+      - coverage
       - check-consumers
       - compute-matrix
       - lint
@@ -454,6 +483,7 @@ jobs:
           results=( \
             "${{ needs.release-intent.result }}" \
             "${{ needs.gofmt.result }}" \
+            "${{ needs.coverage.result }}" \
             "${{ needs.check-consumers.result }}" \
             "${{ needs.compute-matrix.result }}" \
             "${{ needs.lint.result }}" \

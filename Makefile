@@ -29,10 +29,10 @@ AGENT_MODULES := agent
 # reason the others are: a new source is a package beside them, and core keeps the contract.
 TOOL_MODULES := tool
 
-MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) examples/forge
+MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) e2e examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES)
+MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) e2e
 
 # `go mod tidy` resolves the core version a module pins against the module proxy.
 # The three implementation modules pin a core that is only a commit on main so
@@ -76,8 +76,8 @@ help:
 	@echo "FlowCraft"
 	@echo ""
 	@echo "  make vet         Run go vet on all modules (consumers outside the workspace)"
-	@echo "  make test        Run tests on all modules (excl. Go benchmarks; consumers"
-	@echo "                   outside the workspace)"
+	@echo "  make test        Run tests on all modules under the race detector (excl. Go"
+	@echo "                   benchmarks; consumers outside the workspace). RACE=0 skips it"
 	@echo "  make fmt         Run gofmt -s on all modules"
 	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
@@ -85,10 +85,13 @@ help:
 	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
 	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
 	@echo "  make test-shuffle   Run the tests in random order, three times"
-	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s)"
+	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s);"
+	@echo "                   FUZZ_SEED=5m is the run whose corpus files are committed"
 	@echo "  make stress      Stress one test (PKG= ./pkg RUN=TestName COUNT=200)"
 	@echo "  make check-consumers  Build the examples outside the workspace (GOWORK=off)."
-	@echo "  make ci          vet + test"
+	@echo "  make ci          vet + race tests + the coverage ratchet"
+	@echo "  make cover-check  Per-package coverage floors (core/coverage-floor.txt)"
+	@echo "  make cover-write  Raise the floors from the current profile"
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
 	@echo "  make release-plan   Print the pending module release plan as JSON."
@@ -107,10 +110,18 @@ vet:
 	@$(call GO_FOREACH,$(MODULES_TEST),vet,go vet $(VET_TAGS) ./...)
 	@$(call GO_FOREACH,$(MODULES_CONSUMER),vet-consumer,GOWORK=off go vet $(VET_TAGS) ./...)
 
+# The race detector is on by default, because the merge gate runs it: a local `make test`
+# that skipped it reported green on the failures CI then caught, which is the whole reason
+# concurrency bugs reached the release lane. RACE=0 is the explicit opt-out for an edit loop
+# that cannot afford it — nothing else turns it off, so a matrix in CI and a developer's run
+# stay the same check.
+RACE ?= 1
+RACE_FLAGS = $(if $(filter 1,$(RACE)),-race,)
+
 .PHONY: test
 test:
-	@$(call GO_FOREACH,$(MODULES_TEST),test,go test $(VET_TAGS) ./... -count=1)
-	@$(call GO_FOREACH,$(MODULES_CONSUMER),test-consumer,GOWORK=off go test $(VET_TAGS) ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_TEST),test,go test $(VET_TAGS) $(RACE_FLAGS) ./... -count=1)
+	@$(call GO_FOREACH,$(MODULES_CONSUMER),test-consumer,GOWORK=off go test $(VET_TAGS) $(RACE_FLAGS) ./... -count=1)
 
 .PHONY: fmt
 fmt:
@@ -227,6 +238,27 @@ cover:
 	@cd core && go tool cover -func=../.cover.out | tail -n 25
 	@echo "==> full profile: .cover.out (go tool cover -html=.cover.out)"
 
+# The coverage ratchet. A single total moves by two points when a well-tested file is
+# split, so the gate is per package against core/coverage-floor.txt: a floor is what the
+# package reached, it may only go up, and `cover-write` is the only thing that raises it.
+#
+# The profile is taken with -coverpkg=./... because a per-package number is misleading
+# here: sessionkit and netpolicy are exercised through the backends, so their own test
+# files cover a small slice while the real hit rate is several times higher.
+COVER_MODULE := core
+COVER_PROFILE := .cover.out
+
+.PHONY: cover-check cover-write
+cover-check:
+	@cd $(COVER_MODULE) && go test -count=1 -coverpkg=./... -coverprofile=../$(COVER_PROFILE) ./... >/dev/null
+	@cd scripts/coveragegate && GOWORK=off go run . -profile ../../$(COVER_PROFILE) \
+		-floor ../../$(COVER_MODULE)/coverage-floor.txt
+
+cover-write:
+	@cd $(COVER_MODULE) && go test -count=1 -coverpkg=./... -coverprofile=../$(COVER_PROFILE) ./... >/dev/null
+	@cd scripts/coveragegate && GOWORK=off go run . -profile ../../$(COVER_PROFILE) \
+		-floor ../../$(COVER_MODULE)/coverage-floor.txt -write
+
 .PHONY: test-shuffle
 test-shuffle:
 	@$(call GO_FOREACH,$(MODULES_TEST),test-shuffle,go test -shuffle=on -count=3 ./...)
@@ -244,8 +276,10 @@ stress:
 	fi
 	@scripts/stress.sh "$(PKG)" "$(RUN)" "$(COUNT)"
 
+# The default pre-commit gate. It is "what CI runs", not "the fast part of what CI runs":
+# a developer who skips the coverage ratchet here finds out about it in a review instead.
 .PHONY: ci
-ci: vet test
+ci: vet test cover-check
 
 .PHONY: release-check
 release-check:

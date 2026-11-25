@@ -1,0 +1,47 @@
+# Statement-coverage floors for core, one per package.
+#
+# A floor is what the package reached when it was last touched, rounded down to a
+# whole percent so ordinary churn does not force an edit. It may only go up: a
+# drop fails `make cover-check`, and lowering a number is a claim the reviewer of
+# the pull request has to accept.
+#
+# "-" marks a package with no floor. The conformance suites are executed by the
+# modules that own an implementation, not by core, so a core-only profile reports
+# nothing for them and a floor there would be a claim nobody made.
+#
+# Regenerate with `make cover-write`; the suite entries below are preserved by hand.
+#
+# package                            floor
+agent                              84
+agent/agenttest                    82
+config                             97
+deploy                             77
+deploy/sources                     83
+errdefs                            97
+fsx                                79
+host                               82
+identity                           100
+identity/inject                    100
+inference                          81
+inference/inferencetest            16
+inference/route                    78
+internal/decode                    92
+internal/layout                    83
+internal/paths                     74
+internal/pathtest                  80
+internal/ptr                       100
+internal/search                    99
+message                            86
+message/media                      69
+model                              79
+outcome                            80
+policy                             77
+sandbox                            83
+sandbox/sandboxtest                -
+skill                              89
+telemetry                          91
+telemetry/setup                    78
+telemetry/telemetrytest            74
+tool                               85
+tool/projection                    80
+tool/tooltest                      84
