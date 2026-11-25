@@ -31,7 +31,7 @@ func TestValidateGrantForCapsIsTheDocumentVersusProcessCheck(t *testing.T) {
 			mention: "does not configure",
 		},
 		"a model this process does not serve": {
-			grant:   policy.Grant{Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-9"}}}},
+			grant:   policy.Grant{Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-9"}}}}},
 			mention: "does not serve",
 		},
 	}
@@ -55,7 +55,7 @@ func TestValidateGrantForCapsAcceptsWhatTheProcessCarries(t *testing.T) {
 		"unconstrained": {},
 		"a known backend and model": {
 			Sandbox: "local",
-			Models:  []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}},
+			Models:  []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}}},
 		},
 	} {
 		if err := deploy.ValidateGrantForCaps("helper", grant, capsOf()); err != nil {

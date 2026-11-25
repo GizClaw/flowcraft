@@ -135,7 +135,7 @@ and the code that enforces it agree by construction.
 | `net`        | `mode` (`default`, `deny_all`, `allow_list`, `proxy`), `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`. | `default`: the host decides.                                                        |
 | `exec`       | `timeout`, `env`, `shell`.                                                                                            | No timeout, the host's environment, the backend's shell.                            |
 | `resources`  | `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.                                                   | Unbounded — and a backend that cannot enforce a non-zero value must refuse.         |
-| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **every model the process serves**.                                     |
+| `models`     | `[{id: {provider, name}, profile?, modes?}]`, in priority order: the first entry a request can use answers it.        | Empty means **every model the process serves**, in the process's own order.         |
 | `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                               |
 | `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                                  |
 
@@ -143,8 +143,21 @@ Three defaults are deliberately equal, and the equality is the design: files are
 open because a read is recoverable and auditable; tools are open because which
 tools exist is a property of the process; models are open because which models
 exist is the process's too. Each one is enforced where it is used — the tree
-handles the files, the projection the tools, and the host refuses a model call
+handles the files, the projection the tools, and the router refuses a model call
 outside the set before any provider sees it.
+
+A model entry may narrow what the model may be asked for:
+
+```yaml
+models:
+  - { id: { provider: openai, name: gpt-6 } } # any mode it declares
+  - { id: { provider: openai, name: deep-research }, modes: [text] }
+```
+
+The modes are `text`, `image`, `audio`, `video`, `tool_call`, `embed` and `decide`.
+`tool_call` is what a request that offers tools needs, so narrowing a model to
+`text` is how a session is denied tools on that model. A request that names no model
+gets the first entry, in order, that can serve it.
 
 `Grant.Normalized()` is the gate and the canonical form at once. It normalizes
 `files`, `tools` and `net`, validates `exec`, `resources` and `delegation`,

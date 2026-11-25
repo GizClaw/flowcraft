@@ -179,7 +179,7 @@ func TestDecisionFailoverReasksTheWholeCall(t *testing.T) {
 	}
 }
 
-// A router publishes only the seams its targets serve.
+// A router publishes only the modes its targets serve.
 func TestProviderPublishesOnlyServedSeams(t *testing.T) {
 	decider := &fakeDecider{reply: func(int) (inference.DecisionResponse, error) {
 		return inference.DecisionResponse{}, nil

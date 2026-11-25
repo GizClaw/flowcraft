@@ -58,7 +58,7 @@ agents:
 // the caller decides what its session may do.
 var endToEndAuthority = policy.Grant{
 	Sandbox: "local",
-	Models:  []model.ModelRef{{ID: model.ModelID{Provider: "fake", Name: "fake-1"}}},
+	Models:  []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "fake", Name: "fake-1"}}}},
 }
 
 // endToEndImpls is the implementation table this binary would carry. Names and kinds are

@@ -606,15 +606,8 @@ func parseRetryAfter(value string) time.Duration {
 
 // checkModel enforces a declared model's input and output modalities.
 func checkModel(descriptor model.ModelDescriptor, request inference.GenerateRequest) error {
-	if len(descriptor.Capabilities.Outputs) > 0 {
-		text := false
-		for _, output := range descriptor.Capabilities.Outputs {
-			if output == message.PartText {
-				text = true
-				break
-			}
-		}
-		if !text {
+	if len(descriptor.Capabilities.Modes) > 0 {
+		if !descriptor.Capabilities.Can(model.ModeText) {
 			return inference.NewError(
 				inference.UnsupportedFeature, inference.FieldOutput,
 				errors.New("anthropic: the model declares no text output"),

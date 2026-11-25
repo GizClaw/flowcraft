@@ -19,7 +19,7 @@ func permission() policy.Grant {
 	return policy.Grant{
 		Sandbox: "locked",
 		Files:   policy.Files{Read: []string{pathtest.Abs("srv/w")}, Write: []string{pathtest.Abs("srv/w/out")}},
-		Models:  []model.ModelRef{ref("openai", "gpt-4o"), ref("openai", "gpt-4o-mini")},
+		Models:  []policy.ModelGrant{{ModelRef: ref("openai", "gpt-4o")}, {ModelRef: ref("openai", "gpt-4o-mini")}},
 		Tools: policy.ToolSet{
 			Allow:    []string{"read_file", "write_file", "exec"},
 			Exposure: map[string]policy.Exposure{"exec": policy.ExposureDeferred},
@@ -98,7 +98,7 @@ func TestAllowsModelWithoutASetIsUnrestricted(t *testing.T) {
 // grant without a profile names it wherever it is served, and a grant with one
 // pins the deployment.
 func TestAllowsModelProfileIsAsymmetric(t *testing.T) {
-	loose := policy.Grant{Models: []model.ModelRef{ref("openai", "gpt-4o")}}
+	loose := policy.Grant{Models: []policy.ModelGrant{{ModelRef: ref("openai", "gpt-4o")}}}
 	if !loose.AllowsModel(model.ModelRef{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"}) {
 		t.Fatal("an unpinned grant refused a pinned ref")
 	}
@@ -106,9 +106,7 @@ func TestAllowsModelProfileIsAsymmetric(t *testing.T) {
 		t.Fatal("a different model id was allowed")
 	}
 
-	pinned := policy.Grant{Models: []model.ModelRef{
-		{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"},
-	}}
+	pinned := policy.Grant{Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"}}}}
 	if pinned.AllowsModel(ref("openai", "gpt-4o")) {
 		t.Fatal("a pinned grant allowed an unpinned ref")
 	}

@@ -48,15 +48,15 @@ func manifestHash(value any) string {
 // agent's deployment in the same process. The intersection is the honest answer, and a
 // granted model the catalog does not declare stays in as its bare ref so a typo in a grant
 // cannot vanish from the manifest.
-func manifestModels(provider *inference.Provider, granted []model.ModelRef) string {
+func manifestModels(provider *inference.Provider, granted []policy.ModelGrant) string {
 	if len(granted) == 0 {
 		return ""
 	}
 	entries := make([]manifestModel, 0, len(granted))
-	for _, ref := range granted {
-		entry := manifestModel{Ref: ref}
+	for _, grant := range granted {
+		entry := manifestModel{Ref: grant.ModelRef, Modes: grant.Modes}
 		if provider != nil && provider.Catalog != nil {
-			if descriptor, found := provider.Catalog.Describe(ref.ID); found {
+			if descriptor, found := provider.Catalog.Describe(grant.ID); found {
 				entry.Declared = &descriptor
 			}
 		}
@@ -78,7 +78,11 @@ func manifestModels(provider *inference.Provider, granted []model.ModelRef) stri
 // manifestModel is one model as the manifest records it: what the grant names, plus what
 // the provider declared about it.
 type manifestModel struct {
-	Ref      model.ModelRef
+	Ref model.ModelRef
+	// Modes is what the authority narrowed the model to, when it narrowed it. It is part
+	// of the combination: two sessions that may call one model for different modes do not
+	// hold the same authority.
+	Modes    []model.Mode           `json:",omitempty"`
 	Declared *model.ModelDescriptor `json:",omitempty"`
 }
 
@@ -145,7 +149,7 @@ func (a *Agents) manifestFor(entry *deployment, grant policy.Grant, view tool.Vi
 // Inputs come from three owners: the deployment (the driver kind), the session's authority (which
 // models and tools it holds), the process (what the providers declare and what the tool table
 // exposes), and the host (the deployment fingerprint and the build identity).
-func (a *Agents) manifestOf(driver string, granted []model.ModelRef, view tool.View) agent.Manifest {
+func (a *Agents) manifestOf(driver string, granted []policy.ModelGrant, view tool.View) agent.Manifest {
 	return agent.Manifest{
 		Schema:     agent.ManifestSchema,
 		Deployment: a.fingerprint,

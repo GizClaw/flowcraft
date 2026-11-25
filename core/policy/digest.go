@@ -4,8 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-
-	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // digestView is the part of a Grant that decides what a session may do: every field of one.
@@ -16,14 +14,14 @@ import (
 // Limits are deliberately absent: they are the session table's policy, and
 // changing an idle timeout must not invalidate a checkpoint.
 type digestView struct {
-	Sandbox    string           `json:"sandbox"`
-	Files      Files            `json:"files"`
-	Net        NetPolicy        `json:"net"`
-	Exec       ExecPolicy       `json:"exec"`
-	Resources  Resources        `json:"resources"`
-	Models     []model.ModelRef `json:"models"`
-	Tools      ToolSet          `json:"tools"`
-	Delegation *Delegation      `json:"delegation"`
+	Sandbox    string       `json:"sandbox"`
+	Files      Files        `json:"files"`
+	Net        NetPolicy    `json:"net"`
+	Exec       ExecPolicy   `json:"exec"`
+	Resources  Resources    `json:"resources"`
+	Models     []ModelGrant `json:"models"`
+	Tools      ToolSet      `json:"tools"`
+	Delegation *Delegation  `json:"delegation"`
 }
 
 // Digest is the stable identity of a permission set: the value a span renders as

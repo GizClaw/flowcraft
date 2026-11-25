@@ -24,7 +24,7 @@ const unaryResponseLimit = 32 << 20
 //
 // The transport is `driver/internal/httpx`: the client, the body ceiling and the
 // failure classification are shared with the other vendor drivers. Retries are
-// not here — `core/inference/route` owns the attempt budget for every seam, so a
+// not here — `core/inference/route` owns the attempt budget for every mode, so a
 // call asks once and reports what happened.
 type mediaClient struct {
 	http *httpx.Client

@@ -76,7 +76,7 @@ const (
 func Authority() policy.Grant {
 	return policy.Grant{
 		Sandbox: "local",
-		Models:  []model.ModelRef{{ID: model.ModelID{Provider: providerKey, Name: modelName}}},
+		Models:  []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: providerKey, Name: modelName}}}},
 		Tools:   policy.ToolSet{Allow: []string{"write_file"}},
 	}
 }

@@ -15,13 +15,12 @@ import (
 
 func speechSpec() ModelSpec {
 	return testSpec("speech-2.6-hd", "tts",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartAudio})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeAudio})
 }
 
 func h3Spec() ModelSpec {
 	return testSpec("MiniMax-H3", "video",
-		[]message.PartKind{message.PartText, message.PartImage, message.PartVideo, message.PartAudio},
-		[]message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText, message.PartImage, message.PartVideo, message.PartAudio}, []model.Mode{model.ModeVideo})
 }
 
 func testRequest(name string, output inference.Output, content message.Content) inference.GenerateRequest {
@@ -536,8 +535,7 @@ func TestWireModelAliasReachesTheWire(t *testing.T) {
 }
 
 func TestNewRejectsAnInconsistentLineUp(t *testing.T) {
-	broken := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText},
-		[]message.PartKind{message.PartText})
+	broken := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeText})
 	_, err := New(Settings{BaseURL: "https://example.invalid", APIKey: "key",
 		Models: []ModelSpec{broken}})
 	if err == nil {
@@ -554,7 +552,7 @@ func TestNewRejectsAnInconsistentLineUp(t *testing.T) {
 // the model does not serve).
 func TestCompileVideoRejectsUndeclaredInput(t *testing.T) {
 	textOnly := testSpec("MiniMax-H3", "video",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeVideo})
 	request := testRequest("MiniMax-H3", inference.OutputVideo,
 		message.Content{Parts: []message.Part{
 			message.TextPart{Text: "animate"},
@@ -571,8 +569,7 @@ func TestCompileVideoRejectsUndeclaredInput(t *testing.T) {
 
 	// The same request compiles once the declaration lists the image input.
 	withImages := testSpec("MiniMax-H3", "video",
-		[]message.PartKind{message.PartText, message.PartImage},
-		[]message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText, message.PartImage}, []model.Mode{model.ModeVideo})
 	if _, err := compileVideo(withImages, "MiniMax-H3")(
 		context.Background(), request, pipeline.ShapeUnary); err != nil {
 		t.Fatalf("declared image input rejected: %v", err)

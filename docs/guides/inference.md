@@ -195,6 +195,43 @@ vendor's model is not answered by another vendor that happens to use the same
 name — which is what makes a grant's `models[].id.provider` a real constraint
 rather than a comment.
 
+### What the target must be able to do
+
+A candidate must also **serve what the request asks for**. `ModelCapabilities.Modes`
+is that vocabulary: `text`, `image`, `audio`, `video`, `tool_call`, `embed` and
+`decide`, with `EmbeddingDimensions` filling in `embed` and text assumed when a
+catalog entry says nothing at all.
+
+- A generation needs the mode its `Output` names, plus `tool_call` when it carries
+  tools. A model that declares nothing is assumed to produce text and is not refused
+  a tool channel — an empty declaration filters nothing, which is the same rule the
+  input list follows.
+- A decision needs `decide`; embeddings need `embed`.
+- A model that declares _some_ modes is held to them: one that lists `text` will not
+  be handed a video request or a toolset.
+
+Two things this fixes rather than documents: asking an embedding-only model to
+generate is refused here, by name, instead of failing at the vendor; and a
+`tool_calling` flag nobody read is gone — the tool channel is a mode, so a grant can
+narrow a model to `text` and a request with tools is then refused before it runs.
+
+### Sessions restrict the fleet
+
+`Router.Restrict` returns a copy that only serves the models a session's grant lists,
+in the grant's order. The host builds one per session at open, so the list a caller
+states is the list the router will choose from — a request that names a model outside
+it is refused with `PolicyDenied` (`model.not_granted`), one that uses a mode the
+entry excludes is `model.mode_not_permitted`, and a request that names no model takes
+the first entry that can serve it (`model.no_candidate` when none can). A request
+carrying provider-specific options is pinned to the provider those options name,
+because the pipeline drops anything addressed elsewhere.
+
+The host restates those refusals as a `policy.Denial` with `Check: models`, so what a
+caller and the next turn read is the sentence — which model, what the session may
+call — under the same classification every other refusal uses. The router's own
+classification stays as the cause, which is how a caller tells "refused" from "could
+not be consulted".
+
 | Field                               | Meaning                                                              |
 | ----------------------------------- | -------------------------------------------------------------------- |
 | `Generate`, `Decision`              | One selector per seam; a nil selector means every target in order.   |

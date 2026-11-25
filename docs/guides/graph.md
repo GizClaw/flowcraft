@@ -47,20 +47,18 @@ that stays well defined.
 
 ## The document
 
-The graph is its own file; the deployment's engine settings only name it:
+The graph is its own file; the deployment's program settings only name it:
 
 ```yaml
 # deploy.yaml
 agents:
   - name: forge
-    engine:
-      kind: graph
+    program:
+      impl: graph
       settings:
-        source: { kind: file, settings: { path: ./graphs/react.yaml } }
-    runtime:
-      layers:
-        - priority: 0
-          source: { kind: file, settings: { path: ./runtime.yaml } }
+        model: { provider: openai, name: gpt-5 } # what a node that names none calls
+        path: ./graphs/react.yaml
+    limits: { idle: 30m }
 ```
 
 ```yaml
@@ -218,7 +216,7 @@ One model call per invocation.
 | `usage`              | State key the token usage is appended to.                                                                                       |
 | `output`             | State key the response text is written to.                                                                                      |
 | `request.stream`     | Nil streams (incremental events, what a reader watches); `false` returns one finished response for a call whose answer is data. |
-| `request.model`      | `provider`, `name`, `profile` — resolved against the runtime's routing table.                                                   |
+| `request.model`      | Optional. `provider`, `name`, `profile` pin the model; omitted, the router answers from the session's granted list.             |
 | `request.system`     | The system framing for this call.                                                                                               |
 | `request.tools`      | `enabled`, `names` (restrict the offer), `require` (force visible in a dynamic catalog), `choice`.                              |
 | `request.extensions` | Provider extensions, decoded by the registered `ExtensionDecoder`s.                                                             |

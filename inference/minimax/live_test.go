@@ -53,8 +53,8 @@ func TestLiveSpeech(t *testing.T) {
 	provider := liveSettings(t, ModelSpec{
 		Name: name, Kind: "tts",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartAudio},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeAudio},
 		},
 	})
 
@@ -92,8 +92,8 @@ func TestLiveVideo(t *testing.T) {
 	provider := liveSettings(t, ModelSpec{
 		Name: name, Kind: "video",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartVideo},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeVideo},
 		},
 	})
 

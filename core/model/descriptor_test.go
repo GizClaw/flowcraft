@@ -67,15 +67,15 @@ func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
 	original := ModelDescriptor{
 		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 		Capabilities: ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText, message.PartImage},
-			Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartText, message.PartImage},
+			Modes:  []Mode{ModeText},
 		},
 	}
 	clone := original.Clone()
 	clone.Capabilities.Inputs[1] = message.PartAudio
-	clone.Capabilities.Outputs[0] = message.PartImage
+	clone.Capabilities.Modes[0] = ModeImage
 	if original.Capabilities.Inputs[1] != message.PartImage ||
-		original.Capabilities.Outputs[0] != message.PartText {
+		original.Capabilities.Modes[0] != ModeText {
 		t.Fatalf(
 			"descriptor clone shares capability slices: original = %+v",
 			original.Capabilities,
@@ -83,15 +83,15 @@ func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
 	}
 }
 
-func TestModelDescriptorValidateRejectsNonOutputModality(t *testing.T) {
+func TestModelDescriptorValidateRejectsAnUnknownMode(t *testing.T) {
 	descriptor := ModelDescriptor{
 		ID: ModelID{Provider: "openai", Name: "gpt-x"},
 		Capabilities: ModelCapabilities{
-			Outputs: []message.PartKind{message.PartToolCall},
+			Modes: []Mode{Mode("file")},
 		},
 	}
 	if err := descriptor.Validate(); err == nil {
-		t.Fatal("tool_call output unexpectedly accepted")
+		t.Fatal("an unlisted mode unexpectedly accepted")
 	}
 }
 
@@ -147,8 +147,7 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 	  "label": "Kimi K3",
 	  "capabilities": {
 	    "inputs": ["text", "image"],
-	    "outputs": ["text"],
-	    "tool_calling": true,
+	    "modes": ["text", "tool_call"],
 	    "hosted_web_search": true
 	  },
 	  "limits": {"max_input_tokens": 128000, "max_output_tokens": 8192},
@@ -172,7 +171,7 @@ func TestModelDescriptorWireFormat(t *testing.T) {
 	}
 	for _, key := range []string{
 		`"id"`, `"label"`, `"capabilities"`, `"inputs"`,
-		`"outputs"`, `"tool_calling"`, `"hosted_web_search"`,
+		`"modes"`, `"tool_call"`, `"hosted_web_search"`,
 		`"limits"`, `"max_input_tokens"`, `"max_output_tokens"`,
 		`"lifecycle"`, `"status"`, `"retires_at"`, `"replacement"`, `"notes"`,
 	} {

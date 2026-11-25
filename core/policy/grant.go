@@ -32,10 +32,10 @@ type Grant struct {
 	Exec ExecPolicy `json:"exec,omitempty" yaml:"exec,omitempty"`
 	// Resources caps what a command may consume.
 	Resources Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
-	// Models lists the callable models. Empty means every model the process
-	// serves: which models exist is a property of the process, and the host
-	// enforces the set at the call, so "unrestricted" is a meaningful default.
-	Models []model.ModelRef `json:"models,omitempty" yaml:"models,omitempty"`
+	// Models lists the callable models, in priority order: the first entry a mode can
+	// use is the one a call that names no model gets. Empty means every model the
+	// process serves.
+	Models []ModelGrant `json:"models,omitempty" yaml:"models,omitempty"`
 	// Tools is which tools the session may see and call.
 	Tools ToolSet `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Delegation is the authority to hand work to another agent. Nil means
@@ -90,18 +90,69 @@ func (g Grant) Validate() error {
 	return err
 }
 
-// AllowsModel reports whether ref may be called. An empty model set grants every
-// model the process serves: what exists at all is a property of the process, the
-// same reason an empty tool allow-list means "all of them".
-func (g Grant) AllowsModel(ref model.ModelRef) bool { return g.allowsModel(ref) }
+// ModelGrant is one model a session may call, and the modes it may call it for.
+//
+// It embeds the ref instead of nesting it, so a document keeps writing
+// `models: [{id: {...}, profile: ...}]` and adds `modes` only where it narrows.
+// Empty Modes mean every mode the model declares — a grant that lists a model without
+// qualifying it permits what the provider says the model can do.
+type ModelGrant struct {
+	model.ModelRef
+	// Modes restricts what the model may be asked for: text, image, audio, video,
+	// embed or decide.
+	Modes []model.Mode `json:"modes,omitempty" yaml:"modes,omitempty"`
+}
 
-func (g Grant) allowsModel(ref model.ModelRef) bool {
+// Validate rejects a mode set no model could honour.
+func (m ModelGrant) Validate() error {
+	if err := m.ModelRef.Validate(); err != nil {
+		return err
+	}
+	seen := make(map[model.Mode]struct{}, len(m.Modes))
+	for _, mode := range m.Modes {
+		if !mode.Valid() {
+			return errdefs.Validationf("mode %q is not one of text, image, audio, video, embed or decide", mode)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return errdefs.Validationf("mode %q is declared twice", mode)
+		}
+		seen[mode] = struct{}{}
+	}
+	return nil
+}
+
+// AllowsModel reports whether ref may be called at all, whichever mode asks. An
+// empty model set grants every model the process serves: what exists at all is a
+// property of the process, the same reason an empty tool allow-list means "all of
+// them".
+func (g Grant) AllowsModel(ref model.ModelRef) bool {
 	if len(g.Models) == 0 {
 		return true
 	}
-	return slices.ContainsFunc(g.Models, func(granted model.ModelRef) bool {
-		return sameModel(granted, ref)
-	})
+	for _, granted := range g.Models {
+		if sameModel(granted.ModelRef, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsModelMode reports whether ref may be called for mode.
+//
+// An entry without modes permits every mode the model declares, so this answers the
+// permission half of the question; whether the model can do it at all is the
+// provider's declaration, which the router reads from the catalog.
+func (g Grant) AllowsModelMode(ref model.ModelRef, mode model.Mode) bool {
+	if len(g.Models) == 0 {
+		return true
+	}
+	for _, granted := range g.Models {
+		if !sameModel(granted.ModelRef, ref) {
+			continue
+		}
+		return len(granted.Modes) == 0 || slices.Contains(granted.Modes, mode)
+	}
+	return false
 }
 
 // sameModel reports whether a granted ref names the model want asks for.
@@ -139,22 +190,61 @@ func (g Grant) AllowsRead(path string) bool {
 	return len(g.Files.Read) == 0 || coveredBy(g.Files.Read, path)
 }
 
-// normalizeModels validates and deduplicates a model set while keeping the
-// declared order: position is priority, so sorting would reorder a failover
-// chain.
-func normalizeModels(refs []model.ModelRef) ([]model.ModelRef, error) {
-	if len(refs) == 0 {
+// normalizeModels validates and deduplicates a model set while keeping the declared
+// order: position is priority, so sorting would reorder the list a call without a
+// model name chooses from.
+//
+// A model listed twice keeps its first position and the **intersection** of its mode
+// sets, because a repeated entry can only narrow: empty means every mode, so
+// intersecting with it is the other set. A caller that repeated a model to widen it
+// wrote a list whose meaning depended on which entry was read first.
+func normalizeModels(grants []ModelGrant) ([]ModelGrant, error) {
+	if len(grants) == 0 {
 		return nil, nil
 	}
-	out := make([]model.ModelRef, 0, len(refs))
-	for i, ref := range refs {
-		if err := ref.Validate(); err != nil {
+	out := make([]ModelGrant, 0, len(grants))
+	for i, grant := range grants {
+		if err := grant.Validate(); err != nil {
 			return nil, errdefs.Validationf("policy.models[%d]: %w", i, err)
 		}
-		if slices.Contains(out, ref) {
+		merged := false
+		for j, existing := range out {
+			if !sameModel(existing.ModelRef, grant.ModelRef) {
+				continue
+			}
+			out[j].Modes = intersectModes(existing.Modes, grant.Modes)
+			merged = true
+			break
+		}
+		if merged {
 			continue
 		}
-		out = append(out, ref)
+		out = append(out, ModelGrant{
+			ModelRef: grant.ModelRef,
+			Modes:    slices.Clone(grant.Modes),
+		})
 	}
 	return out, nil
+}
+
+// intersectModes keeps the modes both sides name, treating an empty set as "every
+// mode" so a plain entry never narrows or widens a qualified one by accident.
+func intersectModes(left, right []model.Mode) []model.Mode {
+	switch {
+	case len(left) == 0:
+		return slices.Clone(right)
+	case len(right) == 0:
+		return slices.Clone(left)
+	}
+	allowed := make(map[model.Mode]struct{}, len(right))
+	for _, mode := range right {
+		allowed[mode] = struct{}{}
+	}
+	out := make([]model.Mode, 0, len(left))
+	for _, mode := range left {
+		if _, ok := allowed[mode]; ok {
+			out = append(out, mode)
+		}
+	}
+	return out
 }

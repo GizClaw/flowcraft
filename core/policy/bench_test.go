@@ -15,7 +15,7 @@ import (
 func BenchmarkGrantNormalized(b *testing.B) {
 	authority := policy.Grant{
 		Files:  policy.Files{Read: []string{pathtest.Abs("srv/work")}, Write: []string{pathtest.Abs("srv/work/out")}},
-		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}, {ID: model.ModelID{Provider: "openai", Name: "gpt-4o-mini"}}},
+		Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}}, {ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-4o-mini"}}}},
 		Tools: policy.ToolSet{
 			Allow:  []string{"read_file", "write_file", "exec", "grep"},
 			Budget: policy.Budget{MaxDefinitions: 16, MaxBytes: 8192},
@@ -34,7 +34,7 @@ func BenchmarkGrantNormalized(b *testing.B) {
 func BenchmarkGrantDigest(b *testing.B) {
 	authority := policy.Grant{
 		Files:  policy.Files{Read: []string{pathtest.Abs("srv/work")}, Write: []string{pathtest.Abs("srv/work/out")}},
-		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
+		Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}}},
 	}
 	b.ReportAllocs()
 	for b.Loop() {

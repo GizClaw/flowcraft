@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/inference/anthropic"
 )
@@ -13,7 +12,7 @@ func modelDescriptor(name string) model.ModelDescriptor {
 	return model.ModelDescriptor{
 		ID: model.ModelID{Provider: anthropic.ProviderID, Name: name},
 		Capabilities: model.ModelCapabilities{
-			Outputs: []message.PartKind{message.PartText},
+			Modes: []model.Mode{model.ModeText},
 		},
 	}
 }

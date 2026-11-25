@@ -51,7 +51,7 @@ func causeText(err error) string {
 // trip, and the ones it does not set must stay absent.
 func TestCompileImageAppliesOptions(t *testing.T) {
 	descriptor := testDescriptor("image-options", "image",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	five := 5
 	guidance := 7.5
 	watermark := false
@@ -114,7 +114,7 @@ func TestCompileImageAppliesOptions(t *testing.T) {
 // deployment that declares one should be told it was read and dropped.
 func TestCompileImageWarnsAboutQuality(t *testing.T) {
 	descriptor := testDescriptor("image-options", "image",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	_, warnings, err := compileTestImage(t, descriptor, imageOptionsRequest(t, &ImageOptions{
 		Quality: media.ImageQualityHigh,
 	}, message.TextPart{Text: "x"}))
@@ -130,7 +130,7 @@ func TestCompileImageWarnsAboutQuality(t *testing.T) {
 // deployment gets wrong, and each has a sentence worth asserting.
 func TestCompileImageRefusesConflictingOptions(t *testing.T) {
 	descriptor := testDescriptor("image-options", "image",
-		[]message.PartKind{message.PartText, message.PartImage}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText, message.PartImage}, []model.Mode{model.ModeImage})
 	refOne := embedTestImagePart(t)
 	refTwo := embedTestImagePart(t)
 	size := &media.ImageSize{Width: 1024, Height: 1024}
@@ -213,7 +213,7 @@ func TestCompileImageRefusesConflictingOptions(t *testing.T) {
 // except for the one the platform reads as a word.
 func TestCompileImageNormalisesSizeTokens(t *testing.T) {
 	descriptor := testDescriptor("image-options", "image",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	for token, want := range map[string]string{
 		"2k":       "2K",
 		"4k":       "4K",

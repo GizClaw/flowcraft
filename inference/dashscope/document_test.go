@@ -2,12 +2,11 @@ package dashscope
 
 import (
 	"encoding/json"
+	"github.com/GizClaw/flowcraft/core/model"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // TestDocumentCoversEverySetting is the guard this shape exists for.
@@ -74,7 +73,7 @@ func TestDocumentDecodesDeployment(t *testing.T) {
 			"name": "wan2.7-t2v",
 			"kind": "video",
 			"wire_model": "wan2.7-t2v-2026-06-12",
-			"capabilities": {"inputs": ["text"], "outputs": ["video"]},
+			"capabilities": {"inputs": ["text"], "modes": ["video"]},
 			"limits": {"max_input_tokens": 2048},
 			"video": {"input": "t2v", "resolutions": ["720P"], "ratios": ["16:9"]}
 		}]
@@ -114,9 +113,9 @@ func TestDocumentDecodesDeployment(t *testing.T) {
 	if declared.WireModel != "wan2.7-t2v-2026-06-12" {
 		t.Errorf("wire_model = %q", declared.WireModel)
 	}
-	if len(declared.Capabilities.Outputs) != 1 ||
-		declared.Capabilities.Outputs[0] != message.PartVideo {
-		t.Errorf("capabilities.outputs = %v, want [video]", declared.Capabilities.Outputs)
+	if len(declared.Capabilities.Modes) != 1 ||
+		declared.Capabilities.Modes[0] != model.ModeVideo {
+		t.Errorf("capabilities.modes = %v, want [video]", declared.Capabilities.Modes)
 	}
 	if declared.Limits.MaxInputTokens == nil || *declared.Limits.MaxInputTokens != 2048 {
 		t.Errorf("limits.max_input_tokens = %v, want 2048", declared.Limits.MaxInputTokens)

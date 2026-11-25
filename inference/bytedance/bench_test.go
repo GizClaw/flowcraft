@@ -27,7 +27,7 @@ func benchImagePart(tb testing.TB, size int) message.Part {
 // so the number is the per-call overhead every image request pays.
 func BenchmarkCompileImage(b *testing.B) {
 	desc := testDescriptor("image-bench", "image",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	request := testRequest("image-bench", inference.OutputImage,
 		message.NewTextContent("a red square on a white wall, photographed in daylight"))
 	compile := compileImage("ep-image", desc)
@@ -47,8 +47,8 @@ func BenchmarkCompileVideo(b *testing.B) {
 	spec := ModelSpec{
 		Name: "video-bench", Kind: "video",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText, message.PartImage},
-			Outputs: []message.PartKind{message.PartVideo},
+			Inputs: []message.PartKind{message.PartText, message.PartImage},
+			Modes:  []model.Mode{model.ModeVideo},
 		},
 	}
 	request := testRequest("video-bench", inference.OutputVideo, message.Content{

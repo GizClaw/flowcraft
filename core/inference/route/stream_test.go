@@ -145,7 +145,7 @@ func TestGenerateStreamHandsTheStreamOverVerbatim(t *testing.T) {
 	}
 }
 
-// TestDecideRoutesAndFailsOver covers the judgment seam, which shares the dispatch
+// TestDecideRoutesAndFailsOver covers the judgment mode, which shares the dispatch
 // machinery with generation and therefore has to exhibit the same failover.
 func TestDecideRoutesAndFailsOver(t *testing.T) {
 	failing := &fakeDecider{reply: func(int) (inference.DecisionResponse, error) {
@@ -189,16 +189,16 @@ func TestDecideRoutesAndFailsOver(t *testing.T) {
 // a host that shows a model list must see every target's line-up, and a lookup must
 // answer with the target that actually declares it.
 func TestRouteCatalogMergesTargets(t *testing.T) {
-	first := routeCatalog{targets: []Target{{Name: "a", Provider: inference.Provider{
+	first := routeCatalog{router: &Router{targets: []Target{{Name: "a", Provider: inference.Provider{
 		Catalog: fakeCatalog{models: []model.ModelDescriptor{
 			{ID: model.ModelID{Provider: "p", Name: "m1"}},
 		}},
-	}}}}
-	merged := routeCatalog{targets: append(first.targets, Target{Name: "b", Provider: inference.Provider{
+	}}}}}
+	merged := routeCatalog{router: &Router{targets: append(first.router.targets, Target{Name: "b", Provider: inference.Provider{
 		Catalog: fakeCatalog{models: []model.ModelDescriptor{
 			{ID: model.ModelID{Provider: "p", Name: "m2"}},
 		}},
-	}})}
+	}})}}
 
 	if got := len(merged.Models()); got != 2 {
 		t.Fatalf("Models() returned %d entries, want 2", got)

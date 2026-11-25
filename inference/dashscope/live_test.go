@@ -50,8 +50,8 @@ func liveModel(t *testing.T, env, fallback string) string {
 	return fallback
 }
 
-func liveSpec(kind, name string, inputs, outputs []message.PartKind) ModelSpec {
-	capabilities := model.ModelCapabilities{Inputs: inputs, Outputs: outputs}
+func liveSpec(kind, name string, inputs []message.PartKind, modes []model.Mode) ModelSpec {
+	capabilities := model.ModelCapabilities{Inputs: inputs, Modes: modes}
 	if kind == "embed" {
 		capabilities.EmbeddingDimensions = 1024
 	}
@@ -90,7 +90,7 @@ func TestLiveEmbed(t *testing.T) {
 func TestLiveSpeech(t *testing.T) {
 	name := liveModel(t, "DASHSCOPE_TTS_MODEL", "qwen3-tts-flash")
 	provider := liveSettings(t, liveSpec("tts", name,
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartAudio}))
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeAudio}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -121,7 +121,7 @@ func TestLiveImage(t *testing.T) {
 	}
 	name := liveModel(t, "DASHSCOPE_IMAGE_MODEL", "wanx2.1-t2i-turbo")
 	provider := liveSettings(t, liveSpec("image", name,
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage}))
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()

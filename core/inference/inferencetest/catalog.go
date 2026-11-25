@@ -163,14 +163,12 @@ func runCoverage(t *testing.T, fixture CatalogFixture) {
 		want := output.PartKind()
 		covered := false
 		for _, descriptor := range fixture.Declared {
-			if len(descriptor.Capabilities.Outputs) == 0 {
-				// An empty list declares nothing and filters nothing.
+			if len(descriptor.Capabilities.Modes) == 0 {
+				// An empty declaration filters nothing.
 				continue
 			}
-			for _, declared := range descriptor.Capabilities.Outputs {
-				if declared == want {
-					covered = true
-				}
+			if descriptor.Capabilities.Can(model.Mode(want)) {
+				covered = true
 			}
 		}
 		if !covered {
@@ -213,7 +211,7 @@ func runUnknownOutput(t *testing.T, fixture CatalogFixture, unreachable string) 
 	var target model.ModelDescriptor
 	var missing inference.Output
 	for _, descriptor := range fixture.Declared {
-		if len(descriptor.Capabilities.Outputs) == 0 {
+		if len(descriptor.Capabilities.Modes) == 0 {
 			continue
 		}
 		for _, output := range fixture.Served {
@@ -240,11 +238,5 @@ func runUnknownOutput(t *testing.T, fixture CatalogFixture, unreachable string) 
 }
 
 func declaresOutput(descriptor model.ModelDescriptor, output inference.Output) bool {
-	want := output.PartKind()
-	for _, declared := range descriptor.Capabilities.Outputs {
-		if declared == want {
-			return true
-		}
-	}
-	return false
+	return descriptor.Capabilities.Can(model.Mode(output.PartKind()))
 }

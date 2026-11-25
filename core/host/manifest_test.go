@@ -74,7 +74,7 @@ func manifestHost(t *testing.T, opts ...AgentsOption) *Agents {
 // manifestGrant is the authority the manifest tests open with: one granted model and the
 // process's whole tool table.
 func manifestGrant() policy.Grant {
-	return policy.Grant{Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}}}
+	return policy.Grant{Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}}}}
 }
 
 // sessionManifest is the combination one authority runs under: the value a session stamps on its
@@ -240,14 +240,14 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 			Label: weight,
 		}}}}
 	}
-	base := manifestModels(declared("a"), []model.ModelRef{ref})
+	base := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: ref}})
 	if base == "" {
 		t.Fatal("a granted and declared model has no digest")
 	}
-	if again := manifestModels(declared("a"), []model.ModelRef{ref}); again != base {
+	if again := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: ref}}); again != base {
 		t.Fatalf("the same catalog hashed differently: %q vs %q", again, base)
 	}
-	if changed := manifestModels(declared("b"), []model.ModelRef{ref}); changed == base {
+	if changed := manifestModels(declared("b"), []policy.ModelGrant{{ModelRef: ref}}); changed == base {
 		t.Fatal("a changed declaration did not change the digest")
 	}
 	if got := manifestModels(declared("a"), nil); got != "" {
@@ -256,7 +256,7 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 	// A granted model the catalog does not declare still counts: a typo in a grant is a
 	// different deployment, not an absent one.
 	missing := model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-6"}}
-	if got := manifestModels(declared("a"), []model.ModelRef{missing}); got == "" {
+	if got := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: missing}}); got == "" {
 		t.Fatal("an undeclared granted model left no digest")
 	}
 }
@@ -266,7 +266,7 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 func TestTheGrantDecidesTheModelDigest(t *testing.T) {
 	ref := model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}
 	provider := &inference.Provider{Catalog: catalog{models: []model.ModelDescriptor{{ID: ref.ID}}}}
-	if manifestModels(provider, []model.ModelRef{ref}) == manifestModels(provider, nil) {
+	if manifestModels(provider, []policy.ModelGrant{{ModelRef: ref}}) == manifestModels(provider, nil) {
 		t.Fatal("the granted model list did not reach the digest")
 	}
 	var _ = policy.Grant{}

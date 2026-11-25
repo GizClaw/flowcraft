@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/model"
 )
@@ -269,12 +268,12 @@ func (m ModelSpec) Validate() error {
 	if m.Capabilities.EmbeddingDimensions > 0 {
 		return fmt.Errorf("minimax serves no embedding surface")
 	}
-	if m.Capabilities.Decision {
+	if m.Capabilities.Can(model.ModeDecide) {
 		return fmt.Errorf("minimax serves no decision surface")
 	}
 	switch modelKind(m.Kind) {
 	case kindTTS:
-		if !slices.Contains(m.Capabilities.Outputs, message.PartAudio) {
+		if !slices.Contains(m.Capabilities.Modes, model.ModeAudio) {
 			return fmt.Errorf("tts family must declare audio output")
 		}
 		if !m.Video.isZero() {
@@ -284,7 +283,7 @@ func (m ModelSpec) Validate() error {
 			return err
 		}
 	case kindVideo:
-		if !slices.Contains(m.Capabilities.Outputs, message.PartVideo) {
+		if !slices.Contains(m.Capabilities.Modes, model.ModeVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
 		if m.TTS != (TTSParams{}) {

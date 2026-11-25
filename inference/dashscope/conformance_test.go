@@ -11,8 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/inference/pipeline"
 )
 
-func testModel(name, kind string, inputs, outputs []message.PartKind) ModelSpec {
-	return ModelSpec{Name: name, Kind: kind, Capabilities: model.ModelCapabilities{Inputs: inputs, Outputs: outputs}}
+func testModel(name, kind string, inputs []message.PartKind, modes []model.Mode) ModelSpec {
+	return ModelSpec{Name: name, Kind: kind, Capabilities: model.ModelCapabilities{Inputs: inputs, Modes: modes}}
 }
 
 func testGenerate(name string, output inference.Output, content message.Content) inference.GenerateRequest {
@@ -24,7 +24,7 @@ func testGenerate(name string, output inference.Output, content message.Content)
 }
 
 func TestCompileText(t *testing.T) {
-	declared := testModel("qwen", "generate", []message.PartKind{message.PartText}, []message.PartKind{message.PartText})
+	declared := testModel("qwen", "generate", []message.PartKind{message.PartText}, []model.Mode{model.ModeText})
 	declared.Generate.API = generateAPIMultimodal
 	request := testGenerate("qwen", inference.OutputText, message.NewTextContent("hello"))
 	compiled, err := compileGenerate(declared, "qwen")(context.Background(), request, pipeline.ShapeUnary)
@@ -56,7 +56,7 @@ func TestCompileEmbed(t *testing.T) {
 }
 
 func TestCompileImage(t *testing.T) {
-	declared := testModel("image", "image", []message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+	declared := testModel("image", "image", []message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	declared.Image = ImageParams{Format: media.ImageFormatPNG}
 	request := testGenerate("image", inference.OutputImage, message.NewTextContent("a red square"))
 	compiled, err := compileImage(declared, "image")(context.Background(), request, pipeline.ShapeUnary)
@@ -70,7 +70,7 @@ func TestCompileImage(t *testing.T) {
 
 func TestCompileVideoMediaArray(t *testing.T) {
 	declared := testModel("wan3", "video",
-		[]message.PartKind{message.PartText, message.PartImage}, []message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText, message.PartImage}, []model.Mode{model.ModeVideo})
 	declared.Video = VideoParams{Media: &MediaParams{FirstFrame: true, LastFrame: true}}
 	source, err := media.NewImageURL("https://example.com/first.png", "image/png")
 	if err != nil {
@@ -100,7 +100,7 @@ func TestCompileVideoMediaArray(t *testing.T) {
 }
 
 func TestCompileTTS(t *testing.T) {
-	declared := testModel("tts", "tts", []message.PartKind{message.PartText}, []message.PartKind{message.PartAudio})
+	declared := testModel("tts", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeAudio})
 	declared.TTS = TTSParams{Encoding: media.AudioEncodingPCM16, SampleRateHz: 24000, Channels: 1}
 	request := testGenerate("tts", inference.OutputAudio, message.NewTextContent("hello"))
 	request.Extensions = inference.Extensions{&TTSOptions{Voice: "Cherry", Language: "Chinese"}}
@@ -114,7 +114,7 @@ func TestCompileTTS(t *testing.T) {
 }
 
 func TestCompileTranscribe(t *testing.T) {
-	declared := testModel("asr", "transcribe", []message.PartKind{message.PartAudio}, []message.PartKind{message.PartText})
+	declared := testModel("asr", "transcribe", []message.PartKind{message.PartAudio}, []model.Mode{model.ModeText})
 	source, err := media.NewAudioURL("https://example.com/a.wav", "audio/wav")
 	if err != nil {
 		t.Fatalf("audio: %v", err)

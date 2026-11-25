@@ -128,7 +128,7 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 		},
 		Exec:      policy.ExecPolicy{Timeout: policy.Duration(10 * time.Second), Env: policy.EnvPolicy{Allow: []string{"PATH"}}, Shell: pathtest.Abs("bin/sh")},
 		Resources: policy.Resources{CPUMillicores: 500, MemoryBytes: 1 << 20, MaxOutputBytes: 1 << 16},
-		Models:    []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
+		Models:    []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}}},
 		Tools: policy.ToolSet{
 			Allow:    []string{"read_file"},
 			Exposure: map[string]policy.Exposure{"read_file": policy.ExposureDeferred},

@@ -29,7 +29,7 @@ func videoOptionsSpec() ModelSpec {
 		Name: "video-options", Kind: "video",
 		Capabilities: model.ModelCapabilities{
 			Inputs:          []message.PartKind{message.PartText, message.PartImage},
-			Outputs:         []message.PartKind{message.PartVideo},
+			Modes:           []model.Mode{model.ModeVideo},
 			HostedWebSearch: true,
 		},
 		MaxResolution: "1080p",
@@ -47,8 +47,8 @@ func bareVideoSpec() ModelSpec {
 	return ModelSpec{
 		Name: "video-bare", Kind: "video",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartVideo},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeVideo},
 		},
 		Video: VideoParams{DurationMin: func() *int64 { v := int64(4); return &v }(),
 			DurationMax: func() *int64 { v := int64(12); return &v }()},

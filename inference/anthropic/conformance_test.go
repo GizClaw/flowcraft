@@ -270,9 +270,8 @@ func TestCatalogConformance(t *testing.T) {
 	descriptor := model.ModelDescriptor{
 		ID: model.ModelID{Provider: ProviderID, Name: "claude-test"},
 		Capabilities: model.ModelCapabilities{
-			Inputs:      []message.PartKind{message.PartText},
-			Outputs:     []message.PartKind{message.PartText},
-			ToolCalling: true,
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeText, model.ModeToolCall},
 		},
 	}
 	newProvider := func(t *testing.T, baseURL string) (inference.Provider, error) {

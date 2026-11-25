@@ -16,8 +16,8 @@ func benchSpec() ModelSpec {
 		Name: "qwen-plus",
 		Kind: "generate",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText, message.PartImage},
-			Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartText, message.PartImage},
+			Modes:  []model.Mode{model.ModeText},
 		},
 	}
 }

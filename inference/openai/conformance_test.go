@@ -450,15 +450,14 @@ func TestCatalogConformance(t *testing.T) {
 	text := model.ModelDescriptor{
 		ID: model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
 		Capabilities: model.ModelCapabilities{
-			Inputs:      []message.PartKind{message.PartText},
-			Outputs:     []message.PartKind{message.PartText},
-			ToolCalling: true,
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeText, model.ModeToolCall},
 		},
 		Limits: model.ModelLimits{MaxInputTokens: intPtr(128000)},
 	}
 	image := model.ModelDescriptor{
 		ID:           model.ModelID{Provider: ProviderID, Name: "gpt-image-1"},
-		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartImage}},
+		Capabilities: model.ModelCapabilities{Modes: []model.Mode{model.ModeImage}},
 	}
 
 	newProvider := func(t *testing.T, baseURL string) (inference.Provider, error) {

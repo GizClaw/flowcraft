@@ -32,13 +32,13 @@ import (
 
 // liveProvider builds a driver for one model, skipping when the lane is not
 // configured.
-func liveProvider(t *testing.T, kind, modelName string, inputs, outputs []message.PartKind) inference.Provider {
+func liveProvider(t *testing.T, kind, modelName string, inputs []message.PartKind, modes []model.Mode) inference.Provider {
 	t.Helper()
 	key := os.Getenv("ARK_API_KEY")
 	if key == "" {
 		t.Skip("ARK_API_KEY is not set: the credentialed lane is opt-in")
 	}
-	capabilities := model.ModelCapabilities{Inputs: inputs, Outputs: outputs}
+	capabilities := model.ModelCapabilities{Inputs: inputs, Modes: modes}
 	if kind == "embed" {
 		capabilities.EmbeddingDimensions = 1024
 	}
@@ -96,7 +96,7 @@ func TestLiveEmbed(t *testing.T) {
 func TestLiveImage(t *testing.T) {
 	name := liveModel(t, "ARK_IMAGE_MODEL", "doubao-seedream-4-0-20260415")
 	provider := liveProvider(t, "image", name,
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -122,7 +122,7 @@ func TestLiveVideo(t *testing.T) {
 	}
 	name := liveModel(t, "ARK_VIDEO_MODEL", "doubao-seedance-2-0-mini-260615")
 	provider := liveProvider(t, "video", name,
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeVideo})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()

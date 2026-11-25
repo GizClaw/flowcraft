@@ -280,13 +280,6 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		failSessionSpan(ctx, span, err)
 		return nil, span, err
 	}
-	// The program may say which models it will call; a session that cannot run them is refused
-	// here rather than on the first turn. See checkDeclaredModels.
-	if err := checkDeclaredModels(agentName, entry.program, bind); err != nil {
-		openErr := fmt.Errorf("host: session %q: %w", sessionID, err)
-		failSessionSpan(ctx, span, openErr)
-		return nil, span, openErr
-	}
 	factory, ok := a.res.backendFactory(bind.Sandbox)
 	if !ok {
 		err := errdefs.NotAvailablef(

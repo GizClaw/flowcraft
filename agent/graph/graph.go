@@ -8,7 +8,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/config"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/goccy/go-json"
 )
 
@@ -194,34 +193,6 @@ func (g *Graph) Name() string { return g.name }
 
 // Entry is the node a run starts at.
 func (g *Graph) Entry() string { return g.entry }
-
-// DeclaredModels lists the models the graph's nodes name, in declaration order.
-//
-// It reads the configs the kind decoded at Build, so the engine names no kind and a kind that
-// calls no model contributes nothing. What it cannot see is a model computed at run time; a host
-// that checks this list still checks every call.
-func (g *Graph) DeclaredModels() []model.ModelRef {
-	var out []model.ModelRef
-	seen := make(map[model.ModelRef]struct{})
-	for _, id := range g.order {
-		spec, ok := g.nodes[id]
-		if !ok {
-			continue
-		}
-		declarer, ok := spec.decoded.(ModelDeclarer)
-		if !ok {
-			continue
-		}
-		for _, ref := range declarer.DeclaredModels() {
-			if _, duplicate := seen[ref]; duplicate {
-				continue
-			}
-			seen[ref] = struct{}{}
-			out = append(out, ref)
-		}
-	}
-	return out
-}
 
 // BlobStore is where a run puts media it answers with. agent.Store satisfies it.
 type BlobStore interface {

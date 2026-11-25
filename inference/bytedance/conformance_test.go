@@ -11,10 +11,10 @@ import (
 	"github.com/GizClaw/flowcraft/inference/pipeline"
 )
 
-func testDescriptor(name, kind string, inputs, outputs []message.PartKind) model.ModelDescriptor {
+func testDescriptor(name, kind string, inputs []message.PartKind, modes []model.Mode) model.ModelDescriptor {
 	return descriptor(ModelSpec{
 		Name: name, Kind: kind,
-		Capabilities: model.ModelCapabilities{Inputs: inputs, Outputs: outputs},
+		Capabilities: model.ModelCapabilities{Inputs: inputs, Modes: modes},
 	})
 }
 
@@ -117,7 +117,7 @@ func embedTestImagePart(tb testing.TB) message.Part {
 
 func TestCompileImage(t *testing.T) {
 	desc := testDescriptor("image-test", "image",
-		[]message.PartKind{message.PartText}, []message.PartKind{message.PartImage})
+		[]message.PartKind{message.PartText}, []model.Mode{model.ModeImage})
 	request := testRequest("image-test", inference.OutputImage, message.NewTextContent("a red square"))
 	compiled, err := compileImage("ep-image", desc)(context.Background(), request, pipeline.ShapeUnary)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestCompileVideo(t *testing.T) {
 	desc := ModelSpec{
 		Name: "video-test", Kind: "video",
 		Capabilities: model.ModelCapabilities{
-			Inputs: []message.PartKind{message.PartText}, Outputs: []message.PartKind{message.PartVideo},
+			Inputs: []message.PartKind{message.PartText}, Modes: []model.Mode{model.ModeVideo},
 		},
 	}
 	request := testRequest("video-test", inference.OutputVideo, message.NewTextContent("a calm lake"))

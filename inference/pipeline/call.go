@@ -7,30 +7,30 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 )
 
-// pipeline is the unary execution every seam runs: normalize the request,
+// pipeline is the unary execution every mode runs: normalize the request,
 // validate, compile, prove the compilation accounted for every active field,
-// call, decode, then hand the seam its one specific step.
+// call, decode, then hand the mode its one specific step.
 //
-// It exists because three seams — generation, embedding, decision — were three
+// It exists because three modes — generation, embedding, decision — were three
 // copies of this sequence, differing only in their request and response types.
 // The copies would drift: the extension filter, the contract check and the
 // error classification are exactly the parts a reimplementation forgets.
 type pipeline[Req Request, Wire, Raw, Res any] struct {
 	providerID string
-	// normalize applies per-seam request preparation: extension filtering,
+	// normalize applies per-mode request preparation: extension filtering,
 	// because only the concrete request type exposes its Extensions field.
 	normalize func(Req) Req
 	compile   Compiler[Req, Wire]
 	transport Transport[Req, Wire, Raw]
 	decode    Decoder[Req, Raw, Res]
-	// finish is the seam-specific tail: merge compiler warnings into the
+	// finish is the mode-specific tail: merge compiler warnings into the
 	// response and apply the response contract. It is a function rather than an
 	// interface because warnings live in a field on each response type, and a
 	// Warnings()/SetWarnings() pair on three types would be more machinery for
 	// the same four lines.
 	finish func(request Req, response Res, warnings []inference.Warning) (Res, error)
-	// observe is the seam's instrumentation. Set by the Bind* function after
-	// bind returns, so the shared constructor stays free of seam-specific
+	// observe is the mode's instrumentation. Set by the Bind* function after
+	// bind returns, so the shared constructor stays free of mode-specific
 	// accessors.
 	observe observation[Req, Res]
 }

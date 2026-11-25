@@ -168,22 +168,6 @@ type toolsConfig struct {
 	Choice *inference.ToolChoice `json:"choice"`
 }
 
-// DeclaredModels reports the model this node names, or nothing when it leaves the choice to the
-// deployment's default. It is what a host checks a session's authority against before a turn.
-func (c modelConfig) DeclaredModels() []model.ModelRef {
-	if c.Request.Model == nil {
-		return nil
-	}
-	ref := model.ModelRef{
-		ID:      model.ModelID{Provider: c.Request.Model.Provider, Name: c.Request.Model.Name},
-		Profile: c.Request.Model.Profile,
-	}
-	if ref.ID.Name == "" {
-		return nil
-	}
-	return []model.ModelRef{ref}
-}
-
 func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, error) {
 	config, err := graph.ConfigOf(in, decodeModelConfig)
 	if err != nil {
@@ -346,15 +330,25 @@ func (m *modelKind) request(
 	// Validate what this node built, not the transcript: every history message
 	// was checked when it entered state, and re-checking ten thousand of them per
 	// call costs more than the request it guards.
-	for _, check := range []struct {
+	//
+	// The model is the exception: a node that names none leaves the choice to the
+	// router, which answers from the session's granted models, so only a stated
+	// model has to validate here.
+	checks := []struct {
 		field string
 		err   error
 	}{
-		{"model", request.Model.Validate()},
 		{"input", request.Input.Validate()},
 		{"output", request.Output.Validate()},
 		{"tools", request.Tools.Validate()},
-	} {
+	}
+	if request.Model.ID.Name != "" {
+		checks = append(checks, struct {
+			field string
+			err   error
+		}{"model", request.Model.Validate()})
+	}
+	for _, check := range checks {
 		if check.err != nil {
 			return inference.GenerateRequest{}, fmt.Errorf("request.%s: %w", check.field, check.err)
 		}

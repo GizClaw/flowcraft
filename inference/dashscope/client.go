@@ -72,7 +72,7 @@ func newClients(settings Spec) (*clients, error) {
 // nothing.
 //
 // The transport itself is `driver/internal/httpx`; retries are not here — the
-// route Router owns the attempt budget for every seam.
+// route Router owns the attempt budget for every mode.
 type mediaClient struct {
 	api   *httpx.Client
 	files *httpx.Client

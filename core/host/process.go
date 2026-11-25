@@ -34,7 +34,10 @@ import (
 type Resource struct {
 	providers []*inference.Provider
 	models    *inference.Provider
-	backends  map[string]BackendFactory
+	// router is the same fleet as models, as the value a session restricts: one router
+	// per process, and a session gets a copy that only serves what its grant lists.
+	router   *route.Router
+	backends map[string]BackendFactory
 	// enforcement is what each backend declared it can enforce, which a deployment's escalation
 	// declaration is checked against before a session is opened.
 	enforcement map[string]sandbox.Enforcement
@@ -135,11 +138,12 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 		}
 		r.providers = append(r.providers, provider)
 	}
-	routed, err := r.buildRouted(plan)
+	routed, router, err := r.buildRouted(plan)
 	if err != nil {
 		return unwind(err)
 	}
 	r.models = routed
+	r.router = router
 
 	for _, planned := range plan.Backends {
 		factory, err := planned.New()
@@ -181,20 +185,20 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 // A target carries no model of its own: what a provider serves is its catalog's answer, and
 // declaring the model here as well would be a second spelling of the same fact. The request names
 // a model; the router keeps the targets whose catalog lists it.
-func (r *Resource) buildRouted(plan deploy.ProcessPlan) (*inference.Provider, error) {
+func (r *Resource) buildRouted(plan deploy.ProcessPlan) (*inference.Provider, *route.Router, error) {
 	targets := make([]route.Target, 0, len(r.providers))
 	for i, planned := range plan.Providers {
 		targets = append(targets, route.Target{Name: planned.Name, Provider: *r.providers[i]})
 	}
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	router, err := route.New(targets, route.Policy{Retry: plan.Route})
 	if err != nil {
-		return nil, fmt.Errorf("resource: route: %w", err)
+		return nil, nil, fmt.Errorf("resource: route: %w", err)
 	}
 	provider := router.Provider()
-	return &provider, nil
+	return &provider, router, nil
 }
 
 func (r *Resource) buildToolSources(plan deploy.ProcessPlan) ([]tool.Source, error) {

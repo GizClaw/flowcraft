@@ -24,7 +24,7 @@ import (
 // This file instruments the execution funnel every driver passes through. It
 // lives on the pipeline handle rather than on Bind* because the pipeline is the
 // only place that sees the whole round trip — compile, transport, decode — for
-// every seam, so one implementation covers generate, embed and decide, unary and
+// every mode, so one implementation covers generate, embed and decide, unary and
 // stream, and every driver that will ever be written.
 //
 // What the span describes: one provider round trip. Not the caller's turn, not
@@ -42,12 +42,12 @@ const (
 	statusError   = "error"
 )
 
-// observation carries the seam-specific accessors the instrumentation needs.
+// observation carries the mode-specific accessors the instrumentation needs.
 //
 // The pipeline is generic over its request and response, so reading a model, a
 // usage envelope or a finish reason from an arbitrary Res is only possible
-// through a function the seam supplies when it binds. That is also what keeps
-// this file free of a per-seam type switch.
+// through a function the mode supplies when it binds. That is also what keeps
+// this file free of a per-mode type switch.
 type observation[Req, Res any] struct {
 	// spanName is the fixed span name ("llm.generate", ...). Empty disables
 	// instrumentation, which only happens for a pipeline built outside the
@@ -65,14 +65,14 @@ type observation[Req, Res any] struct {
 
 func (o observation[Req, Res]) enabled() bool { return o.spanName != "" }
 
-// generateObservation describes the generation seam. It serves both the unary
+// generateObservation describes the generation mode. It serves both the unary
 // and the streaming pipeline: they produce the same response type, so the only
 // difference is where the response comes from.
 func generateObservation() observation[inference.GenerateRequest, inference.GenerateResponse] {
 	return observation[inference.GenerateRequest, inference.GenerateResponse]{
 		spanName: "llm.generate",
 		operation: func(request inference.GenerateRequest) string {
-			// The seam is the same for every modality, but the operation is
+			// The mode is the same for every modality, but the operation is
 			// not: an image or speech request is generate_content, and
 			// calling it chat would describe the wire format instead of what
 			// the caller asked for.
@@ -99,7 +99,7 @@ func generateObservation() observation[inference.GenerateRequest, inference.Gene
 	}
 }
 
-// embedObservation describes the embedding seam.
+// embedObservation describes the embedding mode.
 func embedObservation() observation[inference.EmbedRequest, inference.EmbedResponse] {
 	return observation[inference.EmbedRequest, inference.EmbedResponse]{
 		spanName: "llm.embed",
@@ -121,7 +121,7 @@ func embedObservation() observation[inference.EmbedRequest, inference.EmbedRespo
 	}
 }
 
-// decideObservation describes the judgment seam.
+// decideObservation describes the judgment mode.
 func decideObservation() observation[inference.DecisionRequest, inference.DecisionResponse] {
 	return observation[inference.DecisionRequest, inference.DecisionResponse]{
 		spanName: "llm.decide",
@@ -383,7 +383,7 @@ func (c *call[Res]) recordMetrics(
 }
 
 // metricAttrs is the low-cardinality identity set shared by every series: the
-// seam, the provider and the requested model are all bounded by the deployment's
+// mode, the provider and the requested model are all bounded by the deployment's
 // catalog. Run ids and call ids are deliberately absent — they belong on spans.
 func (c *call[Res]) metricAttrs(extra ...attribute.KeyValue) metric.MeasurementOption {
 	attrs := make([]attribute.KeyValue, 0, 3+len(extra))
