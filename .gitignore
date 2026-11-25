@@ -38,6 +38,8 @@
 !agent/**
 !core/
 !core/**
+!e2e/
+!e2e/**
 !inference/
 !inference/**
 !examples/
