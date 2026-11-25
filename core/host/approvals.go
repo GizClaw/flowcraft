@@ -104,12 +104,18 @@ func (r *approvalRoute) ask(spec sandbox.SessionSpec) *message.Content {
 		WorkDir:   spec.Opts.WorkDir,
 		TTY:       spec.TTY,
 	}
-	digest := commandDigest(spec.Argv, spec.Opts.WorkDir)
+	digest := specDigest(spec)
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, answered := r.decided[digest]; answered {
-		return nil
+	if decision, answered := r.decided[digest]; answered {
+		if time.Since(decision.at) > approvalTTL {
+			// A lapsed answer is not an answer: the command goes back to the parent rather than
+			// keeping an approval nobody renewed.
+			delete(r.decided, digest)
+		} else {
+			return nil
+		}
 	}
 	if r.question != nil && r.question.digest == digest {
 		text := r.question.text
@@ -147,6 +153,14 @@ func (r *approvalRoute) decide(ctx context.Context, decision, note string) (appr
 		return approvalQuestion{}, errdefs.Validationf(
 			"host: the question from %q expired; ask it again from the child", r.session)
 	}
+	// Claimed before any I/O: a batch can carry two delegation_answer calls for one child, and the
+	// second must not overwrite the first. A denial that a later approval could erase is not final.
+	r.question = nil
+	if _, decided := r.decided[question.digest]; decided {
+		r.mu.Unlock()
+		return approvalQuestion{}, errdefs.Conflictf(
+			"host: %q was already answered for this command", r.session)
+	}
 	r.mu.Unlock()
 
 	answer := approvalDecision{note: note, at: time.Now()}
@@ -178,7 +192,6 @@ func (r *approvalRoute) decide(ctx context.Context, decision, note string) (appr
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.decided[question.digest] = answer
-	r.question = nil
 	return *question, nil
 }
 
@@ -204,12 +217,17 @@ func (r *approvalRoute) open() bool {
 	return r.question != nil
 }
 
-// commandDigest names a command and the directory it would run in.
+// specDigest names one invocation: its argv, its directory, and how its input side is wired.
 //
-// The separator and the workdir are part of the digest because a decision is about an invocation:
-// approving `git push` in one checkout must not approve it in another, and two argv lists that
-// merely concatenate to the same string are not the same command.
-func commandDigest(argv []string, workdir string) string {
+// The terminal and input flags are part of it because they change what the command *is*: an approval
+// for a piped, non-interactive run must not authorise an interactive terminal session with the same
+// argv and directory.
+func specDigest(spec sandbox.SessionSpec) string {
+	return commandDigest(spec.Argv, spec.Opts.WorkDir, spec.TTY, spec.Stdin)
+}
+
+// commandDigest is specDigest's input, kept separate so a test can name one part.
+func commandDigest(argv []string, workdir string, tty, stdin bool) string {
 	sum := sha256.New()
 	for _, word := range argv {
 		sum.Write([]byte(word))
@@ -217,6 +235,17 @@ func commandDigest(argv []string, workdir string) string {
 	}
 	sum.Write([]byte{1})
 	sum.Write([]byte(workdir))
+	sum.Write([]byte{2})
+	if tty {
+		sum.Write([]byte{'1'})
+	} else {
+		sum.Write([]byte{'0'})
+	}
+	if stdin {
+		sum.Write([]byte{'1'})
+	} else {
+		sum.Write([]byte{'0'})
+	}
 	return hex.EncodeToString(sum.Sum(nil))
 }
 

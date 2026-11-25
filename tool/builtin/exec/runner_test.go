@@ -2,9 +2,11 @@ package exec
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -88,5 +90,49 @@ func TestAPlainStarterIsNotAsked(t *testing.T) {
 	}
 	if question != nil {
 		t.Fatalf("question = %q, want none", question.Text())
+	}
+}
+
+// recordingStarter keeps both specs, so a test can compare the one the parent judges with the one
+// that runs. The digest is computed from argv and workdir, so they have to be identical.
+type recordingStarter struct {
+	asked, started []sandbox.SessionSpec
+}
+
+func (r *recordingStarter) Ask(_ context.Context, spec sandbox.SessionSpec) (*message.Content, error) {
+	r.asked = append(r.asked, spec)
+	question := message.NewTextContent("may I?")
+	return &question, nil
+}
+
+func (r *recordingStarter) Start(_ context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+	r.started = append(r.started, spec)
+	return nil, errdefs.NotAvailablef("not used")
+}
+
+// TestThePreflightSpecIsTheSpecThatRuns pins the identity the approval digest depends on: if the
+// pre-flight describes a different argv or directory, the parent's answer never matches the command.
+func TestThePreflightSpecIsTheSpecThatRuns(t *testing.T) {
+	starter := &recordingStarter{}
+	command := NewCommand(WithShell(testShell()))
+	arguments := `{"command":"echo hi","workdir":"/srv"}`
+	if _, err := command.Ask(context.Background(), bound(t, starter), arguments); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if _, err := command.Execute(context.Background(), bound(t, starter), arguments); err == nil {
+		t.Fatal("the stub starter did not fail")
+	}
+	if len(starter.asked) != 1 || len(starter.started) != 1 {
+		t.Fatalf("asked %d, started %d", len(starter.asked), len(starter.started))
+	}
+	if !slices.Equal(starter.asked[0].Argv, starter.started[0].Argv) {
+		t.Fatalf("pre-flight argv %v != run argv %v", starter.asked[0].Argv, starter.started[0].Argv)
+	}
+	if starter.asked[0].Opts.WorkDir != starter.started[0].Opts.WorkDir {
+		t.Fatalf("workdir %q != %q", starter.asked[0].Opts.WorkDir, starter.started[0].Opts.WorkDir)
+	}
+	if starter.asked[0].TTY != starter.started[0].TTY || starter.asked[0].Stdin != starter.started[0].Stdin {
+		t.Fatalf("input side differs: asked %v/%v, started %v/%v",
+			starter.asked[0].TTY, starter.asked[0].Stdin, starter.started[0].TTY, starter.started[0].Stdin)
 	}
 }

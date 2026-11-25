@@ -240,3 +240,22 @@ func TestStringRendersTheEdgeAndNotThePayload(t *testing.T) {
 		t.Fatalf("String = %q, want no payload", got)
 	}
 }
+
+// TestADecisionReachesTheCapability pins the one field the approval flow depends on: a decision the
+// model typed has to arrive as a decision, not as free text.
+func TestADecisionReachesTheCapability(t *testing.T) {
+	capability := &fake{outcome: platform.DelegationOutcome{Status: "working"}}
+	if _, err := (answerTool{}).Execute(context.Background(), bindingFor(capability),
+		`{"session":"main/seat_1-1","decision":"approve","answer":"because"}`); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	if capability.addressed != "main/seat_1-1" {
+		t.Fatalf("session = %q", capability.addressed)
+	}
+	if capability.answered.Decision != platform.DecisionApprove || capability.answered.Text != "because" {
+		t.Fatalf("answer = %+v", capability.answered)
+	}
+	if _, err := (answerTool{}).Execute(context.Background(), bindingFor(capability), `{"session":"x"}`); !errdefs.IsValidation(err) {
+		t.Fatalf("empty answer = %v, want Validation", err)
+	}
+}

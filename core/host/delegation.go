@@ -442,8 +442,13 @@ func (d *delegator) Answer(ctx context.Context, session string, answer platform.
 	}
 	outcome := platform.DelegationOutcome{Session: session, Agent: child.agent, Depth: child.chain.Depth, Chain: child.chain.ID}
 	folded := &foldedStream{}
-	for event, runErr := range d.agents.Run(ctx, session, userMessage(text)) {
+	// The child's own identity and failure box, as on the other two run sites: the caller's context
+	// carries the parent's session and turn, and a resumed child must not appear as the parent.
+	for event, runErr := range d.agents.Run(nestedRunCtx(ctx), session, userMessage(text)) {
 		if runErr != nil {
+			// A failed resume ends the child's work as surely as a terminal status does; leaving it
+			// open would keep a cell for a conversation nobody will continue.
+			_ = d.agents.CloseSession(context.WithoutCancel(ctx), session)
 			return outcome, runErr
 		}
 		foldDelegated(&outcome, folded, event)
@@ -451,7 +456,7 @@ func (d *delegator) Answer(ctx context.Context, session string, answer platform.
 	outcome.Content = folded.content()
 	// A child that finished its work is closed; one that paused again stays open for the next
 	// answer. Closing a paused child here would erase the state its question was asked from.
-	if outcome.Status != "" && outcome.Status != string(agent.StateInputRequired) {
+	if outcome.Status != string(agent.StateInputRequired) {
 		_ = d.agents.CloseSession(context.WithoutCancel(ctx), session)
 	}
 	return outcome, nil
@@ -498,11 +503,22 @@ func (s *Session) answer(ctx context.Context, answer platform.DelegationAnswer) 
 }
 
 // Cancel stops a child.
+//
+// A child that paused for an answer has no run in flight, so there is nothing to interrupt: the
+// cancel is what closes it. Reporting "the session is idle" and leaving it open would leave a cell,
+// a driver and a boundary alive for a conversation the parent gave up on.
 func (d *delegator) Cancel(ctx context.Context, session, reason string) error {
 	if err := d.child(session); err != nil {
 		return err
 	}
-	return d.agents.Cancel(ctx, session, reason)
+	if err := d.agents.Cancel(ctx, session, reason); err != nil &&
+		!errors.Is(err, agent.ErrSessionIdle) && !errdefs.IsNotFound(err) {
+		return err
+	}
+	if _, open := d.agents.Session(session); !open {
+		return nil
+	}
+	return d.agents.CloseSession(context.WithoutCancel(ctx), session)
 }
 
 // WithDelegationGrant installs the rule that decides what a delegated child may do.

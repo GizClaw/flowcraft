@@ -54,7 +54,8 @@ type Delegation interface {
 	// Answer continues a child that paused for input: an approval decision, or the text the child
 	// asked for.
 	Answer(ctx context.Context, session string, answer DelegationAnswer) (DelegationOutcome, error)
-	// Cancel stops a child. A child that already finished reports nil.
+	// Cancel stops a child, including one paused for an answer. A child that is already gone
+	// reports nil: the caller's intent is satisfied either way.
 	Cancel(ctx context.Context, session, reason string) error
 }
 

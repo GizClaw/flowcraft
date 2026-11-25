@@ -265,6 +265,41 @@ func (t *sessionTool) Metadata() tool.ToolMeta { return tool.ToolMeta{MutatesSta
 // Needs declares the session's process surface.
 func (*sessionTool) Needs() []tool.Need { return []tool.Need{platform.ProcessSlot} }
 
+// Ask is the start action's pre-flight: a delegated child asks its parent before the process exists.
+//
+// Only a start runs something, so the other actions have nothing to ask about — they address a
+// process whose command was decided when it began. The spec is the one table.start would build,
+// including the terminal flags and the input side, so the question is about the invocation that
+// would run.
+func (t *sessionTool) Ask(ctx context.Context, binding tool.Binding, arguments string) (*message.Content, error) {
+	var a sessionArgs
+	if err := tool.DecodeArgs(SessionName, arguments, nil, &a); err != nil {
+		return nil, err
+	}
+	if a.Action != "start" || len(a.Argv) == 0 || strings.TrimSpace(a.WorkDir) == "" {
+		return nil, nil
+	}
+	surface, err := starter(binding)
+	if err != nil {
+		// The call is refused by Execute with the same reason.
+		return nil, nil
+	}
+	asker, ok := surface.(interface {
+		Ask(context.Context, sandbox.SessionSpec) (*message.Content, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	return asker.Ask(ctx, sandbox.SessionSpec{
+		Argv:  a.Argv,
+		TTY:   a.TTY,
+		Rows:  a.Rows,
+		Cols:  a.Cols,
+		Stdin: true,
+		Opts:  sandbox.ExecOptions{WorkDir: a.WorkDir},
+	})
+}
+
 func (t *sessionTool) Execute(ctx context.Context, binding tool.Binding, arguments string) (message.Content, error) {
 	var a sessionArgs
 	if err := tool.DecodeArgs(SessionName, arguments, nil, &a); err != nil {

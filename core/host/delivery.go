@@ -146,7 +146,7 @@ func (a *Agents) steerDelivery(ctx context.Context, session *Session, msg messag
 	// The turn may end before a boundary: the driver reports that as a dropped input, and the
 	// host re-offers it once the turn is over. Keeping the message here is what makes the retry
 	// possible, because the drop report carries only the handle.
-	a.trackSteer(id, session.id, msg)
+	a.trackSteer(session.id, id, msg)
 	recordSteer(ctx, input, steerAccepted)
 	return nil
 }
@@ -177,11 +177,13 @@ func (a *Agents) enqueueDelivery(ctx context.Context, sessionID string, msg mess
 	queue.draining = true
 	queue.mu.Unlock()
 
+	a.workers.Add(1)
 	go a.drainDelivery(sessionID, queue)
 }
 
 // drainDelivery runs the queued messages of one session in order.
 func (a *Agents) drainDelivery(sessionID string, queue *deliveryQueue) {
+	defer a.workers.Done()
 	for {
 		queue.mu.Lock()
 		if len(queue.items) == 0 {
@@ -257,22 +259,38 @@ const (
 
 // trackedSteer is one message waiting to be applied by a running turn.
 type trackedSteer struct {
-	session string
-	msg     message.Message
+	msg message.Message
 }
 
 // trackSteer records a steered message so a turn that ends before a boundary can re-offer it.
-func (a *Agents) trackSteer(id agent.SteerID, sessionID string, msg message.Message) {
+//
+// The map is keyed by session *and* id because a steer id is minted by a driver, and a driver is per
+// session: two graph-backed sessions both name their first steer "graph-1". A table-wide id map would
+// have one conversation's bookkeeping overwrite another's, and the message it lost would never be
+// re-offered — it was already counted as steered.
+func (a *Agents) trackSteer(sessionID string, id agent.SteerID, msg message.Message) {
 	a.deliveryMu.Lock()
 	defer a.deliveryMu.Unlock()
-	a.steers[id] = trackedSteer{session: sessionID, msg: msg}
+	pending, ok := a.steers[sessionID]
+	if !ok {
+		pending = map[agent.SteerID]trackedSteer{}
+		a.steers[sessionID] = pending
+	}
+	pending[id] = trackedSteer{msg: msg}
 }
 
 // steerApplied drops a steered message the driver applied: it is in the transcript now.
-func (a *Agents) steerApplied(id agent.SteerID) {
+func (a *Agents) steerApplied(sessionID string, id agent.SteerID) {
 	a.deliveryMu.Lock()
 	defer a.deliveryMu.Unlock()
-	delete(a.steers, id)
+	pending, ok := a.steers[sessionID]
+	if !ok {
+		return
+	}
+	delete(pending, id)
+	if len(pending) == 0 {
+		delete(a.steers, sessionID)
+	}
 }
 
 // requeueDropped puts every unapplied steered message of one session back in its queue.
@@ -281,19 +299,47 @@ func (a *Agents) steerApplied(id agent.SteerID) {
 // a boundary was reported as applied, and one that did not is still here.
 func (a *Agents) requeueDropped(ctx context.Context, sessionID string) {
 	a.deliveryMu.Lock()
-	var dropped []trackedSteer
-	for id, steer := range a.steers {
-		if steer.session != sessionID {
-			continue
-		}
+	pending := a.steers[sessionID]
+	dropped := make([]trackedSteer, 0, len(pending))
+	for _, steer := range pending {
 		dropped = append(dropped, steer)
-		delete(a.steers, id)
 	}
+	delete(a.steers, sessionID)
 	a.deliveryMu.Unlock()
 	for _, steer := range dropped {
 		telemetry.Debug(ctx, "host: a steered delivery did not reach a boundary",
 			telemetry.String("session.id", sessionID))
 		a.enqueueDelivery(ctx, sessionID, steer.msg)
+	}
+}
+
+// forgetDelivery releases a closed session's pending work and tells the application about it.
+//
+// Without it the queue and the tracked steers of a session id outlive the session: the table grows
+// one entry per conversation a process ever served, and a message steered just before the close is
+// neither re-offered by a later turn (there is none) nor handed to the application.
+func (a *Agents) forgetDelivery(ctx context.Context, sessionID string) {
+	a.deliveryMu.Lock()
+	queue := a.delivery[sessionID]
+	delete(a.delivery, sessionID)
+	pending := a.steers[sessionID]
+	delete(a.steers, sessionID)
+	a.deliveryMu.Unlock()
+
+	dropped := make([]message.Message, 0, len(pending))
+	for _, steer := range pending {
+		dropped = append(dropped, steer.msg)
+	}
+	if queue != nil {
+		queue.mu.Lock()
+		for _, item := range queue.items {
+			dropped = append(dropped, item.msg)
+		}
+		queue.items = nil
+		queue.mu.Unlock()
+	}
+	for _, msg := range dropped {
+		a.undelivered(ctx, sessionID, msg, "the session closed")
 	}
 }
 

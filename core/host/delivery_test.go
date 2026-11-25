@@ -43,6 +43,11 @@ type deliveryDriver struct {
 	// hold keeps a turn open until the test releases it, and started is closed when one begins.
 	hold    chan struct{}
 	started chan struct{}
+	// startOnce makes started fire on the first turn only: several tests reuse one driver for the
+	// application's turn and the delivery turn, and an unconditional close panicked the second one
+	// inside the engine — where it was recorded as a failed turn and discarded, so the test passed
+	// on a turn that never ran.
+	startOnce sync.Once
 }
 
 func (d *deliveryDriver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Event, error] {
@@ -52,7 +57,7 @@ func (d *deliveryDriver) Run(ctx context.Context, req agent.Request) iter.Seq2[a
 		hold, started := d.hold, d.started
 		d.mu.Unlock()
 		if started != nil {
-			close(started)
+			d.startOnce.Do(func() { close(started) })
 		}
 		if hold != nil {
 			select {
@@ -101,6 +106,17 @@ func (d *deliveryDriver) queued() []queuedSteer {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return append([]queuedSteer(nil), d.steers...)
+}
+
+// inputs returns the message each turn ran with.
+func (d *deliveryDriver) inputs() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]string, len(d.requests))
+	for i, req := range d.requests {
+		out[i] = req.Input.Content.Text()
+	}
+	return out
 }
 
 // turns returns how many turns the driver ran.
@@ -164,6 +180,9 @@ func TestADeliveryRunsATurnWhenTheSessionIsIdle(t *testing.T) {
 	waitFor(t, "its events", func() bool { return events.Load() > 0 })
 	if kind != HostTurnDelivery {
 		t.Fatalf("kind = %q, want %q", kind, HostTurnDelivery)
+	}
+	if got := driver.inputs(); len(got) != 1 || got[0] != "from a child" {
+		t.Fatalf("the turn ran with %v, want the delivered message", got)
 	}
 }
 

@@ -130,7 +130,7 @@ host.Run → Agents.request → agent.RunTurn → Driver (graph, a2a)
 
 Three properties are load-bearing:
 
-- **One turn per session.** `beginTurn` refuses a second claim, which is what lets
+- **One turn per session.** `Session.claim` refuses a second caller, which is what lets
   `Steer` and `Cancel` address the turn in flight without an id.
 - **The terminal save happens on every path** — a normal finish, a panic, a
   consumer that stopped, and a `BeforeTurn` that refused. A turn that never started

@@ -259,7 +259,7 @@ func TestAStaleAnswerIsNotUsed(t *testing.T) {
 		t.Fatalf("decide = %v, want Validation for an expired question", err)
 	}
 
-	digest := commandDigest(spec("ls").Argv, pathtest.Abs("srv"))
+	digest := specDigest(spec("ls"))
 	route.decided[digest] = approvalDecision{approve: true, at: time.Now().Add(-2 * approvalTTL)}
 	if _, ok := route.lookup(digest); ok {
 		t.Fatal("an expired decision was still in force")
@@ -319,5 +319,64 @@ func TestTextCannotAnswerAnApproval(t *testing.T) {
 	}
 	if _, err := session.answer(t.Context(), platform.DelegationAnswer{Text: "sure"}); !errdefs.IsValidation(err) {
 		t.Fatalf("answer = %v, want Validation for text on an approval", err)
+	}
+}
+
+// TestARoutedChildNeverFallsBackToTheDeployment is the authority the feature exists to keep: a child
+// whose command was not put to its parent is refused, not handed to a person who never delegated it.
+func TestARoutedChildNeverFallsBackToTheDeployment(t *testing.T) {
+	reviewer := &reviewer{}
+	_, _, starter, backend := askingChild(t, Approval{Approver: reviewer}, lineage("p1"))
+	err := start(t, starter, spec("git", "push"))
+	if _, denied := policy.AsDenial(err); !denied {
+		t.Fatalf("Start = %v, want a policy denial for a command that was never asked about", err)
+	}
+	if len(reviewer.asked) != 0 {
+		t.Fatal("the deployment's approver was asked about a delegated child's command")
+	}
+	if len(backend.started) != 0 {
+		t.Fatal("an unasked command reached the backend")
+	}
+}
+
+// TestASecondAnswerCannotOverwriteTheFirst keeps a denial final under a batch: two answers in one
+// turn both see the same open question, and the loser must be refused rather than silently winning
+// the write.
+func TestASecondAnswerCannotOverwriteTheFirst(t *testing.T) {
+	_, session, starter, backend := askingChild(t, Approval{Approver: &reviewer{}}, lineage("p1"))
+	command := spec("git", "push")
+	if _, err := askerOf(t, starter).Ask(t.Context(), command); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if _, err := session.approvals.decide(t.Context(), platform.DecisionDeny, "no"); err != nil {
+		t.Fatalf("first decide: %v", err)
+	}
+	if _, err := session.approvals.decide(t.Context(), platform.DecisionApprove, "yes"); err == nil {
+		t.Fatal("a second answer overwrote the first")
+	} else if !errdefs.IsConflict(err) && !errdefs.IsValidation(err) {
+		t.Fatalf("second decide = %v, want Conflict or Validation", err)
+	}
+	if decision, ok := session.approvals.lookup(specDigest(command)); !ok || decision.approve {
+		t.Fatalf("stored decision = %+v, %v; want the denial", decision, ok)
+	}
+	if len(backend.started) != 0 {
+		t.Fatal("the command ran")
+	}
+}
+
+// TestAPausedChildCanBeCancelled is the lifecycle rule the docs state: a child with no turn in flight
+// has nothing to interrupt, so a cancel is what closes it.
+func TestAPausedChildCanBeCancelled(t *testing.T) {
+	agents, _, _, _ := askingChild(t, Approval{Approver: &reviewer{}}, lineage("p1"))
+	parent, ok := agents.Session("p1/child-1")
+	if !ok {
+		t.Fatal("the child is not open")
+	}
+	delegator := &delegator{agents: agents, parent: "p1", agent: "parent", grant: parent.grant, chain: parent.chain}
+	if err := delegator.Cancel(t.Context(), "p1/child-1", "the parent gave up"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, open := agents.Session("p1/child-1"); open {
+		t.Fatal("a cancelled paused child is still open")
 	}
 }

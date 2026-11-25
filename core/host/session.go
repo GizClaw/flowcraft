@@ -196,7 +196,7 @@ func (s *Session) isRunning() bool {
 // setCancel records the running turn's cancellation, or clears it when the turn ends.
 //
 // A cancellation installed after a close has already decided to stop the session is applied
-// immediately: otherwise a close that arrived between beginTurn and this call would wait for a
+// immediately: otherwise a close that arrived between claim and this call would wait for a
 // turn nobody had told to stop.
 func (s *Session) setCancel(cancel context.CancelFunc) {
 	s.turnMu.Lock()
@@ -527,6 +527,9 @@ func (a *Agents) CloseSession(ctx context.Context, sessionID string) error {
 	if drained != nil {
 		err = errors.Join(err, drained.close())
 	}
+	// After the close, so a worker that was waiting for the slot has already been released and the
+	// messages it did not deliver are the queue's to report.
+	a.forgetDelivery(ctx, sessionID)
 	return err
 }
 

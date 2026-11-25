@@ -179,7 +179,7 @@ func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent
 		if applied, ok := event.(agent.Interrupted); ok {
 			// The steered message reached a boundary: it is in the transcript, so the delivery
 			// worker must not offer it again when this turn ends.
-			a.steerApplied(applied.ID)
+			a.steerApplied(session.id, applied.ID)
 		}
 		if err != nil {
 			failures++

@@ -69,12 +69,12 @@ the application — never under authority borrowed from somewhere the parent cou
 `platform.Delegation` is the seam. It has exactly four verbs, and the host's
 implementation of each is what a tool call reaches:
 
-| Verb       | Tool                | Use                                                                                  |
-| ---------- | ------------------- | ------------------------------------------------------------------------------------ |
-| `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off. |
-| `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                         |
-| `Answer`   | `delegation_answer` | Continue a child that paused: a decision for an approval, text for anything else.    |
-| `Cancel`   | `delegation_cancel` | Stop a child. A child that already finished reports nil.                             |
+| Verb       | Tool                | Use                                                                                             |
+| ---------- | ------------------- | ----------------------------------------------------------------------------------------------- |
+| `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off.            |
+| `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                                    |
+| `Answer`   | `delegation_answer` | Continue a child that paused: a decision for an approval, text for anything else.               |
+| `Cancel`   | `delegation_cancel` | Stop a child, including one paused for an answer. A child that is already gone is not an error. |
 
 There is no steer verb. `delegation_answer` continues a child that stopped and asked a
 question; feeding a _running_ turn is `host.Agents.Steer`, which the host owns and a
@@ -138,9 +138,10 @@ The follow-up verbs address the child by session id: `Status` reads the state it
 checkpoint recorded (a host with no `agent.Store` refuses it with `NotAvailable`),
 `Answer` runs the child again on the caller's context and folds what it produced next,
 and `Cancel` stops it. `Answer` and `Cancel` go through the session table, so they reach
-a child this process still holds open; one it has closed is `NotFound`. A session may
-only address the edges it opened: the check is a prefix test on the id, so a caller
-cannot reach another conversation's child, or its own parent.
+a child this process still holds open; one it has closed is `NotAvailable` for
+`Answer` and `NotFound` for `Cancel`. A session may only address the edges it opened, and
+their descendants: the check is a prefix test on the id, so a caller cannot reach
+another conversation's child, or its own parent.
 
 ## Lineage
 
@@ -200,9 +201,9 @@ Rules that make the three channels predictable:
 - **A program that cannot take a message between turns cannot be delivered to.** A graph
   needs an `input` state slot; a driver reports it through `agent.InputSink`.
 - **A delivery turn and a caller's `Run` never overlap.** One session has one turn. A delivery
-  waits for a caller's turn to finish — waiting and taking the slot are one step, so the two
-  cannot race — while a caller that arrives during a delivery gets a conflict naming it, and
-  retrying is the answer.
+  waits for a caller's turn to finish: taking the slot is one decision, made under the session's
+  lock, and a waiting delivery re-checks and waits again. A caller that arrives during a delivery
+  gets a conflict naming it, and retrying is the answer.
 
 The delivered message is a **user turn** — the conversation gained a message, and the
 platform does not fabricate an assistant turn the model never wrote. Its text names the

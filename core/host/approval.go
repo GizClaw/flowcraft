@@ -145,18 +145,29 @@ func (s approvalStarter) admit(ctx context.Context, spec sandbox.SessionSpec) (s
 	}
 	// A delegated child's answer arrives from its parent, one command at a time. A denial is an
 	// answer like any other: the command does not run, and the model is told which rule refused it.
+	//
+	// A route with no answer is a refusal, not a fall-through to the deployment's approver: the
+	// child's authority came from its parent, and asking somebody else about the command would
+	// swap the decider the feature exists to pick. It also keeps the claim honest — a command that
+	// needs an answer is only ever started by the pre-flight's suspension, so a tool that cannot
+	// ask is refused visibly instead of parking the parent's turn on a person.
 	if s.route != nil {
-		if answer, ok := s.route.lookup(commandDigest(spec.Argv, spec.Opts.WorkDir)); ok {
-			if answer.approve {
-				return s.next.Start(ctx, spec)
-			}
+		answer, ok := s.route.lookup(specDigest(spec))
+		if !ok {
 			recordDenial(ctx, policy.CheckApproval, s.agent)
-			reason := "the parent refused this command"
-			if answer.note != "" {
-				reason += ": " + answer.note
-			}
-			return nil, &policy.Denial{Check: policy.CheckApproval, Reason: reason}
+			return nil, &policy.Denial{Check: policy.CheckApproval, Reason: strings.TrimSpace(
+				"this command was not put to the parent; a tool that runs commands must ask before " +
+					"it starts them")}
 		}
+		if answer.approve {
+			return s.next.Start(ctx, spec)
+		}
+		recordDenial(ctx, policy.CheckApproval, s.agent)
+		reason := "the parent refused this command"
+		if answer.note != "" {
+			reason += ": " + answer.note
+		}
+		return nil, &policy.Denial{Check: policy.CheckApproval, Reason: reason}
 	}
 	if s.policy.Approver == nil {
 		return nil, refusal(ctx, s.agent, "no approver is configured and the command is not whitelisted")
