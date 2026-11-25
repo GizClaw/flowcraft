@@ -89,10 +89,10 @@ looks narrower but is not.
 ## The boundary comes from the grant
 
 ```text
-bind (a policy.Grant)      → confineOf      → sandbox.Confine
+grant (a policy.Grant)     → confineOf      → sandbox.Confine
                            → factory(confine) → sandbox.Runner   (one per session)
                            → ValidateConfine  → refused if unenforceable
-bind.Files                 → fsx.Open         → the session's tree
+grant.Files                → fsx.Open         → the session's tree
 runner + approval          → platform.ProcessSlot
 ```
 
@@ -208,7 +208,7 @@ validate is refused rather than trusted. The widened command runs in a temporary
 cell built from the wider grant — the session's own cell is never widened in place,
 because a boundary is what a session _is_ — and `ValidateConfine` is what says
 whether the backend can honour it. The audit record carries hashes and digests
-(command hash, both bind digests, the escalator's type, the decision, the duration)
+(command hash, the `from_bind`/`to_bind` digests, the escalator's type, the decision, the duration)
 under event kind `escalation`, on `context.WithoutCancel`, so a cancelled turn still
 leaves the record.
 

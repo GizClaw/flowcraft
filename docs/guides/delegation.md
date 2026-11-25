@@ -167,7 +167,7 @@ the default cannot escalate, and a resolver is trusted host code that narrows.
 
 What crosses is the lineage and nothing else. The host runs the child on
 `identity.Detach` plus `agent.WithoutFailureBox`: without the first, the child would
-carry the parent's conversation, bind and span attributes; without the second, the
+carry the parent's conversation, bind id and span attributes; without the second, the
 parent's first-wins failure box would record the child's model error as the parent
 turn's reason.
 

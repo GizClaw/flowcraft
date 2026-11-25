@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
@@ -59,6 +60,11 @@ type Session struct {
 	// authority is, and the turn copies it into every run record.
 	manifest   agent.Manifest
 	manifestID string
+	// models is the model access this session's authority allows, built once at open from the
+	// process's routed provider. It is derived from the grant like the binding and the manifest,
+	// so it is computed where those are — not per turn, which would rebuild a wrapper for a
+	// value that cannot change.
+	models *inference.Provider
 	// touch is when this session last did anything, in Unix nanos: idle eviction reads it from the
 	// table's goroutine while a turn writes it from its own, so it is atomic rather than guarded.
 	touch atomic.Int64
@@ -332,6 +338,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		bind).WithView(view).WithCaps(capabilities)
 
 	manifest := a.manifestFor(entry, bind, view)
+	models := a.modelAccess(bind)
 	driver, err := entry.program.Open(agent.SessionInfo{
 		Agent:     agentName,
 		SessionID: sessionID,
@@ -354,6 +361,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		bindID:     bind.Digest(),
 		manifest:   manifest,
 		manifestID: manifest.ID(),
+		models:     models,
 		chain:      opening.chain,
 	}
 	if err := a.announceSession(ctx, session); err != nil {

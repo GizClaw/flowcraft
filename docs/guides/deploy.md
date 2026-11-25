@@ -191,8 +191,9 @@ host.WithEscalationTTL(5 * time.Minute)
   cannot summon a prompt by walking into whatever boundary it is given.
 - `ttl` belongs to the process rather than to a document: a temporary cell has to end, whatever
   the command asked for.
-- Every widening that reached a cell leaves an audit record: the command hash, the two bind
-  digests and the decision. The command text, its arguments and the paths are never written.
+- Every widening that reached a cell leaves an audit record: the command hash, the two digests
+  (`from_bind`, `to_bind`) and the decision. The command text, its arguments and the paths are
+  never written.
 
 With no escalator installed the refusal stands; the feature is opt-in, like approval.
 
