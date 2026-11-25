@@ -230,3 +230,31 @@ func delegatorOf(agents *Agents, parent *Session) *delegator {
 	}
 	return d
 }
+
+// TestADelegationEdgeIsNeverReused is the restart hazard: the edge counter starts again in a new
+// process, so the id has to carry something the counter cannot repeat — otherwise the next child
+// continues the task of the previous one, which is still in the store.
+func TestADelegationEdgeIsNeverReused(t *testing.T) {
+	agents, _, _ := asyncHost(t)
+	parent, _ := agents.Session("p1")
+	d := delegatorOf(agents, parent)
+
+	first, err := d.Delegate(t.Context(), platform.DelegationRequest{
+		Target: "child", Mode: "async", Input: "one",
+	})
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	second, err := d.Delegate(t.Context(), platform.DelegationRequest{
+		Target: "child", Mode: "async", Input: "two",
+	})
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if first.Session == second.Session {
+		t.Fatalf("two edges minted the same id %q", first.Session)
+	}
+	if first.Session == "p1/child-1" {
+		t.Fatalf("the id %q has no random suffix", first.Session)
+	}
+}

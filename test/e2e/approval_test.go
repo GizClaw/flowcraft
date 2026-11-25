@@ -2,11 +2,13 @@ package e2e_test
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/host"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/test/internal/stack"
@@ -39,8 +41,11 @@ func TestADelegatedChildAsksItsParentBeforeItRuns(t *testing.T) {
 	bash := call(t, "c2", "bash", map[string]any{
 		"command": "echo x >> " + marker, "workdir": workspace,
 	})
+	// The child's id is minted by the delegation (an edge number and a random suffix), so it is
+	// read from the tool result the way a caller reads it — the reply that answers it is filled in
+	// after the first turn.
 	approve := call(t, "c3", "delegation_answer", map[string]any{
-		"session": stack.SessionID + "/" + stack.AgentName + "-1", "decision": "approve",
+		"session": "pending", "decision": "approve",
 	})
 
 	s := stack.OpenConfig(t, stack.Config{
@@ -56,7 +61,12 @@ func TestADelegatedChildAsksItsParentBeforeItRuns(t *testing.T) {
 	)
 	s.OpenSessionWith(t, stack.SessionID, stack.DelegatingAuthority())
 
-	s.Run(t, stack.SessionID, "do the work")
+	first := s.Run(t, stack.SessionID, "do the work")
+	child := childSession(t, first)
+	approve = call(t, "c3", "delegation_answer", map[string]any{
+		"session": child, "decision": "approve",
+	})
+	s.Model.Set(3, stack.Reply{ToolCall: &approve})
 	// The child stopped to ask before running anything, and the deployment's approver was not the
 	// one asked.
 	if _, err := os.Stat(marker); err == nil {
@@ -78,6 +88,34 @@ func TestADelegatedChildAsksItsParentBeforeItRuns(t *testing.T) {
 	if len(approver.asked) != 0 {
 		t.Fatalf("the deployment's approver was asked %d times after the answer", len(approver.asked))
 	}
+}
+
+// childSession reads the address the delegate call returned, the way a caller does.
+func childSession(t *testing.T, events []agent.Event) string {
+	t.Helper()
+	for _, event := range events {
+		result, ok := event.(agent.ToolResult)
+		if !ok {
+			continue
+		}
+		var payload struct {
+			Session  string `json:"session"`
+			Status   string `json:"status"`
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal([]byte(result.Result.Content.Text()), &payload); err != nil {
+			continue
+		}
+		if payload.Session == "" || payload.Status != "input-required" {
+			continue
+		}
+		if !strings.Contains(payload.Question, "approval") {
+			t.Fatalf("question = %q, want the approval question", payload.Question)
+		}
+		return payload.Session
+	}
+	t.Fatal("the delegate call returned no paused child")
+	return ""
 }
 
 // call builds one tool call the scripted model will ask for.

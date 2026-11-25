@@ -309,6 +309,16 @@ func (m *Model) Requests() []inference.GenerateRequest {
 	return append([]inference.GenerateRequest(nil), m.asked...)
 }
 
+// Set replaces one scripted reply, for a test that only learns an argument (a child session id,
+// say) after an earlier turn has run.
+func (m *Model) Set(index int, reply Reply) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if index >= 0 && index < len(m.replies) {
+		m.replies[index] = reply
+	}
+}
+
 // Calls is how many times the model was called.
 func (m *Model) Calls() int {
 	m.mu.Lock()

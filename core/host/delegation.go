@@ -76,8 +76,14 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	}
 
 	// One child per delegation edge: the id is derived so two edges of one chain are distinguishable,
-	// and so a resumed parent's next edge does not collide with the one before it.
-	child := d.parent + "/" + target + "-" + strconv.FormatInt(d.agents.nextEdge(), 36)
+	// and carries a random suffix so an id is never reused — an edge counter restarts with the
+	// process, and a restarted parent would otherwise mint the id of a child whose task is still in
+	// the store, continuing somebody else's conversation.
+	edge, err := newEdgeID(d.agents.nextEdge())
+	if err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	child := d.parent + "/" + target + "-" + edge
 
 	// The first edge of a chain mints its id; every edge below it extends the one it was given.
 	// Without an id the lineage cannot be attached at all, which is what made max_depth inert and
@@ -352,6 +358,16 @@ func foldDelegated(outcome *platform.DelegationOutcome, folded *foldedStream, ev
 			outcome.Question = &question
 		}
 	}
+}
+
+// newEdgeID names one delegation edge: its number within this process, and four random bytes so two
+// processes never mint the same id.
+func newEdgeID(edge int64) (string, error) {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("host: mint a delegation edge: %w", err)
+	}
+	return strconv.FormatInt(edge, 36) + "-" + hex.EncodeToString(suffix[:]), nil
 }
 
 // nextEdge numbers delegation edges within this process, so two children of one parent get distinct

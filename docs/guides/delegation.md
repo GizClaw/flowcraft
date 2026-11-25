@@ -111,10 +111,12 @@ The child session id is derived from the parent's, never random:
 <parent session>/<target>-<edge>
 ```
 
-`edge` is a per-process counter in base 36. It exists so two edges of one chain are
-distinguishable and a resumed parent's next edge does not collide with the one before
-it; nothing dedupes two `Delegate` calls for the same input, because each call is a new
-child.
+`edge` is a per-process counter in base 36 plus four random bytes. The counter keeps
+the ids of one chain readable and ordered; the suffix is what makes an id unique
+across processes, because the counter restarts with the process and a restarted
+parent would otherwise mint the id of a child whose task is still in the store —
+continuing that child's conversation instead of starting one. Nothing dedupes two
+`Delegate` calls for the same input, because each call is a new child.
 
 The host opens the child with the lineage it just minted, and the first edge of a chain
 **mints** its id (`chain-` and eight random bytes); every edge below it keeps that id

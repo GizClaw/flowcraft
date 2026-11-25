@@ -163,6 +163,11 @@ func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Me
 	req, err := a.request(runCtx, session, msg)
 	if err != nil {
 		session.endTurn()
+		if mode == claimResume {
+			// The answer took the pause and then the turn could not be assembled: put the pause
+			// back, or the session can neither resume nor run.
+			session.restorePause()
+		}
 		cancel()
 		return nil, err
 	}
