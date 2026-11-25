@@ -76,8 +76,8 @@ implementation of each is what a tool call reaches:
 | `Answer`   | `delegation_answer` | Continue a child that paused: a decision for an approval, text for anything else.               |
 | `Cancel`   | `delegation_cancel` | Stop a child, including one paused for an answer. A child that is already gone is not an error. |
 
-There is no steer verb. `delegation_answer` continues a child that stopped and asked a
-question; feeding a _running_ turn is `host.Agents.Steer`, which the host owns and a
+There is no steer verb. `delegation_answer` resumes a child that stopped and asked a
+question — it lands on `Agents.Resume`, the only way out of `input-required`; feeding a _running_ turn is `host.Agents.Steer`, which the host owns and a
 delegated child is not addressed by.
 
 `platform.DelegationOutcome` is what the tools report back — the child session, its
