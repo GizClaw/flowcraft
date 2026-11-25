@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -92,4 +94,37 @@ func pocketFor(needs ...tool.Need) *tool.CapSet {
 		}
 	}
 	return set
+}
+
+// TestLazyLoadMetricsDeclareTheirShape: a deferred load is the one path in the tool
+// registry that costs wall time, and its histogram is what an operator reads to decide
+// whether eager loading is worth it. In seconds, with boundaries that spread over the
+// range a load actually takes.
+func TestLazyLoadMetricsDeclareTheirShape(t *testing.T) {
+	recorder := telemetrytest.Meters(t)
+	registry, err := tool.NewRegistry([]tool.Source{lazySource{tool.LazyTool{
+		Name:        "small",
+		Placeholder: definition("small"),
+		Needs:       []tool.Need{lateSlot},
+		Load: func(context.Context) (tool.Tool, error) {
+			return tool.TextTool(definition("small"), func(context.Context, string) (string, error) {
+				return "ok", nil
+			}), nil
+		},
+	}}}, tool.WithProvisioned(pocketFor(lateSlot)))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	one, ok := registry.Get("small")
+	if !ok {
+		t.Fatal("the lazy tool was not registered")
+	}
+	if err := one.(interface{ EnsureLoaded(context.Context) error }).EnsureLoaded(context.Background()); err != nil {
+		t.Fatalf("EnsureLoaded: %v", err)
+	}
+
+	got := recorder.Collect(t)
+	got.RequireShape(t, "loads.total", "counter", "")
+	got.RequireShape(t, "load.duration.seconds", "histogram", "s")
+	got.RequireBounds(t, "load.duration.seconds", telemetry.DurationBoundsSeconds())
 }

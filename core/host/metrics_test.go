@@ -131,3 +131,27 @@ func TestCancelIsCountedAndSpanned(t *testing.T) {
 		}
 	}
 }
+
+// TestHostMetricsDeclareTheirShape pins the unit and the kind of the series an operator
+// watches. The open-session count is an up-down counter and not a counter — a gauge that
+// looks like a counter is summed instead of read, which reports a number that only grows —
+// and the duration and count instruments carry the unit their name promises.
+func TestHostMetricsDeclareTheirShape(t *testing.T) {
+	recorder := telemetrytest.Meters(t)
+	driver := &turnDriver{log: &journal{}}
+	agents, _ := runnableHost(t, driver)
+
+	if _, err := agents.Open(t.Context(), "s2", "referee"); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// An idle steer is refused and counted: the series exists either way, which is what
+	// the shape assertion needs.
+	_, _ = agents.Steer(t.Context(), "s2", agent.SteerInput{Intent: agent.SteerRedirect})
+	if err := agents.CloseSession(t.Context(), "s2"); err != nil {
+		t.Fatalf("CloseSession: %v", err)
+	}
+
+	got := recorder.Collect(t)
+	got.RequireShape(t, "host.sessions", "updowncounter", "")
+	got.RequireShape(t, "host.steers", "counter", "")
+}

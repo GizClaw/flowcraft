@@ -77,7 +77,13 @@ func recordCheckpointSave(ctx context.Context, agentName string, events int, err
 	}
 	if events > 0 {
 		if histogram, err := meter.Int64Histogram("agent.checkpoint.events",
-			metric.WithDescription("Records appended by one terminal save")); err == nil {
+			metric.WithDescription("Records appended by one terminal save"),
+			// The unit is an annotation: a histogram of event counts has no SI unit, and
+			// the braces are the OpenTelemetry spelling for one.
+			metric.WithUnit("{record}"),
+			// A save appends a handful of records; the default buckets are built for
+			// milliseconds and would put every save in the first one.
+			metric.WithExplicitBucketBoundaries(1, 2, 4, 8, 16, 32, 64, 128, 256)); err == nil {
 			histogram.Record(ctx, int64(events),
 				metric.WithAttributes(attribute.String(identity.AttrAgentName, agentName)))
 		}
@@ -95,7 +101,9 @@ func recordTurnDuration(ctx context.Context, req Request, elapsed time.Duration)
 	}
 	meter := telemetry.MeterWithSuffix("agent")
 	if histogram, err := meter.Float64Histogram("agent.turn.duration",
-		metric.WithDescription("Turn duration, from the first event to the terminal one")); err == nil {
+		metric.WithDescription("Turn duration, from the first event to the terminal one"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 		histogram.Record(ctx, elapsed.Seconds(),
 			metric.WithAttributes(attribute.String(identity.AttrAgentName, req.Agent)))
 	}
@@ -113,7 +121,8 @@ func recordTurnUsage(ctx context.Context, req Request, outcome TurnOutcome) {
 	agentAttr := attribute.String(identity.AttrAgentName, req.Agent)
 
 	if counter, err := meter.Int64Counter("agent.tokens",
-		metric.WithDescription("Tokens consumed by turns")); err == nil {
+		metric.WithDescription("Tokens consumed by turns"),
+		metric.WithUnit("{token}")); err == nil {
 		if outcome.Usage.InputTokens > 0 {
 			counter.Add(ctx, outcome.Usage.InputTokens, metric.WithAttributes(
 				agentAttr, attribute.String("kind", "input")))

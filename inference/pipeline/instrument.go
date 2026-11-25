@@ -359,7 +359,9 @@ func (c *call[Res]) recordMetrics(
 			c.metricAttrs(attribute.String("status", status)))
 	}
 	if histogram, err := meter.Float64Histogram("duration.seconds",
-		metric.WithDescription("Inference call duration")); err == nil {
+		metric.WithDescription("Inference call duration"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 		histogram.Record(c.ctx, duration.Seconds(), c.metricAttrs())
 	}
 	if err := status == statusError; err {
@@ -372,7 +374,9 @@ func (c *call[Res]) recordMetrics(
 	recordTokens(c.ctx, meter, c.metricAttrs(), tokens)
 	if c.sawFirstToken {
 		if histogram, err := meter.Float64Histogram("time_to_first_token.seconds",
-			metric.WithDescription("Delay until the first visible text delta")); err == nil {
+			metric.WithDescription("Delay until the first visible text delta"),
+			metric.WithUnit("s"),
+			metric.WithExplicitBucketBoundaries(telemetry.DurationBoundsSeconds()...)); err == nil {
 			histogram.Record(c.ctx, c.ttft.Seconds(), c.metricAttrs())
 		}
 	}
