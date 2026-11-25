@@ -317,8 +317,19 @@ jobs:
           go-version: "1.26"
       # The config in .github/actionlint.yaml makes the workflow files
       # self-checking: a wrong expression or a missing needs entry fails here.
+      #
+      # Both binaries are installed because actionlint drops the shellcheck and
+      # pyflakes rules when it cannot find them, and a rule that disappears
+      # quietly is how a run: block reaches this lane unread. The make target
+      # checks for them for the same reason; the version lives there too, so a
+      # bump is one edit and not two.
+      - name: Install the workflow linters
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          python3 -m pip install --quiet --break-system-packages pyflakes
       - name: actionlint
-        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
+        run: make lint-workflows
       # Working-tree scan: a pull request checkout has no history to scan, and
       # a secret committed in this PR is still in the tree.
       - name: gitleaks

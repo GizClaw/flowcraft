@@ -85,7 +85,8 @@ help:
 	@echo "  make test        Run tests on all modules under the race detector (excl. Go"
 	@echo "                   benchmarks; consumers outside the workspace). RACE=0 skips it"
 	@echo "  make fmt         Run gofmt -s on all modules"
-	@echo "  make lint        Run golangci-lint on CI-gated modules"
+	@echo "  make lint        golangci-lint on every module, plus actionlint on the"
+	@echo "                   workflows (that lane needs shellcheck and pyflakes)"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make bench       Run benchmarks for BENCH_MODULES into .bench/"
 	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
@@ -139,14 +140,39 @@ fmt:
 # `lint` is every module, in the two modes they need: the workspace's modules resolve
 # each other through go.work, the scripts modules resolve pinned releases through their own
 # go.mod. `lint-workspace` is the half CI runs per module in its own job.
-.PHONY: lint lint-workspace lint-scripts
-lint: lint-workspace lint-scripts
+.PHONY: lint lint-workspace lint-scripts lint-workflows
+lint: lint-workspace lint-scripts lint-workflows
 
 lint-workspace:
 	@$(call GO_FOREACH,$(MODULES_LINT),lint,golangci-lint run --timeout 5m ./...)
 
 lint-scripts:
 	@$(call GO_FOREACH,$(SCRIPT_MODULES),lint-script,GOWORK=off golangci-lint run --timeout 5m ./...)
+
+# The workflows are code too, and actionlint is what checks them. Two of its rules —
+# shellcheck over every run: block, and pyflakes over embedded Python — only run when those
+# binaries are on PATH; without them actionlint reports a clean file that CI then rejects.
+# That is not hypothetical: an SC2129 finding reached CI from a laptop whose actionlint had
+# run without shellcheck, so the presence of the tools is checked here, and skipping them is
+# the opt-in rather than the default.
+ACTIONLINT_VERSION ?= v1.7.7
+LINT_WORKFLOWS_LENIENT ?= 0
+
+lint-workflows:
+	@set -e; \
+	if [ "$(LINT_WORKFLOWS_LENIENT)" != "1" ]; then \
+		missing=""; \
+		for tool in shellcheck pyflakes; do \
+			command -v $$tool >/dev/null 2>&1 || missing="$$missing $$tool"; \
+		done; \
+		if [ -n "$$missing" ]; then \
+			echo "error: actionlint would silently skip a rule:$$missing not on PATH." >&2; \
+			echo "       install: brew install shellcheck && python3 -m pip install pyflakes" >&2; \
+			echo "       or accept the smaller check with LINT_WORKFLOWS_LENIENT=1" >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 .PHONY: tidy
 tidy:

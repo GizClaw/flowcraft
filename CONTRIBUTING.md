@@ -213,8 +213,13 @@ are still missing.
 
 - `make ci` runs `vet` + `test` (under the race detector) + the coverage ratchet
   across every workspace member.
-- `make lint` is the golangci-lint lane over `core` and `driver`; CI runs it
-  separately from `make ci`.
+- `make lint` is the static lane: golangci-lint over every module, then
+  `actionlint` over `.github/workflows`. That half needs `shellcheck` and
+  `pyflakes` on `PATH`, because actionlint silently drops both rules without them
+  — which is how a shellcheck finding once reached CI from a laptop that had run
+  clean. The target names the install lines when either is missing; pass
+  `LINT_WORKFLOWS_LENIENT=1` to accept the smaller check on purpose. CI runs both
+  halves, separately from `make ci`.
 - `make check-consumers` builds every example from its own `go.mod` with
   `GOWORK=off`, so a change that exists only in this checkout is caught there
   rather than at release time.
