@@ -144,7 +144,9 @@ func roots(values ...string) []string {
 // TestAsDenialSurvivesWrapping is the contract the recording layer relies on: a
 // refusal stays inspectable after a caller wraps it with context.
 func TestAsDenialSurvivesWrapping(t *testing.T) {
-	_, err := policy.Grant{}.Narrow(policy.Request{
+	_, err := policy.Grant{Models: []model.ModelRef{
+		{ID: model.ModelID{Provider: "openai", Name: "gpt-4o-mini"}},
+	}}.Narrow(policy.Request{
 		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
 	})
 	denial, ok := policy.AsDenial(err)

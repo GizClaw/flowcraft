@@ -21,8 +21,10 @@
 //     one field that expresses "none".
 //   - [ToolSet] allow is empty by default: every wired tool. Which tools exist is
 //     a property of the process, so "all of them" is a meaningful default.
-//   - Models are empty by default: none. A model call spends money and names a
-//     resource that has no "everything" spelling, so it has to be written down.
+//   - Models are empty by default: every model the process serves. A model call
+//     spends money, so a deployment that wants a subset writes one down; the
+//     host enforces it at the call, which is what makes the empty set mean
+//     "unrestricted" rather than "none".
 //
 // # A widening is a second layer, not a second ceiling
 //

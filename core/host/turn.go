@@ -210,12 +210,15 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		}
 	}
 	return agent.Request{
-		Agent:       session.agent,
-		Task:        task,
-		Input:       msg,
-		Binding:     session.binding,
-		Tools:       a.res.dispatch,
-		Models:      a.res.models,
+		Agent:   session.agent,
+		Task:    task,
+		Input:   msg,
+		Binding: session.binding,
+		Tools:   a.res.dispatch,
+		// The model access is filtered by the session's own grant: a model the
+		// session may not call is refused at the seam rather than by every driver
+		// remembering to ask. See modelgate.go.
+		Models:      a.modelAccess(session.binding.Grant),
 		Ordinal:     session.ordinal,
 		Fingerprint: a.fingerprint,
 		// The host keeps the full store; the turn gets the half a driver may use.

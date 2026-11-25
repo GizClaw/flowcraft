@@ -300,3 +300,35 @@ func requestOf(g policy.Grant) policy.Request {
 	tools := g.Tools
 	return policy.Request{Models: g.Models, Tools: &tools, Budget: &g.Tools.Budget}
 }
+
+// TestAllowsModelWithoutASetIsUnrestricted pins the default: which models exist
+// is a property of the process, so a grant that names none constrains nothing.
+func TestAllowsModelWithoutASetIsUnrestricted(t *testing.T) {
+	var grant policy.Grant
+	if !grant.AllowsModel(ref("openai", "anything")) {
+		t.Fatal("an empty model set refused a model")
+	}
+}
+
+// TestAllowsModelProfileIsAsymmetric covers the two spellings of "this model": a
+// grant without a profile names it wherever it is served, and a grant with one
+// pins the deployment.
+func TestAllowsModelProfileIsAsymmetric(t *testing.T) {
+	loose := policy.Grant{Models: []model.ModelRef{ref("openai", "gpt-4o")}}
+	if !loose.AllowsModel(model.ModelRef{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"}) {
+		t.Fatal("an unpinned grant refused a pinned ref")
+	}
+	if loose.AllowsModel(ref("openai", "gpt-4o-mini")) {
+		t.Fatal("a different model id was allowed")
+	}
+
+	pinned := policy.Grant{Models: []model.ModelRef{
+		{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"},
+	}}
+	if pinned.AllowsModel(ref("openai", "gpt-4o")) {
+		t.Fatal("a pinned grant allowed an unpinned ref")
+	}
+	if !pinned.AllowsModel(model.ModelRef{ID: ref("openai", "gpt-4o").ID, Profile: "team-a"}) {
+		t.Fatal("a pinned grant refused its own ref")
+	}
+}

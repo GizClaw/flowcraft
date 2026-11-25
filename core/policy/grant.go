@@ -31,8 +31,9 @@ type Grant struct {
 	Exec ExecPolicy `json:"exec,omitempty" yaml:"exec,omitempty"`
 	// Resources caps what a command may consume.
 	Resources Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
-	// Models lists the callable models. Empty means none: a model call spends
-	// money and names a resource with no "everything" spelling.
+	// Models lists the callable models. Empty means every model the process
+	// serves: which models exist is a property of the process, and the host
+	// enforces the set at the call, so "unrestricted" is a meaningful default.
 	Models []model.ModelRef `json:"models,omitempty" yaml:"models,omitempty"`
 	// Tools is which tools the session may see and call.
 	Tools ToolSet `json:"tools,omitempty" yaml:"tools,omitempty"`
@@ -167,11 +168,31 @@ func (g Grant) Narrow(req Request) (Grant, error) {
 	return out.Normalized()
 }
 
-// AllowsModel reports whether ref may be called. An empty model set grants none.
+// AllowsModel reports whether ref may be called. An empty model set grants every
+// model the process serves: what exists at all is a property of the process, the
+// same reason an empty tool allow-list means "all of them".
 func (g Grant) AllowsModel(ref model.ModelRef) bool { return g.allowsModel(ref) }
 
 func (g Grant) allowsModel(ref model.ModelRef) bool {
-	return len(g.Models) > 0 && slices.Contains(g.Models, ref)
+	if len(g.Models) == 0 {
+		return true
+	}
+	return slices.ContainsFunc(g.Models, func(granted model.ModelRef) bool {
+		return sameModel(granted, ref)
+	})
+}
+
+// sameModel reports whether a granted ref names the model want asks for.
+//
+// A ref without a profile names a model wherever it is served; a ref with one
+// pins the deployment. Without this asymmetry a grant could not say "this model,
+// whichever account answers" and a caller that named no profile would be refused
+// a model the grant actually listed.
+func sameModel(granted, want model.ModelRef) bool {
+	if granted.ID != want.ID {
+		return false
+	}
+	return granted.Profile == "" || granted.Profile == want.Profile
 }
 
 // AllowsTool reports whether name may be called.
