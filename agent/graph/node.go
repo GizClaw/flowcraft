@@ -35,11 +35,11 @@ type Invoke struct {
 	Snapshot func() Snapshot
 	// Step is the loop counter, so a node can decide to stop.
 	Step int
-	// Answer is the reply to a question this node asked by suspending. It is
+	// Resume is the reply to a question this node asked by suspending. It is
 	// non-empty only on the invocation that resumes a suspended run, and the
 	// node is re-entered from the start: anything it did before suspending is
 	// its own idempotency problem.
-	Answer message.Content
+	Resume message.Content
 	// Lookup returns a model call this run recorded earlier, by request hash.
 	// Nil when nothing was recorded; a node must not assume replay is on.
 	Lookup func(requestHash string) (agent.LLMCallRecord, bool)

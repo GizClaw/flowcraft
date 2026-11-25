@@ -268,7 +268,7 @@ func BenchmarkSuspendResume(b *testing.B) {
 		if run.State() != agent.StateInputRequired {
 			b.Fatalf("state = %s, want input-required", run.State())
 		}
-		for _, err := range run.Answer(ctx, message.NewTextContent("answer")) {
+		for _, err := range run.Resume(ctx, message.NewTextContent("answer")) {
 			if err != nil {
 				b.Fatalf("Answer: %v", err)
 			}
@@ -303,7 +303,7 @@ func BenchmarkSuspendResumeDurable(b *testing.B) {
 		if err != nil || !found {
 			b.Fatalf("restore = %v, found %v", err, found)
 		}
-		for _, err := range resumed.Answer(ctx, message.NewTextContent("answer")) {
+		for _, err := range resumed.Resume(ctx, message.NewTextContent("answer")) {
 			if err != nil {
 				b.Fatalf("Answer: %v", err)
 			}
