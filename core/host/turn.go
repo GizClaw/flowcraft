@@ -200,6 +200,9 @@ func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent
 	}
 
 	state, last, failures := agent.TaskState(""), agent.TaskState(""), 0
+	// Deferred, so a turn that ends early — a sink that stopped, a driver error — still records
+	// where it left the run before the slot is released.
+	defer func() { session.conclude(choose(state, last)) }()
 	turn := agent.RunTurn
 	if resume {
 		turn = agent.ResumeTurn
@@ -228,12 +231,8 @@ func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent
 			return
 		}
 	}
-	if state == "" {
-		state = last
-	}
 	// Recorded before the slot is released: a waiter that saw the slot free but not the pause
 	// would take it and answer a question it was not asked.
-	session.conclude(state)
 	finishRunSpan(spanCtx, span, state, failures)
 }
 

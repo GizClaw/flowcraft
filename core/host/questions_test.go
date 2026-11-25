@@ -10,6 +10,20 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/platform"
 )
 
+// TestASessionWithoutAnOutletHasNoQuestionSurface is the deployment's answer: a root session whose
+// application installed no outlet cannot ask, so the tool refuses the call instead of suspending a
+// turn nobody was told about.
+func TestASessionWithoutAnOutletHasNoQuestionSurface(t *testing.T) {
+	agents := deliveryHost(t, &deliveryDriver{accepts: true})
+	session, ok := agents.Session("s1")
+	if !ok {
+		t.Fatal("the session is not open")
+	}
+	if _, ok := platform.AskSlot.Get(session.Binding().Caps); ok {
+		t.Fatal("a session with no outlet carries a question surface")
+	}
+}
+
 // TestAQuestionIsPosedAndItsAnswerTaken is the tool's round trip: Ask reports the text to suspend
 // on, the answer arrives with the resume, and Take hands it to the call.
 func TestAQuestionIsPosedAndItsAnswerTaken(t *testing.T) {
@@ -72,10 +86,11 @@ func TestAnExpiredQuestionIsAskedAgain(t *testing.T) {
 	}
 }
 
-// TestEverySessionCarriesTheQuestionSurface pins the wiring: the slot the ask_user tool reads is on
-// every session, delegated or not, because the tool's registration depends on it.
-func TestEverySessionCarriesTheQuestionSurface(t *testing.T) {
-	agents := deliveryHost(t, &deliveryDriver{accepts: true})
+// TestASessionWithAnOutletCarriesTheQuestionSurface pins the wiring: the slot the ask_user tool
+// reads is on a session whose application installed an outlet.
+func TestASessionWithAnOutletCarriesTheQuestionSurface(t *testing.T) {
+	agents := deliveryHost(t, &deliveryDriver{accepts: true},
+		WithQuestions(func(context.Context, string, message.Content) bool { return true }))
 	session, ok := agents.Session("s1")
 	if !ok {
 		t.Fatal("the session is not open")

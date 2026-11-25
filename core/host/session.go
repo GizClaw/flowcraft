@@ -164,9 +164,16 @@ func (s *Session) claim(ctx context.Context, kind turnKind, mode claimMode) erro
 			}
 			s.turnMu.Unlock()
 			return nil
+		case !s.running && mode == claimHost:
+			// Paused, and a turn the host started on its own: it waits for the answer, because
+			// the message it carries is not one. Falling through to a conflict here delivered the
+			// queue to the application instead of holding it, which is a dropped delivery.
 		case !s.running:
-			// Paused, and a caller's turn: the message would be taken as the answer.
+			// Paused, and a caller's or a resume's turn that cannot take it.
 			s.turnMu.Unlock()
+			if mode == claimResume {
+				return errdefs.Conflictf("host: session %q is not waiting for an answer", s.id)
+			}
 			return errdefs.Conflictf(
 				"host: session %q is waiting for an answer; use Resume", s.id)
 		case mode != claimHost:
@@ -215,6 +222,14 @@ const (
 	// claimResume is the answer to the question: it takes the slot a paused session is holding.
 	claimResume
 )
+
+// choose prefers the terminal state a turn reached, and falls back to the last status it saw.
+func choose(terminal, last agent.TaskState) agent.TaskState {
+	if terminal != "" {
+		return terminal
+	}
+	return last
+}
 
 // conclude records where a turn left the run, before the slot is released.
 //
@@ -463,8 +478,14 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	if len(opening.chain.Lineage) == 0 {
 		questionSink = a.questions
 	}
-	questions := newQuestionsRoute(sessionID, questionSink)
-	platform.AskSlot.Provide(capabilities, questions)
+	// The slot is only provided where a question can be answered: a root session with no outlet
+	// would otherwise pose a question nobody was told about and suspend a turn that cannot be
+	// resumed. A delegated child always has one — its parent is the outlet.
+	var questions *questionsRoute
+	if questionSink != nil || len(opening.chain.Lineage) > 0 {
+		questions = newQuestionsRoute(sessionID, questionSink)
+		platform.AskSlot.Provide(capabilities, questions)
+	}
 	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
 		policy:    a.approval,
 		agent:     agentName,

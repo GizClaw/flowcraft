@@ -2,6 +2,7 @@ package a2a_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,27 @@ type turnResult struct {
 	artifacts []agent.Artifact
 	status    agent.Status
 	err       error
+}
+
+// resumeTurn is runTurn through the resume verb.
+func resumeTurn(t *testing.T, driver agent.Resumer, req agent.Request) turnResult {
+	t.Helper()
+	var got turnResult
+	for event, err := range driver.Resume(context.Background(), req) {
+		if err != nil {
+			if got.err == nil {
+				got.err = err
+			}
+			continue
+		}
+		switch typed := event.(type) {
+		case agent.Text:
+			got.answer.WriteString(typed.Text)
+		case agent.Status:
+			got.status = typed
+		}
+	}
+	return got
 }
 
 func runTurn(t *testing.T, driver agent.Driver, req agent.Request) turnResult {
@@ -168,7 +190,8 @@ func TestRestartKeepsTheRemoteContext(t *testing.T) {
 }
 
 // A task waiting for the caller survives a restart: the peer's task id is in the section, so the
-// next turn answers that task instead of starting a new one.
+// next turn answers that task instead of starting a new one — and the driver knows it is waiting
+// before it has spoken to the peer, because it reads the state from the store on the way in.
 func TestThePausedTaskSurvivesARestart(t *testing.T) {
 	server, engine := peer(t,
 		agent.Status{State: agent.StateWorking},
@@ -195,8 +218,17 @@ func TestThePausedTaskSurvivesARestart(t *testing.T) {
 	}
 
 	second := connect(t, server.URL, "conv-1")
-	if got := runTurn(t, second, withStore(request("conv-1", "that one"), store)); got.err != nil {
-		t.Fatalf("Run after restart: %v", got.err)
+	// A new message would be taken as the answer to the peer's question, so Run refuses it once
+	// the restored state is known.
+	if got := runTurn(t, second, withStore(request("conv-1", "that one"), store)); !errors.Is(got.err, agent.ErrAwaitingResume) {
+		t.Fatalf("Run after restart = %v, want ErrAwaitingResume", got.err)
+	}
+	resumer, ok := second.(agent.Resumer)
+	if !ok {
+		t.Fatal("the a2a driver cannot resume")
+	}
+	if got := resumeTurn(t, resumer, withStore(request("conv-1", "that one"), store)); got.err != nil {
+		t.Fatalf("Resume after restart: %v", got.err)
 	}
 	taskID := engine.lastTaskID()
 	if taskID == "" {

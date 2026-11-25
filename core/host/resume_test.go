@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -160,12 +161,25 @@ func TestResumeOfAnIdleSessionIsRefused(t *testing.T) {
 // parent is waiting for an answer is not taken as that answer, and is delivered once the parent
 // resumes.
 func TestADeliveryWaitsOutThePause(t *testing.T) {
-	agents, driver := suspendHost(t, "may I?")
+	driver := &protocolDriver{question: "may I?"}
+	var undelivered []string
+	agents := hostFor(t, func() (agent.Program, error) { return &protocolProgram{driver: driver}, nil },
+		WithDelegationDelivery(func(_ context.Context, id string, msg message.Message) bool {
+			undelivered = append(undelivered, id+": "+msg.Content.Text())
+			return true
+		}))
 
 	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
 	}
 
 	agents.deliver(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "from a child"))
+	// Long enough for the worker to reach the claim while the session is still paused: that is the
+	// moment the old behaviour turned the message into "undeliverable", and a test that raced past
+	// it would pass on either code.
+	time.Sleep(50 * time.Millisecond)
+	if len(undelivered) != 0 {
+		t.Fatalf("a delivery offered during the pause was dropped: %v", undelivered)
+	}
 	// A resumed turn and the delivery turn both land here; the delivery must be the third run.
 	for range agents.Resume(t.Context(), "s1", message.NewTextContent("yes")) {
 	}
@@ -175,5 +189,10 @@ func TestADeliveryWaitsOutThePause(t *testing.T) {
 	})
 	if _, resumes, _ := driver.state(); resumes != 1 {
 		t.Fatalf("resumes = %d, want the answer and not the delivery", resumes)
+	}
+	// The message waited, it was not handed to the application: a delivery that a pause turned
+	// into an "undeliverable" is the dropped delivery this test exists for.
+	if len(undelivered) != 0 {
+		t.Fatalf("the delivery was reported undeliverable instead of held: %v", undelivered)
 	}
 }
