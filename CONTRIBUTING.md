@@ -85,7 +85,7 @@ configure it. Cross-reference with one line; never copy.
 
 The independently versioned library modules are `core` (the platform) and
 `driver` (provider inference adapters).
-The Go workspace also includes `e2e` (the stack test: the only module that imports
+The Go workspace also includes `test/e2e` (the stack test: the only module that imports
 the platform and every implementation at once, so it can run a real backend, real
 tools and the real engine together; never released, no changeset and no tag) and
 `examples/forge` (a runnable consumer, not released: it pins released module

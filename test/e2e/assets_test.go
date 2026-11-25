@@ -21,7 +21,7 @@ import (
 // validator: that one checks the shape of a deployment document, not that a graph
 // can be built.
 func TestTheShippedGraphAssetsCompile(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("..", "skills", "flowcraft-deploy", "assets", "*", "graph.yaml"))
+	paths, err := filepath.Glob(filepath.Join("..", "..", "skills", "flowcraft-deploy", "assets", "*", "graph.yaml"))
 	if err != nil {
 		t.Fatalf("glob the shipped assets: %v", err)
 	}

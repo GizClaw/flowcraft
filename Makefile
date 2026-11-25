@@ -29,10 +29,10 @@ AGENT_MODULES := agent
 # reason the others are: a new source is a package beside them, and core keeps the contract.
 TOOL_MODULES := tool
 
-MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) e2e examples/forge
+MODULES_WORK := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) test/e2e examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) e2e
+MODULES_LINT := core $(SANDBOX_MODULES) $(INFERENCE_MODULES) $(AGENT_MODULES) $(TOOL_MODULES) test/e2e
 
 # `go mod tidy` resolves the core version a module pins against the module proxy.
 # The three implementation modules pin a core that is only a commit on main so

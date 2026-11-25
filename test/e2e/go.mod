@@ -1,4 +1,4 @@
-module github.com/GizClaw/flowcraft/e2e
+module github.com/GizClaw/flowcraft/test/e2e
 
 go 1.26.0
 
@@ -43,8 +43,8 @@ require (
 // versions — and the replaces disappear — at the release that tags them, exactly as
 // examples/forge's did.
 replace (
-	github.com/GizClaw/flowcraft/agent => ../agent
-	github.com/GizClaw/flowcraft/core => ../core
-	github.com/GizClaw/flowcraft/sandbox => ../sandbox
-	github.com/GizClaw/flowcraft/tool => ../tool
+	github.com/GizClaw/flowcraft/agent => ../../agent
+	github.com/GizClaw/flowcraft/core => ../../core
+	github.com/GizClaw/flowcraft/sandbox => ../../sandbox
+	github.com/GizClaw/flowcraft/tool => ../../tool
 )
