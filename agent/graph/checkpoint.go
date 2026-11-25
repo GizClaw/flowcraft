@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -201,8 +200,6 @@ type runOptions struct {
 	tools   tool.Dispatcher
 	// models is the process's routed model access.
 	models *inference.Provider
-	// defaultModel is what a node calls when the document names none.
-	defaultModel model.ModelRef
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
@@ -219,11 +216,6 @@ func WithBinding(binding tool.Binding) RunOption {
 // WithTools attaches the process tool surface.
 func WithTools(tools tool.Dispatcher) RunOption {
 	return func(o *runOptions) { o.tools = tools }
-}
-
-// WithDefaultModel sets the model a node calls when the document names none.
-func WithDefaultModel(ref model.ModelRef) RunOption {
-	return func(o *runOptions) { o.defaultModel = ref }
 }
 
 // WithModels attaches the process's routed model access.
@@ -389,6 +381,7 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 	checkpoint := agent.Checkpoint{
 		Schema:      agent.Schema,
 		Fingerprint: r.fingerprint,
+		Manifest:    r.manifest.ID(),
 		Task: agent.Task{
 			ID:        r.taskID,
 			SessionID: r.sessionID,
@@ -527,6 +520,13 @@ func (g *Graph) restore(ctx context.Context, opts runOptions) (*Run, bool, error
 		return nil, false, fmt.Errorf(
 			"graph: checkpoint was taken under %s, this deployment is %s",
 			checkpoint.Fingerprint, opts.fingerprint)
+	}
+	// The manifest carries the authority the conversation actually ran under. A deployment
+	// fingerprint cannot: it names the program, not what the caller was allowed to do.
+	if want := opts.manifest.ID(); want != "" && checkpoint.Manifest != "" && checkpoint.Manifest != want {
+		return nil, false, fmt.Errorf(
+			"graph: checkpoint was taken under authority %s, this session holds %s",
+			checkpoint.Manifest, want)
 	}
 	var proj projection
 	if raw, ok := checkpoint.Sections[sectionGraph]; ok {
@@ -730,6 +730,10 @@ func (g *Graph) carryInto(ctx context.Context, opts runOptions, target *stateSto
 	}
 	if opts.fingerprint != "" && previous.Fingerprint != opts.fingerprint {
 		telemetry.WarnErr(ctx, "graph: not carrying state from another deployment's checkpoint", nil)
+		return nil
+	}
+	if want := opts.manifest.ID(); want != "" && previous.Manifest != "" && previous.Manifest != want {
+		telemetry.WarnErr(ctx, "graph: not carrying state across a change of authority", nil)
 		return nil
 	}
 	var proj projection

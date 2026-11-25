@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/telemetry/telemetrytest"
 )
 
@@ -18,7 +17,7 @@ func TestSessionGaugeBalances(t *testing.T) {
 	driver := &turnDriver{log: &journal{}, block: make(chan struct{})}
 	agents, _ := runnableHost(t, driver)
 
-	if _, err := agents.Open(t.Context(), "s2", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s2", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := agents.CloseSession(t.Context(), "s2"); err != nil {
@@ -64,13 +63,11 @@ func TestEvictionIsCounted(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "old", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "old", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	session, _ := agents.Session("old")
@@ -141,7 +138,7 @@ func TestHostMetricsDeclareTheirShape(t *testing.T) {
 	driver := &turnDriver{log: &journal{}}
 	agents, _ := runnableHost(t, driver)
 
-	if _, err := agents.Open(t.Context(), "s2", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s2", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	// An idle steer is refused and counted: the series exists either way, which is what

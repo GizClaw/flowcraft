@@ -67,12 +67,8 @@ func testRuntime(t *testing.T, provider inference.Generator) *graphtest.Fixture 
 	return graphtest.New(t, graphtest.Config{
 		Generator: provider,
 		Tools:     tools(),
-		Model:     defaultModel,
 	})
 }
-
-// defaultModel is what a node calls when its document names no model.
-var defaultModel = model.ModelRef{ID: model.ModelID{Provider: "p", Name: "m"}}
 
 // tools are the tools the cases call: enough to prove that a call reached the real dispatcher, with
 // the arguments it was given, and that a failure comes back as one.
@@ -404,7 +400,6 @@ func dynamicRuntime(t testing.TB, provider inference.Generator) *graphtest.Fixtu
 		Generator: provider,
 		Tools:     tools(),
 		Deferred:  true,
-		Model:     defaultModel,
 	})
 }
 
@@ -578,27 +573,43 @@ func TestToolRejectsNegativeParallelism(t *testing.T) {
 	}
 }
 
-// A request that names no model resolves to the deployment's default, which arrives with the
-// invocation: a node holds no model of its own, so one instance serves every deployment.
-func TestModelFallsBackToTheInvocationsDefault(t *testing.T) {
-	provider := &stubProvider{response: textResponse("ok")}
-	rt := testRuntime(t, provider)
-	snapshot := map[string]graph.Value{
-		"messages": graph.MessagesValue(graph.MessagesFromSlice([]message.Message{
-			message.NewTextMessage(message.RoleUser, "anything"),
-		})),
-	}
-	stream, err := nodes.Model().Invoke(context.Background(), invokeFor(rt, snapshot,
-		`{"messages":"messages"}`))
-	if err != nil {
-		t.Fatalf("Invoke: %v", err)
-	}
-	drainNode(t, stream)
-	if len(provider.requests) != 1 {
-		t.Fatalf("requests = %d, want one", len(provider.requests))
-	}
-	got := provider.requests[0].Model
-	if got.ID.Provider != defaultModel.ID.Provider || got.ID.Name != defaultModel.ID.Name {
-		t.Errorf("model = %+v, want the deployment default %+v", got, defaultModel)
+// A node that names no model sends an empty ref: the choice belongs to the router, which
+// answers from the authority the session was opened with. A node that names one still gets
+// it, which is how a graph asks for a specific model inside that list.
+func TestModelSendsWhatTheNodeNames(t *testing.T) {
+	pinned := nodes.Model()
+	for name, tc := range map[string]struct {
+		config string
+		want   model.ModelRef
+	}{
+		"nothing named": {
+			config: `{"messages":"messages"}`,
+			want:   model.ModelRef{},
+		},
+		"a pinned model": {
+			config: `{"messages":"messages","request":{"model":{"provider":"p","name":"strong"}}}`,
+			want:   model.ModelRef{ID: model.ModelID{Provider: "p", Name: "strong"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider := &stubProvider{response: textResponse("ok")}
+			rt := testRuntime(t, provider)
+			snapshot := map[string]graph.Value{
+				"messages": graph.MessagesValue(graph.MessagesFromSlice([]message.Message{
+					message.NewTextMessage(message.RoleUser, "anything"),
+				})),
+			}
+			stream, err := pinned.Invoke(context.Background(), invokeFor(rt, snapshot, tc.config))
+			if err != nil {
+				t.Fatalf("Invoke: %v", err)
+			}
+			drainNode(t, stream)
+			if len(provider.requests) != 1 {
+				t.Fatalf("requests = %d, want one", len(provider.requests))
+			}
+			if got := provider.requests[0].Model; got != tc.want {
+				t.Fatalf("model = %+v, want %+v", got, tc.want)
+			}
+		})
 	}
 }

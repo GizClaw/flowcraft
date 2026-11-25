@@ -29,9 +29,7 @@ var documentTypes = []any{
 	policy.NetPolicy{},
 	policy.NetRule{},
 	policy.MITMPolicy{},
-	policy.Escalation{},
 	policy.Change{},
-	policy.Request{},
 }
 
 // TestEveryDocumentFieldIsTagged is the mechanical half of "a Grant is the
@@ -130,14 +128,13 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 		},
 		Exec:      policy.ExecPolicy{Timeout: policy.Duration(10 * time.Second), Env: policy.EnvPolicy{Allow: []string{"PATH"}}, Shell: pathtest.Abs("bin/sh")},
 		Resources: policy.Resources{CPUMillicores: 500, MemoryBytes: 1 << 20, MaxOutputBytes: 1 << 16},
-		Models:    []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}},
+		Models:    []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-4o"}}}},
 		Tools: policy.ToolSet{
 			Allow:    []string{"read_file"},
 			Exposure: map[string]policy.Exposure{"read_file": policy.ExposureDeferred},
 			Budget:   policy.Budget{MaxDefinitions: 8, MaxBytes: 2048},
 		},
 		Delegation: &policy.Delegation{Targets: []string{"other"}, Modes: []policy.DelegationMode{policy.DelegationSync}, MaxDepth: 1},
-		Limits:     policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 4},
 	}
 
 	payload, err := json.Marshal(grant)
@@ -154,7 +151,6 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 		`"models"`, `"provider"`, `"name"`,
 		`"tools"`, `"exposure"`, `"budget"`, `"max_definitions"`, `"max_bytes"`,
 		`"delegation"`, `"targets"`, `"modes"`, `"max_depth"`,
-		`"limits"`, `"idle":"1m0s"`, `"max_sessions"`,
 	} {
 		if !strings.Contains(text, key) {
 			t.Errorf("marshalled grant is missing %s\n%s", key, text)
@@ -178,8 +174,8 @@ func TestGrantSerializesUnderItsDocumentNames(t *testing.T) {
 	if back.Digest() != grant.Digest() {
 		t.Fatal("a JSON round trip changed the grant's identity")
 	}
-	if back.Exec.Timeout != grant.Exec.Timeout || back.Limits.Idle != grant.Limits.Idle {
-		t.Fatalf("durations did not round-trip: %v / %v", back.Exec.Timeout, back.Limits.Idle)
+	if back.Exec.Timeout != grant.Exec.Timeout {
+		t.Fatalf("durations did not round-trip: %v", back.Exec.Timeout)
 	}
 }
 

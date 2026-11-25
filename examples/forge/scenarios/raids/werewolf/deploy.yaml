@@ -7,39 +7,18 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
         path: ${workspace:root}/graphs/referee.yaml
     # Sync delegation: a rule asks one seat and waits for its answer, which is
     # what a turn-based table needs. Depth and concurrency are the manager's.
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
-      delegation:
-        targets: [seat_1, seat_2, seat_3, seat_4, seat_5, seat_6, seat_7, seat_8]
-        modes: [sync]
-        timeout: 2m
-
+    limits: {idle: 30m, max_sessions: 64}
   - name: seat_1
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -51,18 +30,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_2
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -74,18 +45,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_3
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -97,18 +60,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_4
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -120,18 +75,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_5
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -143,18 +90,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_6
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -166,18 +105,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_7
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -189,18 +120,10 @@ agents:
         settings: {dir: "${workspace:root}/.forge/memory", keep: 12}
 
   - name: seat_8
-    grant:
-      sandbox: local
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}

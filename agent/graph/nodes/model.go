@@ -274,7 +274,7 @@ func (m *modelKind) request(
 		return inference.GenerateRequest{}, err
 	}
 	request := inference.GenerateRequest{
-		Model:     modelRefOf(config.Model, in),
+		Model:     modelRefOf(config.Model),
 		ModelHint: config.Hint,
 		Context:   turns[:len(turns)-1],
 		Input: inference.GenerateInput{
@@ -330,15 +330,25 @@ func (m *modelKind) request(
 	// Validate what this node built, not the transcript: every history message
 	// was checked when it entered state, and re-checking ten thousand of them per
 	// call costs more than the request it guards.
-	for _, check := range []struct {
+	//
+	// The model is the exception: a node that names none leaves the choice to the
+	// router, which answers from the session's granted models, so only a stated
+	// model has to validate here.
+	checks := []struct {
 		field string
 		err   error
 	}{
-		{"model", request.Model.Validate()},
 		{"input", request.Input.Validate()},
 		{"output", request.Output.Validate()},
 		{"tools", request.Tools.Validate()},
-	} {
+	}
+	if request.Model.ID.Name != "" {
+		checks = append(checks, struct {
+			field string
+			err   error
+		}{"model", request.Model.Validate()})
+	}
+	for _, check := range checks {
 		if check.err != nil {
 			return inference.GenerateRequest{}, fmt.Errorf("request.%s: %w", check.field, check.err)
 		}
@@ -418,17 +428,21 @@ func (emptyView) Definitions() []message.ToolDefinition { return nil }
 func (emptyView) Visible(string) bool                   { return false }
 func (emptyView) RecordCall(message.ToolCall)           {}
 
-// modelRef resolves the configured model, or the runtime's default.
-func modelRefOf(configured *modelRef, in graph.Invoke) model.ModelRef {
+// modelRef resolves the configured model, or the empty ref when the node names none.
+//
+// An empty ref is not "no model": it is "the router decides", and the router answers from
+// the authority the session was opened with. A node that pins one still gets it, which is
+// how a graph asks for a stronger or a cheaper model than the list's first.
+func modelRefOf(configured *modelRef) model.ModelRef {
 	if configured == nil {
-		return in.DefaultModel
+		return model.ModelRef{}
 	}
 	ref := model.ModelRef{
 		ID:      model.ModelID{Provider: configured.Provider, Name: configured.Name},
 		Profile: configured.Profile,
 	}
 	if ref.ID.Name == "" {
-		return in.DefaultModel
+		return model.ModelRef{}
 	}
 	return ref
 }

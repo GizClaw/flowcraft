@@ -134,8 +134,8 @@ func TestTranscriptionRejectedByDeclaredInputs(t *testing.T) {
 		ID:    model.ModelID{Provider: ProviderID, Name: "gpt-5-mini"},
 		Label: "text only",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeText},
 		},
 	}
 	provider, err := New(Settings{
@@ -160,8 +160,8 @@ func TestTranscriptionEnforcesMaxInputBytes(t *testing.T) {
 		ID:    model.ModelID{Provider: ProviderID, Name: "whisper-1"},
 		Label: "small budget",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartAudio},
-			Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartAudio},
+			Modes:  []model.Mode{model.ModeText},
 		},
 		Limits: model.ModelLimits{MaxInputBytes: &ceiling},
 	}

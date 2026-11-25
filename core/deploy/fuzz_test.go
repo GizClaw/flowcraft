@@ -78,7 +78,7 @@ func FuzzProcessDocument(f *testing.F) {
 		// is resolved against what the process carries. Whatever it decides, it decides
 		// without panicking — and a deployment it accepted is a deployment the host can
 		// build, which starts with a name.
-		deployments, err := loader.Deployments(context.Background(), capabilities(plan), layer)
+		deployments, err := loader.Deployments(context.Background(), layer)
 		if err != nil {
 			return
 		}

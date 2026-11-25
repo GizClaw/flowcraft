@@ -1,37 +1,33 @@
-// Package policy is the permission vocabulary: what an agent may do as a
-// ceiling, what a session actually does, and the one function that turns the
-// first into the second.
+// Package policy is the permission vocabulary: what one session may do, in one
+// value with one validator and one digest.
 //
-// # One type, two instances
+// # One type, one authority
 //
-// A [Grant] is both a ceiling and a fact. The deployment parses an agent's
-// ceiling; [Grant.Narrow] produces a session's version, and it only ever
-// narrows. There is no second "bind" type, because a second type would mean a
-// second validator, a second digest and a second rendering of the same facts —
-// and the first thing two representations do is disagree.
+// A [Grant] is stated by whoever opens a session, which is the application — the
+// trusted side. It is a value, not a gate: the host reads it to build the
+// boundary, and the tools read it to refuse a call with a correctable message.
+// There is no second type and no second source, because two representations of the
+// same facts disagree before anything else does.
 //
-// # Three defaults, chosen one at a time
+// # Three defaults, and one reason for all of them
 //
-// The fields of a Grant do not share a default policy, and the difference is
-// deliberate:
+// [Files], [ToolSet]'s allow-list and Models are all empty by default, and all for
+// the same reason: what exists at all is a property of the process, so "all of it"
+// is the one meaningful default. A caller that wants less writes it down, and each
+// set is enforced where it is used — the tree handles for files, the projection for
+// tools, and a refusal before any provider sees a model call.
 //
-//   - [Files] read and write are empty by default: unrestricted. Reading is
-//     recoverable and auditable, and "let the agent look around" is the ordinary
-//     deployment. A caller narrows by listing roots, and [Files.ReadOnly] is the
-//     one field that expresses "none".
-//   - [ToolSet] allow is empty by default: every wired tool. Which tools exist is
-//     a property of the process, so "all of them" is a meaningful default.
-//   - Models are empty by default: none. A model call spends money and names a
-//     resource that has no "everything" spelling, so it has to be written down.
+// [Files.ReadOnly] is the one field that expresses "none", because there is no way to
+// spell an empty root list differently from an omitted one.
 //
-// # A widening is a second layer, not a second ceiling
+// # A widening is one command, not a new session
 //
-// [Grant.Escalate] is what an operator declared above the ceiling, and [Grant.Widen]
-// is the only function that turns it into authority: for one command, a session may
-// be run in a boundary the declaration covers, never in the ceiling it was narrowed
-// from. Both invariants — the declaration is inside the ceiling's reach, and a
-// widening never drops what the bind already had — are checked here, because they
-// are properties of the values rather than of the host that asks.
+// [Grant.Widen] is what an approval turns into a temporary cell's authority. It
+// checks the three invariants the feature depends on — the approved grant keeps
+// every permit the session had, only files.write, net and exec.env may differ, and
+// the result validates — because they are properties of the values rather than of
+// the host that asks. The bound above the approval is what the machine can enforce,
+// which the sandbox backend answers when the temporary cell is built.
 //
 // # This package does no I/O and emits no telemetry
 //

@@ -60,12 +60,8 @@ func manifestHost(t *testing.T, opts ...AgentsOption) *Agents {
 	t.Cleanup(func() { _ = res.Close() })
 
 	agents := NewAgents(res, opts...)
-	grant := permissiveGrant("local")
-	grant.Tools = policy.ToolSet{}
-	grant.Models = []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}}
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   grant,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &seenProgram{driver: &seenDriver{}}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
@@ -75,29 +71,47 @@ func manifestHost(t *testing.T, opts ...AgentsOption) *Agents {
 	return agents
 }
 
+// manifestGrant is the authority the manifest tests open with: one granted model and the
+// process's whole tool table.
+func manifestGrant() policy.Grant {
+	return policy.Grant{Models: []policy.ModelGrant{{ModelRef: model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}}}}
+}
+
+// sessionManifest is the combination one authority runs under: the value a session stamps on its
+// records.
+func sessionManifest(t *testing.T, agents *Agents, name string, grant policy.Grant) agent.Manifest {
+	t.Helper()
+	entry := manifestEntry(t, agents, name)
+	view, err := entry.viewFor(grant.Tools, agents.res)
+	if err != nil {
+		t.Fatalf("viewFor: %v", err)
+	}
+	return agents.manifestFor(entry, grant, view)
+}
+
 // TestTheManifestNamesTheDeployment is the value's whole job: one assembled combination per
-// deployment, with every component a producer can answer for.
+// authority, with every component a producer can answer for.
 func TestTheManifestNamesTheDeployment(t *testing.T) {
 	agents := manifestHost(t,
 		WithFingerprint("fp-1"), WithHarness("forge@1.2.3"))
-	entry := manifestEntry(t, agents, "referee")
+	manifest := sessionManifest(t, agents, "referee", manifestGrant())
 
-	if entry.manifest.Schema != agent.ManifestSchema {
-		t.Fatalf("schema = %q, want %q", entry.manifest.Schema, agent.ManifestSchema)
+	if manifest.Schema != agent.ManifestSchema {
+		t.Fatalf("schema = %q, want %q", manifest.Schema, agent.ManifestSchema)
 	}
-	if entry.manifest.Deployment != "fp-1" || entry.manifest.Driver != "graph" {
-		t.Fatalf("manifest = %+v, want the deployment and driver", entry.manifest)
+	if manifest.Deployment != "fp-1" || manifest.Driver != "graph" {
+		t.Fatalf("manifest = %+v, want the deployment and driver", manifest)
 	}
-	if entry.manifest.Harness != "forge@1.2.3" {
-		t.Fatalf("harness = %q, want the host's", entry.manifest.Harness)
+	if manifest.Harness != "forge@1.2.3" {
+		t.Fatalf("harness = %q, want the host's", manifest.Harness)
 	}
-	if entry.manifest.Models == "" {
+	if manifest.Models == "" {
 		t.Fatal("the model catalog the grant allows left no digest")
 	}
-	if entry.manifest.Tools == "" {
-		t.Fatal("the tool schema the deployment exposes left no digest")
+	if manifest.Tools == "" {
+		t.Fatal("the tool schema the authority exposes left no digest")
 	}
-	if entry.manifest.ID() == "" {
+	if manifest.ID() == "" {
 		t.Fatal("the assembled manifest has no identity")
 	}
 }
@@ -106,10 +120,10 @@ func TestTheManifestNamesTheDeployment(t *testing.T) {
 // configuration assembled twice must produce one identity, or nothing joins a dataset row to
 // another run.
 func TestTwoDeploymentsOfOneProfessionAreComparable(t *testing.T) {
-	first := manifestEntry(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee")
-	second := manifestEntry(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee")
-	if first.manifest.ID() != second.manifest.ID() {
-		t.Fatalf("identical deployments disagree: %q vs %q", first.manifest.ID(), second.manifest.ID())
+	first := sessionManifest(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee", manifestGrant())
+	second := sessionManifest(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee", manifestGrant())
+	if first.ID() != second.ID() {
+		t.Fatalf("identical deployments disagree: %q vs %q", first.ID(), second.ID())
 	}
 }
 
@@ -117,20 +131,22 @@ func TestTwoDeploymentsOfOneProfessionAreComparable(t *testing.T) {
 // exposes fewer tools, or a different build of the same documents, is not the same version
 // combination and must not claim to be.
 func TestTheManifestFollowsTheToolsAndTheBuild(t *testing.T) {
-	reference := manifestEntry(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee")
+	reference := sessionManifest(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee", manifestGrant())
 
-	rebuilt := manifestEntry(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.4")), "referee")
-	if rebuilt.manifest.ID() == reference.manifest.ID() {
+	rebuilt := sessionManifest(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.4")), "referee", manifestGrant())
+	if rebuilt.ID() == reference.ID() {
 		t.Fatal("a different build hashed the same")
 	}
 
-	hidden := manifestEntry(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee")
-	hiddenView := hidden.newView()
-	if manifestTools(hiddenView) == "" {
-		t.Fatal("the exposed tool schema has no digest")
+	// The authority decides the exposure: a session that may call nothing seen is a different
+	// version combination, which is the point of assembling this per session.
+	hidden := sessionManifest(t, manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3")), "referee",
+		policy.Grant{Tools: policy.ToolSet{Allow: []string{}}})
+	if hidden.ID() == reference.ID() {
+		t.Fatal("a narrower authority hashed the same as a wider one")
 	}
 	if manifestTools(nil) != "" {
-		t.Fatal("a deployment with no tool projection hashed something")
+		t.Fatal("a session with no tool projection hashed something")
 	}
 }
 
@@ -140,9 +156,10 @@ func TestTheManifestReachesTheRunRecord(t *testing.T) {
 	var got []agent.RunRecord
 	agents := manifestHost(t, WithFingerprint("fp-1"), WithHarness("forge@1.2.3"),
 		WithRunSink(func(record agent.RunRecord) { got = append(got, record) }))
-	entry := manifestEntry(t, agents, "referee")
+	grant := manifestGrant()
+	want := sessionManifest(t, agents, "referee", grant)
 
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", grant); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
@@ -151,17 +168,20 @@ func TestTheManifestReachesTheRunRecord(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("run records = %d, want 1", len(got))
 	}
-	if got[0].Manifest != entry.manifest.ID() {
-		t.Fatalf("record manifest = %q, want the deployment's %q", got[0].Manifest, entry.manifest.ID())
+	if got[0].Manifest != want.ID() {
+		t.Fatalf("record manifest = %q, want the session's %q", got[0].Manifest, want.ID())
 	}
 }
 
 // TestTheRequestCarriesThePrecomputedManifestID is the hot-path half of that record: the host
-// hands the turn both the value and the identity it computed at install, so the turn never hashes
-// a per-deployment constant.
+// hands the turn both the value and the identity it computed at open, so the turn never hashes a
+// per-session constant.
 func TestTheRequestCarriesThePrecomputedManifestID(t *testing.T) {
 	agents, driver := seenHost(t)
-	entry := manifestEntry(t, agents, "referee")
+	// seenHost opens its session with this authority, so that is the combination the record
+	// must name.
+	grant := permissiveGrant("local")
+	want := sessionManifest(t, agents, "referee", grant)
 
 	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
 	}
@@ -170,11 +190,11 @@ func TestTheRequestCarriesThePrecomputedManifestID(t *testing.T) {
 	if req.ManifestID == "" {
 		t.Fatal("the request carries no manifest identity")
 	}
-	if req.ManifestID != entry.manifest.ID() {
-		t.Fatalf("request manifest id = %q, want the deployment's %q", req.ManifestID, entry.manifest.ID())
+	if req.ManifestID != want.ID() {
+		t.Fatalf("request manifest id = %q, want the session's %q", req.ManifestID, want.ID())
 	}
-	if req.Manifest != entry.manifest {
-		t.Fatalf("request manifest = %+v, want the deployment's %+v", req.Manifest, entry.manifest)
+	if req.Manifest != want {
+		t.Fatalf("request manifest = %+v, want the session's %+v", req.Manifest, want)
 	}
 }
 
@@ -220,14 +240,14 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 			Label: weight,
 		}}}}
 	}
-	base := manifestModels(declared("a"), []model.ModelRef{ref})
+	base := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: ref}})
 	if base == "" {
 		t.Fatal("a granted and declared model has no digest")
 	}
-	if again := manifestModels(declared("a"), []model.ModelRef{ref}); again != base {
+	if again := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: ref}}); again != base {
 		t.Fatalf("the same catalog hashed differently: %q vs %q", again, base)
 	}
-	if changed := manifestModels(declared("b"), []model.ModelRef{ref}); changed == base {
+	if changed := manifestModels(declared("b"), []policy.ModelGrant{{ModelRef: ref}}); changed == base {
 		t.Fatal("a changed declaration did not change the digest")
 	}
 	if got := manifestModels(declared("a"), nil); got != "" {
@@ -236,7 +256,7 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 	// A granted model the catalog does not declare still counts: a typo in a grant is a
 	// different deployment, not an absent one.
 	missing := model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-6"}}
-	if got := manifestModels(declared("a"), []model.ModelRef{missing}); got == "" {
+	if got := manifestModels(declared("a"), []policy.ModelGrant{{ModelRef: missing}}); got == "" {
 		t.Fatal("an undeclared granted model left no digest")
 	}
 }
@@ -246,7 +266,7 @@ func TestTheModelDigestFollowsTheDeclaredCatalog(t *testing.T) {
 func TestTheGrantDecidesTheModelDigest(t *testing.T) {
 	ref := model.ModelRef{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}}
 	provider := &inference.Provider{Catalog: catalog{models: []model.ModelDescriptor{{ID: ref.ID}}}}
-	if manifestModels(provider, []model.ModelRef{ref}) == manifestModels(provider, nil) {
+	if manifestModels(provider, []policy.ModelGrant{{ModelRef: ref}}) == manifestModels(provider, nil) {
 		t.Fatal("the granted model list did not reach the digest")
 	}
 	var _ = policy.Grant{}

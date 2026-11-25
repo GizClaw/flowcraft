@@ -11,15 +11,5 @@ agents:
       settings:
         # The graph is compiled once per deployment and shared by every session; the model is what a
         # node calls when the graph names none.
-        model: {provider: openai, name: gpt-4o-mini}
         path: ${workspace:root}/graphs/assistant.yaml
-    grant:
-      sandbox: local
-      # Empty read means unlimited read; the write set is the workspace, which is what the file tools
-      # are handed.
-      # Empty read and write mean unlimited, and that is what the no-isolation backend can honour: it has
-      # no boundary, so it refuses a written-down set rather than pretending to enforce one. A hardened
-      # deployment registers a backend that can confine — bwrap or seatbelt — and writes the set down.
-      files: {}
-      net: {mode: default}
-      limits: {idle: 30m, max_sessions: 8}
+    limits: {idle: 30m, max_sessions: 8}

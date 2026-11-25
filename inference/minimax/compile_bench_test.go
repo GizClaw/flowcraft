@@ -18,8 +18,8 @@ func benchVideoSpec() ModelSpec {
 		Name: "MiniMax-Hailuo-2.3",
 		Kind: "video",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText, message.PartImage},
-			Outputs: []message.PartKind{message.PartVideo},
+			Inputs: []message.PartKind{message.PartText, message.PartImage},
+			Modes:  []model.Mode{model.ModeVideo},
 		},
 	}
 }

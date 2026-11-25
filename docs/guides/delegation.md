@@ -5,14 +5,14 @@ title: Delegation
 
 # Delegation Guide
 
-Delegation is a permission, not a service. `policy.Delegation`, written as
-`grant.delegation` on an agent, says which agents a session may reach, in which modes,
-how deep and how large an input may be. A session whose bind carries a non-nil
-`Delegation` is given one capability — `platform.DelegationSlot`, filled by the host —
-and `tool/builtin/delegation` exposes the four tools that read it:
+Delegation is a permission, not a service. `policy.Delegation`, a block on the grant a
+session is opened with, says which agents it may reach, in which modes, how deep and
+how large an input may be. A session whose grant carries a non-nil `Delegation` is
+given one capability — `platform.DelegationSlot`, filled by the host — and
+`tool/builtin/delegation` exposes the four tools that read it:
 
 ```text
-grant.delegation (policy.Delegation)
+Grant.Delegation (policy.Delegation)
     → host fills platform.DelegationSlot with *host.delegator
     → tool/builtin/delegation reads it from tool.Binding.Caps, per call
 ```
@@ -24,23 +24,29 @@ imports the host.
 
 ## Deployment
 
-Delegation is a block on an agent's grant. A process document cannot grant it, and an
-absent block is not "unrestricted" — it is no delegation at all, which is the safe zero
-value for the one capability that can manufacture a run under a different grant:
+Delegation is a block on the authority a session is opened with. No document can grant
+it, and an absent block is not "unrestricted" — it is no delegation at all, which is the
+safe zero value for the one capability that can manufacture a run under a different
+authority:
 
-```yaml
-agents:
-  - name: forge
-    grant:
-      # …
-      delegation:
-        targets: [forge-review, forge-test] # required: naming is how it is granted
-        modes: [sync, async] # required; async must be named to be used
-        max_depth: 4 # zero caps nothing
-        max_concurrent: 4 # zero is unbounded; the session's own limit still applies
-        timeout: 5m # zero leaves it to the caller's context
-        max_input_bytes: 65536 # zero uses policy.DefaultMaxInputBytes (64 KiB)
+```go
+authority := policy.Grant{
+    // …
+    Delegation: &policy.Delegation{
+        Targets:       []string{"forge-review", "forge-test"}, // required: naming is how it is granted
+        Modes:         []policy.DelegationMode{policy.DelegationSync, policy.DelegationAsync},
+        MaxDepth:      4,     // zero caps nothing
+        MaxConcurrent: 4,     // zero is unbounded; the session's own limit still applies
+        Timeout:       policy.Duration(5 * time.Minute), // zero leaves it to the caller's context
+        MaxInputBytes: 65536, // zero uses policy.DefaultMaxInputBytes (64 KiB)
+    },
+}
 ```
+
+The child's authority is resolved from the trusted side. With no resolver installed it
+inherits the parent's grant, which is the one rule that cannot escalate; an application
+that needs per-target authority installs `host.WithDelegationGrant` and returns something
+narrower.
 
 | Field             | Rule                                                                                                                         |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
@@ -51,11 +57,12 @@ agents:
 | `timeout`         | Bounds one synchronous edge. Zero leaves the child to the caller's context, which for a sync edge is the parent's turn.      |
 | `max_input_bytes` | Caps the text one delegation hands over. Zero uses `policy.DefaultMaxInputBytes`.                                            |
 
-The values are validated at load (`policy.Delegation.Validate`, reached through
-`Grant.Normalized`), so a block with no target or no mode is a document error rather
-than a session that cannot delegate. Every edge is admitted against the **parent's**
-grant: only the caller's side can answer "may this session hand work to that agent, that
-way, this deep".
+The values are validated with the grant (`policy.Delegation.Validate`, reached through
+`Grant.Normalized`), so a block with no target or no mode is refused at open rather than
+being a session that silently cannot delegate. Every edge is admitted against the **parent's**
+authority: only the caller's side can answer "may this session hand work to that agent, that
+way, this deep". The child then runs under its own — inherited from the parent, or resolved by
+the application — never under authority borrowed from somewhere the parent could not reach.
 
 ## The four verbs
 
@@ -90,7 +97,7 @@ state, its answer or its question, and the lineage:
 `Delegate` is strict about its preconditions, because each one is a fact that would
 otherwise become a wrong answer somewhere else:
 
-1. **A parent session with a policy.** The parent's bind carries `grant.delegation`, and
+1. **A parent session with a policy.** The parent's grant carries a `Delegation`, and
    the target is in `targets`. A session that may not delegate has no capability at all,
    so the tool is refused before the call.
 2. **The mode is allowed** by the same grant.
@@ -153,27 +160,29 @@ agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: d
 ## What the child inherits, and what it does not
 
 The child is **a session of its own**: its own task, its own checkpoint, its own hooks
-(with `Agent` naming the target's deployment), its own grant — the target deployment's,
-not the parent's bind — and its own sandbox configuration.
+and its own program (both from the target's deployment), and its own cell. Its
+**authority** is inherited from the parent unless the application installed
+`host.WithDelegationGrant`, which is what keeps delegation from manufacturing authority:
+the default cannot escalate, and a resolver is trusted host code that narrows.
 
 What crosses is the lineage and nothing else. The host runs the child on
 `identity.Detach` plus `agent.WithoutFailureBox`: without the first, the child would
-carry the parent's conversation, bind and span attributes; without the second, the
+carry the parent's conversation, bind id and span attributes; without the second, the
 parent's first-wins failure box would record the child's model error as the parent
 turn's reason.
 
-Core derives no policy for the child, and in particular no boundary: `grant.delegation`
+Core derives no authority for the child, and in particular no boundary: `Delegation`
 bounds delegation (who, how many, how deep, how large) and says nothing about the
-child's write boundary, network posture or approval mode. A deployment that confines or
-gates work per session decides that in the child's own grant, or in a hook that
-recognises the child.
+child's write boundary, network posture or approval mode. An application that confines
+or gates work per target does that in its `WithDelegationGrant` resolver, or in a hook
+that recognises the child.
 
 ## What this replaced
 
 `core/delegation` is gone: its `Service` (a value that bound a policy to the host's
 session table), its own `Policy`, an async `Job` in a `Store` with `MemStore`, and a
 `Tools(service)` source. So is the run-identity carrier the lineage used to be stamped
-into. What replaced each part is one existing thing: the policy is `grant.delegation` on
+into. What replaced each part is one existing thing: the policy is `Grant.Delegation` on
 a `policy.Grant`, the verbs are `core/tool/platform`'s `Delegation` capability, the
 tools are a `tool.Source` in the `tool` module, the child is a session of
 `host.Agents`, and the lineage is `identity.Chain`. The behaviour that mattered — a

@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -33,7 +34,10 @@ import (
 type Resource struct {
 	providers []*inference.Provider
 	models    *inference.Provider
-	backends  map[string]BackendFactory
+	// router is the same fleet as models, as the value a session restricts: one router
+	// per process, and a session gets a copy that only serves what its grant lists.
+	router   *route.Router
+	backends map[string]BackendFactory
 	// enforcement is what each backend declared it can enforce, which a deployment's escalation
 	// declaration is checked against before a session is opened.
 	enforcement map[string]sandbox.Enforcement
@@ -80,13 +84,13 @@ type Options struct {
 	// the document asked for. The application supplies it: which executor runs a call is a decision
 	// about this binary, not about a deployment document.
 	Dispatcher func(catalog tool.Catalog, chain []tool.Middleware) tool.Dispatcher
-	// View builds one deployment's exposure over the tool table, from the tool set its grant
-	// allows, and returns the factory every session asks for its own view.
+	// View builds an exposure over the tool table from the tool set one authority allows, and
+	// returns the factory a session asks for its own view.
 	//
-	// The two halves are separate for a reason: what may be shown is the grant's, so it is
-	// built once per deployment, while the discovery pool, its recency order and the budget a
-	// round has spent belong to one conversation. An implementation that returns a single view
-	// for every session would let two sessions evict each other's tools.
+	// The two halves are separate for a reason: what may be shown is the authority's, so it is
+	// built once per tool set and shared, while the discovery pool, its recency order and the
+	// budget a round has spent belong to one conversation. An implementation that returned a
+	// single view for every session would let two sessions evict each other's tools.
 	//
 	// A policy the projection refuses is reported here, at install, rather than at the first
 	// session: a deployment whose authority cannot be projected is not deployable at all.
@@ -134,11 +138,12 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 		}
 		r.providers = append(r.providers, provider)
 	}
-	routed, err := r.buildRouted(plan)
+	routed, router, err := r.buildRouted(plan)
 	if err != nil {
 		return unwind(err)
 	}
 	r.models = routed
+	r.router = router
 
 	for _, planned := range plan.Backends {
 		factory, err := planned.New()
@@ -180,20 +185,20 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 // A target carries no model of its own: what a provider serves is its catalog's answer, and
 // declaring the model here as well would be a second spelling of the same fact. The request names
 // a model; the router keeps the targets whose catalog lists it.
-func (r *Resource) buildRouted(plan deploy.ProcessPlan) (*inference.Provider, error) {
+func (r *Resource) buildRouted(plan deploy.ProcessPlan) (*inference.Provider, *route.Router, error) {
 	targets := make([]route.Target, 0, len(r.providers))
 	for i, planned := range plan.Providers {
 		targets = append(targets, route.Target{Name: planned.Name, Provider: *r.providers[i]})
 	}
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	router, err := route.New(targets, route.Policy{Retry: plan.Route})
 	if err != nil {
-		return nil, fmt.Errorf("resource: route: %w", err)
+		return nil, nil, fmt.Errorf("resource: route: %w", err)
 	}
 	provider := router.Provider()
-	return &provider, nil
+	return &provider, router, nil
 }
 
 func (r *Resource) buildToolSources(plan deploy.ProcessPlan) ([]tool.Source, error) {
@@ -241,11 +246,29 @@ func (r *Resource) addCloser(name string, close func() error) {
 // backendFactory returns the constructor registered under name, which is what a grant's sandbox
 // field selects.
 //
+// An empty name asks for the runtime's default: the one backend this process configured. A
+// process with none, or with several and an unstated choice, has no default — guessing would run
+// the session somewhere the caller did not name.
+//
 // It is unexported because [Agents] reads it directly: a session's backend instance is built from
 // this factory and that session's confine, so the only consumer is in this package.
 func (r *Resource) backendFactory(name string) (BackendFactory, bool) {
-	factory, ok := r.backends[name]
-	return factory, ok
+	if name != "" {
+		factory, ok := r.backends[name]
+		return factory, ok
+	}
+	if len(r.order) == 1 {
+		return r.backends[r.order[0]], true
+	}
+	return nil, false
+}
+
+// sandboxNames renders the backends this process configured, for an error message.
+func (r *Resource) sandboxNames() string {
+	if len(r.order) == 0 {
+		return "none"
+	}
+	return strings.Join(r.order, ", ")
 }
 
 // Capabilities reports what an agent document may ask for.

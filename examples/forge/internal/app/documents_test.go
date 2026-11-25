@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/GizClaw/flowcraft/core/deploy"
 )
 
 // The shipped scenarios are the only documents that matter to this binary, so they are loaded here:
@@ -31,13 +29,7 @@ func TestTheShippedScenariosLoad(t *testing.T) {
 			if len(plan.Backends) == 0 {
 				t.Fatal("the process document declared no backend")
 			}
-			// The capabilities are what a built resource reports; here the document's own declaration
-			// stands in for it, because this test builds no process.
-			caps := deploy.Capabilities{
-				Backends: plan.BackendNames(),
-				Models:   []string{"openai/gpt-6.1-sol"},
-			}
-			specs, err := deployments(context.Background(), impls(), abs, options, caps)
+			specs, err := deployments(context.Background(), impls(), abs, options)
 			if err != nil {
 				t.Fatalf("deployments: %v", err)
 			}
@@ -48,8 +40,8 @@ func TestTheShippedScenariosLoad(t *testing.T) {
 				if spec.Program.Impl != "graph" {
 					t.Errorf("agent %q program = %q", spec.Name, spec.Program.Impl)
 				}
-				if spec.Grant.Sandbox != "local" {
-					t.Errorf("agent %q sandbox = %q", spec.Name, spec.Grant.Sandbox)
+				if spec.Limits.Idle <= 0 {
+					t.Errorf("agent %q declares no session table", spec.Name)
 				}
 			}
 		})

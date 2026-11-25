@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 )
 
-// BindGenerator assembles the generation seam from the bound halves. Either
+// BindGenerator assembles the generation mode from the bound halves. Either
 // half may be nil: a provider that cannot stream reports streaming as an
 // unsupported operation instead of forcing every driver to carry a stub.
 func BindGenerator(unary GenerateDriver, stream GenerateStreamDriver) inference.Generator {

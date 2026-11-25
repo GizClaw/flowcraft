@@ -7,17 +7,18 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 )
 
-// Grant is the permission value: the ceiling an agent may reach, and — after
-// [Grant.Narrow] — the facts of one session.
+// Grant is the permission value: what one session may do, stated by whoever opens
+// it.
 //
-// Both uses share one type on purpose. Two types with the same fields would mean
-// two validators, two digests and two renderings of the same facts, and the first
-// thing two representations do is disagree; the only real difference is "is this
-// the ceiling or the result", which the call site already knows.
+// It is a value rather than a gate. The host reads it to build the boundary, and a
+// tool reads it to refuse a call with a message the model can correct itself with.
+// There is no second representation, because two of them would mean two validators,
+// two digests and two renderings of the same facts — and the first thing two
+// representations do is disagree.
 //
-// A validated Grant is immutable. [Grant.Normalized] returns independent copies
-// of the slices a narrowing could touch, so a caller mutating its own
-// configuration after the fact cannot widen a running session.
+// A validated Grant is immutable. [Grant.Normalized] returns independent copies of
+// the slices it owns, so a caller mutating its own configuration after the fact
+// cannot change a running session.
 type Grant struct {
 	// Sandbox names the isolation template the runtime offers. Empty means the
 	// runtime's default; a runtime with no templates and a named sandbox is a
@@ -31,31 +32,20 @@ type Grant struct {
 	Exec ExecPolicy `json:"exec,omitempty" yaml:"exec,omitempty"`
 	// Resources caps what a command may consume.
 	Resources Resources `json:"resources,omitempty" yaml:"resources,omitempty"`
-	// Models lists the callable models. Empty means none: a model call spends
-	// money and names a resource with no "everything" spelling.
-	Models []model.ModelRef `json:"models,omitempty" yaml:"models,omitempty"`
+	// Models lists the callable models, in priority order: the first entry a mode can
+	// use is the one a call that names no model gets. Empty means every model the
+	// process serves.
+	Models []ModelGrant `json:"models,omitempty" yaml:"models,omitempty"`
 	// Tools is which tools the session may see and call.
 	Tools ToolSet `json:"tools,omitempty" yaml:"tools,omitempty"`
 	// Delegation is the authority to hand work to another agent. Nil means
 	// none.
 	Delegation *Delegation `json:"delegation,omitempty" yaml:"delegation,omitempty"`
-	// Escalate is how far an operator let this ceiling be widened, for one
-	// command at a time, when a backend refuses it. Nil means nothing: the
-	// session runs in its bind and a refused command stays refused.
-	//
-	// It sits above the ceiling rather than inside it, which is why a bind does
-	// not carry it (see [Grant.Narrow]): narrowing a session has to mean
-	// something, and a widening that reached back to the ceiling would undo it.
-	Escalate *Escalation `json:"escalate,omitempty" yaml:"escalate,omitempty"`
-	// Limits are the session-table decisions. They are parsed with the grant but
-	// they are not permissions: [Grant.Narrow] clears them and the digest
-	// ignores them.
-	Limits Limits `json:"limits,omitempty" yaml:"limits,omitempty"`
 }
 
 // Normalized returns the canonical form and rejects a grant that cannot be
-// enforced. It is the load-time gate: a grant that reaches [Grant.Narrow] has
-// already passed here.
+// enforced. It runs where the grant enters — at open for a session, at build for an
+// approval — so everything downstream may assume it passed.
 func (g Grant) Normalized() (Grant, error) {
 	files, err := g.Files.Normalized()
 	if err != nil {
@@ -75,9 +65,6 @@ func (g Grant) Normalized() (Grant, error) {
 	if err := g.Resources.Validate(); err != nil {
 		return Grant{}, err
 	}
-	if err := g.Limits.Validate(); err != nil {
-		return Grant{}, err
-	}
 	if g.Delegation != nil {
 		if err := g.Delegation.Validate(); err != nil {
 			return Grant{}, err
@@ -94,14 +81,6 @@ func (g Grant) Normalized() (Grant, error) {
 	out.Tools = tools
 	out.Models = models
 	out.Delegation = g.Delegation.Clone()
-	// The escalation is checked against the grant it sits on, which is the only
-	// value that can tell whether it widens anything.
-	if g.Escalate != nil {
-		if err := g.Escalate.Validate(out); err != nil {
-			return Grant{}, err
-		}
-		out.Escalate = g.Escalate.Clone()
-	}
 	return out, nil
 }
 
@@ -111,67 +90,82 @@ func (g Grant) Validate() error {
 	return err
 }
 
-// Narrow produces a session's grant from an agent's ceiling plus a caller's
-// request. It only ever narrows: every field is compared against the ceiling and
-// refused when it exceeds it, and a request that cannot be honoured is an error
-// rather than a silently truncated grant — a permission that quietly lost a field
-// is indistinguishable from one that never had it.
+// ModelGrant is one model a session may call, and the modes it may call it for.
 //
-// The request cannot reach files, network, sandbox or delegation: those are
-// decided by the host, which is the only layer that knows where the session
-// actually runs.
-func (g Grant) Narrow(req Request) (Grant, error) {
-	base, err := g.Normalized()
-	if err != nil {
-		return Grant{}, errdefs.Validationf("policy: the grant being narrowed is invalid: %w", err)
-	}
-
-	out := base
-	// Limits belong to the agent's session table; a session does not limit
-	// itself.
-	out.Limits = Limits{}
-	// An escalation is a declaration about the ceiling, so a bind does not carry
-	// it either: what a session may be widened to is the deployment's statement,
-	// and the host reads it from there when a command is refused.
-	out.Escalate = nil
-
-	if len(req.Models) > 0 {
-		for _, ref := range req.Models {
-			if !base.allowsModel(ref) {
-				return Grant{}, deny(CheckModels, "model %s is not granted", modelName(ref))
-			}
-		}
-		models, err := normalizeModels(req.Models)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Models = models
-	}
-
-	if req.Tools != nil {
-		tools, err := base.Tools.narrowedTo(*req.Tools)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Tools = tools
-	}
-
-	if req.Budget != nil {
-		budget, err := base.Tools.Budget.narrowedTo(*req.Budget)
-		if err != nil {
-			return Grant{}, err
-		}
-		out.Tools.Budget = budget
-	}
-
-	return out.Normalized()
+// It embeds the ref instead of nesting it, so a document keeps writing
+// `models: [{id: {...}, profile: ...}]` and adds `modes` only where it narrows.
+// Empty Modes mean every mode the model declares — a grant that lists a model without
+// qualifying it permits what the provider says the model can do.
+type ModelGrant struct {
+	model.ModelRef
+	// Modes restricts what the model may be asked for: text, image, audio, video,
+	// embed or decide.
+	Modes []model.Mode `json:"modes,omitempty" yaml:"modes,omitempty"`
 }
 
-// AllowsModel reports whether ref may be called. An empty model set grants none.
-func (g Grant) AllowsModel(ref model.ModelRef) bool { return g.allowsModel(ref) }
+// Validate rejects a mode set no model could honour.
+func (m ModelGrant) Validate() error {
+	if err := m.ModelRef.Validate(); err != nil {
+		return err
+	}
+	seen := make(map[model.Mode]struct{}, len(m.Modes))
+	for _, mode := range m.Modes {
+		if !mode.Valid() {
+			return errdefs.Validationf("mode %q is not one of text, image, audio, video, embed or decide", mode)
+		}
+		if _, duplicate := seen[mode]; duplicate {
+			return errdefs.Validationf("mode %q is declared twice", mode)
+		}
+		seen[mode] = struct{}{}
+	}
+	return nil
+}
 
-func (g Grant) allowsModel(ref model.ModelRef) bool {
-	return len(g.Models) > 0 && slices.Contains(g.Models, ref)
+// AllowsModel reports whether ref may be called at all, whichever mode asks. An
+// empty model set grants every model the process serves: what exists at all is a
+// property of the process, the same reason an empty tool allow-list means "all of
+// them".
+func (g Grant) AllowsModel(ref model.ModelRef) bool {
+	if len(g.Models) == 0 {
+		return true
+	}
+	for _, granted := range g.Models {
+		if sameModel(granted.ModelRef, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// AllowsModelMode reports whether ref may be called for mode.
+//
+// An entry without modes permits every mode the model declares, so this answers the
+// permission half of the question; whether the model can do it at all is the
+// provider's declaration, which the router reads from the catalog.
+func (g Grant) AllowsModelMode(ref model.ModelRef, mode model.Mode) bool {
+	if len(g.Models) == 0 {
+		return true
+	}
+	for _, granted := range g.Models {
+		if !sameModel(granted.ModelRef, ref) {
+			continue
+		}
+		return len(granted.Modes) == 0 || slices.Contains(granted.Modes, mode)
+	}
+	return false
+}
+
+// sameModel reports whether a granted ref names the model want asks for.
+//
+// A ref without a profile names a model wherever it is served; a ref with one
+// pins the deployment. Without this asymmetry a grant could not say "this model,
+// whichever account answers" and a caller that named no profile would be refused
+// a model the grant actually listed.
+func sameModel(granted, want model.ModelRef) bool {
+	if granted.ID != want.ID {
+		return false
+	}
+	return granted.Profile == "" || granted.Profile == want.Profile
 }
 
 // AllowsTool reports whether name may be called.
@@ -196,30 +190,61 @@ func (g Grant) AllowsRead(path string) bool {
 	return len(g.Files.Read) == 0 || coveredBy(g.Files.Read, path)
 }
 
-// normalizeModels validates and deduplicates a model set while keeping the
-// declared order: position is priority, so sorting would reorder a failover
-// chain.
-func normalizeModels(refs []model.ModelRef) ([]model.ModelRef, error) {
-	if len(refs) == 0 {
+// normalizeModels validates and deduplicates a model set while keeping the declared
+// order: position is priority, so sorting would reorder the list a call without a
+// model name chooses from.
+//
+// A model listed twice keeps its first position and the **intersection** of its mode
+// sets, because a repeated entry can only narrow: empty means every mode, so
+// intersecting with it is the other set. A caller that repeated a model to widen it
+// wrote a list whose meaning depended on which entry was read first.
+func normalizeModels(grants []ModelGrant) ([]ModelGrant, error) {
+	if len(grants) == 0 {
 		return nil, nil
 	}
-	out := make([]model.ModelRef, 0, len(refs))
-	for i, ref := range refs {
-		if err := ref.Validate(); err != nil {
+	out := make([]ModelGrant, 0, len(grants))
+	for i, grant := range grants {
+		if err := grant.Validate(); err != nil {
 			return nil, errdefs.Validationf("policy.models[%d]: %w", i, err)
 		}
-		if slices.Contains(out, ref) {
+		merged := false
+		for j, existing := range out {
+			if !sameModel(existing.ModelRef, grant.ModelRef) {
+				continue
+			}
+			out[j].Modes = intersectModes(existing.Modes, grant.Modes)
+			merged = true
+			break
+		}
+		if merged {
 			continue
 		}
-		out = append(out, ref)
+		out = append(out, ModelGrant{
+			ModelRef: grant.ModelRef,
+			Modes:    slices.Clone(grant.Modes),
+		})
 	}
 	return out, nil
 }
 
-func modelName(ref model.ModelRef) string {
-	name := ref.ID.Provider + ":" + ref.ID.Name
-	if ref.Profile != "" {
-		name = ref.Profile + "/" + name
+// intersectModes keeps the modes both sides name, treating an empty set as "every
+// mode" so a plain entry never narrows or widens a qualified one by accident.
+func intersectModes(left, right []model.Mode) []model.Mode {
+	switch {
+	case len(left) == 0:
+		return slices.Clone(right)
+	case len(right) == 0:
+		return slices.Clone(left)
 	}
-	return name
+	allowed := make(map[model.Mode]struct{}, len(right))
+	for _, mode := range right {
+		allowed[mode] = struct{}{}
+	}
+	out := make([]model.Mode, 0, len(left))
+	for _, mode := range left {
+		if _, ok := allowed[mode]; ok {
+			out = append(out, mode)
+		}
+	}
+	return out
 }

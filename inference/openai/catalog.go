@@ -106,14 +106,12 @@ func checkDeclaredOutput(
 	descriptor model.ModelDescriptor,
 	request inference.GenerateRequest,
 ) error {
-	if len(descriptor.Capabilities.Outputs) == 0 {
+	if len(descriptor.Capabilities.Modes) == 0 {
 		return nil
 	}
-	want := request.Output.PartKind()
-	for _, declared := range descriptor.Capabilities.Outputs {
-		if declared == want {
-			return nil
-		}
+	want := model.Mode(request.Output.PartKind())
+	if descriptor.Capabilities.Can(want) {
+		return nil
 	}
 	return inference.NewError(
 		inference.UnsupportedOperation,

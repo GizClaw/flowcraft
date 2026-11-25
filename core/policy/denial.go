@@ -12,8 +12,6 @@ import (
 type Check string
 
 const (
-	// CheckClamp is a request that asked for more than the ceiling allows.
-	CheckClamp Check = "clamp"
 	// CheckVisibility is a tool the session may not see or call.
 	CheckVisibility Check = "visibility"
 	// CheckWrites is a path outside the session's writable set.
@@ -45,7 +43,6 @@ const (
 // dashboard would report a rule that never fires.
 func Checks() []Check {
 	return []Check{
-		CheckClamp,
 		CheckVisibility,
 		CheckWrites,
 		CheckModels,

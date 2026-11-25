@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/model"
 )
 
@@ -103,15 +103,15 @@ func (m ModelSpec) Validate() error {
 			"text generation is not served by this driver; use driver: openai "+
 				"with base_url %s and api chat (model %q)", ArkOpenAIBaseURL, m.Name)
 	case kindImage:
-		if !hasOutput(m.Capabilities.Outputs, message.PartImage) {
+		if !hasOutput(m.Capabilities.Modes, model.ModeImage) {
 			return fmt.Errorf("image family must declare image output")
 		}
 	case kindVideo:
-		if !hasOutput(m.Capabilities.Outputs, message.PartVideo) {
+		if !hasOutput(m.Capabilities.Modes, model.ModeVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
 	case kindEmbed:
-		if len(m.Capabilities.Outputs) != 0 {
+		if len(m.Capabilities.Modes) != 0 {
 			return fmt.Errorf("embed family declares no generate output")
 		}
 		if m.Capabilities.EmbeddingDimensions <= 0 {
@@ -163,13 +163,8 @@ func descriptor(spec ModelSpec) model.ModelDescriptor {
 	}
 }
 
-func hasOutput(outputs []message.PartKind, want message.PartKind) bool {
-	for _, output := range outputs {
-		if output == want {
-			return true
-		}
-	}
-	return false
+func hasOutput(modes []model.Mode, want model.Mode) bool {
+	return slices.Contains(modes, want)
 }
 
 // Keep context imported for the settings decoder used by callers.

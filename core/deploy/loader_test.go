@@ -125,13 +125,13 @@ observability: { trace: call, bodies: false }
 func TestProcessResolvesWithoutBuilding(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-
 	// The document prints unix roots; what it tests is the plan, so the roots are
 	// rebased onto the platform's own spelling before they are validated.
 	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
+
 	if built.providers+built.backends+built.tools+built.programs != 0 {
 		t.Fatalf("loading built something: %+v", built)
 	}
@@ -230,22 +230,9 @@ version: 1
 agents:
   - name: helper
     program: { impl: graph, settings: { graph: "main" } }
-    grant:
-      sandbox: local
-      models: [{ id: { provider: "openai", name: "gpt-5" } }]
-      limits: { idle: 30m, max_sessions: 64 }
+    limits: { idle: 30m, max_sessions: 64 }
     hooks: [{ impl: audit }]
 `
-
-// capabilities is what a built process reports: the backend instances its plan configured and
-// the models its providers serve. Registered kinds are not here — the loader checks those
-// against the table it already has.
-func capabilities(plan deploy.ProcessPlan) deploy.Capabilities {
-	return deploy.Capabilities{
-		Backends: plan.BackendNames(),
-		Models:   []string{"openai/gpt-5"},
-	}
-}
 
 // TestDeploymentResolvesAgainstCapabilities is the seam between the two documents: an agent
 // selects what the process carries, and every selection is checked here rather than at the
@@ -255,12 +242,7 @@ func TestDeploymentResolvesAgainstCapabilities(t *testing.T) {
 	loader := deploy.NewLoader(impls(built))
 	// The document prints unix roots; what it tests is the plan, so the roots are
 	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-
-	deployments, err := loader.Deployments(context.Background(), capabilities(plan),
+	deployments, err := loader.Deployments(context.Background(),
 		sources.Bytes("agent.yaml", []byte(agentDoc)))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
@@ -271,12 +253,6 @@ func TestDeploymentResolvesAgainstCapabilities(t *testing.T) {
 	deployment := deployments[0]
 	if deployment.Name != "helper" {
 		t.Fatalf("name = %q", deployment.Name)
-	}
-	if plan.Observability.Trace != telemetry.TraceCall || plan.Observability.Bodies {
-		t.Fatalf("observability = %+v, want the process document's", plan.Observability)
-	}
-	if deployment.Grant.Sandbox != "local" {
-		t.Fatalf("grant sandbox = %q", deployment.Grant.Sandbox)
 	}
 	if built.programs != 0 {
 		t.Fatal("resolving a deployment built the program; that is host.Add's job")
@@ -289,40 +265,14 @@ func TestDeploymentResolvesAgainstCapabilities(t *testing.T) {
 func TestAnAgentDocumentHasNoPrompt(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := strings.Replace(agentDoc, "name: helper", "name: helper\n    prompt: you are helpful", 1)
 
-	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agent.yaml", []byte(platformRoots(doc))))
+	_, err := loader.Deployments(context.Background(), sources.Bytes("agent.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("err = %v, want a validation error naming the unknown field", err)
 	}
 	if !strings.Contains(err.Error(), "prompt") {
 		t.Fatalf("error %q does not name the field", err)
-	}
-}
-
-// TestMissingCapabilityIsNotAvailable is the other error class: the document is fine, this
-// process cannot serve it.
-func TestMissingCapabilityIsNotAvailable(t *testing.T) {
-	built := &builds{}
-	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	caps := capabilities(plan)
-	caps.Models = nil // this process serves no models
-
-	_, err = loader.Deployments(context.Background(), caps, sources.Bytes("agent.yaml", []byte(agentDoc)))
-	if err == nil || !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want a NotAvailable error", err)
 	}
 }
 
@@ -332,38 +282,15 @@ func TestMissingCapabilityIsNotAvailable(t *testing.T) {
 func TestUnknownProgramKindIsADocumentError(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := strings.Replace(agentDoc, "impl: graph", "impl: a2a", 1)
 
-	_, err = loader.Deployments(context.Background(), capabilities(plan),
+	_, err := loader.Deployments(context.Background(),
 		sources.Bytes("agent.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("err = %v, want a validation error naming the kind", err)
 	}
 	if !strings.Contains(err.Error(), "a2a") {
 		t.Fatalf("error %q does not name the kind", err)
-	}
-}
-
-func TestMissingBackendIsNotAvailable(t *testing.T) {
-	built := &builds{}
-	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	caps := capabilities(plan)
-	caps.Backends = nil
-
-	if _, err := loader.Deployments(context.Background(), caps, sources.Bytes("agent.yaml", []byte(agentDoc))); err == nil || !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want NotAvailable", err)
 	}
 }
 
@@ -411,26 +338,20 @@ inference:
 func TestOneDocumentCarriesManyAgents(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := `
 version: 1
 agents:
   - name: referee
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `
-	deployments, err := loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
+	deployments, err := loader.Deployments(context.Background(), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
@@ -445,13 +366,7 @@ agents:
 func TestAnAgentDocumentNeedsAtLeastOneAgent(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte("version: 1\nagents: []\n")))
+	_, err := loader.Deployments(context.Background(), sources.Bytes("agents.yaml", []byte("version: 1\nagents: []\n")))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("err = %v, want a validation error", err)
 	}
@@ -460,23 +375,17 @@ func TestAnAgentDocumentNeedsAtLeastOneAgent(t *testing.T) {
 func TestDuplicateAgentNameIsRefused(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := `
 version: 1
 agents:
   - name: twin
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: twin
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `
-	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
+	_, err := loader.Deployments(context.Background(), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "twin") {
 		t.Fatalf("err = %v, want a validation error naming the agent", err)
 	}
@@ -487,29 +396,19 @@ agents:
 func TestErrorsNameTheAgent(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	caps := capabilities(plan)
-	caps.Models = nil
 	doc := `
 version: 1
 agents:
   - name: referee
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_1
-    program: { impl: graph }
-    grant:
-      models: [{ id: { provider: "openai", name: "gpt-5" } }]
-      limits: { idle: 30m }
+    program: { impl: pipeline }
+    limits: { idle: 30m }
 `
-	_, err = loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
-	if err == nil || !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want NotAvailable", err)
+	_, err := loader.Deployments(context.Background(), sources.Bytes("agents.yaml", []byte(platformRoots(doc))))
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("err = %v, want a validation error", err)
 	}
 	if !strings.Contains(err.Error(), "seat_1") {
 		t.Fatalf("error %q does not name the agent", err)
@@ -523,30 +422,24 @@ agents:
 func TestASequenceIsReplacedWhole(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	base := sources.Bytes("base.yaml", []byte(`
 version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
 `)), 10)
 
-	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
+	deployments, err := loader.Deployments(context.Background(), base, overlay)
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
@@ -564,35 +457,29 @@ agents:
 func TestAScalarOverlayWins(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	base := sources.Bytes("base.yaml", []byte(`
 version: 1
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m, max_sessions: 64 } }
+    limits: { idle: 30m, max_sessions: 64 }
 `))
 	overlay := sources.Over(sources.Bytes("prod.yaml", []byte(`
 agents:
   - name: seat_2
     program: { impl: graph }
-    grant: { limits: { idle: 30m, max_sessions: 8 } }
+    limits: { idle: 30m, max_sessions: 8 }
 `)), 10)
 
-	deployments, err := loader.Deployments(context.Background(), capabilities(plan), base, overlay)
+	deployments, err := loader.Deployments(context.Background(), base, overlay)
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
 	if len(deployments) != 1 {
 		t.Fatalf("deployments = %d, want the one agent both layers name", len(deployments))
 	}
-	if deployments[0].Grant.Limits.MaxSessions != 8 {
-		t.Fatalf("max_sessions = %d, want the overlay's value", deployments[0].Grant.Limits.MaxSessions)
+	if deployments[0].Limits.MaxSessions != 8 {
+		t.Fatalf("max_sessions = %d, want the overlay's value", deployments[0].Limits.MaxSessions)
 	}
 }
 
@@ -678,23 +565,17 @@ inference:
 func TestHooksCarryTheirSettings(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := `
 version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
     hooks:
       - impl: audit
         settings: { dir: /var/memory }
 `
-	deployments, err := loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
+	deployments, err := loader.Deployments(context.Background(), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
@@ -713,47 +594,17 @@ agents:
 func TestUnknownHookKindIsADocumentError(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
 	doc := `
 version: 1
 agents:
   - name: seat_1
     program: { impl: graph }
-    grant: { limits: { idle: 30m } }
+    limits: { idle: 30m }
     hooks: [{ impl: nobody-registered-this }]
 `
-	_, err = loader.Deployments(context.Background(), capabilities(plan), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
+	_, err := loader.Deployments(context.Background(), sources.Bytes("a.yaml", []byte(platformRoots(doc))))
 	if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "nobody-registered-this") {
 		t.Fatalf("err = %v, want a validation error naming the hook kind", err)
-	}
-}
-
-// TestModelGrantsNameProviderAndModel: "gpt-5" alone is ambiguous once two providers serve one,
-// so the reference a grant writes is compared as provider/name — the same string a provider's
-// catalog reports.
-func TestModelGrantsNameProviderAndModel(t *testing.T) {
-	built := &builds{}
-	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	caps := capabilities(plan)
-	caps.Models = []string{"other/gpt-5"}
-
-	_, err = loader.Deployments(context.Background(), caps, sources.Bytes("agent.yaml", []byte(agentDoc)))
-	if err == nil || !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want NotAvailable", err)
-	}
-	if !strings.Contains(err.Error(), "openai/gpt-5") {
-		t.Fatalf("error %q does not name the reference it wanted", err)
 	}
 }
 
@@ -763,13 +614,6 @@ func TestModelGrantsNameProviderAndModel(t *testing.T) {
 func TestLimitsAreRequired(t *testing.T) {
 	built := &builds{}
 	loader := deploy.NewLoader(impls(built))
-	// The document prints unix roots; what it tests is the plan, so the roots are
-	// rebased onto the platform's own spelling before they are validated.
-	plan, err := loader.Process(context.Background(), sources.Bytes("runtime.yaml", []byte(platformRoots(processDoc))))
-	if err != nil {
-		t.Fatalf("Process: %v", err)
-	}
-	caps := capabilities(plan)
 
 	for name, doc := range map[string]string{
 		"no limits": `
@@ -783,10 +627,10 @@ version: 1
 agents:
   - name: a
     program: { impl: graph }
-    grant: { limits: { idle: 0s } }
+    limits: { idle: 0s }
 `,
 	} {
-		if _, err := loader.Deployments(context.Background(), caps, sources.Bytes("a.yaml", []byte(platformRoots(doc)))); err == nil || !errdefs.IsValidation(err) {
+		if _, err := loader.Deployments(context.Background(), sources.Bytes("a.yaml", []byte(platformRoots(doc)))); err == nil || !errdefs.IsValidation(err) {
 			t.Fatalf("%s: err = %v, want a validation error", name, err)
 		}
 	}

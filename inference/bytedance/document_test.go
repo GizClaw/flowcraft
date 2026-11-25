@@ -27,7 +27,7 @@ func TestDocumentCoversEverySetting(t *testing.T) {
 		// The three below are declared on Settings but read by no code in this
 		// driver, so offering them would be a knob that does nothing. Retry
 		// and failover belong to the route Router, which owns the attempt
-		// budget for every seam.
+		// budget for every mode.
 		"Region":         "read by no code in this driver",
 		"ReasoningScope": "read by no code in this driver",
 		"Retries":        "read by no code in this driver",
@@ -80,7 +80,7 @@ func TestDocumentDecodesDeployment(t *testing.T) {
 		"models": [{
 			"name": "seedance-pro",
 			"kind": "video",
-			"capabilities": {"inputs": ["text"], "outputs": ["video"]},
+			"capabilities": {"inputs": ["text"], "modes": ["video"]},
 			"limits": {"max_input_tokens": 4096},
 			"video": {"seed": true, "duration_max_seconds": 12}
 		}]

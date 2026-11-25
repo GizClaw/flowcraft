@@ -34,23 +34,6 @@ func (e Exposure) Valid() bool {
 	}
 }
 
-// rank orders exposures by how much they hide: a narrowing may raise a rank,
-// never lower it.
-func (e Exposure) rank() int {
-	switch e {
-	case ExposureAlways:
-		return 0
-	case ExposureDirect:
-		return 1
-	case ExposureDeferred:
-		return 2
-	case ExposureHidden:
-		return 3
-	default:
-		return -1
-	}
-}
-
 // Budget caps what reaches the model in one round. Zero on either field means the
 // built-in default.
 type Budget struct {
@@ -182,107 +165,6 @@ func (t ToolSet) Validate() error {
 		}
 	}
 	return t.Budget.Validate()
-}
-
-// narrowedTo returns t restricted by req, which must be a subset of t.
-//
-// "Subset" is per axis: a requested allow-list must sit inside the ceiling's, a
-// requested hide-list may only add, an exposure may only hide more, and a budget
-// may only shrink. Every violation is a clamp denial, because a request that asks
-// for more than its ceiling is a caller bug or an attack, never a preference.
-func (t ToolSet) narrowedTo(req ToolSet) (ToolSet, error) {
-	if err := req.Validate(); err != nil {
-		return ToolSet{}, errdefs.Validationf("policy.tools: requested set is invalid: %w", err)
-	}
-	out := t
-
-	if req.Allow != nil {
-		if t.Allow != nil {
-			for _, name := range req.Allow {
-				if !slices.Contains(t.Allow, name) {
-					return ToolSet{}, deny(CheckVisibility, "tool %q is not in the authority's allow-list", name)
-				}
-			}
-		}
-		out.Allow = req.Allow
-	}
-
-	for _, name := range req.Hide {
-		if t.Allows(name) && !slices.Contains(out.Hide, name) {
-			out.Hide = append(slices.Clone(out.Hide), name)
-		}
-	}
-	if len(req.Hide) > 0 {
-		out.Hide = sortedUnique(out.Hide)
-	}
-
-	if len(t.Exposure) > 0 {
-		// Narrowing the allow-list can orphan an inherited exposure: a name the
-		// session may no longer call must not keep a presentation override, or the
-		// narrowed set would fail its own validation.
-		inherited := make(map[string]Exposure, len(t.Exposure))
-		for name, level := range t.Exposure {
-			if out.Allows(name) {
-				inherited[name] = level
-			}
-		}
-		out.Exposure = inherited
-		if len(inherited) == 0 {
-			out.Exposure = nil
-		}
-	}
-	if len(req.Exposure) > 0 {
-		exposure := make(map[string]Exposure, len(out.Exposure)+len(req.Exposure))
-		for name, level := range out.Exposure {
-			exposure[name] = level
-		}
-		for name, level := range req.Exposure {
-			if !out.Allows(name) {
-				return ToolSet{}, deny(CheckVisibility, "tool %q is not callable: its exposure cannot be set", name)
-			}
-			if level.rank() < t.ExposureOf(name).rank() {
-				return ToolSet{}, deny(CheckVisibility,
-					"tool %q cannot be exposed more widely than the authority allows (%s -> %s)",
-					name, t.ExposureOf(name), level)
-			}
-			exposure[name] = level
-		}
-		out.Exposure = exposure
-	}
-
-	if req.Budget != (Budget{}) {
-		budget, err := t.Budget.narrowedTo(req.Budget)
-		if err != nil {
-			return ToolSet{}, err
-		}
-		out.Budget = budget
-	}
-	return out.Normalized()
-}
-
-// narrowedTo keeps the smaller of each cap.
-//
-// A zero field in the request means "inherit", not "use the default": a request
-// that only lowers the definition count must not accidentally reset the byte cap
-// to a value larger than its ceiling.
-func (b Budget) narrowedTo(req Budget) (Budget, error) {
-	ceiling := b.Effective()
-	out := b
-	if req.MaxDefinitions > 0 {
-		if req.MaxDefinitions > ceiling.MaxDefinitions {
-			return Budget{}, deny(CheckBudget,
-				"max_definitions %d exceeds the authority's %d", req.MaxDefinitions, ceiling.MaxDefinitions)
-		}
-		out.MaxDefinitions = req.MaxDefinitions
-	}
-	if req.MaxBytes > 0 {
-		if req.MaxBytes > ceiling.MaxBytes {
-			return Budget{}, deny(CheckBudget,
-				"max_bytes %d exceeds the authority's %d", req.MaxBytes, ceiling.MaxBytes)
-		}
-		out.MaxBytes = req.MaxBytes
-	}
-	return out, nil
 }
 
 func sortedUnique(names []string) []string {

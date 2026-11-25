@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -164,23 +163,11 @@ func (s approvalStarter) admit(ctx context.Context, spec sandbox.SessionSpec) (s
 // happened" per attempt is a log a model can inflate by walking into its boundary.
 func (s approvalStarter) escalate(ctx context.Context, spec sandbox.SessionSpec, refused error) (sandbox.Session, error) {
 	if s.escalator == nil {
-		// Declared and not installed is a failure, not a silent narrow retry: unlike approval,
-		// which stays opt-in, the declaration is a promise to an operator that was made and then
-		// not kept.
-		recordEscalation(ctx, s.agent, escalationUnavailable)
-		return nil, errdefs.NotAvailablef(
-			"host: the command is outside the session's confine and this process installed no escalator")
-	}
-	if !s.widener.take() {
-		recordEscalation(ctx, s.agent, escalationExhausted)
-		recordDenial(ctx, policy.CheckEscalation, s.agent)
-		return nil, &policy.Denial{
-			Check:  policy.CheckEscalation,
-			Reason: "the session has used its widenings; the command stays outside its confine",
-		}
+		// Nothing to ask: the command is outside the session's authority and no operator has
+		// offered to widen it, so the refusal is the answer.
+		return nil, refused
 	}
 	from := s.widener.bind
-	from.Escalate = s.widener.declaration
 	request := s.widener.request(s.agent, s.session, spec)
 
 	asked := time.Now()
@@ -196,11 +183,10 @@ func (s approvalStarter) escalate(ctx context.Context, spec sandbox.SessionSpec,
 	}
 	widened, err := from.Widen(answer)
 	if err != nil {
-		// An answer outside the declaration is refused, not trusted: an approval widens one
-		// boundary within what the deployment declared, and a host that honoured more would make
-		// the declaration advisory.
+		// An answer that is not a widening of what the session had is refused, not trusted: an
+		// approval widens one boundary, it does not replace the session's authority.
 		recordEscalation(ctx, s.agent, escalationUnauthorized)
-		telemetry.WarnErr(ctx, "host: the escalator answered outside the declaration", err)
+		telemetry.WarnErr(ctx, "host: the escalator answered with something that is not a widening", err)
 		return nil, refused
 	}
 	attemptCtx, attempt, cancel := s.widener.attempt(ctx, spec)

@@ -70,7 +70,7 @@ func approvalHost(t *testing.T, approval Approval) (sandbox.SessionStarter, *gat
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestNoPolicyInstallsTheBackendUndecorated(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

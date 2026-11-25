@@ -2,6 +2,7 @@ package dashscope
 
 import (
 	"fmt"
+	"github.com/GizClaw/flowcraft/core/model"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -87,19 +88,19 @@ func validateModel(declared ModelSpec) error {
 	kind := modelKind(declared.Kind)
 	switch kind {
 	case kindImage:
-		if !slices.Contains(capabilities.Outputs, message.PartImage) {
+		if !slices.Contains(capabilities.Modes, model.ModeImage) {
 			return fmt.Errorf("image family must declare image output")
 		}
 	case kindVideo:
-		if !slices.Contains(capabilities.Outputs, message.PartVideo) {
+		if !slices.Contains(capabilities.Modes, model.ModeVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
 	case kindGenerate:
-		if !slices.Contains(capabilities.Outputs, message.PartText) {
+		if !slices.Contains(capabilities.Modes, model.ModeText) {
 			return fmt.Errorf("generate family must declare text output")
 		}
-		for _, output := range capabilities.Outputs {
-			if output != message.PartText {
+		for _, output := range capabilities.Modes {
+			if output != model.ModeText {
 				return fmt.Errorf(
 					"the generate family publishes text output only; %q output would never compile",
 					output,
@@ -118,7 +119,7 @@ func validateModel(declared ModelSpec) error {
 			}
 		}
 	case kindEmbed:
-		if len(capabilities.Outputs) > 0 {
+		if len(capabilities.Modes) > 0 {
 			return fmt.Errorf("the embed family declares no generate output")
 		}
 		if capabilities.HostedWebSearch {
@@ -135,11 +136,11 @@ func validateModel(declared ModelSpec) error {
 			}
 		}
 	case kindTTS:
-		if !slices.Contains(capabilities.Outputs, message.PartAudio) {
+		if !slices.Contains(capabilities.Modes, model.ModeAudio) {
 			return fmt.Errorf("the speech family must declare audio output")
 		}
-		for _, output := range capabilities.Outputs {
-			if output != message.PartAudio {
+		for _, output := range capabilities.Modes {
+			if output != model.ModeAudio {
 				return fmt.Errorf(
 					"the speech family publishes audio output only; %q output would never compile",
 					output,
@@ -176,8 +177,8 @@ func validateModel(declared ModelSpec) error {
 				)
 			}
 		}
-		for _, output := range capabilities.Outputs {
-			if output != message.PartText {
+		for _, output := range capabilities.Modes {
+			if output != model.ModeText {
 				return fmt.Errorf(
 					"the file-transcription surface publishes text; %q output would never compile",
 					output,

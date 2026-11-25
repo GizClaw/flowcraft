@@ -115,31 +115,7 @@ agents:
     program:
       impl: graph
       settings: {path: "/srv/graphs/referee.yaml"}
-    grant:
-      sandbox: hardened
-      files:
-        read: ["/srv/assets", "/srv/work"]
-        write: ["/srv/work"]
-      net: {mode: deny_all}
-      exec:
-        timeout: 2m
-        shell: "/bin/bash"
-        env: {allow: ["PATH", "HOME"]}
-      resources:
-        cpu_millicores: 2000
-        memory_bytes: 2147483648
-        max_output_bytes: 1048576
-      models:
-        - id: {provider: openai, name: "gpt-5"}
-      tools:
-        allow: ["files_read", "files_write", "exec"]
-        exposure: {files_read: always, exec: deferred}
-        budget: {max_definitions: 16}
-      delegation:
-        targets: ["seat_1", "seat_2"]
-        modes: ["sync"]
-        max_depth: 2
-      limits: {idle: 30m, max_sessions: 64}
+    limits: {idle: 30m, max_sessions: 64}
     hooks:
       - impl: seat-memory
         settings: {dir: ".forge/memory", keep: 12}
@@ -148,13 +124,7 @@ agents:
     program:
       impl: graph
       settings: {path: "/srv/graphs/seat_1.yaml"}
-    grant:
-      sandbox: hardened
-      files: {read: ["/srv/work"], write: ["/srv/work"]}
-      net: {mode: deny_all}
-      models:
-        - id: {provider: openai, name: "gpt-5"}
-      limits: {idle: 10m}
+    limits: {idle: 10m}
 `
 
 // TestTheDocumentedConfigLoads is the example above, run.
@@ -221,11 +191,7 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	if plan.Observability.Trace != telemetry.TraceCall || plan.Observability.Bodies {
 		t.Fatalf("observability = %+v, want the documented trace level", plan.Observability)
 	}
-	caps := deploy.Capabilities{
-		Backends: plan.BackendNames(),
-		Models:   []string{"openai/gpt-5"},
-	}
-	deployments, err := loader.Deployments(context.Background(), caps, sources.Bytes("agents.yaml", []byte(agents)))
+	deployments, err := loader.Deployments(context.Background(), sources.Bytes("agents.yaml", []byte(agents)))
 	if err != nil {
 		t.Fatalf("Deployments: %v", err)
 	}
@@ -236,13 +202,13 @@ func TestTheDocumentedConfigLoads(t *testing.T) {
 	if referee.Name != "referee" || referee.Program.Impl != "graph" {
 		t.Fatalf("referee = %+v", referee)
 	}
-	if referee.Grant.Sandbox != "hardened" || referee.Grant.Limits.MaxSessions != 64 {
-		t.Fatalf("referee grant = %+v", referee.Grant)
+	if referee.Limits.MaxSessions != 64 {
+		t.Fatalf("referee limits = %+v", referee.Limits)
 	}
 	if len(referee.Hooks) != 1 || referee.Hooks[0].Impl != "seat-memory" {
 		t.Fatalf("referee hooks = %+v", referee.Hooks)
 	}
-	if deployments[1].Grant.Limits.MaxSessions != 0 {
-		t.Fatalf("seat_1 limits = %+v, want the omitted max_sessions as unbounded", deployments[1].Grant.Limits)
+	if deployments[1].Limits.MaxSessions != 0 {
+		t.Fatalf("seat_1 limits = %+v, want the omitted max_sessions as unbounded", deployments[1].Limits)
 	}
 }

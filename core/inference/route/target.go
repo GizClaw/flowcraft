@@ -15,7 +15,7 @@ import (
 // in a trace.
 //
 // It is an inference.Provider because that is exactly what a candidate is — a
-// set of seams plus the model line-up that says what it can serve.
+// set of modes plus the model line-up that says what it can serve.
 type Target struct {
 	// Name identifies the target in traces and errors.
 	Name string
@@ -34,8 +34,8 @@ type Target struct {
 	Profile string
 }
 
-// Selector chooses among targets for one request. One seam, one method: a
-// selector that answered for several seams would be the operation table this
+// Selector chooses among targets for one request. One mode, one method: a
+// selector that answered for several modes would be the operation table this
 // package exists to avoid.
 type Selector[Req any] interface {
 	Select(ctx context.Context, request Req, targets []Target) ([]Target, error)
@@ -61,7 +61,7 @@ type Attempt struct {
 
 // Trace collects the attempts of one call.
 //
-// It travels in the context rather than being returned, because the seam
+// It travels in the context rather than being returned, because the mode
 // signatures return only a response: a caller that wants the record creates one
 // with WithTrace and reads it afterwards.
 type Trace struct {
@@ -101,10 +101,13 @@ func TraceFrom(ctx context.Context) *Trace {
 	return trace
 }
 
-// Router dispatches seam calls across targets.
+// Router dispatches mode calls across targets.
 type Router struct {
 	targets []Target
 	policy  Policy
+	// allow is the model restriction a session imposed, in priority order. Empty is
+	// unrestricted, which is what a router built directly keeps.
+	allow []Allow
 }
 
 // New validates a target list and its policy.
@@ -122,15 +125,15 @@ func New(targets []Target, policy Policy) (*Router, error) {
 		}
 		seen[target.Name] = true
 		if target.Provider.Generator == nil && target.Provider.Decider == nil {
-			return nil, fmt.Errorf("route: target %q serves no seam", target.Name)
+			return nil, fmt.Errorf("route: target %q serves no mode", target.Name)
 		}
 	}
 	return &Router{targets: targets, policy: policy}, nil
 }
 
-// Provider publishes the routed seams as one provider.
+// Provider publishes the routed modes as one provider.
 //
-// A seam with no capable target stays nil, so "this router does not judge" is
+// A mode with no capable target stays nil, so "this router does not judge" is
 // the same kind of fact as "this driver does not embed".
 func (r *Router) Provider() inference.Provider {
 	provider := inference.Provider{}
@@ -141,7 +144,7 @@ func (r *Router) Provider() inference.Provider {
 		provider.Decider = routedDecider{router: r}
 	}
 	if r.anyTarget(func(t Target) bool { return t.Provider.Catalog != nil }) {
-		provider.Catalog = routeCatalog{targets: r.targets}
+		provider.Catalog = routeCatalog{router: r}
 	}
 	return provider
 }
@@ -163,14 +166,14 @@ func dispatch[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
-	modelOf func(Req) string,
+	modelOf func(Req) model.ModelRef,
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
-	prefer func([]Target) []Target,
+	modes []model.Mode,
 ) (Res, error) {
 	ctx, call := startRoute(ctx, operation)
-	response, err := dispatchTargets(ctx, call, targets, selector, request, modelOf, withTarget, invoke, retry, prefer)
+	response, err := dispatchTargets(ctx, call, targets, selector, request, modelOf, withTarget, invoke, retry, modes)
 	call.finish(err)
 	return response, err
 }
@@ -183,18 +186,18 @@ func dispatchTargets[Req, Res any](
 	targets []Target,
 	selector Selector[Req],
 	request Req,
-	modelOf func(Req) string,
+	modelOf func(Req) model.ModelRef,
 	withTarget func(Req, Target) Req,
 	invoke func(context.Context, Target, Req) (Res, error),
 	retry RetryPolicy,
-	prefer func([]Target) []Target,
+	modes []model.Mode,
 ) (Res, error) {
 	var zero Res
 
 	// Filter before selecting: a target that does not serve the requested model
 	// would fail as UnknownModel and waste an attempt. Order is preserved, so a
 	// nil selector still means "in declaration order".
-	candidates := filterTargets(targets, modelOf(request))
+	candidates := filterTargets(targets, modelOf(request), modes)
 	ordered := candidates
 	if selector != nil {
 		selected, err := selector.Select(ctx, request, candidates)
@@ -202,9 +205,6 @@ func dispatchTargets[Req, Res any](
 			return zero, err
 		}
 		ordered = selected
-	}
-	if prefer != nil {
-		ordered = prefer(ordered)
 	}
 	call.selectTargets(ordered)
 	if len(ordered) == 0 {
@@ -256,46 +256,84 @@ func dispatchTargets[Req, Res any](
 
 // filterTargets keeps the targets whose catalog serves the requested model.
 //
+// The request names a model, and a model id is provider plus name: when the caller
+// names a provider, a target that declares the same model name under another provider
+// is not a candidate. That is what stops failover from crossing vendors — a session
+// granted one vendor's model must not be answered by another vendor that happens to
+// use the same name.
+//
 // A target with no catalog, or one that declares no models, is kept: absence of
 // information is not evidence of absence, and the driver's own UnknownModel is
 // still the fallback classification.
-func filterTargets(targets []Target, name string) []Target {
-	if name == "" {
+func filterTargets(targets []Target, want model.ModelRef, modes []model.Mode) []Target {
+	if want.ID.Name == "" {
 		return targets
 	}
 	kept := make([]Target, 0, len(targets))
 	for _, target := range targets {
 		// A declared model is authoritative: it is what the deployment says this
 		// target is for. Without one, fall back to the catalog, and with no
-		// catalog either the target stays a candidate and the driver decides.
+		// catalog either the target stays a candidate when it can plausibly serve
+		// the mode (text, the historical default).
+		if !servesProfile(target.Profile, want.Profile) {
+			continue
+		}
 		if target.Model.Name != "" {
-			if target.Model.Name == name {
+			if servesID(target.Model, want.ID) && declaresModes(target, want.ID, modes) {
 				kept = append(kept, target)
 			}
 			continue
 		}
-		if servesModel(target, name) {
+		if servesModel(target, want.ID) && declaresModes(target, want.ID, modes) {
 			kept = append(kept, target)
 		}
 	}
 	return kept
 }
 
-func servesModel(target Target, name string) bool {
+// servesID reports whether a declared model id can serve want.
+//
+// A caller that names no provider is asking by model name, which is the looser
+// question and the one a name-only configuration has always answered; naming a
+// provider pins the vendor.
+func servesID(declared, want model.ModelID) bool {
+	if declared.Name != want.Name {
+		return false
+	}
+	// A request that names no provider asks by model name, and a declaration that
+	// names none makes no vendor claim; only two stated providers can disagree.
+	return want.Provider == "" || declared.Provider == "" || declared.Provider == want.Provider
+}
+
+// servesProfile reports whether a target can serve the requested deployment identity.
+// An unnamed profile on either side is not a constraint.
+func servesProfile(declared, want string) bool {
+	return want == "" || declared == "" || declared == want
+}
+
+func servesModel(target Target, want model.ModelID) bool {
 	catalog := target.Provider.Catalog
 	if catalog == nil {
-		return true
+		return servesUnlisted(target, want)
 	}
 	models := catalog.Models()
 	if len(models) == 0 {
-		return true
+		return servesUnlisted(target, want)
 	}
 	for _, descriptor := range models {
-		if descriptor.ID.Name == name {
+		if servesID(descriptor.ID, want) {
 			return true
 		}
 	}
 	return false
+}
+
+// servesUnlisted answers for a target that declares no line-up: it cannot say what it
+// serves, so it is a candidate for a request that names no provider, and for one that
+// names this target's provider. Anything else would let it absorb a call meant for a
+// vendor it never claimed — which is exactly what a request's provider is for.
+func servesUnlisted(target Target, want model.ModelID) bool {
+	return want.Provider == "" || target.Name == want.Provider
 }
 
 // kindOf extracts the classified kind, if the failure carries one.
@@ -309,22 +347,32 @@ func kindOf(err error) inference.ErrorKind {
 
 // routeCatalog merges the model line-ups of the targets that publish one.
 type routeCatalog struct {
-	targets []Target
+	router *Router
 }
 
+// Models is the union of what the targets declare, restricted to what this router may
+// serve. A session cannot enumerate a model its authority excludes: showing it would
+// offer a name the next call refuses.
 func (c routeCatalog) Models() []model.ModelDescriptor {
 	var out []model.ModelDescriptor
-	for _, target := range c.targets {
+	for _, target := range c.router.targets {
 		if target.Provider.Catalog == nil {
 			continue
 		}
-		out = append(out, target.Provider.Catalog.Models()...)
+		for _, descriptor := range target.Provider.Catalog.Models() {
+			if c.router.allowsModelID(descriptor.ID) {
+				out = append(out, descriptor)
+			}
+		}
 	}
 	return out
 }
 
 func (c routeCatalog) Describe(id model.ModelID) (model.ModelDescriptor, bool) {
-	for _, target := range c.targets {
+	if !c.router.allowsModelID(id) {
+		return model.ModelDescriptor{}, false
+	}
+	for _, target := range c.router.targets {
 		if target.Provider.Catalog == nil {
 			continue
 		}

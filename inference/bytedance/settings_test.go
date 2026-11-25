@@ -12,8 +12,8 @@ func TestEmbedModelRequiresDimensions(t *testing.T) {
 		Name: "doubao-embedding-vision",
 		Kind: "embed",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText, message.PartImage},
-			Outputs: nil,
+			Inputs: []message.PartKind{message.PartText, message.PartImage},
+			Modes:  nil,
 		},
 	}
 	if err := embed.Validate(); err == nil {

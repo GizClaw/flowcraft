@@ -17,6 +17,7 @@ type Checkpoint struct {
     Version    int64                      // the store advances this on every save
     ServerVersion int64                   // a protocol adapter's own counter
     Fingerprint Fingerprint               // the deployment that wrote this
+    Manifest   string                     // the authority and build it ran under
     Task       Task                       // the projection: what is true now
     Sections   map[string]json.RawMessage // engine-owned state
 }
@@ -101,12 +102,18 @@ legitimate: the engine owns the state, the adapter owns its token.
 
 ## The fingerprint
 
-`Fingerprint` is the deployment identity a checkpoint was written under — the
-runtime digest, the engine identity and the settings that define them. A resume
-under a different fingerprint is not the same deployment, so a host can refuse
-rather than replay a transcript into a stack that did not produce it. For the
-graph engine the fingerprint is the document's **source name and bytes**, which is why
-editing the graph invalidates the checkpoints taken under the old one.
+`Fingerprint` is the deployment identity a checkpoint was written under: the name,
+the program kind and the hook kinds of every agent in the set, hashed by
+`deploy.Fingerprint`. A resume under a different fingerprint is not the same
+deployment, so a host can refuse rather than replay a transcript into a stack that
+did not produce it.
+
+`Manifest` is the identity of what the conversation _held_: the authority its caller
+stated and the build that ran it. It is a separate value because a deployment no
+longer carries authority — two sessions of one agent may hold different grants — and
+a task continued under a different authority is not the same task. A checkpoint
+written before the field existed leaves it empty, and the comparison is skipped
+rather than guessed at.
 
 ## Who writes what
 

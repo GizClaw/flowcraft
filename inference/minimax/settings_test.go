@@ -10,17 +10,16 @@ import (
 	"github.com/GizClaw/flowcraft/core/model"
 )
 
-func testSpec(name, kind string, inputs, outputs []message.PartKind) ModelSpec {
+func testSpec(name, kind string, inputs []message.PartKind, modes []model.Mode) ModelSpec {
 	return ModelSpec{
 		Name: name, Kind: kind,
-		Capabilities: model.ModelCapabilities{Inputs: inputs, Outputs: outputs},
+		Capabilities: model.ModelCapabilities{Inputs: inputs, Modes: modes},
 	}
 }
 
 func TestSettingsRequireAPIKey(t *testing.T) {
 	settings := Settings{Models: []ModelSpec{
-		testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText},
-			[]message.PartKind{message.PartAudio}),
+		testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeAudio}),
 	}}
 	if err := settings.Validate(); err == nil {
 		t.Fatal("settings without an api key were accepted")
@@ -39,27 +38,23 @@ func TestModelKindFamilyContract(t *testing.T) {
 	}{
 		{
 			name: "tts without audio output",
-			spec: testSpec("speech", "tts", []message.PartKind{message.PartText},
-				[]message.PartKind{message.PartText}),
+			spec: testSpec("speech", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeText}),
 			want: "audio output",
 		},
 		{
 			name: "video without video output",
-			spec: testSpec("MiniMax-H3", "video", []message.PartKind{message.PartText},
-				[]message.PartKind{message.PartAudio}),
+			spec: testSpec("MiniMax-H3", "video", []message.PartKind{message.PartText}, []model.Mode{model.ModeAudio}),
 			want: "video output",
 		},
 		{
 			name: "kind the driver does not serve",
-			spec: testSpec("image-01", "image", []message.PartKind{message.PartText},
-				[]message.PartKind{message.PartImage}),
+			spec: testSpec("image-01", "image", []message.PartKind{message.PartText}, []model.Mode{model.ModeImage}),
 			want: "unsupported kind",
 		},
 		{
 			name: "embedding width on a media model",
 			spec: func() ModelSpec {
-				spec := testSpec("m", "video", []message.PartKind{message.PartText},
-					[]message.PartKind{message.PartVideo})
+				spec := testSpec("m", "video", []message.PartKind{message.PartText}, []model.Mode{model.ModeVideo})
 				spec.Capabilities.EmbeddingDimensions = 1024
 				return spec
 			}(),
@@ -68,8 +63,7 @@ func TestModelKindFamilyContract(t *testing.T) {
 		{
 			name: "speech parameters on a video model",
 			spec: func() ModelSpec {
-				spec := testSpec("MiniMax-H3", "video", []message.PartKind{message.PartText},
-					[]message.PartKind{message.PartVideo})
+				spec := testSpec("MiniMax-H3", "video", []message.PartKind{message.PartText}, []model.Mode{model.ModeVideo})
 				spec.TTS = TTSParams{Encoding: media.AudioEncodingMP3}
 				return spec
 			}(),
@@ -140,8 +134,7 @@ func TestTTSParamsValidate(t *testing.T) {
 }
 
 func TestDuplicateDeclarationsRejected(t *testing.T) {
-	spec := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText},
-		[]message.PartKind{message.PartAudio})
+	spec := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeAudio})
 	settings := Settings{APIKey: "key", Models: []ModelSpec{spec, spec}}
 	if err := settings.Validate(); err == nil {
 		t.Fatal("duplicate declarations were accepted")
@@ -150,8 +143,7 @@ func TestDuplicateDeclarationsRejected(t *testing.T) {
 
 func TestCatalogPublishesDeclaredFacts(t *testing.T) {
 	declared := testSpec("MiniMax-H3", "video",
-		[]message.PartKind{message.PartText, message.PartImage},
-		[]message.PartKind{message.PartVideo})
+		[]message.PartKind{message.PartText, message.PartImage}, []model.Mode{model.ModeVideo})
 	declared.Limits.MaxInputTokens = nil
 	entry, ok := newCatalog([]ModelSpec{declared}).Describe(model.ModelID{
 		Provider: ProviderID, Name: "MiniMax-H3",
@@ -159,9 +151,9 @@ func TestCatalogPublishesDeclaredFacts(t *testing.T) {
 	if !ok {
 		t.Fatal("declared model was not published")
 	}
-	if len(entry.Capabilities.Outputs) != 1 ||
-		entry.Capabilities.Outputs[0] != message.PartVideo {
-		t.Fatalf("outputs = %v, want video", entry.Capabilities.Outputs)
+	if len(entry.Capabilities.Modes) != 1 ||
+		entry.Capabilities.Modes[0] != model.ModeVideo {
+		t.Fatalf("modes = %v, want video", entry.Capabilities.Modes)
 	}
 	if _, found := newCatalog([]ModelSpec{declared}).Describe(model.ModelID{
 		Provider: ProviderID, Name: "MiniMax-Hailuo-02",
@@ -272,8 +264,7 @@ func TestVideoParamsValidate(t *testing.T) {
 }
 
 func TestVideoParamsBelongToTheVideoKind(t *testing.T) {
-	spec := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText},
-		[]message.PartKind{message.PartAudio})
+	spec := testSpec("speech-2.6-hd", "tts", []message.PartKind{message.PartText}, []model.Mode{model.ModeAudio})
 	spec.Video = VideoParams{PromptLimit: 10}
 	if err := spec.Validate(); err == nil {
 		t.Fatal("video parameters on a tts model were accepted")

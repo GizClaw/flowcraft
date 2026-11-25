@@ -26,7 +26,7 @@ one per entry in the process document. Verify a new backend with
 One chain, and each link owns exactly one decision:
 
 ```text
-policy.Grant              the agent's ceiling, narrowed by the caller's request
+policy.Grant              what the caller stated for this session
   → sandbox.Confine       the projection: files, net, env, resources — nothing invented
   → host.BackendFactory   func(sandbox.Confine) (sandbox.Runner, error), one instance per session
   → sandbox.ValidateConfine   refused here if the backend cannot enforce it
@@ -41,7 +41,7 @@ impls.Backend(deploy.BackendImpl("local", func(_ struct{}, confine sandbox.Confi
 }))
 ```
 
-At open the host projects the session's bind onto a `sandbox.Confine` — `Files`, `Net`,
+At open the host projects the session's grant onto a `sandbox.Confine` — `Files`, `Net`,
 `Exec.Env` and `Resources`, the grant's own values and nothing invented — builds the
 runner from it, and re-runs `sandbox.ValidateConfine(confine,
 runner.Capabilities().Policy)` so a backend that skipped its own check cannot hand a
@@ -210,9 +210,9 @@ backend must gate its `MemoryCap`/`CPUCap` declaration on instead of hardcoding 
 
 ## What a deployment says
 
-A backend is chosen in the process document, by name; an agent selects one with
-`grant.sandbox`. There is no per-session sandbox block: what one session may touch is
-its grant.
+A backend is chosen in the process document, by name; a session selects one with its
+grant's `sandbox` field (empty picks the process's only backend). There is no per-agent
+sandbox block: what one session may touch is its grant.
 
 ```yaml
 # the process document: the backends this binary carries
@@ -222,32 +222,24 @@ sandbox:
     impl: local
 ```
 
-```yaml
-# the agent document: one agent's ceiling
-version: 1
-agents:
-  - name: forge
-    grant:
-      sandbox: local # a name the process must configure
-      files:
-        read: [/srv/agent]
-        write: [/srv/agent/out]
-      net:
-        mode: allow_list
-        allow_hosts: [api.openai.com]
-      exec:
-        timeout: 60s
-      resources: { cpu_millicores: 2000, memory_bytes: 2147483648 }
-      limits: { idle: 30m }
+```go
+// what the application states when it opens a session
+authority := policy.Grant{
+    Sandbox: "local", // a name the process must configure
+    Files:   policy.Files{Read: []string{"/srv/agent"}, Write: []string{"/srv/agent/out"}},
+    Net:     policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: []string{"api.openai.com"}},
+    Exec:    policy.ExecPolicy{Timeout: policy.Duration(60 * time.Second)},
+    Resources: policy.Resources{CPUMillicores: 2000, MemoryBytes: 2147483648},
+}
 ```
 
-| Grant field | Becomes, in the confine                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| `sandbox`   | The name the host resolves to a `BackendFactory`. A name the process does not carry is `NotAvailable` at open.        |
-| `files`     | `Confine.Files` — `read[]`, `write[]`, `readonly`. Absolute roots; `readonly` is a file-tool permission, not a mount. |
-| `net`       | `Confine.Net` — `mode`, `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`.                                |
-| `exec.env`  | `Confine.Env` — `allow[]` (an empty list means "nothing", absent means "inherit") and `inject{}`.                     |
-| `resources` | `Confine.Resources` — the per-command ceiling: `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.    |
+| Grant field | Becomes, in the confine                                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `sandbox`   | The name the host resolves to a `BackendFactory`. A name the process does not carry is `NotAvailable` at open.                 |
+| `files`     | `Confine.Files` — `read[]`, `write[]`, `readonly`. Absolute roots; a write-restricting set needs a backend that bounds writes. |
+| `net`       | `Confine.Net` — `mode`, `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`.                                         |
+| `exec.env`  | `Confine.Env` — `allow[]` (an empty list means "nothing", absent means "inherit") and `inject{}`.                              |
+| `resources` | `Confine.Resources` — the per-command ceiling: `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.             |
 
 Everything else in the grant is somebody else's: the tools are the projection's, the
 models are the provider's, the timeout is a per-call argument, and the delegation block
@@ -282,14 +274,14 @@ line is wrapped in it. The exec tool uses them; a backend never does.
 
 Two command rules belong to the host, because asking whether a command may run — and
 asking again whether a refused one may leave the boundary — is policy rather than a
-capability: approval (`host.Approval`) and escalation (`host.Escalator`, driven by
-`grant.escalate` and only ever offered for a `sandbox.ErrConfineDenied`). They decorate
+capability: approval (`host.Approval`) and escalation (`host.Escalator`, only ever offered
+for a `sandbox.ErrConfineDenied`). They decorate
 the narrow `SessionStarter`, so a tool gets the operator's decision for free. See
 [runtime.md](runtime.md).
 
-A delegated subagent is a session of its own: its confine comes from the target
-deployment's grant, not the caller's, and core derives no mode for it. See
-[delegation.md](delegation.md).
+A delegated subagent is a session of its own: its confine comes from the authority the
+delegation resolves for it — by default the parent's, which is the only rule that cannot
+escalate — and core derives no mode for it. See [delegation.md](delegation.md).
 
 ## What this replaced
 
@@ -298,8 +290,8 @@ The previous `core/sandbox/engine` package is gone: the `Exec` decorator stack
 `ClassifySafeReadOnly`), `ValidateExecPolicy` and the safe-read-only classifier. So is
 `core/permission` — its `Policy`/`Writes` per-call permission is now the grant's `files`
 and the session's confine — and the `sandbox.backend/writes/net/journal` deployment
-block, which became `sandbox[]` in the process document plus `grant.files`/`net`/`exec`/
-`resources` on the agent. The file journal (`OpenJournal`, the watch set, the gap
+block, which became `sandbox[]` in the process document plus `files`/`net`/`exec`/
+`resources` on the session's grant. The file journal (`OpenJournal`, the watch set, the gap
 vocabulary) went with it. Approval and escalation did not disappear, they moved to
 `core/host`; the one-shot form did not disappear either, it is now
 `sandbox.Exec` over a `SessionStarter`, with no decorator chain to keep in step.

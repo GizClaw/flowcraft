@@ -298,6 +298,17 @@ func finish(ctx context.Context, span trace.Span, req Request, d Driver, turn Tu
 	}
 }
 
+// manifestID is the version combination this turn ran under, as a string.
+//
+// A caller driving a turn without a host still gets an identity; the host always sets the
+// precomputed one.
+func manifestID(req Request) string {
+	if req.ManifestID != "" {
+		return req.ManifestID
+	}
+	return req.Manifest.ID()
+}
+
 // reportRun hands one finished run to the host's sink, when it installed one.
 //
 // It is the join point between a trace and a dataset row: the ids identify the span, the
@@ -309,12 +320,7 @@ func reportRun(ctx context.Context, span trace.Span, req Request, outcome TurnOu
 	if req.OnRun == nil {
 		return
 	}
-	manifest := req.ManifestID
-	if manifest == "" {
-		// A caller driving a turn without a host still gets an identity; the host always
-		// sets the precomputed one.
-		manifest = req.Manifest.ID()
-	}
+	manifest := manifestID(req)
 	record := RunRecord{
 		Agent:     req.Agent,
 		Manifest:  manifest,
@@ -368,6 +374,7 @@ func saveTerminal(ctx context.Context, req Request, d Driver, facts turnFacts) {
 	_, _, err := req.Store.Save(context.WithoutCancel(saveCtx), Checkpoint{
 		Schema:      Schema,
 		Fingerprint: req.Fingerprint,
+		Manifest:    manifestID(req),
 		Task:        task,
 	}, kept)
 	if err != nil {

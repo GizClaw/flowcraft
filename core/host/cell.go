@@ -143,9 +143,6 @@ func confineOf(grant policy.Grant) (sandbox.Confine, error) {
 	if err := grant.Files.Validate(); err != nil {
 		return sandbox.Confine{}, err
 	}
-	if err := grant.Limits.Validate(); err != nil {
-		return sandbox.Confine{}, err
-	}
 	return sandbox.Confine{
 		Files:     grant.Files,
 		Net:       grant.Net,

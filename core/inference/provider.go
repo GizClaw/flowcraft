@@ -1,14 +1,18 @@
 package inference
 
-import "fmt"
+import (
+	"fmt"
 
-// Provider is one vendor's capabilities: the seams it serves plus the model
+	"github.com/GizClaw/flowcraft/core/model"
+)
+
+// Provider is one vendor's capabilities: the modes it serves plus the model
 // line-up it declared.
 //
 // It is a struct, not an interface that grows a method per capability. Adding a
-// seam is one field, and a nil field is the honest answer to "can this provider
+// mode is one field, and a nil field is the honest answer to "can this provider
 // do it" — no stub returning UnsupportedOperation, no wrapper type per
-// combination of supported seams.
+// combination of supported modes.
 //
 // Generator is embedded, so a host that only wants turns keeps working:
 // Provider satisfies Generator.
@@ -37,14 +41,14 @@ func (p Provider) Validate() error {
 	}
 	for _, descriptor := range p.Catalog.Models() {
 		capabilities := descriptor.Capabilities
-		if capabilities.EmbeddingDimensions > 0 && p.Embedder == nil {
+		if capabilities.Can(model.ModeEmbed) && p.Embedder == nil {
 			return fmt.Errorf(
-				"inference: model %q declares an embedding width but the provider serves no embeddings",
+				"inference: model %q declares the embed mode but the provider serves no embeddings",
 				descriptor.ID.Name)
 		}
-		if capabilities.Decision && p.Decider == nil {
+		if capabilities.Can(model.ModeDecide) && p.Decider == nil {
 			return fmt.Errorf(
-				"inference: model %q declares decision support but the provider serves no decisions",
+				"inference: model %q declares the decide mode but the provider serves no decisions",
 				descriptor.ID.Name)
 		}
 	}

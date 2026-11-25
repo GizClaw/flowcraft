@@ -18,8 +18,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
@@ -104,13 +104,25 @@ func (p *sessionProgram) Close() error {
 	return nil
 }
 
+// defaultLimits is the session table a test deployment declares unless the test is
+// about the limit itself.
+func defaultLimits() policy.Limits {
+	return policy.Limits{Idle: policy.Duration(time.Minute)}
+}
+
 // sessionDeployment is a deployment with one backend and a program that opens drivers.
 func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journal, backend *boundary) (deploy.Deployment, *sessionProgram) {
+	t.Helper()
+	return sessionDeploymentWith(t, name, grant, defaultLimits(), log, backend)
+}
+
+// sessionDeploymentWith is sessionDeployment with an explicit session table.
+func sessionDeploymentWith(t *testing.T, name string, grant policy.Grant, limits policy.Limits, log *journal, backend *boundary) (deploy.Deployment, *sessionProgram) {
 	t.Helper()
 	program := &sessionProgram{log: log}
 	return deploy.Deployment{
 		Name:    name,
-		Grant:   grant,
+		Limits:  limits,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
 	}, program
 }
@@ -118,14 +130,11 @@ func sessionDeployment(t *testing.T, name string, grant policy.Grant, log *journ
 // permissiveGrant allows everything and names the backend the deployment configured. Files are
 // unrestricted, so no directory has to exist for most tests.
 func permissiveGrant(sandboxName string) policy.Grant {
-	return policy.Grant{
-		Sandbox: sandboxName,
-		Limits:  policy.Limits{Idle: policy.Duration(time.Minute), MaxSessions: 0},
-	}
+	return policy.Grant{Sandbox: sandboxName}
 }
 
 // hostWith builds an Agents over a resource whose single backend is b.
-func hostWith(t *testing.T, backend *boundary) *Agents {
+func hostWith(t *testing.T, backend *boundary, opts ...AgentsOption) *Agents {
 	t.Helper()
 	res, err := Open(t.Context(), deploy.ProcessPlan{
 		Backends: []deploy.PlannedBackend{boundBackend("local", backend)},
@@ -134,7 +143,7 @@ func hostWith(t *testing.T, backend *boundary) *Agents {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = res.Close() })
-	return NewAgents(res)
+	return NewAgents(res, opts...)
 }
 
 // TestOpenSessionBuildsAndClosesEverything is the session's lifecycle: opening builds the driver and
@@ -148,7 +157,7 @@ func TestOpenSessionBuildsAndClosesEverything(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -183,7 +192,7 @@ func TestTheBindingCarriesTheSessionsCapabilities(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -211,7 +220,7 @@ func TestOpenRefusesAConfineTheBackendCannotEnforce(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	_, err := agents.Open(t.Context(), "s1", "referee")
+	_, err := agents.Open(t.Context(), "s1", "referee", grant)
 	if err == nil || !errdefs.IsNotAvailable(err) {
 		t.Fatalf("err = %v, want NotAvailable", err)
 	}
@@ -228,16 +237,16 @@ func TestMaxSessionsIsEnforced(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.MaxSessions = 1
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	limits := defaultLimits()
+	limits.MaxSessions = 1
+	dep, _ := sessionDeploymentWith(t, "referee", permissiveGrant("local"), limits, log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s2", "referee"); err == nil || !errdefs.IsNotAvailable(err) {
+	if _, err := agents.Open(t.Context(), "s2", "referee", permissiveGrant("local")); err == nil || !errdefs.IsNotAvailable(err) {
 		t.Fatalf("second Open = %v, want NotAvailable", err)
 	}
 }
@@ -252,7 +261,7 @@ func TestRemoveRefusesWhileSessionsAreOpen(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if err := agents.Remove("referee"); !errors.Is(err, ErrSessionsActive) {
@@ -273,7 +282,7 @@ func TestReloadKeepsTheOldProgramAliveForOpenSessions(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
@@ -299,16 +308,14 @@ func TestEvictIdleClosesTheSessionsPastTheLimit(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "old", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "old", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "new", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "new", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
@@ -336,9 +343,7 @@ func TestSessionsKeepInsertionOrderThroughInterleavedLifecycles(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Minute)
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -353,7 +358,7 @@ func TestSessionsKeepInsertionOrderThroughInterleavedLifecycles(t *testing.T) {
 		case 0: // Open
 			id := fmt.Sprintf("s%d", next)
 			next++
-			if _, err := agents.Open(t.Context(), id, "referee"); err != nil {
+			if _, err := agents.Open(t.Context(), id, "referee", permissiveGrant("local")); err != nil {
 				t.Fatalf("step %d: Open(%s): %v", step, id, err)
 			}
 			want = append(want, id)
@@ -425,7 +430,7 @@ func TestOpenWithAFileGrantOpensTheTree(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", grant)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -450,13 +455,13 @@ func TestOpenRefusals(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	if _, err := agents.Open(t.Context(), "s1", "missing"); !errdefs.IsNotFound(err) {
+	if _, err := agents.Open(t.Context(), "s1", "missing", permissiveGrant("local")); !errdefs.IsNotFound(err) {
 		t.Fatalf("unknown agent = %v, want NotFound", err)
 	}
 	if err := agents.Close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "missing"); !errdefs.IsNotAvailable(err) {
+	if _, err := agents.Open(t.Context(), "s1", "missing", permissiveGrant("local")); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("closed table = %v, want NotAvailable", err)
 	}
 }
@@ -514,13 +519,12 @@ func runnableHost(t *testing.T, driver *turnDriver) (*Agents, *turnProgram) {
 	program := &turnProgram{driver: driver}
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return program, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
@@ -662,9 +666,9 @@ func TestTheSessionLimitHoldsUnderConcurrentOpens(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.MaxSessions = 1
-	dep, _ := sessionDeployment(t, "referee", grant, log, backend)
+	limits := defaultLimits()
+	limits.MaxSessions = 1
+	dep, _ := sessionDeploymentWith(t, "referee", permissiveGrant("local"), limits, log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
@@ -676,7 +680,7 @@ func TestTheSessionLimitHoldsUnderConcurrentOpens(t *testing.T) {
 		wg.Add(1)
 		go func(ordinal int) {
 			defer wg.Done()
-			_, err := agents.Open(context.Background(), fmt.Sprintf("s%d", ordinal), "referee")
+			_, err := agents.Open(context.Background(), fmt.Sprintf("s%d", ordinal), "referee", permissiveGrant("local"))
 			results <- err
 		}(i)
 	}
@@ -707,7 +711,7 @@ func TestCloseReleasesARetiredProgram(t *testing.T) {
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	reloaded, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
@@ -775,12 +779,12 @@ func TestEvictIdleSkipsARunningTurn(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	grant := permissiveGrant("local")
-	grant.Limits.Idle = policy.Duration(time.Millisecond)
+	limits := defaultLimits()
+	limits.Idle = policy.Duration(time.Millisecond)
 	blocked := &turnDriver{log: log, block: make(chan struct{})}
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   grant,
+		Limits:  limits,
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &turnProgram{driver: blocked}, nil }},
 	}
 	if err := agents.Add(dep); err != nil {
@@ -790,7 +794,7 @@ func TestEvictIdleSkipsARunningTurn(t *testing.T) {
 		close(blocked.block)
 		_ = agents.Close(t.Context())
 	})
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
@@ -812,96 +816,73 @@ func TestEvictIdleSkipsARunningTurn(t *testing.T) {
 	}
 }
 
-// TestASessionRunsUnderTheNarrowedGrant is the two-instances rule the domain model states: the
-// deployment's grant is the ceiling, and a session may run under less. Nothing in the host called
-// [policy.Grant.Narrow], so every session ran under the ceiling and `session.bind.id` was always
-// equal to `agent.grant.id` — the "an untrusted peer can only ask for less" property held only
-// inside `policy`.
-func TestASessionRunsUnderTheNarrowedGrant(t *testing.T) {
+// TestASessionRunsUnderTheGrantItWasOpenedWith is the authority rule: the caller states it, the
+// binding carries it, and the digest that goes on every span names exactly that value.
+func TestASessionRunsUnderTheGrantItWasOpenedWith(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
 
-	ceiling := permissiveGrant("local")
-	ceiling.Models = []model.ModelRef{
-		{ID: model.ModelID{Provider: "openai", Name: "gpt-5"}},
-		{ID: model.ModelID{Provider: "openai", Name: "gpt-5-mini"}},
-	}
-	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file", "write_file", "exec"}}
-	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	authority := permissiveGrant("local")
+	authority.Tools = policy.ToolSet{Allow: []string{"read_file"}}
+	dep, _ := sessionDeployment(t, "referee", authority, log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
-	request := policy.Request{
-		Models: []model.ModelRef{{ID: model.ModelID{Provider: "openai", Name: "gpt-5-mini"}}},
-		Tools:  &policy.ToolSet{Allow: []string{"read_file"}},
-	}
-	session, err := agents.Open(t.Context(), "s1", "referee", WithRequest(request))
+	session, err := agents.Open(t.Context(), "s1", "referee", authority)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	bind := session.Binding().Grant
 	if bind.AllowsTool("write_file") || bind.AllowsTool("exec") {
-		t.Fatalf("bind allows %v, want only the requested tool", bind.Tools.Allow)
+		t.Fatalf("bind allows %v, want only the stated tool", bind.Tools.Allow)
 	}
 	if !bind.AllowsTool("read_file") {
-		t.Fatal("bind lost the tool the request asked for")
+		t.Fatal("bind lost the tool the caller stated")
 	}
-	if len(bind.Models) != 1 || bind.Models[0].ID.Name != "gpt-5-mini" {
-		t.Fatalf("bind models = %v, want the requested one", bind.Models)
-	}
-	if session.bindID == "" || session.bindID == ceiling.Digest() {
-		t.Fatalf("bind id = %q, want the narrowed grant's digest", session.bindID)
+	if session.bindID == "" || session.bindID != bind.Digest() {
+		t.Fatalf("bind id = %q, want the grant's digest %q", session.bindID, bind.Digest())
 	}
 }
 
-// TestANarrowingRequestCannotWiden is the direction that matters: a request outside the ceiling is
-// refused at open, not truncated into something that looks narrower but is not.
-func TestANarrowingRequestCannotWiden(t *testing.T) {
+// TestAnOpenWithAnUnenforceableGrantIsRefused: the grant is validated where it enters, and a
+// refused open leaves no session behind.
+func TestAnOpenWithAnUnenforceableGrantIsRefused(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	ceiling := permissiveGrant("local")
-	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file"}}
-	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
-	_, err := agents.Open(t.Context(), "s1", "referee", WithRequest(policy.Request{
-		Tools: &policy.ToolSet{Allow: []string{"read_file", "exec"}},
-	}))
-	if err == nil {
-		t.Fatal("a request for a tool outside the ceiling was accepted")
+	// A narrowed read set beside an unrestricted write set is the combination policy refuses.
+	refused := policy.Grant{Files: policy.Files{Read: []string{pathtest.Abs("srv/w")}}}
+	if _, err := agents.Open(t.Context(), "s1", "referee", refused); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("err = %v, want a validation error", err)
 	}
 	if _, open := agents.Session("s1"); open {
 		t.Fatal("a refused open left a session behind")
 	}
 }
 
-// TestASessionWithoutARequestKeepsTheCeiling is the compatibility half: a caller with nothing to
-// narrow gets the deployment's grant unchanged, and the bind digest still names it.
-func TestASessionWithoutARequestKeepsTheCeiling(t *testing.T) {
+// TestAnOpenWithAGrantTheProcessCannotCarryIsRefused is the other side of the same check: the
+// grant is fine, this process does not have the backend it names.
+func TestAnOpenWithAGrantTheProcessCannotCarryIsRefused(t *testing.T) {
 	log := &journal{}
 	backend := &boundary{log: log, filesystemBounds: true}
 	agents := hostWith(t, backend)
-	ceiling := permissiveGrant("local")
-	ceiling.Tools = policy.ToolSet{Allow: []string{"read_file"}}
-	dep, _ := sessionDeployment(t, "referee", ceiling, log, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
-	session, err := agents.Open(t.Context(), "s1", "referee")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if session.bindID != ceiling.Digest() {
-		t.Fatalf("bind id = %q, want the ceiling's", session.bindID)
+	if _, err := agents.Open(t.Context(), "s1", "referee", policy.Grant{Sandbox: "bwrap"}); err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("err = %v, want NotAvailable", err)
 	}
 }
 
@@ -927,7 +908,7 @@ func TestCompactionKeepsTheIndexAndTheOrder(t *testing.T) {
 	var live []string
 	for i := range batch {
 		id := fmt.Sprintf("s%02d", i)
-		if _, err := agents.Open(t.Context(), id, "referee"); err != nil {
+		if _, err := agents.Open(t.Context(), id, "referee", permissiveGrant("local")); err != nil {
 			t.Fatalf("Open(%s): %v", id, err)
 		}
 		if i%2 == 0 {
@@ -953,5 +934,45 @@ func TestCompactionKeepsTheIndexAndTheOrder(t *testing.T) {
 	}
 	if got := agents.Sessions("referee"); len(got) != len(live)-1 {
 		t.Fatalf("Sessions = %v, want %d entries", got, len(live)-1)
+	}
+}
+
+// TestAnUnstatedSandboxNeedsOneBackend covers the rule that makes an empty grant usable: an empty
+// sandbox name asks for the runtime's default, and a process with none or several has none to give.
+func TestAnUnstatedSandboxNeedsOneBackend(t *testing.T) {
+	log := &journal{}
+	backend := &boundary{log: log, filesystemBounds: true}
+	agents := hostWith(t, backend)
+	dep, _ := sessionDeployment(t, "referee", permissiveGrant("local"), log, backend)
+	if err := agents.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = agents.Close(t.Context()) })
+
+	// One backend, no name: it is the default.
+	if _, err := agents.Open(t.Context(), "s1", "referee", policy.Grant{}); err != nil {
+		t.Fatalf("Open with one backend and no name: %v", err)
+	}
+
+	// Two backends, no name: the process cannot guess, and the error says what it runs.
+	two, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
+		boundBackend("local", backend),
+		boundBackend("bwrap", backend),
+	}}, testOptions(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = two.Close() })
+	ambiguous := NewAgents(two)
+	if err := ambiguous.Add(dep); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	t.Cleanup(func() { _ = ambiguous.Close(t.Context()) })
+	_, err = ambiguous.Open(t.Context(), "s1", "referee", policy.Grant{})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("err = %v, want NotAvailable", err)
+	}
+	if !strings.Contains(err.Error(), "local") || !strings.Contains(err.Error(), "bwrap") {
+		t.Fatalf("error %q does not say which backends this process runs", err)
 	}
 }

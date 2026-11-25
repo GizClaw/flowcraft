@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // Decide routes one judgment call.
@@ -14,12 +15,17 @@ import (
 // probabilities and confidences from two models, which are not comparable, and a
 // refusal from one with an answer from another.
 func (r *Router) Decide(ctx context.Context, request inference.DecisionRequest) (inference.DecisionResponse, error) {
+	ref, err := r.resolve(operationDecide, request.Model, []model.Mode{model.ModeDecide}, extensionProviders(request.Extensions))
+	if err != nil {
+		return inference.DecisionResponse{}, err
+	}
+	request.Model = ref
 	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request,
-		modelNameOfDecide, withDecideTarget, invokeDecide, r.policy.Retry, nil)
+		modelOfDecide, withDecideTarget, invokeDecide, r.policy.Retry, []model.Mode{model.ModeDecide})
 }
 
-// modelNameOfDecide is the model the caller asked to judge.
-func modelNameOfDecide(request inference.DecisionRequest) string { return request.Model.ID.Name }
+// modelOfDecide is the model the caller asked to judge.
+func modelOfDecide(request inference.DecisionRequest) model.ModelRef { return request.Model }
 
 // withDecideTarget stamps the chosen target onto the request.
 func withDecideTarget(request inference.DecisionRequest, target Target) inference.DecisionRequest {
@@ -41,7 +47,7 @@ func invokeDecide(ctx context.Context, target Target, request inference.Decision
 	return target.Provider.Decider.Decide(ctx, request)
 }
 
-// routedDecider is the judgment seam of a Router.
+// routedDecider is the judgment mode of a Router.
 type routedDecider struct {
 	router *Router
 }

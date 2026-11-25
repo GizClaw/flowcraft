@@ -15,7 +15,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/internal/paths"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -155,6 +154,9 @@ type operator struct {
 	mu     sync.Mutex
 	asked  []EscalationRequest
 	answer func(EscalationRequest) (policy.Grant, error)
+	// widen is what an unconditional yes adds to the session's write set. The answer is a widening
+	// of what the session had, never a replacement: [policy.Grant.Widen] is what checks that.
+	widen []string
 }
 
 func (o *operator) ApproveWidening(_ context.Context, request EscalationRequest) (policy.Grant, error) {
@@ -164,7 +166,9 @@ func (o *operator) ApproveWidening(_ context.Context, request EscalationRequest)
 	if o.answer != nil {
 		return o.answer(request)
 	}
-	return request.To, nil
+	widened := request.From
+	widened.Files.Write = append(append([]string(nil), request.From.Files.Write...), o.widen...)
+	return widened, nil
 }
 
 func (o *operator) questions() []EscalationRequest {
@@ -173,9 +177,9 @@ func (o *operator) questions() []EscalationRequest {
 	return append([]EscalationRequest(nil), o.asked...)
 }
 
-// escalationGrant is a deployment that may write one directory and may be widened to a second one,
-// which is the shape the whole feature exists for.
-func escalationGrant(t *testing.T, sandboxName string) policy.Grant {
+// escalationGrant is a session authority that may write one directory, and the second directory an
+// operator may widen it to: the shape the whole feature exists for.
+func escalationGrant(t *testing.T, sandboxName string) (policy.Grant, string) {
 	t.Helper()
 	root := t.TempDir()
 	out, tmp := filepath.Join(root, "out"), filepath.Join(root, "tmp")
@@ -186,12 +190,7 @@ func escalationGrant(t *testing.T, sandboxName string) policy.Grant {
 	}
 	grant := permissiveGrant(sandboxName)
 	grant.Files = policy.Files{Read: []string{root}, Write: []string{out}}
-	grant.Escalate = &policy.Escalation{
-		Files:         policy.Files{Write: []string{out, tmp}},
-		TTL:           policy.Duration(30 * time.Second),
-		MaxPerSession: 2,
-	}
-	return grant
+	return grant, tmp
 }
 
 // escalatingHost opens one session under grant, over a backend the test controls, and hands back
@@ -214,7 +213,7 @@ func escalatingHost(t *testing.T, grant policy.Grant, opts ...AgentsOption) (san
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "s1", "referee")
+	session, err := agents.Open(t.Context(), "s1", "referee", grant)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -261,9 +260,9 @@ func records(t *testing.T, store *agenttest.MemStore) []agent.EventRecord {
 // described in the ledger, when it is done.
 func TestAnApprovedWideningRunsInATemporaryCell(t *testing.T) {
 	recorder := telemetrytest.Meters(t)
-	grant := escalationGrant(t, "local")
-	out, tmp := grant.Files.Write[0], grant.Escalate.Files.Write[1]
-	who := &operator{}
+	grant, tmp := escalationGrant(t, "local")
+	out := grant.Files.Write[0]
+	who := &operator{widen: []string{tmp}}
 	starter, backend, store := escalatingHost(t, grant, WithEscalation(who))
 
 	target := filepath.Join(tmp, "scratch")
@@ -272,7 +271,8 @@ func TestAnApprovedWideningRunsInATemporaryCell(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// The question names the command and the difference, and nothing about the session's internals.
+	// The question names the command and the authority in force, and nothing about the session's
+	// internals.
 	asked := who.questions()
 	if len(asked) != 1 {
 		t.Fatalf("asked = %d, want one question", len(asked))
@@ -283,14 +283,8 @@ func TestAnApprovedWideningRunsInATemporaryCell(t *testing.T) {
 	if !strings.Contains(asked[0].Command, target) || asked[0].WorkDir != filepath.Dir(target) {
 		t.Fatalf("request = %+v, want the command that was refused", asked[0])
 	}
-	if len(asked[0].Changes) == 0 || asked[0].Changes[0].Dimension != "files.write" {
-		t.Fatalf("changes = %+v, want the write set as the difference", asked[0].Changes)
-	}
 	if got := asked[0].From.Files.Write; len(got) != 1 || got[0] != out {
 		t.Fatalf("from = %v, want the session's own write set", got)
-	}
-	if got := asked[0].To.Files.Write; len(got) != 2 {
-		t.Fatalf("to = %v, want the declaration's write set", got)
 	}
 
 	// Two cells were built: the session's, and the widened one the command actually ran in.
@@ -299,7 +293,7 @@ func TestAnApprovedWideningRunsInATemporaryCell(t *testing.T) {
 		t.Fatalf("built %d cells, want the session's and the widened one", len(built))
 	}
 	if got := built[1].confine.Files.Write; len(got) != 2 || got[1] != tmp {
-		t.Fatalf("the widened cell confined writes to %v, want the declaration's set", got)
+		t.Fatalf("the widened cell confined writes to %v, want the approved set", got)
 	}
 	if commands := backend.commands(); len(commands) != 1 {
 		t.Fatalf("ran %d commands, want the one retry", len(commands))
@@ -350,8 +344,7 @@ func TestAnApprovedWideningRunsInATemporaryCell(t *testing.T) {
 // so the command did not run, the session's cell is untouched and nothing claims otherwise.
 func TestARefusedWideningLeavesTheOriginalRefusal(t *testing.T) {
 	recorder := telemetrytest.Meters(t)
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
+	grant, tmp := escalationGrant(t, "local")
 	who := &operator{answer: func(EscalationRequest) (policy.Grant, error) {
 		return policy.Grant{}, &policy.Denial{Check: policy.CheckApproval, Reason: "operator said no"}
 	}}
@@ -377,46 +370,32 @@ func TestARefusedWideningLeavesTheOriginalRefusal(t *testing.T) {
 	counted(t, recorder, escalationApproved, 0)
 }
 
-// TestAnExhaustedBudgetAsksNobody is the budget's purpose: a session that has spent its widenings is
-// refused without an operator being asked again.
-func TestAnExhaustedBudgetAsksNobody(t *testing.T) {
+// TestNoEscalatorLeavesTheRefusal is the opt-in default: a process that installed no operator has
+// offered nothing, so a command outside the session's authority stays refused rather than failing
+// with a second error class.
+func TestNoEscalatorLeavesTheRefusal(t *testing.T) {
 	recorder := telemetrytest.Meters(t)
-	grant := escalationGrant(t, "local")
-	grant.Escalate.MaxPerSession = 1
-	tmp := grant.Escalate.Files.Write[1]
-	who := &operator{}
-	starter, _, store := escalatingHost(t, grant, WithEscalation(who))
+	grant, tmp := escalationGrant(t, "local")
+	starter, backend, store := escalatingHost(t, grant)
 
-	running, err := starter.Start(t.Context(), command(filepath.Join(tmp, "first")))
-	if err != nil {
-		t.Fatalf("the first widening was refused: %v", err)
+	_, err := starter.Start(t.Context(), command(filepath.Join(tmp, "scratch")))
+	if !errors.Is(err, sandbox.ErrConfineDenied) {
+		t.Fatalf("err = %v, want the confine refusal", err)
 	}
-	_ = running.Close()
-
-	_, err = starter.Start(t.Context(), command(filepath.Join(tmp, "second")))
-	denial, ok := policy.AsDenial(err)
-	if !ok || denial.Check != policy.CheckEscalation {
-		t.Fatalf("err = %v, want a denial with the escalation check", err)
+	if got := len(backend.builds()); got != 1 {
+		t.Fatalf("built %d cells, want only the session's", got)
 	}
-	if !strings.Contains(denial.Reason, "used its widenings") {
-		t.Fatalf("reason = %q, want it to name the budget", denial.Reason)
+	if kept := records(t, store); len(kept) != 0 {
+		t.Fatalf("records = %d, want none", len(kept))
 	}
-	if got := len(who.questions()); got != 1 {
-		t.Fatalf("asked = %d, want one: a spent budget asks nobody", got)
-	}
-	if kept := records(t, store); len(kept) != 1 {
-		t.Fatalf("records = %d, want only the widening that happened", len(kept))
-	}
-	counted(t, recorder, escalationApproved, 1)
-	counted(t, recorder, escalationExhausted, 1)
+	counted(t, recorder, escalationUnavailable, 0)
 }
 
 // TestAWideningIsRetriedOnce pins the retry: the widened cell failing again is the answer, so the
 // second refusal is returned and nobody is asked a second time.
 func TestAWideningIsRetriedOnce(t *testing.T) {
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
-	who := &operator{}
+	grant, tmp := escalationGrant(t, "local")
+	who := &operator{widen: []string{tmp}}
 	starter, backend, _ := escalatingHost(t, grant, WithEscalation(who))
 	backend.refuseEveryCommand = true
 
@@ -432,38 +411,16 @@ func TestAWideningIsRetriedOnce(t *testing.T) {
 	}
 }
 
-// TestADeclaredEscalationWithoutAnEscalatorIsNotAvailable is the difference from approval: a
-// declaration is a promise, and a process that cannot keep it says so instead of quietly refusing.
-func TestADeclaredEscalationWithoutAnEscalatorIsNotAvailable(t *testing.T) {
+// TestAnAnswerThatIsNotAWideningIsRefused is what replaced the declared ceiling: the answer has to
+// keep every permit the session had, so an operator that hands back a different authority — here
+// one that drops the root the session could already write — is not trusted.
+func TestAnAnswerThatIsNotAWideningIsRefused(t *testing.T) {
 	recorder := telemetrytest.Meters(t)
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
-	starter, backend, store := escalatingHost(t, grant)
-
-	_, err := starter.Start(t.Context(), command(filepath.Join(tmp, "scratch")))
-	if !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want NotAvailable", err)
-	}
-	if got := len(backend.builds()); got != 1 {
-		t.Fatalf("built %d cells, want only the session's", got)
-	}
-	if kept := records(t, store); len(kept) != 0 {
-		t.Fatalf("records = %d, want none", len(kept))
-	}
-	counted(t, recorder, escalationUnavailable, 1)
-}
-
-// TestAWideningOutsideTheDeclarationIsRefused is the declaration's teeth: an escalator that answers
-// with more than the deployment allows is not trusted, because an approval widens one boundary
-// within the declaration rather than replacing it.
-func TestAWideningOutsideTheDeclarationIsRefused(t *testing.T) {
-	recorder := telemetrytest.Meters(t)
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
+	grant, tmp := escalationGrant(t, "local")
 	who := &operator{answer: func(request EscalationRequest) (policy.Grant, error) {
-		wider := request.To
-		wider.Files.Write = []string{filepath.Dir(tmp)}
-		return wider, nil
+		replaced := request.From
+		replaced.Files.Write = []string{tmp}
+		return replaced, nil
 	}}
 	starter, backend, store := escalatingHost(t, grant, WithEscalation(who))
 
@@ -472,7 +429,7 @@ func TestAWideningOutsideTheDeclarationIsRefused(t *testing.T) {
 		t.Fatalf("err = %v, want the original refusal", err)
 	}
 	if got := len(backend.builds()); got != 1 {
-		t.Fatalf("built %d cells, want only the session's: nothing outside the declaration runs", got)
+		t.Fatalf("built %d cells, want only the session's: a replacement is not a widening", got)
 	}
 	if kept := records(t, store); len(kept) != 0 {
 		t.Fatalf("records = %d, want none", len(kept))
@@ -480,66 +437,12 @@ func TestAWideningOutsideTheDeclarationIsRefused(t *testing.T) {
 	counted(t, recorder, escalationUnauthorized, 1)
 }
 
-// TestADelegatedChildCannotBorrowItsParentsDeclaration is the delegation rule: a child is opened
-// under its own deployment, so it is widened by what its own document declares — which here is
-// nothing. The child is opened the way a delegation opens it (its own deployment plus the lineage
-// it extends), because that is the call the parent's grant is deliberately not part of.
-func TestADelegatedChildCannotBorrowItsParentsDeclaration(t *testing.T) {
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
-	who := &operator{}
-
-	backend := &widening{}
-	res, err := Open(t.Context(), deploy.ProcessPlan{Backends: []deploy.PlannedBackend{
-		boundBackend("local", &boundary{log: &journal{}, filesystemBounds: true}),
-	}}, testOptions(t))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = res.Close() })
-	res.backends["local"] = backend.factory
-
-	agents := NewAgents(res, WithEscalation(who))
-	log := &journal{}
-	parent, _ := sessionDeployment(t, "parent", grant, log, &boundary{log: log, filesystemBounds: true})
-	// The child declares no escalation of its own, and inherits nothing from its parent.
-	child, _ := sessionDeployment(t, "child", permissiveGrant("local"), log, &boundary{log: log, filesystemBounds: true})
-	if err := agents.Add(parent, child); err != nil {
-		t.Fatalf("Add: %v", err)
-	}
-	parentSession, err := agents.Open(t.Context(), "p1", "parent")
-	if err != nil {
-		t.Fatalf("Open parent: %v", err)
-	}
-	if parentSession.grant.Escalate == nil {
-		t.Fatal("the parent declares no escalation, so this test would pass for the wrong reason")
-	}
-	childSession, err := agents.Open(t.Context(), "c1", "child", WithChain(identity.Chain{ID: "c", Depth: 1}))
-	if err != nil {
-		t.Fatalf("Open child: %v", err)
-	}
-	t.Cleanup(func() { _ = agents.Close(t.Context()) })
-
-	starter, ok := platform.ProcessSlot.Get(childSession.Binding().Caps)
-	if !ok || starter == nil {
-		t.Fatal("the child has no process capability")
-	}
-	_, err = starter.Start(t.Context(), command(filepath.Join(tmp, "scratch")))
-	if !errors.Is(err, sandbox.ErrConfineDenied) {
-		t.Fatalf("err = %v, want the child's own confine refusal", err)
-	}
-	if got := len(who.questions()); got != 0 {
-		t.Fatalf("asked = %d, want none: the child borrows nothing from its parent", got)
-	}
-}
-
 // TestAPanickingCommandStillClosesTheTemporaryCell is the cleanup promise: a backend that explodes
 // while starting leaves no cell behind, because the widened boundary is the one thing this feature
 // must never leak.
 func TestAPanickingCommandStillClosesTheTemporaryCell(t *testing.T) {
-	grant := escalationGrant(t, "local")
-	tmp := grant.Escalate.Files.Write[1]
-	who := &operator{}
+	grant, tmp := escalationGrant(t, "local")
+	who := &operator{widen: []string{tmp}}
 	starter, backend, _ := escalatingHost(t, grant, WithEscalation(who))
 	backend.panicWhenWider = true
 
@@ -558,6 +461,37 @@ func TestAPanickingCommandStillClosesTheTemporaryCell(t *testing.T) {
 	}
 	if got := built[1].closed.Load(); got != 1 {
 		t.Fatalf("the widened cell was closed %d times after a panic, want once", got)
+	}
+}
+
+// TestTheEscalationTTLBoundsTheWidenedCell is the one lifetime rule that stayed with the host: a
+// temporary cell has to end, so a widened attempt is bounded even when the command asked for longer.
+// The caller's own shorter deadline still wins.
+func TestTheEscalationTTLBoundsTheWidenedCell(t *testing.T) {
+	agents := NewAgents(&Resource{}, WithEscalation(&operator{}))
+	who := agents.widenerFor(policy.Grant{})
+	ctx, spec, cancel := who.attempt(t.Context(), sandbox.SessionSpec{Opts: sandbox.ExecOptions{Timeout: time.Hour}})
+	defer cancel()
+	if spec.Opts.Timeout != DefaultEscalationTTL {
+		t.Fatalf("attempt timeout = %v, want %v", spec.Opts.Timeout, DefaultEscalationTTL)
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) > DefaultEscalationTTL {
+		t.Fatalf("attempt deadline = %v (ok=%v), want at most the default TTL", deadline, ok)
+	}
+
+	shorter := 10 * time.Second
+	_, spec, cancel = who.attempt(t.Context(), sandbox.SessionSpec{Opts: sandbox.ExecOptions{Timeout: shorter}})
+	defer cancel()
+	if spec.Opts.Timeout != shorter {
+		t.Fatalf("attempt timeout = %v, want the caller's shorter %v", spec.Opts.Timeout, shorter)
+	}
+
+	tuned := NewAgents(&Resource{}, WithEscalation(&operator{}), WithEscalationTTL(time.Minute))
+	_, spec, cancel = tuned.widenerFor(policy.Grant{}).attempt(t.Context(), sandbox.SessionSpec{})
+	defer cancel()
+	if spec.Opts.Timeout != time.Minute {
+		t.Fatalf("attempt timeout = %v, want the configured ttl", spec.Opts.Timeout)
 	}
 }
 

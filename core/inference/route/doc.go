@@ -1,4 +1,4 @@
-// Package route selects among several providers for one seam call.
+// Package route selects among several providers for one mode call.
 //
 // # What is routed
 //
@@ -19,11 +19,24 @@
 // the same model; changing models requires rebuilding the index, and that is a
 // host decision, not a routing one.
 //
-// # Discovery is the driver's job
+// # What a target must declare
 //
-// The dispatcher does not ask whether a target can serve a request. A driver
-// rejects an undeclared model or an unsupported feature during compilation,
-// before any provider I/O, and those kinds are classified as "try the next
-// target". Capability filtering therefore lives where the knowledge is — in each
-// driver's declarations — not in a table here.
+// The dispatcher asks two questions before a target is tried. Does its catalog
+// declare the requested model id, and does that model serve what the call asks for —
+// the output mode, the tool channel, an embedding, a judgment? Input content kinds
+// are checked the same way, because a fleet-wide mismatch is a configuration fact
+// rather than a provider fault.
+//
+// The questions stop where a declaration stops: a target that publishes no line-up is
+// assumed to generate text, and a declaration that says nothing filters nothing. The
+// driver is still the final arbiter of everything a declaration does not cover, and
+// its refusals are classified as "try the next target".
+//
+// # A session restricts the fleet
+//
+// [Router.Restrict] returns a copy that only serves a listed set of models, in order,
+// with the modes each may be used for. The host builds one per session from the
+// caller's grant, so authority is enforced by the same code that picks the target:
+// a model outside the list is refused with a classified error before any provider
+// sees the call, and a request that names no model is answered from the list.
 package route

@@ -63,7 +63,7 @@ func TestACustomKindIsRegisteredWithWithKinds(t *testing.T) {
 	}
 	defer func() { _ = drv.Close() }()
 
-	binding, tools, models, _ := rt.Substrate()
+	binding, tools, models := rt.Substrate()
 	req := agent.Request{
 		Task:    agent.Task{ID: "t1"},
 		Input:   message.NewTextMessage(message.RoleUser, "hi"),

@@ -82,7 +82,11 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 		}
 		chain.ID = minted
 	}
-	if _, err := d.agents.Open(ctx, child, target, WithChain(chain)); err != nil {
+	childGrant, err := d.childAuthority(ctx, target)
+	if err != nil {
+		return platform.DelegationOutcome{}, err
+	}
+	if _, err := d.agents.Open(ctx, child, target, childGrant, WithChain(chain)); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
 
@@ -154,17 +158,33 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	return outcome, nil
 }
 
+// childAuthority resolves what a delegated child may do.
+//
+// It happens on the trusted side: a delegation must never manufacture authority the parent did not
+// hold, so the default is to inherit the parent's grant. An application that needs per-target
+// authority installs [WithDelegationGrant], and the answer is taken as given — like an escalator,
+// the resolver is host code and attenuation is its job.
+func (d *delegator) childAuthority(ctx context.Context, target string) (policy.Grant, error) {
+	inherited := d.parent.lineage().grant
+	resolve := d.agents.delegationGrant
+	if resolve == nil {
+		return inherited, nil
+	}
+	return resolve(ctx, d.parent.agent, target, inherited)
+}
+
 // lineageView is what a delegation needs from its parent: the policy that permits it and the chain it
 // extends. It is a value, so the child cannot reach the parent's driver or cell through it.
 type lineageView struct {
 	policy *policy.Delegation
+	grant  policy.Grant
 	chain  identity.Chain
 }
 
 // lineage is the parent's delegation view. The chain is read from the identity the turn attached, so a
 // resumed process continues the chain it recorded rather than starting a new one at depth zero.
 func (s *Session) lineage() lineageView {
-	return lineageView{policy: s.grant.Delegation, chain: s.chain}
+	return lineageView{policy: s.grant.Delegation, grant: s.grant, chain: s.chain}
 }
 
 // admitDelegation answers the three questions the grant asks: which agent, which mode, how deep.
@@ -320,4 +340,16 @@ func (d *delegator) Cancel(ctx context.Context, session, reason string) error {
 		return err
 	}
 	return d.agents.Cancel(ctx, session, reason)
+}
+
+// WithDelegationGrant installs the rule that decides what a delegated child may do.
+//
+// The default — no resolver — is inheritance: the child runs under the parent's grant. That is
+// the only rule that cannot escalate, because a delegation is the one capability that can
+// manufacture a new run with a new authority. An application that needs per-target authority
+// (a reviewer that may only read, a seat that may only write its own notes) installs this and
+// returns something else. The host does not check the answer: like an escalator, the resolver is
+// trusted host code and attenuation is its job.
+func WithDelegationGrant(resolve func(ctx context.Context, parent, target string, authority policy.Grant) (policy.Grant, error)) AgentsOption {
+	return func(a *Agents) { a.delegationGrant = resolve }
 }

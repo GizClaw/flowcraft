@@ -33,7 +33,6 @@ func benchToolRuntime(tb testing.TB, answer tool.Tool) *graphtest.Fixture {
 	return graphtest.New(tb, graphtest.Config{
 		Generator: &stubProvider{},
 		Tools:     []tool.Tool{answer},
-		Model:     defaultModel,
 	})
 }
 

@@ -115,9 +115,9 @@ type Request struct {
 	Binding tool.Binding
 	// Tools executes tool calls through the process chain, under Binding.
 	Tools tool.Dispatcher
-	// Models is the process's routed model access. It is not a permission: the grant's
-	// model list is what decides which models this session may call, and the route
-	// enforces it.
+	// Models is the process's routed model access, already filtered by the session's
+	// authority: a model outside the grant is refused at the seam before any provider
+	// sees the call.
 	Models *inference.Provider
 	// Ordinal is this turn's 1-based position among the session's runs. The host counts
 	// it: a driver sees one run and cannot know how many its session has had, and a

@@ -71,7 +71,7 @@ func TestDocumentDecodesDeployment(t *testing.T) {
 			"name": "MiniMax-H3",
 			"kind": "video",
 			"wire_model": "MiniMax-Hailuo-3",
-			"capabilities": {"inputs": ["text", "image"], "outputs": ["video"]},
+			"capabilities": {"inputs": ["text", "image"], "modes": ["video"]},
 			"limits": {"max_input_tokens": 8192},
 			"video": {"duration_min_seconds": 6}
 		}]

@@ -69,13 +69,12 @@ func hostFor(t *testing.T, program func() (agent.Program, error), opts ...Agents
 	agents := NewAgents(res, opts...)
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: program},
 	}
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
@@ -338,7 +337,7 @@ func TestTaskIDsSurviveAReopen(t *testing.T) {
 		t.Fatalf("CloseSession: %v", err)
 	}
 	// The same conversation id reopened: a fresh Session, whose ordinal starts over.
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "two")) {

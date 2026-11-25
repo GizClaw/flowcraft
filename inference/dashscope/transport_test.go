@@ -24,8 +24,8 @@ func textModelSpec() ModelSpec {
 		Name: "qwen-test",
 		Kind: "generate",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeText},
 		},
 	}
 	declared.Generate.API = generateAPIMultimodal
@@ -253,8 +253,8 @@ func TestImageTaskRoundTrip(t *testing.T) {
 		Name: "image-test",
 		Kind: "image",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartImage},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeImage},
 		},
 	}
 	declared.Image = ImageParams{Format: media.ImageFormatPNG}
@@ -315,8 +315,8 @@ func TestImageTaskReportsAFailedState(t *testing.T) {
 	declared := ModelSpec{
 		Name: "image-test", Kind: "image",
 		Capabilities: model.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartImage},
+			Inputs: []message.PartKind{message.PartText},
+			Modes:  []model.Mode{model.ModeImage},
 		},
 	}
 	declared.Image = ImageParams{Format: media.ImageFormatPNG}

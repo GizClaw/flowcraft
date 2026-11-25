@@ -4,12 +4,13 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-// Limits are the session-table decisions an agent makes: when an idle session is
-// evicted and how many it may hold at once.
+// Limits are the session-table decisions an agent declares: when an idle session
+// is evicted and how many it may hold at once.
 //
-// They are part of a Grant because they are parsed from the same document, but
-// they are not permissions and they do not travel into a session: [Grant.Narrow]
-// clears them, and the digest ignores them. A session does not limit itself.
+// They are the table's policy, not a session's permission, so they live beside
+// the grant in the agent document rather than inside it: a session does not limit
+// itself, and a permission value does not decide how long its conversation may
+// sit idle.
 type Limits struct {
 	// Idle is how long a session may sit unused before it is evicted. Zero
 	// means the host's default.

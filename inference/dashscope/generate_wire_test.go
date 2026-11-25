@@ -34,7 +34,7 @@ func genFixtures() []struct {
 } {
 	mk := func(name, api, maxParam string) ModelSpec {
 		spec := ModelSpec{Name: "m", Kind: "generate", Capabilities: model.ModelCapabilities{
-			Inputs: []message.PartKind{message.PartText}, Outputs: []message.PartKind{message.PartText},
+			Inputs: []message.PartKind{message.PartText}, Modes: []model.Mode{model.ModeText},
 		}}
 		spec.Generate.API = api
 		spec.Generate.MaxTokensParam = maxParam

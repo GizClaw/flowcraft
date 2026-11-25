@@ -210,12 +210,15 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		}
 	}
 	return agent.Request{
-		Agent:       session.agent,
-		Task:        task,
-		Input:       msg,
-		Binding:     session.binding,
-		Tools:       a.res.dispatch,
-		Models:      a.res.models,
+		Agent:   session.agent,
+		Task:    task,
+		Input:   msg,
+		Binding: session.binding,
+		Tools:   a.res.dispatch,
+		// The model access was filtered by the session's own grant when it opened: a
+		// model the session may not call is refused at the seam rather than by every
+		// driver remembering to ask. See modelgate.go.
+		Models:      session.models,
 		Ordinal:     session.ordinal,
 		Fingerprint: a.fingerprint,
 		// The host keeps the full store; the turn gets the half a driver may use.
@@ -225,8 +228,8 @@ func (a *Agents) request(ctx context.Context, session *Session, msg message.Mess
 		Bodies: session.deploy.observability.Bodies,
 		// The full manifest stays on the request because a driver writes it into its
 		// checkpoint; the id travels beside it so the turn does not hash it again.
-		Manifest:   session.deploy.manifest,
-		ManifestID: session.deploy.manifestID,
+		Manifest:   session.manifest,
+		ManifestID: session.manifestID,
 		OnRun:      a.runSink,
 	}, nil
 }

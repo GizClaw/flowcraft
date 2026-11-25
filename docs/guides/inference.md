@@ -51,7 +51,7 @@ means declaration order.
 ```yaml
 inference:
   providers:
-    - name: luna # this deployment's identity for the account; the grant selects by it
+    - name: luna # this deployment's identity for the account; a session's grant names it
       impl: openai # a kind the process compiled in (`Loader` is given the implementation table)
       settings: # the driver's own written form; `openai.Document` is the authority on it
         base_url: https://api.openai.com/v1
@@ -81,7 +81,7 @@ descriptor is `model.ModelDescriptor` as written — `id`, `label`, `capabilitie
 
 | Block                      | Rule                                                                                                                                             |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `providers[].name`         | This deployment's identity for the account or endpoint; a grant names it in `models[].id.provider`.                                              |
+| `providers[].name`         | This deployment's identity for the account or endpoint; a session's grant names it in `models[].id.provider`.                                    |
 | `providers[].impl`         | Must be registered on the `Loader`; an unknown one fails with the offered names.                                                                 |
 | `providers[].settings`     | Opaque to core: the driver's constructor decodes it.                                                                                             |
 | `models[]` (in `settings`) | The line-up this provider serves. Declaring a model is the only way one exists; the route picks among targets, not among models in one provider. |
@@ -179,6 +179,58 @@ A `route.Target` is one candidate: its provider, weight (for selectors that use
 one), the model it serves, and the deployment profile it belongs to. Dispatch
 stamps the winning target's model identity onto the request, so a caller names a
 model and the answer carries the provider that actually served it.
+
+Candidates are filtered before selection, and the filter reads the **model id** —
+provider plus name — not just the name:
+
+- a target that declares a model is a candidate only for that id;
+- otherwise its catalog is asked, and an entry must match the requested id;
+- a target that declares no line-up at all cannot answer the question, so it is a
+  candidate for a request that names no provider and for one that names it (its
+  `Target.Name`), and for nothing else.
+
+Two consequences follow. A caller that names no provider still gets the loose,
+name-only question. And failover never crosses vendors: a session granted one
+vendor's model is not answered by another vendor that happens to use the same
+name — which is what makes a grant's `models[].id.provider` a real constraint
+rather than a comment.
+
+### What the target must be able to do
+
+A candidate must also **serve what the request asks for**. `ModelCapabilities.Modes`
+is that vocabulary: `text`, `image`, `audio`, `video`, `tool_call`, `embed` and
+`decide`, with `EmbeddingDimensions` filling in `embed` and text assumed when a
+catalog entry says nothing at all.
+
+- A generation needs the mode its `Output` names, plus `tool_call` when it carries
+  tools. A model that declares nothing is assumed to produce text and is not refused
+  a tool channel — an empty declaration filters nothing, which is the same rule the
+  input list follows.
+- A decision needs `decide`; embeddings need `embed`.
+- A model that declares _some_ modes is held to them: one that lists `text` will not
+  be handed a video request or a toolset.
+
+Two things this fixes rather than documents: asking an embedding-only model to
+generate is refused here, by name, instead of failing at the vendor; and a
+`tool_calling` flag nobody read is gone — the tool channel is a mode, so a grant can
+narrow a model to `text` and a request with tools is then refused before it runs.
+
+### Sessions restrict the fleet
+
+`Router.Restrict` returns a copy that only serves the models a session's grant lists,
+in the grant's order. The host builds one per session at open, so the list a caller
+states is the list the router will choose from — a request that names a model outside
+it is refused with `PolicyDenied` (`model.not_granted`), one that uses a mode the
+entry excludes is `model.mode_not_permitted`, and a request that names no model takes
+the first entry that can serve it (`model.no_candidate` when none can). A request
+carrying provider-specific options is pinned to the provider those options name,
+because the pipeline drops anything addressed elsewhere.
+
+The host restates those refusals as a `policy.Denial` with `Check: models`, so what a
+caller and the next turn read is the sentence — which model, what the session may
+call — under the same classification every other refusal uses. The router's own
+classification stays as the cause, which is how a caller tells "refused" from "could
+not be consulted".
 
 | Field                               | Meaning                                                              |
 | ----------------------------------- | -------------------------------------------------------------------- |

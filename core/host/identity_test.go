@@ -58,13 +58,12 @@ func delegatedHost(t *testing.T, mode policy.DelegationMode) (*Agents, *identity
 	parent, _ := sessionDeployment(t, "parent", parentGrant, log, backend)
 	child := deploy.Deployment{
 		Name:    "child",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &identityProgram{driver: childDriver}, nil }},
 	}
 	if err := agents.Add(parent, child); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "p1", "parent"); err != nil {
+	if _, err := agents.Open(t.Context(), "p1", "parent", parentGrant); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
@@ -139,14 +138,13 @@ func TestOnSessionRunsAtOpenAndCanRefuse(t *testing.T) {
 	}}
 	dep := deploy.Deployment{
 		Name:    "referee",
-		Grant:   permissiveGrant("local"),
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &identityProgram{driver: &identityDriver{}}, nil }},
 		Hooks:   []deploy.PlannedHook{{Impl: "spy", New: func() (agent.Hooks, error) { return spy, nil }}},
 	}
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s1", "referee"); err != nil {
+	if _, err := agents.Open(t.Context(), "s1", "referee", permissiveGrant("local")); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if len(seen) != 1 || seen[0].SessionID != "s1" || seen[0].Agent != "referee" {
@@ -163,7 +161,7 @@ func TestOnSessionRunsAtOpenAndCanRefuse(t *testing.T) {
 	if err := agents.Add(refuseDep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := agents.Open(t.Context(), "s2", "halting"); err == nil {
+	if _, err := agents.Open(t.Context(), "s2", "halting", permissiveGrant("local")); err == nil {
 		t.Fatal("a refusing OnSession did not refuse the open")
 	}
 }

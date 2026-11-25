@@ -145,13 +145,12 @@ func process(ctx context.Context, impls *deploy.Impls, dir string, opts []config
 	return deploy.NewLoader(impls).WithConfigOptions(opts...).Process(ctx, processLayer(dir))
 }
 
-// deployments resolves the agents document against a *built* process.
+// deployments resolves the agents document.
 //
-// The capabilities come from the resource, not from the plan: a provider's settings are opaque to the
-// document layer, so "which models this process serves" is only knowable once the providers exist. That
-// ordering is the reason the two documents are resolved in two steps.
-func deployments(ctx context.Context, impls *deploy.Impls, dir string, opts []config.Option, caps deploy.Capabilities) ([]deploy.Deployment, error) {
-	return deploy.NewLoader(impls).WithConfigOptions(opts...).Deployments(ctx, caps, agentsLayer(dir))
+// It answers what runs — program, hooks, session table — and nothing about what a session may do:
+// authority is the application's, stated when a conversation is opened.
+func deployments(ctx context.Context, impls *deploy.Impls, dir string, opts []config.Option) ([]deploy.Deployment, error) {
+	return deploy.NewLoader(impls).WithConfigOptions(opts...).Deployments(ctx, agentsLayer(dir))
 }
 
 // processSources is the tool sources the process document declares, by name.
@@ -200,11 +199,6 @@ func agentsFacts(dir string) []agentFacts {
 					Path string `json:"path"`
 				} `json:"settings"`
 			} `json:"program"`
-			Grant struct {
-				Delegation *struct {
-					Targets []string `json:"targets"`
-				} `json:"delegation"`
-			} `json:"grant"`
 			Hooks []struct {
 				Impl string `json:"impl"`
 			} `json:"hooks"`
@@ -218,9 +212,6 @@ func agentsFacts(dir string) []agentFacts {
 		one := agentFacts{
 			Name:  agent.Name,
 			Graph: expandWorkspace(agent.Program.Settings.Path, dir),
-		}
-		if agent.Grant.Delegation != nil {
-			one.Delegates = agent.Grant.Delegation.Targets
 		}
 		for _, hook := range agent.Hooks {
 			one.Hooks = append(one.Hooks, hook.Impl)

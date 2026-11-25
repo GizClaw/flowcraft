@@ -134,7 +134,7 @@ func (d *driver) checkDecisionDeclarations(request inference.DecisionRequest) er
 		return inference.NewError(inference.UnknownModel, inference.FieldModel,
 			fmt.Errorf("openai: model %q is not declared by this deployment", request.Model.ID.Name))
 	}
-	if !descriptor.Capabilities.Decision {
+	if !descriptor.Capabilities.Can(model.ModeDecide) {
 		return inference.NewError(inference.UnsupportedOperation, inference.FieldModel,
 			fmt.Errorf("openai: model %q declares no decision support", descriptor.ID.Name))
 	}

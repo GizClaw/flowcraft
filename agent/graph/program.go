@@ -8,7 +8,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 )
 
 // Program is a compiled graph: the document plus the decisions that belong to the deployment rather
@@ -29,9 +28,6 @@ type ProgramOptions struct {
 	// Replay answers model calls from the task's recorded responses instead of calling out. A miss
 	// is an error, which is what makes it useful for evidence rather than for a demo.
 	Replay bool
-	// DefaultModel is what a node calls when the document names no model. It comes from the
-	// deployment's route rather than from a node, so two nodes of one deployment agree.
-	DefaultModel model.ModelRef
 }
 
 // manifestOf is which manifest a run records: the host's, when the turn carried one.
@@ -53,11 +49,6 @@ type ProgramOption func(*ProgramOptions)
 // WithProgramManifest records the version combination a run executed under.
 func WithProgramManifest(manifest agent.Manifest) ProgramOption {
 	return func(o *ProgramOptions) { o.Manifest = manifest }
-}
-
-// WithProgramDefaultModel sets the deployment's default model.
-func WithProgramDefaultModel(ref model.ModelRef) ProgramOption {
-	return func(o *ProgramOptions) { o.DefaultModel = ref }
 }
 
 // ReplayProgram answers model calls from the task's records instead of calling out.
@@ -157,7 +148,6 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 				WithBinding(req.Binding),
 				WithTools(req.Tools),
 				WithModels(req.Models),
-				WithDefaultModel(d.program.opts.DefaultModel),
 				WithStore(req.Store, req.Task.ID),
 				WithSession(d.session),
 				WithFingerprint(req.Fingerprint),
@@ -199,9 +189,6 @@ func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Eve
 		}
 	}
 }
-
-// DefaultModel is what a node calls when the document names no model.
-func (d *driver) DefaultModel() model.ModelRef { return d.program.opts.DefaultModel }
 
 // Steer queues a message for the run's next step boundary and returns its handle.
 //

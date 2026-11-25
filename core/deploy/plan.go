@@ -81,7 +81,7 @@ type PlannedHook struct {
 
 // PlannedProvider is one model target, resolved but not built.
 type PlannedProvider struct {
-	// Name addresses the target, both from an agent's grant and from a route policy.
+	// Name addresses the target, both from a session's grant and from a route policy.
 	Name string
 	// Impl is the registered implementation the document's kind selected.
 	Impl string
@@ -123,8 +123,8 @@ type Deployment struct {
 	Name string
 	// Program is what runs the conversations.
 	Program PlannedProgram
-	// Grant is the authority its sessions run under, already validated.
-	Grant policy.Grant
+	// Limits are the session table's decisions, already validated.
+	Limits policy.Limits
 	// Hooks are the lifecycle policies attached to it, in declaration order. Each one carries
 	// its own settings because a hook without them cannot do anything: forge's seat memory
 	// needs a directory and a retention count.

@@ -43,7 +43,7 @@ func TestProviderValidateCatchesUncallableDeclarations(t *testing.T) {
 
 	declaring := stubCatalog{models: []model.ModelDescriptor{{
 		ID:           model.ModelID{Provider: "p", Name: "judge"},
-		Capabilities: model.ModelCapabilities{Decision: true},
+		Capabilities: model.ModelCapabilities{Modes: []model.Mode{model.ModeDecide}},
 	}}}
 	provider = inference.Provider{Generator: stubGenerator{}, Catalog: declaring}
 	if err := provider.Validate(); err == nil {

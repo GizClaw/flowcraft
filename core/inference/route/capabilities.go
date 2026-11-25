@@ -16,7 +16,7 @@ import (
 // It is done here, in the route, because this is the only layer that holds the catalog and
 // therefore the only one that can answer "does any target carry this request?"; a pipeline
 // sees one provider and would report a provider failure for a fleet-wide mismatch.
-func acceptContent(targets []Target, content message.Content) ([]Target, error) {
+func acceptContent(targets []Target, want model.ModelID, content message.Content) ([]Target, error) {
 	if len(targets) == 0 {
 		return targets, nil
 	}
@@ -26,7 +26,7 @@ func acceptContent(targets []Target, content message.Content) ([]Target, error) 
 	}
 	kept := make([]Target, 0, len(targets))
 	for _, target := range targets {
-		if coversInputs(declaredInputs(target), needed) {
+		if coversInputs(declaredInputs(target, want), needed) {
 			kept = append(kept, target)
 		}
 	}
@@ -74,20 +74,29 @@ func coversInputs(declared []message.PartKind, needed []message.PartKind) bool {
 	return true
 }
 
-// declaredInputs is what one target says it accepts: the catalog entry for the model it
-// serves, when the target publishes a catalog at all.
-func declaredInputs(target Target) []message.PartKind {
-	if target.Provider.Catalog == nil || target.Model.Name == "" {
-		return nil
-	}
-	descriptor, found := target.Provider.Catalog.Describe(model.ModelID{
-		Provider: target.Model.Provider,
-		Name:     target.Model.Name,
-	})
+// declaredInputs is what one target says it accepts for want: the catalog entry for the
+// model it serves, when the target publishes a catalog at all.
+//
+// The id comes from the request when the target declares no model of its own, which is
+// what a host-built target looks like: the deployment names the models in its provider's
+// catalog, not on each target.
+func declaredInputs(target Target, want model.ModelID) []message.PartKind {
+	descriptor, found := descriptorFor(target, want)
 	if !found {
 		return nil
 	}
 	return descriptor.Capabilities.Inputs
+}
+
+// descriptorFor resolves what a target says about want.
+func descriptorFor(target Target, want model.ModelID) (model.ModelDescriptor, bool) {
+	if target.Provider.Catalog == nil {
+		return model.ModelDescriptor{}, false
+	}
+	if target.Model.Name != "" {
+		want = target.Model
+	}
+	return target.Provider.Catalog.Describe(want)
 }
 
 // errUnsupportedInput is the cause behind a fleet-wide input mismatch. It is a value rather
@@ -101,69 +110,62 @@ func (e errUnsupportedInput) Error() string {
 	return "route: no target accepts " + e.part + " input (the first candidate was " + e.model + ")"
 }
 
-// preferOutputs reorders candidates so a target whose declared outputs cover the request's
-// intent comes first, keeping declaration order inside each group.
+// declaresMode reports whether a target says it can serve mode for want.
 //
-// This is the other half of the capabilities comment — "routing prefers targets whose declared
-// outputs cover the request intent" — and it is deliberately the opposite of [acceptContent]:
-// `Outputs` is a preference, so nothing is ever dropped and a fleet that declares no outputs at
-// all keeps its declaration order. A request that names no output means text.
-func preferOutputs(targets []Target, want inference.Output) []Target {
-	if len(targets) < 2 {
-		return targets
-	}
-	kind := outputKind(want)
-	preferred := make([]Target, 0, len(targets))
-	rest := make([]Target, 0, len(targets))
-	for _, target := range targets {
-		if coversOutputs(declaredOutputs(target), kind) {
-			preferred = append(preferred, target)
-			continue
+// A target that publishes no catalog cannot answer, and the historical default applies: a
+// model that says nothing is a text generator. That keeps a fleet with no declarations
+// working for text and refuses it for anything it never claimed.
+func declaresModes(target Target, want model.ModelID, modes []model.Mode) bool {
+	for _, mode := range modes {
+		if !declaresMode(target, want, mode) {
+			return false
 		}
-		rest = append(rest, target)
 	}
-	return append(preferred, rest...)
+	return true
 }
 
-// outputKind maps the request's intent onto the content kind it would produce.
-func outputKind(want inference.Output) message.PartKind {
+// declaresMode reports whether a target says it can serve one mode for want.
+func declaresMode(target Target, want model.ModelID, mode model.Mode) bool {
+	if descriptor, found := descriptorFor(target, want); found {
+		if !descriptor.Capabilities.Declares() {
+			// Nothing declared: text is assumed, and the channels that ride on it are
+			// not refused — the declaration rule is that an empty one filters nothing.
+			return mode == model.ModeText || mode == model.ModeToolCall
+		}
+		return descriptor.Capabilities.Can(mode)
+	}
+	// No declaration for this model: the provider's own seams are what it can do. A
+	// generator is assumed to produce text — the historical default — while an output
+	// modality nobody declared is not assumed, because guessing would hand a model a
+	// request it cannot answer.
+	//
+	// Tool calls are the exception, and it is the declaration rule again: an empty
+	// declaration filters nothing. A model that never said whether it has a tool channel
+	// is not refused one, because before this mode existed nothing did.
+	switch mode {
+	case model.ModeText:
+		return target.Provider.Generator != nil
+	case model.ModeDecide:
+		return target.Provider.Decider != nil
+	case model.ModeEmbed:
+		return target.Provider.Embedder != nil
+	case model.ModeToolCall:
+		return true
+	default:
+		return false
+	}
+}
+
+// outputMode maps the request's intent onto the mode it would produce.
+func outputMode(want inference.Output) model.Mode {
 	switch want {
 	case inference.OutputImage:
-		return message.PartImage
+		return model.ModeImage
 	case inference.OutputAudio:
-		return message.PartAudio
+		return model.ModeAudio
 	case inference.OutputVideo:
-		return message.PartVideo
+		return model.ModeVideo
 	default:
-		return message.PartText
+		return model.ModeText
 	}
-}
-
-// coversOutputs reports whether a declared output list covers the kind. Undeclared covers
-// everything, for the same reason an undeclared input list filters nothing.
-func coversOutputs(declared []message.PartKind, want message.PartKind) bool {
-	if len(declared) == 0 {
-		return true
-	}
-	for _, kind := range declared {
-		if kind == want {
-			return true
-		}
-	}
-	return false
-}
-
-// declaredOutputs is what one target says it can produce.
-func declaredOutputs(target Target) []message.PartKind {
-	if target.Provider.Catalog == nil || target.Model.Name == "" {
-		return nil
-	}
-	descriptor, found := target.Provider.Catalog.Describe(model.ModelID{
-		Provider: target.Model.Provider,
-		Name:     target.Model.Name,
-	})
-	if !found {
-		return nil
-	}
-	return descriptor.Capabilities.Outputs
 }

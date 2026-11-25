@@ -84,7 +84,7 @@ func TestToolBatchCarriesTheNodesBinding(t *testing.T) {
 	result, _ := drainNodeWith(t, context.Background(), stream)
 	requireCallOrder(t, calls, toolTurnCallIDs(t, result))
 
-	want, _, _, _ := rt.Substrate()
+	want, _, _ := rt.Substrate()
 	answer.mu.Lock()
 	defer answer.mu.Unlock()
 	if len(answer.seen) != len(calls) {

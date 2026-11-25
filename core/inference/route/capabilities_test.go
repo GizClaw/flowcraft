@@ -68,7 +68,7 @@ func TestDeclaredInputsAreAHardFilter(t *testing.T) {
 		{"no target carries it", []Target{textOnly}, image, nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			kept, err := acceptContent(tc.targets, tc.content)
+			kept, err := acceptContent(tc.targets, model.ModelID{}, tc.content)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("acceptContent accepted %v", tc.targets)
@@ -94,40 +94,51 @@ func TestDeclaredInputsAreAHardFilter(t *testing.T) {
 	}
 }
 
-// TestOutputsAreAPreferenceNotAPermission is the half of the capabilities comment that must never
-// turn into a rejection: a target that declares only text still runs an image request when nothing
-// better exists, and a fleet that declares no outputs keeps its declaration order.
-func TestOutputsAreAPreferenceNotAPermission(t *testing.T) {
-	textOut := targetDeclaring("text-out")
-	textOut.Provider.Catalog = testCatalog{models: []model.ModelDescriptor{{
-		ID:           textOut.Model,
-		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartText}},
-	}}}
-	imageOut := targetDeclaring("image-out")
-	imageOut.Provider.Catalog = testCatalog{models: []model.ModelDescriptor{{
-		ID:           imageOut.Model,
-		Capabilities: model.ModelCapabilities{Outputs: []message.PartKind{message.PartText, message.PartImage}},
-	}}}
-	undeclared := targetDeclaring("undeclared")
+// TestAnOutputModeIsAHardFilter is the other half of the capabilities contract: a
+// model that cannot produce the requested modality is not a candidate. The historical
+// default still holds — a model that declares nothing is a text generator — so a fleet
+// with no declarations keeps working for text and refuses what it never claimed.
+func TestAnOutputModeIsAHardFilter(t *testing.T) {
+	// One model, three targets that declare different things about it: the filter is
+	// about the model, not about which target was asked.
+	shared := model.ModelID{Provider: "p", Name: "m"}
+	generating := &fakeGenerator{}
+	withModes := func(name string, modes ...model.Mode) Target {
+		return Target{Name: name, Provider: inference.Provider{
+			Generator: generating,
+			Catalog: testCatalog{models: []model.ModelDescriptor{{
+				ID:           shared,
+				Capabilities: model.ModelCapabilities{Modes: modes},
+			}}},
+		}}
+	}
+	textOut := withModes("text-out", model.ModeText)
+	imageOut := withModes("image-out", model.ModeText, model.ModeImage)
+	// A generator that declares no line-up: the provider's own modes are the answer,
+	// and it is a candidate because it is named for the requested provider.
+	undeclared := Target{Name: shared.Provider, Provider: inference.Provider{Generator: generating}}
 
 	for _, tc := range []struct {
 		name    string
 		targets []Target
-		want    inference.Output
-		first   string
+		mode    model.Mode
+		want    []string
 	}{
-		{"image intent prefers the image model", []Target{textOut, imageOut}, inference.OutputImage, "t-image-out"},
-		{"text intent keeps declaration order", []Target{textOut, imageOut}, inference.OutputText, "t-text-out"},
-		{"undeclared covers everything", []Target{undeclared, textOut}, inference.OutputImage, "t-undeclared"},
-		{"nothing is dropped", []Target{textOut, imageOut}, inference.OutputImage, "t-image-out"},
+		{"an image request keeps only the image model", []Target{textOut, imageOut}, model.ModeImage, []string{"image-out"}},
+		{"a text request keeps both", []Target{textOut, imageOut}, model.ModeText, []string{"text-out", "image-out"}},
+		{"an undeclared model on a generator is text", []Target{undeclared}, model.ModeText, []string{shared.Provider}},
+		{"and nothing else", []Target{undeclared}, model.ModeImage, nil},
+		{"the embed mode needs a declaration", []Target{textOut}, model.ModeEmbed, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ordered := preferOutputs(tc.targets, tc.want)
-			if len(ordered) != len(tc.targets) {
-				t.Fatalf("preferOutputs dropped %d of %d targets", len(tc.targets)-len(ordered), len(tc.targets))
+			kept := filterTargets(tc.targets, model.ModelRef{ID: shared}, []model.Mode{tc.mode})
+			if len(kept) != len(tc.want) {
+				t.Fatalf("kept %d targets, want %d", len(kept), len(tc.want))
 			}
-			if ordered[0].Name != tc.first {
-				t.Fatalf("first = %q, want %q", ordered[0].Name, tc.first)
+			for i, target := range kept {
+				if target.Name != tc.want[i] {
+					t.Fatalf("kept[%d] = %q, want %q", i, target.Name, tc.want[i])
+				}
 			}
 		})
 	}

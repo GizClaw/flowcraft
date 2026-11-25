@@ -26,8 +26,8 @@ import (
 // The zero value is not "unrestricted": [Binding.Valid] is false and dispatch refuses
 // it. A binding is only ever assembled by the host.
 type Binding struct {
-	// Grant is the effective policy of the session, already clamped from an
-	// authority. It is a value, not a gate: a tool reads it to give a correctable
+	// Grant is the authority the session was opened with. It is a value, not a gate:
+	// a tool reads it to give a correctable
 	// error ("this path is outside the session's read roots") instead of failing
 	// opaquely.
 	Grant policy.Grant

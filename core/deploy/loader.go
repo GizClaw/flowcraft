@@ -125,15 +125,12 @@ func (l *Loader) Process(ctx context.Context, layers ...config.Layer) (ProcessPl
 // Deployments resolves an agent document against what the process offers.
 //
 // One document carries a list of agents, because a fleet is described once and then tuned per
-// seat — and because a document with a single agent is just a list of one. Layer merging uses
-// the same list: an overlay that rewrites one agent's grant names that agent and leaves the
-// rest alone.
+// seat — and because a document with a single agent is just a list of one.
 //
-// The split between the two error classes happens here: decoding is a document error, and
-// everything checked against caps is [errdefs.NotAvailable] — the document is fine, this
-// process cannot serve it. Every failure names the agent it is about, since the document no
-// longer has one.
-func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...config.Layer) ([]Deployment, error) {
+// The document says what runs and how its session table behaves; it says nothing about what a
+// session may do. Authority is passed to host.Open, so the only check here is the document
+// itself.
+func (l *Loader) Deployments(ctx context.Context, layers ...config.Layer) ([]Deployment, error) {
 	if err := l.ready(); err != nil {
 		return nil, err
 	}
@@ -148,7 +145,7 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	seen := make(map[string]struct{}, len(doc.Agents))
 	out := make([]Deployment, 0, len(doc.Agents))
 	for _, entry := range doc.Agents {
-		deployment, err := l.resolveAgent(entry, caps)
+		deployment, err := l.resolveAgent(entry)
 		if err != nil {
 			return nil, err
 		}
@@ -163,34 +160,31 @@ func (l *Loader) Deployments(ctx context.Context, caps Capabilities, layers ...c
 	return out, nil
 }
 
-// resolveAgent is one agent's resolution: its program, its authority, and the hook names the
+// resolveAgent is one agent's resolution: its program, its session table and the hook names the
 // host must resolve. How much of a turn is recorded is not here: it is the process's, and the
 // process document states it.
-func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, error) {
+func (l *Loader) resolveAgent(entry agentEntry) (Deployment, error) {
 	name := strings.TrimSpace(entry.Name)
 	if name == "" {
 		return Deployment{}, errdefs.Validationf("deploy: every agent needs a name")
 	}
-	if err := entry.Grant.Validate(); err != nil {
-		return Deployment{}, errdefs.Validationf("deploy: agent %q: %w", name, err)
-	}
 	// The limits block is required: there is no inherited default, and a session table that
 	// silently keeps every conversation is not something a document may forget into.
-	if entry.Grant.Limits.IsZero() {
+	if entry.Limits.IsZero() {
 		return Deployment{}, errdefs.Validationf(
-			"deploy: agent %q must state grant.limits (idle, and optionally max_sessions)", name)
+			"deploy: agent %q must state limits (idle, and optionally max_sessions)", name)
 	}
-	if entry.Grant.Limits.Idle <= 0 {
+	if err := entry.Limits.Validate(); err != nil {
+		return Deployment{}, errdefs.Validationf("deploy: agent %q: limits: %w", name, err)
+	}
+	if entry.Limits.Idle <= 0 {
 		return Deployment{}, errdefs.Validationf(
-			"deploy: agent %q: grant.limits.idle must be a positive duration", name)
+			"deploy: agent %q: limits.idle must be a positive duration", name)
 	}
 
 	program, err := l.planProgram(entry.Program)
 	if err != nil {
 		return Deployment{}, errdefs.Validationf("deploy: agent %q: %w", name, err)
-	}
-	if err := checkGrant(name, entry.Grant, caps); err != nil {
-		return Deployment{}, err
 	}
 	hooks, err := l.planHooks(name, entry.Hooks)
 	if err != nil {
@@ -200,7 +194,7 @@ func (l *Loader) resolveAgent(entry agentEntry, caps Capabilities) (Deployment, 
 	return Deployment{
 		Name:    name,
 		Program: program,
-		Grant:   entry.Grant,
+		Limits:  entry.Limits,
 		Hooks:   hooks,
 	}, nil
 }
@@ -241,11 +235,14 @@ func (l *Loader) planHooks(agentName string, docs []hookDocument) ([]PlannedHook
 	return hooks, nil
 }
 
-// checkGrant is the document-versus-process check for authority: a grant that names a
-// backend or a model this process does not carry, or that declares an escalation the backend
-// cannot host, is a deployment that would fail on its first session, and saying so at install
-// time is the whole point of this layer.
-func checkGrant(agentName string, grant policy.Grant, caps Capabilities) error {
+// ValidateGrantForCaps reports whether a process can carry a session's authority: the sandbox
+// the grant selects exists here, and every model it names is one this process serves.
+//
+// It is the host's check rather than the document's — the document no longer states authority —
+// so it runs when a session is opened. A deployment that would fail on its first session is
+// therefore refused at the first session rather than at install: the document cannot know what
+// its callers will ask for.
+func ValidateGrantForCaps(agentName string, grant policy.Grant, caps Capabilities) error {
 	if sandboxName := strings.TrimSpace(grant.Sandbox); sandboxName != "" {
 		if !slices.Contains(caps.Backends, sandboxName) {
 			return errdefs.NotAvailablef(
@@ -260,34 +257,6 @@ func checkGrant(agentName string, grant policy.Grant, caps Capabilities) error {
 				"deploy: agent %q names model %q, which this process does not serve (%s)",
 				agentName, ref, listOf(caps.Models))
 		}
-	}
-	return checkEscalation(agentName, grant, caps)
-}
-
-// checkEscalation refuses a declaration the selected backend has no boundary for.
-//
-// An escalation is "exceed the confine, with permission" — so a backend that does not confine
-// writes has nothing to exceed, and accepting the declaration would give the model a success
-// signal that means nothing: the command it was refused for never reached a boundary at all.
-//
-// What the process reports is a per-backend declaration ([Capabilities.Enforcement]); a backend
-// it does not report is refused too, because "nobody said" is not "it bounds writes". The
-// declaration's own two rules — only the widenable dimensions, and never narrower than the
-// grant — are checked by [policy.Grant.Normalized], which runs before this.
-func checkEscalation(agentName string, grant policy.Grant, caps Capabilities) error {
-	if grant.Escalate == nil {
-		return nil
-	}
-	name := strings.TrimSpace(grant.Sandbox)
-	if name == "" {
-		return errdefs.NotAvailablef(
-			"deploy: agent %q declares grant.escalate but selects no sandbox; there is no boundary to widen",
-			agentName)
-	}
-	if !caps.EnforcementOf(name).FilesystemBounds {
-		return errdefs.NotAvailablef(
-			"deploy: agent %q declares grant.escalate on sandbox %q, which does not confine writes; there is no boundary to widen",
-			agentName, name)
 	}
 	return nil
 }

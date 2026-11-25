@@ -95,9 +95,10 @@ type entryDocument struct {
 // A fleet is described once and then tuned per seat, and a document with a single agent is
 // just a list of one — so there is no "single agent" variant to keep in step.
 //
-// It has no runtime section on purpose: what an agent may use is its grant, not a private copy
-// of the process. The program section names an implementation registered on the process; the grant is
-// policy's own type, decoded and validated by it.
+// It has no runtime section on purpose: what an agent may use is the process's, not a private copy
+// of it. It has no permission section either: authority is stated by whoever opens a session. The
+// program section names an implementation registered on the process, and `limits` is policy's own
+// type, decoded and validated by it.
 type agentDocument struct {
 	Version int          `json:"version"`
 	Agents  []agentEntry `json:"agents"`
@@ -109,8 +110,10 @@ type agentEntry struct {
 	// to decide which entry an overlay is rewriting.
 	Name    string          `json:"name"`
 	Program programDocument `json:"program"`
-	Grant   policy.Grant    `json:"grant,omitempty"`
-	Hooks   []hookDocument  `json:"hooks,omitempty"`
+	// Limits are the session table's decisions: how long a conversation may sit idle and how
+	// many this agent may hold. They are the table's policy, not a session's permission.
+	Limits policy.Limits  `json:"limits"`
+	Hooks  []hookDocument `json:"hooks,omitempty"`
 }
 
 // hookDocument is one lifecycle policy: an implementation and its settings.

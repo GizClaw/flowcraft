@@ -3,7 +3,7 @@
 // Three call sites may decide who a run is, and each knows exactly one fact:
 //
 //   - the host, when it opens a session (it is the only layer that knows the
-//     narrowed grant, and therefore the bind);
+//     grant the caller stated, and therefore the bind);
 //   - the agent, when it starts a turn (the only layer that knows the task and the
 //     ordinal);
 //   - delegation, when it derives a child run (the only layer that knows the
