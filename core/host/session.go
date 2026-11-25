@@ -90,6 +90,9 @@ type Session struct {
 	// turnDone is closed when the turn in flight ends. A close waits on it before releasing the
 	// driver and the boundary the turn is using.
 	turnDone chan struct{}
+	// approvals routes this session's command questions to its parent. It is nil for a session a
+	// caller opened: nothing above it asked, so the deployment's approver answers inline.
+	approvals *approvalRoute
 }
 
 // turnKind names who started a turn.
@@ -362,6 +365,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 
 	capabilities := tool.NewCapSet()
 	platform.TreeSlot.Provide(capabilities, built.tree)
+	approvals := a.approvalRouteFor(sessionID, agentName, opening.chain)
 	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
 		policy:    a.approval,
 		agent:     agentName,
@@ -370,6 +374,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		factory:   factory,
 		escalator: a.escalator,
 		audit:     a.auditor(sessionID),
+		route:     approvals,
 	}))
 	// The catalog is the process's: every session of this deployment searches the same discovery.
 	if a.res.skills != nil {
@@ -422,6 +427,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		manifestID: manifest.ID(),
 		models:     models,
 		chain:      opening.chain,
+		approvals:  approvals,
 	}
 	if err := a.announceSession(ctx, session); err != nil {
 		openErr := errors.Join(err, session.close())

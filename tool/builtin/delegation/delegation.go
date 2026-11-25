@@ -198,26 +198,52 @@ var _ tool.Tool = answerTool{}
 func (answerTool) Needs() []tool.Need { return []tool.Need{platform.DelegationSlot} }
 
 func (answerTool) Definition() message.ToolDefinition {
-	return twoField(Answer, "Answer a delegated agent that paused for input.",
-		"session", "The session id "+Name+" returned.",
-		"answer", "The reply the child continues from.")
+	return schemaOf(Answer,
+		"Answer a delegated agent that paused for input. Give a decision for an approval "+
+			"question, and text for anything else. A denial is final: the child cannot escalate "+
+			"it afterwards, so escalate instead when you would rather not judge.",
+		map[string]any{
+			"session": map[string]any{
+				"type":        "string",
+				"description": "The session id " + Name + " returned.",
+			},
+			"decision": map[string]any{
+				"type": "string",
+				"enum": []string{platform.DecisionApprove, platform.DecisionDeny, platform.DecisionEscalate},
+				"description": "The answer to an approval question: approve runs the command, deny " +
+					"refuses it for good, and escalate asks the deployment's approver.",
+			},
+			"answer": map[string]any{
+				"type": "string",
+				"description": "The reply a child that asked something other than an approval " +
+					"continues from, or the reason beside a decision.",
+			},
+		}, "session")
 }
 
 func (answerTool) Metadata() tool.ToolMeta { return tool.ToolMeta{MutatesState: true} }
 
 func (answerTool) Execute(ctx context.Context, binding tool.Binding, arguments string) (message.Content, error) {
 	var params struct {
-		Session string `json:"session"`
-		Answer  string `json:"answer"`
+		Session  string `json:"session"`
+		Decision string `json:"decision"`
+		Answer   string `json:"answer"`
 	}
 	if err := tool.DecodeArgs(Answer, arguments, nil, &params); err != nil {
 		return message.Content{}, err
+	}
+	if params.Decision == "" && strings.TrimSpace(params.Answer) == "" {
+		return message.Content{}, errdefs.Validationf(
+			"%s: give a decision for an approval question, or the answer to any other", Answer)
 	}
 	delegate, err := capability(binding, Answer)
 	if err != nil {
 		return message.Content{}, err
 	}
-	outcome, err := delegate.Answer(ctx, params.Session, params.Answer)
+	outcome, err := delegate.Answer(ctx, params.Session, platform.DelegationAnswer{
+		Decision: params.Decision,
+		Text:     params.Answer,
+	})
 	if err != nil {
 		return message.Content{}, err
 	}
@@ -271,19 +297,12 @@ func encode(toolName string, payload any) (message.Content, error) {
 	return message.NewTextContent(string(raw)), nil
 }
 
-// oneField and twoField build a closed schema, so a typo in an argument is a schema error rather than
-// a silently ignored setting.
+// oneField builds a closed schema, so a typo in an argument is a schema error rather than a silently
+// ignored setting.
 func oneField(name, description, field, fieldDescription string) message.ToolDefinition {
 	return schemaOf(name, description, map[string]any{
 		field: map[string]any{"type": "string", "description": fieldDescription},
 	}, field)
-}
-
-func twoField(name, description, first, firstDescription, second, secondDescription string) message.ToolDefinition {
-	return schemaOf(name, description, map[string]any{
-		first:  map[string]any{"type": "string", "description": firstDescription},
-		second: map[string]any{"type": "string", "description": secondDescription},
-	}, first, second)
 }
 
 func schemaOf(name, description string, properties map[string]any, required ...string) message.ToolDefinition {

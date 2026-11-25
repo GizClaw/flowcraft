@@ -33,6 +33,28 @@ type Tool interface {
 	Execute(ctx context.Context, b Binding, arguments string) (message.Content, error)
 }
 
+// Asker is a tool that can say a call needs an answer before it runs.
+//
+// Asking is a pre-flight: it happens before the batch is launched and must have no side effects,
+// because the tool node asks every pending call and a question stops the turn before any of them
+// execute. A command that would need an approval is the case it exists for — asking *before* the
+// command runs is what makes a suspended turn resumable without replaying a side effect.
+//
+// The question is nil when the call may proceed. An error means the tool could not even form the
+// question, which is the tool's failure, not a refusal.
+type Asker interface {
+	Ask(ctx context.Context, b Binding, arguments string) (*message.Content, error)
+}
+
+// AskDispatcher is the dispatcher form of [Asker]: the node hands it one pending call and gets back
+// the question the turn should stop on.
+//
+// It is optional on purpose. A dispatcher that cannot ask — a test double, a chain built around
+// something else — simply does not implement it, and the node runs the batch as it always did.
+type AskDispatcher interface {
+	Ask(ctx context.Context, b Binding, call message.ToolCall) (*message.Content, error)
+}
+
 // ToolMeta carries optional, execution-relevant metadata about a Tool.
 //
 // All fields are advisory; a zero ToolMeta means "no claims, treat

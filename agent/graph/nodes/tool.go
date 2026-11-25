@@ -33,8 +33,11 @@ import (
 // consistent with the pending list, and a live observer sees which tool is
 // running instead of a silent gap between two model rounds.
 //
-// A tool cannot pause the run: the node has no translation from a tool result
-// to graph.Suspend.
+// A pending call whose tool may need an answer is asked before the batch is
+// launched: a question suspends the step with nothing executed, so the resume
+// replays no side effect. That is the whole translation from a tool to
+// graph.Suspend — a tool result cannot suspend a run, a question asked first
+// can.
 type toolKind struct{}
 
 type toolConfig struct {
@@ -100,6 +103,20 @@ func (t *toolKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStrea
 		// Nothing to do: a node that finds no work succeeds without writing, so a
 		// cycle can route on the state instead of on an error.
 		return graph.Static(graph.Result{}), nil
+	}
+
+	// Ask before launching anything: the suspension must not sit behind a side
+	// effect, or resuming would run it twice.
+	if asker, ok := in.Tools.(tool.AskDispatcher); ok {
+		for _, call := range calls {
+			question, err := asker.Ask(ctx, in.Binding, call)
+			if err != nil {
+				return nil, fmt.Errorf("tool: %q: %w", call.Name, err)
+			}
+			if question != nil {
+				return graph.Static(graph.Result{Suspend: &graph.Suspend{Question: *question}}), nil
+			}
+		}
 	}
 
 	if _, err := in.State(config.Messages).Messages(); err != nil {

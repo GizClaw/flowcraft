@@ -189,6 +189,12 @@ by word; an empty entry matches nothing), and everything else goes to the
 and an approver error is not a denial and also refuses. A process with no policy
 installs the starter undecorated, so approval stays opt-in.
 
+A session a delegation opened does not ask the `Approver` first: its commands are
+put to the parent's model, which either answers, refuses, or escalates back to the
+same `Approver`. The turn suspends on the question instead of blocking, and the
+parent answers with `delegation_answer` — see
+[delegation.md](delegation.md#approvals).
+
 **Escalation** answers "may this one command exceed the boundary". Only a command
 the backend already refused with `sandbox.ErrConfineDenied` is offered, and there is
 exactly one retry:

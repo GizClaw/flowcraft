@@ -73,8 +73,8 @@ func TestDigestCoversEveryPermission(t *testing.T) {
 // another rule in every dashboard.
 func TestDenialChecksAreEnumerated(t *testing.T) {
 	checks := policy.Checks()
-	if len(checks) != 6 {
-		t.Fatalf("Checks() = %v, want the six rules the package can refuse by", checks)
+	if len(checks) != 7 {
+		t.Fatalf("Checks() = %v, want the seven rules the package can refuse by", checks)
 	}
 	seen := make(map[policy.Check]bool, len(checks))
 	for _, check := range checks {

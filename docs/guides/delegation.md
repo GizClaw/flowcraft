@@ -73,7 +73,7 @@ implementation of each is what a tool call reaches:
 | ---------- | ------------------- | ------------------------------------------------------------------------------------ |
 | `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off. |
 | `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                         |
-| `Answer`   | `delegation_answer` | Continue a child that paused for input.                                              |
+| `Answer`   | `delegation_answer` | Continue a child that paused: a decision for an approval, text for anything else.    |
 | `Cancel`   | `delegation_cancel` | Stop a child. A child that already finished reports nil.                             |
 
 There is no steer verb. `delegation_answer` continues a child that stopped and asked a
@@ -123,7 +123,8 @@ mints one before opening.
 
 **Sync** runs the child on the caller's context, bounded by `max_concurrent` (a slot the
 parent holds for the run) and by `timeout`; the child session exists for the length of
-the call and is closed when it returns. The answer, the question and the terminal state
+the call and is closed when it returns — unless it paused, see [Approvals](#approvals).
+The answer, the question and the terminal state
 are folded from the child's event stream into the outcome. A child that outlives
 `timeout` is cancelled rather than abandoned, and the caller sees `DeadlineExceeded`.
 
@@ -131,7 +132,7 @@ are folded from the child's event stream into the outcome. A child that outlives
 `Status: submitted` and the session id. The run outlives the turn that asked for it, so
 it gets a root span of its own linked to the asking turn — a child of a span that has
 already ended would be a trace nobody can read — and the goroutine closes the session
-when the run ends.
+when the run ends, unless the child paused to ask.
 
 The follow-up verbs address the child by session id: `Status` reads the state its
 checkpoint recorded (a host with no `agent.Store` refuses it with `NotAvailable`),
@@ -215,6 +216,39 @@ for an application that must not parse a sentence:
 | `delegation.chain`   | the delegation chain the run belongs to           |
 | `delegation.depth`   | how many edges above the child                    |
 | `delegation.status`  | the child's task state when the delivery was made |
+
+## Approvals
+
+A child that runs a command its deployment does not whitelist asks **its parent** before
+it runs, not a person. The agent that delegated the work holds the conversation that
+made the command make sense; a prompt to an operator would throw that away and ask
+about `git push` with no idea what is being pushed.
+
+The question is a pre-flight, not a retry. When the child's tool node is about to run a
+batch it first asks each call's tool whether it needs an answer (`tool.Asker`, reached
+through the dispatcher's `Ask`). A question suspends the child's step **before anything
+executes**, so the command does not run twice when the child resumes; the turn ends with
+`input-required` and the question reaches the parent — as the tool result of a sync
+`delegate`, or as a delivered message for an async one. The child session stays open.
+
+The parent answers with `delegation_answer`:
+
+| `decision` | What happens                                                                           |
+| ---------- | -------------------------------------------------------------------------------------- |
+| `approve`  | The command runs when the child retries it.                                            |
+| `deny`     | It does not run, and the refusal is final: the child is told not to retry or escalate. |
+| `escalate` | The deployment's `Approver` — a person or a service — decides; there is no one else.   |
+
+An answer is bound to one command and one directory (a digest of the argv and the
+workdir) for fifteen minutes. An approval of `git status` is therefore not an approval
+of `git push`, the same command in another checkout is another question, and a decision
+nobody used does not stay in force for the rest of the session.
+
+A session a caller opened has no parent, so it keeps the old behaviour:
+`Approval.Approver` is asked on the turn's goroutine. A refusal from either side is a
+`policy.Denial` with `CheckApproval`, which is what a model reads to correct itself and
+what a dashboard counts. A delegation the parent's grant does not permit is a denial
+with `CheckDelegation`.
 
 ## What the child inherits, and what it does not
 

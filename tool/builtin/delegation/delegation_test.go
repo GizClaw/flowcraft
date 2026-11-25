@@ -18,7 +18,7 @@ import (
 type fake struct {
 	request   platform.DelegationRequest
 	addressed string
-	answered  string
+	answered  platform.DelegationAnswer
 	outcome   platform.DelegationOutcome
 	err       error
 }
@@ -33,7 +33,8 @@ func (f *fake) Status(_ context.Context, session string) (platform.DelegationOut
 	return f.outcome, f.err
 }
 
-func (f *fake) Answer(_ context.Context, session, answer string) (platform.DelegationOutcome, error) {
+func (f *fake) Answer(_ context.Context, session string, answer platform.DelegationAnswer,
+) (platform.DelegationOutcome, error) {
 	f.addressed, f.answered = session, answer
 	return f.outcome, f.err
 }
@@ -215,8 +216,8 @@ func TestTheFollowUpToolsAddressTheChild(t *testing.T) {
 			if capability.addressed != "main/seat_1-1" {
 				t.Fatalf("addressed %q", capability.addressed)
 			}
-			if name == Answer && capability.answered != "yes" {
-				t.Fatalf("answer = %q", capability.answered)
+			if name == Answer && capability.answered.Text != "yes" {
+				t.Fatalf("answer = %q", capability.answered.Text)
 			}
 		})
 	}

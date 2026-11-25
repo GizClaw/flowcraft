@@ -41,7 +41,8 @@ func TestAdmitDelegationChecksTargetModeAndDepth(t *testing.T) {
 			if tc.want && err != nil {
 				t.Fatalf("admitDelegation = %v, want admitted", err)
 			}
-			if !tc.want && !errdefs.IsForbidden(err) && !errdefs.IsValidation(err) {
+			_, denied := policy.AsDenial(err)
+			if !tc.want && !denied && !errdefs.IsValidation(err) {
 				t.Fatalf("admitDelegation = %v, want a refusal", err)
 			}
 		})
