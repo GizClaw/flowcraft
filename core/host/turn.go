@@ -97,7 +97,27 @@ func WithFingerprint(fingerprint agent.Fingerprint) AgentsOption {
 // itself holds the slot in exactly the same way, and the refusal names which one it is.
 func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, false)
+		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, claimCaller)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		run(yield, nil)
+	}
+}
+
+// Resume continues a session that stopped to ask, with the caller's answer.
+//
+// It is the only way to leave the paused state: Run refuses it, because a message offered to a
+// paused run is taken as the answer to a question the caller never saw — which is exactly how a
+// delegated result used to be swallowed by a parent that was waiting for one.
+//
+// An empty content is a legitimate answer ("continue"); the node that asked decides what to make
+// of it.
+func (a *Agents) Resume(ctx context.Context, sessionID string, content message.Content) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		msg := message.Message{Role: message.RoleUser, Content: content}
+		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, claimResume)
 		if err != nil {
 			yield(nil, err)
 			return
@@ -112,7 +132,7 @@ func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message)
 // — the delivery worker — tell "busy" from "failed" without starting anything. The returned
 // function runs the turn; calling it is the caller's decision.
 func (a *Agents) turn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, sink HostTurnEvents) (func(), error) {
-	run, err := a.claimTurn(ctx, sessionID, msg, kind, true)
+	run, err := a.claimTurn(ctx, sessionID, msg, kind, claimHost)
 	if err != nil {
 		return nil, err
 	}
@@ -123,12 +143,12 @@ func (a *Agents) turn(ctx context.Context, sessionID string, msg message.Message
 //
 // Everything that can fail before the driver runs happens here, so a host turn can refuse without
 // half-running: the session exists, the slot is free, the request assembled.
-func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, wait bool) (func(yield func(agent.Event, error) bool, sink HostTurnEvents), error) {
+func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, mode claimMode) (func(yield func(agent.Event, error) bool, sink HostTurnEvents), error) {
 	session, ok := a.Session(sessionID)
 	if !ok {
 		return nil, errdefs.NotFoundf("host: session %q is not open", sessionID)
 	}
-	if err := session.claim(ctx, kind, wait); err != nil {
+	if err := session.claim(ctx, kind, mode); err != nil {
 		return nil, err
 	}
 	runCtx, cancel := context.WithCancel(session.identity(ctx))
@@ -147,13 +167,13 @@ func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Me
 			session.touchNow(time.Now())
 			a.requeueDropped(ctx, session.id)
 		}()
-		a.executeTurn(runCtx, session, req, yield, sink, kind)
+		a.executeTurn(runCtx, session, req, yield, sink, kind, mode == claimResume)
 	}, nil
 }
 
 // executeTurn drives one claimed turn and writes its events to yield, or to sink when the host is
 // the one that started it.
-func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent.Request, yield func(agent.Event, error) bool, sink HostTurnEvents, kind turnKind) {
+func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent.Request, yield func(agent.Event, error) bool, sink HostTurnEvents, kind turnKind, resume bool) {
 	// The failure box is installed before the run span opens, not inside RunTurn, so both
 	// spans of this turn read the same classification: the decorator reuses a box it finds
 	// rather than making a second one.
@@ -171,10 +191,17 @@ func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent
 		emit = func(agent.Event, error) bool { return true }
 	}
 
-	state, failures := agent.TaskState(""), 0
-	for event, err := range agent.RunTurn(spanCtx, req, session.driver) {
-		if status, ok := event.(agent.Status); ok && status.State.Terminal() {
-			state = status.State
+	state, last, failures := agent.TaskState(""), agent.TaskState(""), 0
+	turn := agent.RunTurn
+	if resume {
+		turn = agent.ResumeTurn
+	}
+	for event, err := range turn(spanCtx, req, session.driver) {
+		if status, ok := event.(agent.Status); ok {
+			last = status.State
+			if status.State.Terminal() {
+				state = status.State
+			}
 		}
 		if applied, ok := event.(agent.Interrupted); ok {
 			// The steered message reached a boundary: it is in the transcript, so the delivery
@@ -193,6 +220,12 @@ func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent
 			return
 		}
 	}
+	if state == "" {
+		state = last
+	}
+	// Recorded before the slot is released: a waiter that saw the slot free but not the pause
+	// would take it and answer a question it was not asked.
+	session.conclude(state)
 	finishRunSpan(spanCtx, span, state, failures)
 }
 

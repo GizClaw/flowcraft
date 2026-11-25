@@ -444,7 +444,7 @@ func (d *delegator) Answer(ctx context.Context, session string, answer platform.
 	folded := &foldedStream{}
 	// The child's own identity and failure box, as on the other two run sites: the caller's context
 	// carries the parent's session and turn, and a resumed child must not appear as the parent.
-	for event, runErr := range d.agents.Run(nestedRunCtx(ctx), session, userMessage(text)) {
+	for event, runErr := range d.agents.Resume(nestedRunCtx(ctx), session, message.NewTextContent(text)) {
 		if runErr != nil {
 			// A failed resume ends the child's work as surely as a terminal status does; leaving it
 			// open would keep a cell for a conversation nobody will continue.

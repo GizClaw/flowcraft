@@ -34,6 +34,16 @@ func (d *seenDriver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent
 	}
 }
 
+// Resume records the same request, so a test that continues a suspended task can still read what
+// the turn was assembled from. Without it the turn decorator refuses the resume before the driver
+// sees anything, which is the contract: a driver that reports input-required must be able to
+// continue it.
+func (d *seenDriver) Resume(ctx context.Context, req agent.Request) iter.Seq2[agent.Event, error] {
+	return d.Run(ctx, req)
+}
+
+func (d *seenDriver) Paused() bool { return false }
+
 func (d *seenDriver) Close() error { return nil }
 
 type seenProgram struct{ driver *seenDriver }
@@ -132,7 +142,9 @@ func TestTheStoreFeedsTheTaskAndTheFingerprint(t *testing.T) {
 	}
 
 	agents, driver := seenHost(t, WithStore(store), WithFingerprint("fp-1"))
-	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	// The restored task stopped to ask, so it is continued with Resume: a message would be taken
+	// as the answer to a question this caller never saw.
+	for range agents.Resume(t.Context(), "s1", message.NewTextContent("continue")) {
 	}
 	req := driver.requests[0]
 	if req.Task.State != agent.StateWorking {
