@@ -1,136 +1,142 @@
-# Process document
+# Runtime layer
 
-The process document says what _this process_ carries: the sandbox backends a
-session can run in, the model targets it serves, the tool sources it aggregates,
-the directories skill discovery walks, and how much of a turn it records. It is
-read by `deploy.Loader.Process`, which returns a plan of settings plus factories and
-builds nothing.
+`runtime.layers[].path` names a YAML file: the substrate one agent runs on.
+Layers merge by `priority` (higher wins) — mappings key by key, **sequences
+replaced whole**, scalars replaced — and placeholders resolve once, after the
+merge.
 
 ```yaml
 version: 1
+name: assistant
+
+files:
+  roots: [/workspace/assistant]      # absolute, at least one; also the write policy
 
 sandbox:
-  - name: local # what an agent's grant.sandbox selects
-    impl: local # a backend the binary registered
-    settings: {} # the backend's own block, decoded by its factory
+  backend: seatbelt                  # local | seatbelt | bwrap | windows | remote
+  workdir: /workspace/assistant      # default: the first files root
+  writes: [/workspace/assistant/out]
+  net:
+    mode: allow_list                 # default | none | allow_list | proxy
+    allow_hosts: [api.openai.com, "*.github.com"]
+  timeout: 60s
+  output_mib: 8
 
 inference:
   providers:
-    - name: openai # what a grant's models are checked against
-      impl: openai
-      settings: { api_key: ${OPENAI_API_KEY} }
+    - name: luna                     # deployment identity, referenced by models
+      driver: openai                 # a name the host compiled in
+      settings: {api_key: ${OPENAI_API_KEY}}
+  models:
+    - provider: luna                 # position = priority
+      model: gpt-5
+      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
   route:
     attempts_per_target: 2
-    max_targets: 1
-    base_delay: 250ms
-    max_delay: 5s
+    max_targets: 3
 
 tools:
-  sources:
-    - { name: files, impl: files }
-    - { name: exec, impl: exec }
+  enable: [files]                    # groups: files, exec, skills; empty = all
+  dynamic:
+    default: direct                  # always | direct | deferred | hidden
+    always: [tool_search]
+  images: false
   middleware:
-    - { name: telemetry, impl: telemetry }
+    - {name: result_limit, settings: {max_bytes: 20000}}
 
 skills:
-  roots: [/srv/agent/skills]
-
-# Both fields are required: "we record nothing" and "nobody said" are different
-# facts, and the second one is how a deployment ends up with no trace at all.
-observability: { trace: call, bodies: false }
+  roots: [.agents/skills]
 ```
 
-## Fields
+## `sandbox`
 
-| Section                 | Rule                                                                                                                                                           |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`               | Must be `1`. Any other value is refused instead of read optimistically.                                                                                        |
-| `sandbox[]`             | `{name, impl, settings}`. `name` is the backend's address in a grant; two entries cannot share one.                                                            |
-| `inference.providers[]` | `{name, impl, settings}`. `name` is what a grant's models are resolved against.                                                                                |
-| `inference.route`       | `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. Selectors are Go values and stay out of the document.                                         |
-| `tools.sources[]`       | `{name, impl, settings}`. Every source is aggregated into one tool table for the whole process.                                                                |
-| `tools.middleware[]`    | `{name, impl, settings}`, outermost first. A link whose registration says it is only worth installing above the process's trace level is left out of the plan. |
-| `skills.roots[]`        | Absolute directories scanned for `SKILL.md`. Discovered once for the process, because the index is a process fact.                                             |
-| `observability.trace`   | Required: `none`, `run`, `call` or `node`.                                                                                                                     |
-| `observability.bodies`  | Required, `true` or `false`. Retention of model response bytes, not a level.                                                                                   |
+| Field                          | Rule                                                                           |
+| ------------------------------ | ------------------------------------------------------------------------------ |
+| `backend`                      | Required, no default.                                                          |
+| `workdir`                      | Where commands run; empty means the first files root.                          |
+| `writes`                       | Absolute paths a command may write; empty means read-only.                     |
+| `net.mode`                     | `default`, `none`, `allow_list`, `proxy`.                                      |
+| `net.allow_hosts`              | Only with `allow_list`.                                                        |
+| `net.proxy`                    | Only with `proxy`.                                                             |
+| `timeout`                      | Default per-call deadline; a tool may ask for less.                            |
+| `cpu_millicores`               | Needs `timeout` (the budget is derived from it).                               |
+| `memory_mib`, `output_mib`     | Caps; zero means unbounded / backend default.                                  |
+| `journal`                      | A settings block; presence opts in.                                            |
+| `bwrap`, `seatbelt`, `windows` | That backend's own construction options — on any other backend it is an error. |
+| `remote`                       | Client configuration for `backend: remote`, absent otherwise.                  |
 
-`sandbox`, `inference` and `tools` are optional as blocks, but a process with no
-backend can serve no session and a process with no provider serves no model — the
-first session or the first agent document is where that shows up.
+The budget reaches every call: `timeout`, `cpu_millicores`, `memory_mib` and
+`writes` are projected onto each command, merged per field and taking the stricter
+side. A cap the backend cannot enforce (a cpu budget on `local`, `writes` on
+`local` or `remote`) is a build error or a warning — never silence.
 
-Duplicate names within a section are refused: a name is how a session selects the
-resource.
+### A backend's own block
 
-## `settings` belongs to the implementation
-
-Every entry names an `impl` and carries that implementation's settings as an opaque
-block. The schema of the block is the factory's, not the document's: the loader
-hands the raw bytes to `Factory.Plan`, which decodes them strictly. That is why an
-unknown key inside `settings` is a load error with the same weight as an unknown
-key at the top level, and why a settings block this card cannot describe in general
-— `examples/forge/internal/app` is where a real one is written.
-
-The `impl` name must be in the process's own registration table. The error lists
-what is there:
-
-```text
-deploy: provider "luna" selects impl "opnai", which is not registered (anthropic, openai)
+```yaml
+sandbox:
+  backend: bwrap # or seatbelt
+  bwrap:
+    binary: /usr/bin/bwrap # resolved against the runner root
+    extra_flags: [--die-with-parent] # bwrap only; policy-weakening flags are refused
+    readonly_root: true
 ```
 
-## `observability`
+```yaml
+sandbox:
+  backend: windows
+  windows:
+    write_confine: true # Low-integrity token; without it the runner is lifecycle-only
+```
 
-| Trace level | Spans                                                                         |
-| ----------- | ----------------------------------------------------------------------------- |
-| `none`      | the run and its turns                                                         |
-| `run`       | one per driver step, plus the turn's `checkpoint.save`                        |
-| `call`      | the per-call spans: a model call, a tool call, one command                    |
-| `node`      | whatever the driver considers a node of its own — the graph adds one per node |
+### Journal
 
-`bodies: true` keeps each model response's bytes, which is what a replay answers
-from. It is a retention decision about the user's content, so it is written down
-rather than inferred from the level.
+```yaml
+sandbox:
+  journal:
+    exclude: [.git, node_modules] # never watched (the cost control)
+    retention: 4096 # events kept for replay (default 4096)
+    max_watch_set: 20000 # watch budget; past it, a capacity gap
+    ops: [create, rename, remove] # drop "write" events
+```
 
-Both live on the process and not on an agent because everything they control — the
-tool chain, the model access, the backends — is built once for the process. A level
-two agents could disagree about would be a knob with no effect.
+A platform without a watch source fails the build when a journal is configured.
 
-## `route`
+### Remote
 
-`attempts_per_target` and `max_targets` bound retries and failover,
-`base_delay`/`max_delay` bound the backoff; a negative value is refused. Which
-target a call picks is a selector, and a selector is a Go value the host registers,
-so it has no written form.
+```yaml
+sandbox:
+  backend: remote
+  remote:
+    transport: unix # http (default) | unix
+    socket: /run/flowcraft/sandbox.sock
+    timeout: 30s
+    poll_hold: 15s
+```
 
-## Placeholders
+`transport: http` needs `endpoint` (`http(s)://…`) and rejects `socket`; `unix`
+needs `socket` and rejects `endpoint` and `insecure_skip_verify`. Files do not
+cross the wire: the file tools need that host's filesystem mounted where they run,
+which is why `tools.files` with `backend: remote` warns.
 
-Every string may name a placeholder, and expansion happens once, after the layers
-merge:
+## `files`, `skills`, `tools`
 
-| Form                | Resolves through                      |
-| ------------------- | ------------------------------------- |
-| `${NAME}`           | the built-in `env` scheme             |
-| `${NAME:-fallback}` | `env`, with a default when unset      |
-| `${scheme:arg:arg}` | a resolver the application registered |
+| Section            | Rule                                                                                                                                          |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| `files.roots`      | At least one, all absolute; also the write policy the file tools enforce.                                                                     |
+| `skills.roots`     | Directories scanned for `SKILL.md`; one index, shared by the tools and the host.                                                              |
+| `tools.enable`     | Tool **groups** (`files`, `exec`, `skills`), not individual tool names; empty enables every registered group.                                 |
+| `tools.dynamic`    | The projection: `default`, `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`.                                      |
+| `tools.images`     | Publish the image-reading branch of the file tools.                                                                                           |
+| `tools.mcp`        | `defer` plus `servers[]`: `transport: stdio                                                                                                   | http`, `command`/`url`, `prefix`, `required`, `liveness`. |
+| `tools.middleware` | Ordered list of `{name, settings}`; built-ins: `telemetry`, `recover`, `result_limit`, `concurrency`, `redact`. `recover` cannot be disabled. |
 
-Only `${env:…}` is built in; a scheme this process did not register is a load error
-listing the schemes that are. `$$` is a literal `$`.
+## `inference`
 
-## What the loader checks
+Providers are `{name, driver, settings}` — `settings` is the driver's own shape,
+decoded by the host's adapter, not by the document. Models are
+`{provider, model, weight, capabilities, limits}`; position is priority. `route`
+takes `selector`, `selector_settings`, `attempts_per_target`, `max_targets`,
+`base_delay`, `max_delay`.
 
-1. strict decoding — an unknown field anywhere, `settings` included, is an error;
-2. `version` is `1`;
-3. every section's names are present and unique;
-4. every `impl` is registered in its group, and its `settings` decode;
-5. `observability.trace` and `observability.bodies` are both present, and the level
-   parses;
-6. `route` values parse and are not negative.
-
-It does not dial a provider, construct a backend or start anything: what a settings
-block _means_, whether a credential works and whether an endpoint answers are the
-host's business at start time.
-
-## The other document
-
-What an agent may do is not here: it is the agent document's `grant`, which is a
-ceiling the process's resources are selected from. See
-[deployment.md](deployment.md).
+A name the host did not register fails the build with the offered list:
+`inference.providers[luna].driver: "openai" is not available; offered: openai`.

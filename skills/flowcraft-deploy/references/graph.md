@@ -1,6 +1,6 @@
 # Graph document
 
-A program of `impl: graph` runs the file named by `program.settings.path`. It is one
+An engine of `kind: graph` runs the file named by `settings.path`. It is one
 document, compiled once per deployment and shared by every session.
 
 ```yaml
@@ -44,7 +44,7 @@ nodes:
 edges:
   - { from: model, to: tools, when: "len(pending) > 0" }
   - { from: tools, to: model }
-  - { from: model, to: end, when: "len(pending) == 0" }
+  - { from: model, to: END, when: "len(pending) == 0" }
 
 output: { key: answer }
 ```
@@ -128,8 +128,8 @@ store: a 200-message transcript measured 667 µs and 5000 allocations per turn.
 
 ### `script`
 
-Not built in — the host registers the kind (`agent/graph/script`), because a script
-engine is a dependency choice.
+Not built in — the host registers the kind (`core/agent-graph/script`), because a
+script engine is a dependency choice.
 
 ## Edges and conditions
 
@@ -141,7 +141,7 @@ when the step started, plus `step`:
 edges:
   - { from: model, to: tools, when: "len(pending) > 0 and step < 8" }
   - { from: tools, to: model }
-  - { from: model, to: end }
+  - { from: model, to: END }
 ```
 
 Conditions compile once at build, so a typo is a load error. In the environment,
