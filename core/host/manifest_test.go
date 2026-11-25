@@ -156,6 +156,28 @@ func TestTheManifestReachesTheRunRecord(t *testing.T) {
 	}
 }
 
+// TestTheRequestCarriesThePrecomputedManifestID is the hot-path half of that record: the host
+// hands the turn both the value and the identity it computed at install, so the turn never hashes
+// a per-deployment constant.
+func TestTheRequestCarriesThePrecomputedManifestID(t *testing.T) {
+	agents, driver := seenHost(t)
+	entry := manifestEntry(t, agents, "referee")
+
+	for range agents.Run(t.Context(), "s1", message.NewTextMessage(message.RoleUser, "hi")) {
+	}
+
+	req := driver.requests[0]
+	if req.ManifestID == "" {
+		t.Fatal("the request carries no manifest identity")
+	}
+	if req.ManifestID != entry.manifest.ID() {
+		t.Fatalf("request manifest id = %q, want the deployment's %q", req.ManifestID, entry.manifest.ID())
+	}
+	if req.Manifest != entry.manifest {
+		t.Fatalf("request manifest = %+v, want the deployment's %+v", req.Manifest, entry.manifest)
+	}
+}
+
 // TestTheToolDigestIsOrderFree keeps the digest about content: a projection that lists the
 // same definitions in another order is the same schema, and hashing the order would make two
 // identical deployments incomparable for no reason.

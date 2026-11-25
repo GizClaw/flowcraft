@@ -309,9 +309,15 @@ func reportRun(ctx context.Context, span trace.Span, req Request, outcome TurnOu
 	if req.OnRun == nil {
 		return
 	}
+	manifest := req.ManifestID
+	if manifest == "" {
+		// A caller driving a turn without a host still gets an identity; the host always
+		// sets the precomputed one.
+		manifest = req.Manifest.ID()
+	}
 	record := RunRecord{
 		Agent:     req.Agent,
-		Manifest:  req.Manifest.ID(),
+		Manifest:  manifest,
 		TaskID:    req.Task.ID,
 		State:     outcome.State,
 		ErrorKind: string(kind),

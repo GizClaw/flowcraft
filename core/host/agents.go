@@ -65,9 +65,11 @@ type deployment struct {
 	observability deploy.Observability
 	// manifest is the version combination this deployment runs, assembled at install; the
 	// turn copies it into every run record and the driver writes it into its checkpoint.
-	// Its identity is [agent.Manifest.ID], hashed by the two consumers rather than stored
-	// here: a cached copy would be a second answer to one question.
 	manifest agent.Manifest
+	// manifestID is the manifest's identity, computed once at install. The turn records it
+	// instead of hashing the same deployment constant every turn, and the driver still gets
+	// the full manifest to write into its checkpoint.
+	manifestID string
 	// hooks are the lifecycle policies the document attached, built once at install so a bad
 	// setting fails here rather than on the first turn that reaches a boundary.
 	hooks agent.Hooks
@@ -319,6 +321,7 @@ func (a *Agents) build(dep deploy.Deployment) (*deployment, error) {
 		grant:         dep.Grant,
 		observability: a.res.observability,
 		manifest:      manifest,
+		manifestID:    manifest.ID(),
 		hooks:         hooks,
 		newView:       newView,
 		narrowed:      narrowed,

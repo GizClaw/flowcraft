@@ -148,6 +148,12 @@ type Request struct {
 	// that computed an id for the record and let the driver name the manifest itself would be
 	// recording two answers to one question.
 	Manifest Manifest
+	// ManifestID is the manifest's identity, computed by the host at install; the value is
+	// [Request.Manifest]. It is carried beside the value because every turn reports it, and
+	// hashing the same per-deployment constant on the turn path pays for one answer repeatedly.
+	// Empty falls back to Manifest.ID(), which is what a caller driving a turn without a host
+	// has.
+	ManifestID string
 	// OnRun receives one finished run, when the host installed a sink.
 	//
 	// It is called once per turn, after the terminal checkpoint is durable and before the
