@@ -1,7 +1,6 @@
 package route
 
 import (
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -62,25 +61,12 @@ func (r *Router) Restrict(allow []Allow) *Router {
 
 // resolve decides which model one call asks for.
 //
-// With no restriction the request's own model is used unchanged, which is what an
-// unrestricted router has always done. With one, a named model must be listed (and
-// the mode it is being used for must be permitted), and a request that names none is
-// answered from the list in order: the first entry that permits this mode, that some
-// target declares, and — when the request carries provider-specific options — that
-// belongs to one of those providers.
+// A named model is used as given, once the restriction — when there is one — allows it
+// and some target can serve it for the modes the call needs. A request that names none
+// is answered from the authority: the grant's list in order when the session holds one,
+// and otherwise the fleet's own line-up in declaration order, because "every model the
+// process serves" is a list too — just one the process wrote.
 func (r *Router) resolve(operation string, requested model.ModelRef, modes []model.Mode, providers []string) (model.ModelRef, error) {
-	if len(r.allow) == 0 {
-		if requested.ID.Name == "" {
-			// Nothing to choose from and nothing named: the configuration is incomplete,
-			// and saying so beats sending an empty model to a provider that will report a
-			// missing one in its own vocabulary.
-			err := inference.NewError(inference.InvalidRequest, inference.FieldModel,
-				errors.New("route: no model was named and this router has no list to choose from"))
-			err.Detail = "model.not_named"
-			return model.ModelRef{}, err
-		}
-		return requested, nil
-	}
 	if requested.ID.Name != "" {
 		for _, entry := range r.allow {
 			if !sameModelRef(entry.Model, requested) {
@@ -93,24 +79,51 @@ func (r *Router) resolve(operation string, requested model.ModelRef, modes []mod
 			}
 			return requested, nil
 		}
-		return model.ModelRef{}, denied("model.not_granted",
-			"model %s is not granted (this session may call %s)", modelName(requested), allowList(r.allow))
+		if len(r.allow) > 0 {
+			return model.ModelRef{}, denied("model.not_granted",
+				"model %s is not granted (this session may call %s)", modelName(requested), allowList(r.allow))
+		}
+		if !r.canServe(requested, modes) {
+			return model.ModelRef{}, denied("model.no_candidate",
+				"no target serves %s for %s", modelName(requested), modeList(modes))
+		}
+		return requested, nil
 	}
 
-	for _, entry := range r.allow {
-		if !entry.permits(modes) {
+	if len(r.allow) > 0 {
+		for _, entry := range r.allow {
+			if !entry.permits(modes) {
+				continue
+			}
+			if len(providers) > 0 && !slices.Contains(providers, entry.Model.ID.Provider) {
+				continue
+			}
+			if !r.canServe(entry.Model, modes) {
+				continue
+			}
+			return entry.Model, nil
+		}
+		return model.ModelRef{}, denied("model.no_candidate",
+			"no granted model serves %s (this session may call %s)", modeList(modes), allowList(r.allow))
+	}
+
+	// Unrestricted: choose from what the fleet declares, in declaration order.
+	for _, target := range r.targets {
+		if target.Provider.Catalog == nil {
 			continue
 		}
-		if len(providers) > 0 && !slices.Contains(providers, entry.Model.ID.Provider) {
-			continue
+		for _, descriptor := range target.Provider.Catalog.Models() {
+			if len(providers) > 0 && !slices.Contains(providers, descriptor.ID.Provider) {
+				continue
+			}
+			ref := model.ModelRef{ID: descriptor.ID}
+			if r.canServe(ref, modes) {
+				return ref, nil
+			}
 		}
-		if !r.canServe(entry.Model, modes) {
-			continue
-		}
-		return entry.Model, nil
 	}
 	return model.ModelRef{}, denied("model.no_candidate",
-		"no granted model serves %s (this session may call %s)", modeList(modes), allowList(r.allow))
+		"no model this process serves declares %s", modeList(modes))
 }
 
 // allowsModelID reports whether the restriction lists this model id.

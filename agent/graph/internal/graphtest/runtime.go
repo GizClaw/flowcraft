@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/agent/graph"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 
@@ -40,13 +39,12 @@ type Fixture struct {
 	binding tool.Binding
 	tools   tool.Dispatcher
 	models  *inference.Provider
-	def     model.ModelRef
 }
 
-// Substrate returns the four values a run attaches to every invocation, for a case that drives a
+// Substrate returns the values a run attaches to every invocation, for a case that drives a
 // request through a real program and wants the same authority the fixture's stamps carry.
-func (f *Fixture) Substrate() (tool.Binding, tool.Dispatcher, *inference.Provider, model.ModelRef) {
-	return f.binding, f.tools, f.models, f.def
+func (f *Fixture) Substrate() (tool.Binding, tool.Dispatcher, *inference.Provider) {
+	return f.binding, f.tools, f.models
 }
 
 // Stamp attaches this fixture's substrate to an invocation, which is what a run does for every node
@@ -55,7 +53,6 @@ func (f *Fixture) Stamp(in *graph.Invoke) {
 	in.Binding = f.binding
 	in.Tools = f.tools
 	in.Models = f.models
-	in.DefaultModel = f.def
 }
 
 // Config is one test runtime's inputs.
@@ -69,8 +66,6 @@ type Config struct {
 	// Deferred hides every tool behind tool_search, so a case can prove that a discovery is what
 	// made something visible.
 	Deferred bool
-	// Model is what a node calls when its document names none.
-	Model model.ModelRef
 }
 
 // New builds a runtime over cfg.
@@ -96,7 +91,6 @@ func New(t testing.TB, cfg Config) *Fixture {
 		binding:    tool.Bind(session{}, policy.Grant{}).WithView(view),
 		tools:      known{registry},
 		models:     &inference.Provider{Generator: cfg.Generator},
-		def:        cfg.Model,
 	}
 }
 

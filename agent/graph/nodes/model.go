@@ -274,7 +274,7 @@ func (m *modelKind) request(
 		return inference.GenerateRequest{}, err
 	}
 	request := inference.GenerateRequest{
-		Model:     modelRefOf(config.Model, in),
+		Model:     modelRefOf(config.Model),
 		ModelHint: config.Hint,
 		Context:   turns[:len(turns)-1],
 		Input: inference.GenerateInput{
@@ -428,17 +428,21 @@ func (emptyView) Definitions() []message.ToolDefinition { return nil }
 func (emptyView) Visible(string) bool                   { return false }
 func (emptyView) RecordCall(message.ToolCall)           {}
 
-// modelRef resolves the configured model, or the runtime's default.
-func modelRefOf(configured *modelRef, in graph.Invoke) model.ModelRef {
+// modelRef resolves the configured model, or the empty ref when the node names none.
+//
+// An empty ref is not "no model": it is "the router decides", and the router answers from
+// the authority the session was opened with. A node that pins one still gets it, which is
+// how a graph asks for a stronger or a cheaper model than the list's first.
+func modelRefOf(configured *modelRef) model.ModelRef {
 	if configured == nil {
-		return in.DefaultModel
+		return model.ModelRef{}
 	}
 	ref := model.ModelRef{
 		ID:      model.ModelID{Provider: configured.Provider, Name: configured.Name},
 		Profile: configured.Profile,
 	}
 	if ref.ID.Name == "" {
-		return in.DefaultModel
+		return model.ModelRef{}
 	}
 	return ref
 }

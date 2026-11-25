@@ -14,7 +14,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 
@@ -98,10 +97,9 @@ type Run struct {
 	replay bool
 	// The session's tool surface, carried by the turn: nothing here is read from ambient
 	// state, so two runs cannot see each other's authority.
-	binding      tool.Binding
-	tools        tool.Dispatcher
-	models       *inference.Provider
-	defaultModel model.ModelRef
+	binding tool.Binding
+	tools   tool.Dispatcher
+	models  *inference.Provider
 	// stateMu guards the lifecycle: it is read by a caller that steers and written by the run.
 	stateMu sync.RWMutex
 	// steerMu guards the steer a caller queued for the next boundary.
@@ -167,22 +165,21 @@ func (g *Graph) Start(ctx context.Context, messages []message.Message, opts ...R
 			"graph: the document declares no input slot; add `input: <state key>` or send no messages")
 	}
 	run := &Run{
-		g:            g,
-		values:       store,
-		store:        settings.store,
-		taskID:       settings.taskID,
-		sessionID:    settings.sessionID,
-		fingerprint:  settings.fingerprint,
-		manifest:     settings.manifest,
-		trace:        settings.trace,
-		bodies:       settings.bodies,
-		replay:       settings.replay,
-		binding:      settings.binding,
-		tools:        settings.tools,
-		models:       settings.models,
-		defaultModel: settings.defaultModel,
-		active:       []string{g.entry},
-		state:        agent.StateSubmitted,
+		g:           g,
+		values:      store,
+		store:       settings.store,
+		taskID:      settings.taskID,
+		sessionID:   settings.sessionID,
+		fingerprint: settings.fingerprint,
+		manifest:    settings.manifest,
+		trace:       settings.trace,
+		bodies:      settings.bodies,
+		replay:      settings.replay,
+		binding:     settings.binding,
+		tools:       settings.tools,
+		models:      settings.models,
+		active:      []string{g.entry},
+		state:       agent.StateSubmitted,
 	}
 	run.startedAt = time.Now()
 	if g.timeout > 0 {
@@ -656,13 +653,12 @@ func (r *Run) runStep(
 			Records: func(kind string) []agent.Record {
 				return r.records[kind]
 			},
-			Replay:       r.replay,
-			Trace:        r.trace,
-			Bodies:       r.bodies,
-			Binding:      r.binding,
-			Tools:        r.tools,
-			Models:       r.models,
-			DefaultModel: r.defaultModel,
+			Replay:  r.replay,
+			Trace:   r.trace,
+			Bodies:  r.bodies,
+			Binding: r.binding,
+			Tools:   r.tools,
+			Models:  r.models,
 			Checkpoint: func(records []agent.Record) error {
 				return r.persist(ctx, nil, records)
 			},

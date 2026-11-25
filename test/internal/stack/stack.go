@@ -355,11 +355,7 @@ func (c catalog) Describe(id model.ModelID) (model.ModelDescriptor, bool) {
 
 // graphSettings is the graph kind's document surface, as this binary defines it.
 type graphSettings struct {
-	Path  string `json:"path"`
-	Model struct {
-		Provider string `json:"provider"`
-		Name     string `json:"name"`
-	} `json:"model"`
+	Path string `json:"path"`
 }
 
 // impls is the table this binary compiles in: three real implementations and one fake.
@@ -388,9 +384,7 @@ func impls(scripted *Model) *deploy.Impls {
 			if err != nil {
 				return nil, err
 			}
-			return graph.NewProgram(compiled, graph.WithProgramDefaultModel(model.ModelRef{
-				ID: model.ModelID{Provider: settings.Model.Provider, Name: settings.Model.Name},
-			})), nil
+			return graph.NewProgram(compiled), nil
 		}))
 }
 

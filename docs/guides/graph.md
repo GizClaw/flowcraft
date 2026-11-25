@@ -56,7 +56,6 @@ agents:
     program:
       impl: graph
       settings:
-        model: { provider: openai, name: gpt-5 } # what a node that names none calls
         path: ./graphs/react.yaml
     limits: { idle: 30m }
 ```

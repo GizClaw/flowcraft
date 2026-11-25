@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/internal/pathtest"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -859,7 +860,7 @@ func TestAnOpenWithAnUnenforceableGrantIsRefused(t *testing.T) {
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 
 	// A narrowed read set beside an unrestricted write set is the combination policy refuses.
-	refused := policy.Grant{Files: policy.Files{Read: []string{"/srv/w"}}}
+	refused := policy.Grant{Files: policy.Files{Read: []string{pathtest.Abs("srv/w")}}}
 	if _, err := agents.Open(t.Context(), "s1", "referee", refused); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("err = %v, want a validation error", err)
 	}

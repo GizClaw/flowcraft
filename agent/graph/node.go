@@ -8,7 +8,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -69,8 +68,6 @@ type Invoke struct {
 	// Models is the process's routed model access. It is not a permission: the grant's model
 	// list decides which models a session may call, and the route enforces it.
 	Models *inference.Provider
-	// DefaultModel is what a node calls when its document names no model.
-	DefaultModel model.ModelRef
 	// Checkpoint writes records immediately, for a side effect that must be
 	// recorded before it runs. Nil when the run has no store.
 	Checkpoint func(records []Record) error

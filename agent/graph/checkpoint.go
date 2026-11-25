@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -201,8 +200,6 @@ type runOptions struct {
 	tools   tool.Dispatcher
 	// models is the process's routed model access.
 	models *inference.Provider
-	// defaultModel is what a node calls when the document names none.
-	defaultModel model.ModelRef
 }
 
 // WithStore makes the run durable. The run id addresses the checkpoint; the
@@ -219,11 +216,6 @@ func WithBinding(binding tool.Binding) RunOption {
 // WithTools attaches the process tool surface.
 func WithTools(tools tool.Dispatcher) RunOption {
 	return func(o *runOptions) { o.tools = tools }
-}
-
-// WithDefaultModel sets the model a node calls when the document names none.
-func WithDefaultModel(ref model.ModelRef) RunOption {
-	return func(o *runOptions) { o.defaultModel = ref }
 }
 
 // WithModels attaches the process's routed model access.

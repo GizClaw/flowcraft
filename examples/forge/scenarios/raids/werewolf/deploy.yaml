@@ -7,8 +7,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -21,8 +19,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -38,8 +34,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -55,8 +49,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -72,8 +64,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -89,8 +79,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -106,8 +94,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -123,8 +109,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}
@@ -140,8 +124,6 @@ agents:
     program:
       impl: graph
       settings:
-        # What a node calls when the graph names no model.
-        model: {provider: openai, name: gpt-6.1-sol}
         # Where a script node's relative path resolves: the workspace, so a rule writes `rules/x.star`
         # and means the file beside it.
         scripts: ${workspace:root}

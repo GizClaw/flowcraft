@@ -11,6 +11,5 @@ agents:
       settings:
         # The graph is compiled once per deployment and shared by every session; the model is what a
         # node calls when the graph names none.
-        model: {provider: openai, name: gpt-4o-mini}
         path: ${workspace:root}/graphs/assistant.yaml
     limits: {idle: 30m, max_sessions: 8}

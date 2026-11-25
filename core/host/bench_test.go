@@ -65,7 +65,9 @@ func BenchmarkOpenProcess(b *testing.B) {
 func benchDeployment(b *testing.B, name string, grant policy.Grant, log *journal, backend *boundary) deploy.Deployment {
 	b.Helper()
 	return deploy.Deployment{
-		Name:    name,
+		Name: name,
+		// The session table the sweep reads: without an idle horizon EvictIdle is a no-op.
+		Limits:  policy.Limits{Idle: policy.Duration(time.Minute)},
 		Program: deploy.PlannedProgram{Impl: "graph", New: func() (agent.Program, error) { return &sessionProgram{log: log}, nil }},
 	}
 }

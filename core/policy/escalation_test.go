@@ -215,7 +215,7 @@ func TestWidenComparesNetworkPostures(t *testing.T) {
 		g.Net = policy.NetPolicy{
 			Mode:        policy.NetAllowList,
 			AllowHosts:  []string{"api.example.com"},
-			UnixSockets: []string{"/run/agent.sock"},
+			UnixSockets: []string{pathtest.Abs("run/agent.sock")},
 			MITM:        &policy.MITMPolicy{Enabled: true, Hosts: []string{"api.example.com"}},
 		}
 		return g
@@ -239,7 +239,7 @@ func TestWidenComparesNetworkPostures(t *testing.T) {
 			accept: true,
 		},
 		"another socket": {
-			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: from.Net.AllowHosts, UnixSockets: []string{"/run/agent.sock", "/run/proxy.sock"}, MITM: from.Net.MITM},
+			net:    policy.NetPolicy{Mode: policy.NetAllowList, AllowHosts: from.Net.AllowHosts, UnixSockets: []string{pathtest.Abs("run/agent.sock"), pathtest.Abs("run/proxy.sock")}, MITM: from.Net.MITM},
 			accept: true,
 		},
 		"a narrower allow-list": {

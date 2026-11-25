@@ -324,12 +324,45 @@ func TestThePublishedCatalogObeysTheRestriction(t *testing.T) {
 	}
 }
 
-// TestAnUnnamedModelOnAnUnrestrictedRouterIsAConfigurationError is the last case: nothing
-// names a model and the router has no list to choose from — a grant that permits every
-// model cannot answer "which one", so the call stops here rather than at the vendor.
-func TestAnUnnamedModelOnAnUnrestrictedRouterIsAConfigurationError(t *testing.T) {
+// TestAnUnnamedModelTakesTheFleetsLineUp is what "unrestricted" means: a grant that lists
+// no model permits every model the process serves, so a request that names none is
+// answered from the fleet's own declaration order — the first one that can serve it.
+func TestAnUnnamedModelTakesTheFleetsLineUp(t *testing.T) {
 	var calls []string
-	router, err := New([]Target{serving(t, "openai", "gpt-6", &calls, model.ModeText)}, Policy{})
+	router, err := New([]Target{
+		serving(t, "openai", "gpt-6", &calls, model.ModeText),
+		serving(t, "dashscope", "wan-2", &calls, model.ModeImage),
+	}, Policy{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	request := generationRequest()
+	request.Model = model.ModelRef{}
+	if _, err := router.Generate(context.Background(), request); err != nil {
+		t.Fatalf("Generate for text: %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "openai" {
+		t.Fatalf("calls = %v, want the first target that declares text", calls)
+	}
+
+	request.Output = inference.OutputImage
+	if _, err := router.Generate(context.Background(), request); err != nil {
+		t.Fatalf("Generate for an image: %v", err)
+	}
+	if len(calls) != 2 || calls[1] != "dashscope" {
+		t.Fatalf("calls = %v, want the target that declares image", calls)
+	}
+}
+
+// TestAnUnnamedModelWithNothingDeclaredIsRefused is the other side: a fleet that publishes
+// no line-up cannot be asked to choose, and saying so beats sending an empty model on.
+func TestAnUnnamedModelWithNothingDeclaredIsRefused(t *testing.T) {
+	var calls []string
+	router, err := New([]Target{{
+		Name:     "openai",
+		Provider: inference.Provider{Generator: &fakeGenerator{}},
+	}}, Policy{})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -337,11 +370,11 @@ func TestAnUnnamedModelOnAnUnrestrictedRouterIsAConfigurationError(t *testing.T)
 	request.Model = model.ModelRef{}
 	_, err = router.Generate(context.Background(), request)
 	var classified *inference.Error
-	if !errors.As(err, &classified) || classified.Kind != inference.InvalidRequest {
-		t.Fatalf("err = %v, want InvalidRequest", err)
+	if !errors.As(err, &classified) || classified.Kind != inference.PolicyDenied {
+		t.Fatalf("err = %v, want PolicyDenied", err)
 	}
-	if classified.Detail != "model.not_named" {
-		t.Fatalf("detail = %q, want model.not_named", classified.Detail)
+	if !strings.Contains(err.Error(), "model.no_candidate") {
+		t.Fatalf("error %q does not carry the stable detail", err)
 	}
 	if len(calls) != 0 {
 		t.Fatalf("nothing should have run: %v", calls)

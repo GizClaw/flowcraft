@@ -11,5 +11,4 @@ agents:
       impl: graph
       settings:
         path: "<graph>"
-        model: { provider: fake, name: fake-1 }
     limits: { idle: 5m, max_sessions: 4 }

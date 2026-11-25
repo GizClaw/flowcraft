@@ -100,7 +100,6 @@ agents:
     program:
       impl: graph
       settings:
-        model: { provider: openai, name: gpt-4o-mini }
         path: /srv/agent/graphs/assistant.yaml
     limits: { idle: 30m, max_sessions: 8 }
     hooks:

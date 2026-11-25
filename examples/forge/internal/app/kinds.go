@@ -16,7 +16,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/inference/anthropic"
@@ -31,13 +30,6 @@ import (
 // relative path resolves against.
 type graphSettings struct {
 	Path string `json:"path"`
-	// Model is what a node calls when the graph names none. It is written here because the engine's
-	// default is the engine's setting: the grant says which models a session may reach, and this says
-	// which one a silence means.
-	Model struct {
-		Provider string `json:"provider"`
-		Name     string `json:"name"`
-	} `json:"model"`
 	// Scripts is the directory a script node's `path` resolves against. It is the workspace, named by
 	// the document, so a scenario writes `rules/vote_tally.star` and means the file beside it.
 	Scripts string `json:"scripts,omitempty"`
@@ -76,10 +68,7 @@ func graphProgram(settings graphSettings) (agent.Program, error) {
 	if err != nil {
 		return nil, err
 	}
-	option := graph.WithProgramDefaultModel(model.ModelRef{
-		ID: model.ModelID{Provider: settings.Model.Provider, Name: settings.Model.Name},
-	})
-	return graph.NewProgram(compiled, option), nil
+	return graph.NewProgram(compiled), nil
 }
 
 // filesSettings is the file tool's written form: whether the model may be handed an image.
