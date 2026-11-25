@@ -28,12 +28,21 @@ type openOptions struct {
 	chain identity.Chain
 }
 
-// WithChain records the delegation lineage the session runs under.
+// withChain records the delegation lineage the session runs under.
 //
-// It is the only way a session learns it is somebody's child: a caller-opened session has no
-// chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
-// delegation's max_depth counts was always zero, so the limit never fired.
-func WithChain(chain identity.Chain) OpenOption {
+// It is deliberately not an [OpenOption] an application can pass. A lineage is not something a
+// caller states, it is something the host *did*: [delegator.Delegate] is the only code that opens a
+// child, and it is the only code that knows the parent, the chain id and the depth it just minted.
+//
+// Three invariants read this value and all of them assume it. `max_depth` counts the depth, so a
+// caller-set chain could reset it. The approval route asks the lineage's last element for a
+// decision, so a chain whose parent never asked for the session is a question nobody can answer —
+// the child's turn would stop at input-required with no one to resume it. And the spans and run
+// records name the chain, so a fabricated one is an audit trail for a delegation that never
+// happened. Nothing outside this package needs it: an application that wants a session's lineage
+// reads it from the host, and a resume after a restart will read the chain the checkpoint recorded
+// rather than a value the caller supplies.
+func withChain(chain identity.Chain) OpenOption {
 	return func(o *openOptions) { o.chain = chain }
 }
 

@@ -224,7 +224,7 @@ With no escalator installed the refusal stands: the feature is opt-in, like appr
 
 | Call                                     | Use                                                                                                                                                               |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                                     |
+| `Agents.Open`                            | Admit a session under the grant the caller states. The delegation lineage is the host's to attach, not an option: a session a caller opens is nobody's child.     |
 | `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                                 |
 | `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                      |
 | `Agents.EvictIdle(agent, now)`           | Evict by the agent's `limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |

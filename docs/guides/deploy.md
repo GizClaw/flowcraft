@@ -370,16 +370,16 @@ session, err := agents.Open(ctx, sessionID, "assistant", authority)
 for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
-| Call                                           | Use                                                                                                    |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                         |
-| `Agents.Open`                                  | Admit a session under the `policy.Grant` its caller states; `WithChain` attaches a delegation lineage. |
-| `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                             |
-| `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                    |
-| `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                     |
-| `Agents.EvictIdle`                             | Evict by the agent's `limits.idle`. Explicit, and it skips a running session however long it has run.  |
-| `Agents.Names` / `Deployed`                    | What is installed.                                                                                     |
-| `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                           |
+| Call                                           | Use                                                                                                                            |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                                                 |
+| `Agents.Open`                                  | Admit a session under the `policy.Grant` its caller states. A delegation lineage is attached by the host, never by the caller. |
+| `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                                                     |
+| `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                                            |
+| `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                                             |
+| `Agents.EvictIdle`                             | Evict by the agent's `limits.idle`. Explicit, and it skips a running session however long it has run.                          |
+| `Agents.Names` / `Deployed`                    | What is installed.                                                                                                             |
+| `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                                                   |
 
 A reload retires the old program and closes it when its last session is gone: a
 session runs against what it was opened under.

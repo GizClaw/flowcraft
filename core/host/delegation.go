@@ -98,7 +98,7 @@ func (d *delegator) Delegate(ctx context.Context, req platform.DelegationRequest
 	if err != nil {
 		return platform.DelegationOutcome{}, err
 	}
-	if _, err := d.agents.Open(ctx, child, target, childGrant, WithChain(chain)); err != nil {
+	if _, err := d.agents.Open(ctx, child, target, childGrant, withChain(chain)); err != nil {
 		return platform.DelegationOutcome{}, err
 	}
 

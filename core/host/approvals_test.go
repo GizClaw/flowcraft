@@ -37,7 +37,7 @@ func askingChild(t *testing.T, approval Approval, chain identity.Chain) (*Agents
 	if err := agents.Add(dep); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	session, err := agents.Open(t.Context(), "p1/child-1", "child", permissiveGrant("local"), WithChain(chain))
+	session, err := agents.Open(t.Context(), "p1/child-1", "child", permissiveGrant("local"), withChain(chain))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -116,10 +116,10 @@ distinguishable and a resumed parent's next edge does not collide with the one b
 it; nothing dedupes two `Delegate` calls for the same input, because each call is a new
 child.
 
-The child is opened with `host.WithChain`, and the first edge of a chain **mints** its
-id (`chain-` and eight random bytes); every edge below it keeps that id and adds one to
-the depth. Without an id the lineage cannot be attached at all, which is why the host
-mints one before opening.
+The host opens the child with the lineage it just minted, and the first edge of a chain
+**mints** its id (`chain-` and eight random bytes); every edge below it keeps that id
+and adds one to the depth. Without an id the lineage cannot be attached at all, which is
+why the host mints one before opening.
 
 **Sync** runs the child on the caller's context, bounded by `max_concurrent` (a slot the
 parent holds for the run) and by `timeout`; the child session exists for the length of
@@ -145,14 +145,12 @@ another conversation's child, or its own parent.
 
 ## Lineage
 
-```go
-agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: depth}))
-```
-
-- `host.WithChain` is the only way a session learns it is somebody's child: a session a
-  caller opens has no chain, and a delegated edge is the only thing that knows the
-  lineage. Without it the depth `max_depth` counts would always be zero, so the limit
-  would never fire.
+- The lineage is the host's to attach, not the caller's to state: delegation is the only
+  code path that opens a child, and it is the only place that knows the parent, the
+  chain id and the depth. There is no `Open` option for it, because a chain a caller
+  supplied would be a delegation edge that never happened — and three things read it:
+  `max_depth` counts its depth, the approval route asks its last element for a decision,
+  and the spans name it.
 - The lineage lives on `identity.Run` (`ChainID`, `Depth`) and is attached per run by the
   session, after the session facts, through `inject.Chain`. Every span a layer beneath
   opens carries it, so a whole chain is one trace.
