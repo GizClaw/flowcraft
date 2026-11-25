@@ -1,13 +1,18 @@
 name: Windows sandbox stress
 
-# Nightly stress lane for the Windows sandbox's isolation paths.
+# Nightly stress lane for the Windows session layer.
 #
-# These tests create AppContainer profiles, grant DACLs, install WFP
-# filters and run a behavioral fence probe concurrently — the code path
-# that produced the rare heap corruption in issue #542. The merge-gate
-# lane runs them once (`-count=1`, no race detector); this lane repeats
-# them under the race detector so a flake or a memory-safety regression
-# shows up on a schedule instead of on a release.
+# What it covers: sandbox/sessionkit's Windows-only paths — the job object and
+# its kill-on-close tree, the ConPTY session and its exit codes, the environment
+# block, and the cap sampler that stops with the session. These are the pieces
+# that hand a process tree to a job object and read a pseudo-console back, which
+# is where a single pass misses an ordering bug.
+#
+# What it used to cover: an AppContainer/WFP isolation backend that lived at
+# core/sandbox-windows. That package is not in this tree — the lane kept naming it,
+# so every nightly run has failed with "matched no packages" since the module
+# split, silently, because nothing gates on this lane. The package list is
+# `make sandbox-faults FAULT_PACKAGES=./sessionkit/...` now, so a move is one edit.
 #
 # GODEBUG makes the garbage collector clobber freed objects and check
 # pointer validity, which turns latent mis-sized or dangling writes into
@@ -24,7 +29,7 @@ permissions:
 
 jobs:
   stress:
-    name: Stress core/sandbox-windows
+    name: Stress sandbox/sessionkit (windows)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -33,7 +38,6 @@ jobs:
         with:
           go-version: "1.26"
       - name: Race + repeat
-        working-directory: core
         env:
           GODEBUG: invalidptr=1,clobberfree=1
-        run: go test -race -count=3 -timeout 900s ./sandbox-windows/...
+        run: make sandbox-faults FAULT_PACKAGES=./sessionkit/... FAULT_COUNT=3

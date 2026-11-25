@@ -91,6 +91,8 @@ help:
 	@echo "  make bench-check  One iteration per benchmark (the CI bench lane)"
 	@echo "  make bench-compare  Compare two .bench files with benchstat (OLD= NEW=)"
 	@echo "  make test-shuffle   Run the tests in random order, three times"
+	@echo "  make sandbox-faults  Repeat the sandbox failure paths under the race detector"
+	@echo "                   (what the nightly lanes run)"
 	@echo "  make fuzz        Run the fuzz targets for FUZZTIME (default 15s);"
 	@echo "                   FUZZ_SEED=5m is the run whose corpus files are committed"
 	@echo "  make stress      Stress one test (PKG= ./pkg RUN=TestName COUNT=200)"
@@ -282,6 +284,22 @@ test-shuffle:
 .PHONY: fuzz
 fuzz:
 	@scripts/fuzz.sh
+
+# The nightly stability lanes. The package list lives here rather than in the workflow,
+# which is what went wrong the first time: both jobs kept naming core/sandbox-remote,
+# core/sandbox/sessionkit and core/sandbox-local after those packages moved into the
+# sandbox module, so every nightly run has failed with "matched no packages" — quietly,
+# because a diagnostic lane gates nothing. A lane is only as alive as the paths it names.
+#
+# netpolicy is here because the MITM proxy is one of the failure paths: a transport that
+# dies mid-body, a client that hangs up during a CONNECT.
+FAULT_PACKAGES ?= ./remote/... ./sessionkit/... ./local/... ./netpolicy/...
+FAULT_COUNT ?= 10
+FAULT_TIMEOUT ?= 900s
+
+.PHONY: sandbox-faults
+sandbox-faults:
+	@cd sandbox && go test -race -count=$(FAULT_COUNT) -timeout $(FAULT_TIMEOUT) $(FAULT_PACKAGES)
 
 .PHONY: stress
 stress:

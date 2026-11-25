@@ -10,6 +10,13 @@ name: Sandbox fault injection
 # under the race detector, on both platforms that carry the stacked code
 # (linux for pipes and the group sampler, macOS for the kqueue and pty paths).
 #
+# The package list is `make sandbox-faults`, not a list here. It used to be a list
+# here, and it named core/sandbox-remote, core/sandbox/sessionkit and
+# core/sandbox-local — which stopped existing when those packages moved into the
+# sandbox module. Every nightly run since has failed with "matched no packages",
+# and nobody saw it, because these lanes are diagnostic and nothing gates on them.
+# That is the failure mode to avoid: a lane is only as alive as the paths it names.
+#
 # It is diagnostic: not a required check, and not part of make ci. A red run
 # here means a flake or a real ordering bug to investigate, not a blocked merge.
 
@@ -40,7 +47,4 @@ jobs:
       # Ten passes under the race detector: the retry matrix, the held read, the
       # slow event consumer, the restarted server, and the spawn/reap races.
       - name: Race + repeat
-        working-directory: core
-        run: |
-          go test -race -count=10 -timeout 900s \
-            ./sandbox-remote/... ./sandbox/sessionkit/ ./sandbox-local/
+        run: make sandbox-faults
