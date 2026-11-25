@@ -800,7 +800,16 @@ func inputRole(role message.Role) (inference.InputRole, error) {
 func toolCallsOf(msg message.Message) []message.ToolCall {
 	var calls []message.ToolCall
 	for _, part := range msg.Content.Parts {
-		if call, ok := part.(message.ToolCallPart); ok {
+		// Either T or *T satisfies message.Part, and a driver that builds the pointer
+		// is as valid as one that builds the value. A raw assertion on the value form
+		// finds nothing for the first of them, and "the model asked for no tools" is
+		// indistinguishable from "the model asked for tools this cannot see" — so the
+		// part is normalized first.
+		normalized, err := message.NormalizePart(part)
+		if err != nil {
+			continue
+		}
+		if call, ok := normalized.(message.ToolCallPart); ok {
 			calls = append(calls, call.Call)
 		}
 	}
