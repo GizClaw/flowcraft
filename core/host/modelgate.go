@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -59,6 +60,36 @@ func gateModels(base *inference.Provider, grant policy.Grant) *inference.Provide
 		out.Catalog = gatedCatalog{next: base.Catalog, grant: grant}
 	}
 	return &out
+}
+
+// checkDeclaredModels refuses an open whose authority excludes something the program says it will
+// call.
+//
+// The gate in this file already refuses every such call, but it refuses it in the middle of a turn:
+// for a program whose default model is outside the session's authority, that is every turn, and the
+// failure reads like a broken model rather than a permission that was never granted. Asking the
+// program up front turns it into one honest error at open.
+//
+// A program that cannot say (no [agent.ModelDeclarer]) is not refused here; the gate remains.
+func checkDeclaredModels(agentName string, program agent.Program, grant policy.Grant) error {
+	if len(grant.Models) == 0 {
+		return nil
+	}
+	declarer, ok := program.(agent.ModelDeclarer)
+	if !ok {
+		return nil
+	}
+	for _, ref := range declarer.DeclaredModels() {
+		if grant.AllowsModel(ref) {
+			continue
+		}
+		return &policy.Denial{
+			Check: policy.CheckModels,
+			Reason: "the program calls " + modelName(ref) + ", which this session is not granted" +
+				" (it may call " + grantedModels(grant.Models) + ")",
+		}
+	}
+	return nil
 }
 
 // gatedGenerator refuses a generation the session may not run.

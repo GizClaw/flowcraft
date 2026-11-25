@@ -169,6 +169,17 @@ type ConfigDecoder interface {
 	DecodeConfig(raw json.RawMessage) (any, error)
 }
 
+// ModelDeclarer is the optional capability of a node config that names models statically.
+//
+// The engine does not know which kinds call a model: a kind that does says so by having its
+// decoded config implement this, and a kind whose model is computed at run time simply does not.
+// The list is what a host checks a session's authority against before the first turn.
+type ModelDeclarer interface {
+	// DeclaredModels reports the models this config names. An empty list is a config that
+	// names none — the deployment's default model answers for it.
+	DeclaredModels() []model.ModelRef
+}
+
 // ConfigOf returns the config Build decoded, or decodes the raw document for a
 // caller that invoked the kind directly (a test).
 func ConfigOf[T any](in Invoke, decode func(json.RawMessage) (T, error)) (T, error) {

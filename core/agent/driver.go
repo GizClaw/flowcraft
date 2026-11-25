@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
@@ -33,6 +34,20 @@ type Program interface {
 	// artefact, a background goroutine. It runs when the deployment is removed, after its
 	// last session has closed.
 	Close() error
+}
+
+// ModelDeclarer is the optional half of a [Program] that can name the models its turns may call.
+//
+// A program that implements it lets a host refuse a session whose authority excludes a model the
+// program will ask for, before the first turn: that is a permission error at open rather than a
+// model failure in the middle of a conversation. A program that cannot say — a remote driver, a
+// script that computes a model at run time — simply does not implement it, and the call-time
+// check is what remains.
+//
+// It is a declaration, not a guarantee: a name computed at run time is not here, which is why the
+// host also filters every call. See host.modelgate.
+type ModelDeclarer interface {
+	DeclaredModels() []model.ModelRef
 }
 
 // Driver runs one session's turns.

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/core/policy"
@@ -96,3 +97,60 @@ func TestModelAccessWithoutASetSharesTheProvider(t *testing.T) {
 		t.Fatal("an unrestricted session did not get the process provider")
 	}
 }
+
+// declarer is a program that names its models, the way the graph program does.
+type declarer struct {
+	models []model.ModelRef
+}
+
+func (d declarer) DeclaredModels() []model.ModelRef           { return d.models }
+func (declarer) Open(agent.SessionInfo) (agent.Driver, error) { return nil, nil }
+func (declarer) Close() error                                 { return nil }
+
+// TestAnOpenRefusesAProgramThatCallsWhatTheSessionMayNot is the early half of the model check: a
+// program whose default or node model is outside the session's authority fails at open, where the
+// error reads as a permission, instead of on every turn, where it reads as a broken model.
+func TestAnOpenRefusesAProgramThatCallsWhatTheSessionMayNot(t *testing.T) {
+	program := declarer{models: []model.ModelRef{
+		{ID: modelID("openai", "gpt-4o")},
+		{ID: modelID("openai", "gpt-4o-mini")},
+	}}
+	grant := policy.Grant{Models: []model.ModelRef{{ID: modelID("openai", "gpt-4o-mini")}}}
+
+	err := checkDeclaredModels("referee", program, grant)
+	denial, ok := policy.AsDenial(err)
+	if !ok {
+		t.Fatalf("err = %v, want a policy denial", err)
+	}
+	if denial.Check != policy.CheckModels {
+		t.Fatalf("Check = %q, want %q", denial.Check, policy.CheckModels)
+	}
+	if !strings.Contains(denial.Reason, "gpt-4o") || !strings.Contains(denial.Reason, "gpt-4o-mini") {
+		t.Fatalf("the reason does not name both sides: %q", denial.Reason)
+	}
+}
+
+// TestAnOpenWithoutAModelSetAcceptsAnyProgram keeps the empty-set rule: an unrestricted session
+// checks nothing, because there is nothing to check against.
+func TestAnOpenWithoutAModelSetAcceptsAnyProgram(t *testing.T) {
+	program := declarer{models: []model.ModelRef{{ID: modelID("openai", "gpt-4o")}}}
+	if err := checkDeclaredModels("referee", program, policy.Grant{}); err != nil {
+		t.Fatalf("an unrestricted session refused a program: %v", err)
+	}
+}
+
+// TestAProgramThatCannotDeclareIsNotRefusedAtOpen: a remote driver has no static list, so the
+// call-time gate is the only check — and the open must not invent one.
+func TestAProgramThatCannotDeclareIsNotRefusedAtOpen(t *testing.T) {
+	if err := checkDeclaredModels("referee", generatorProgram{}, policy.Grant{
+		Models: []model.ModelRef{{ID: modelID("openai", "gpt-4o-mini")}},
+	}); err != nil {
+		t.Fatalf("a program with no declaration was refused: %v", err)
+	}
+}
+
+// generatorProgram is a program that says nothing about its models.
+type generatorProgram struct{}
+
+func (generatorProgram) Open(agent.SessionInfo) (agent.Driver, error) { return nil, nil }
+func (generatorProgram) Close() error                                 { return nil }

@@ -74,6 +74,24 @@ func NewProgram(g *Graph, opts ...ProgramOption) *Program {
 	return &Program{g: g, opts: o}
 }
 
+// DeclaredModels reports the models this program may call: the graph's own declarations plus the
+// deployment's default, which answers for every node that names none.
+//
+// It is the static half of a host's model check. A name computed at run time is not here, which
+// is why the host also filters each call.
+func (p *Program) DeclaredModels() []model.ModelRef {
+	refs := p.g.DeclaredModels()
+	if p.opts.DefaultModel.ID.Name == "" {
+		return refs
+	}
+	for _, ref := range refs {
+		if ref == p.opts.DefaultModel {
+			return refs
+		}
+	}
+	return append(refs, p.opts.DefaultModel)
+}
+
 // Open binds the program to one session.
 //
 // It cannot fail: nothing is compiled or dialled here, because the graph was compiled when the

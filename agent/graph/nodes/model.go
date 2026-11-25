@@ -168,6 +168,22 @@ type toolsConfig struct {
 	Choice *inference.ToolChoice `json:"choice"`
 }
 
+// DeclaredModels reports the model this node names, or nothing when it leaves the choice to the
+// deployment's default. It is what a host checks a session's authority against before a turn.
+func (c modelConfig) DeclaredModels() []model.ModelRef {
+	if c.Request.Model == nil {
+		return nil
+	}
+	ref := model.ModelRef{
+		ID:      model.ModelID{Provider: c.Request.Model.Provider, Name: c.Request.Model.Name},
+		Profile: c.Request.Model.Profile,
+	}
+	if ref.ID.Name == "" {
+		return nil
+	}
+	return []model.ModelRef{ref}
+}
+
 func (m *modelKind) Invoke(ctx context.Context, in graph.Invoke) (graph.NodeStream, error) {
 	config, err := graph.ConfigOf(in, decodeModelConfig)
 	if err != nil {
