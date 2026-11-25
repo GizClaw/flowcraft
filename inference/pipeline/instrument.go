@@ -193,7 +193,7 @@ func startCall[Req, Res any](
 		))
 	// Who the call belongs to comes from the context. The span is opened here
 	// because this is the one place every driver passes through.
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	return ctx, &call[Res]{
 		ctx:       ctx,
 		span:      span,

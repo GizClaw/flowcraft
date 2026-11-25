@@ -484,7 +484,7 @@ func startTurnSpan(ctx context.Context, req Request) (context.Context, trace.Spa
 			attribute.Int(telemetry.AttrAgentRound, req.Ordinal),
 			attribute.String(telemetry.AttrAgentTraceLevel, req.Trace.String()),
 		))
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	return ctx, span
 }
 

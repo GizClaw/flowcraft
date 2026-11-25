@@ -31,7 +31,7 @@ func startSessionSpan(ctx context.Context, session *Session) (context.Context, t
 	ctx = session.identity(ctx)
 	ctx, span := telemetry.TracerWithSuffix("host").Start(ctx, spanSessionOpen,
 		trace.WithAttributes(attribute.String(identity.AttrAgentName, session.agent)))
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	return ctx, span
 }
 
@@ -57,7 +57,7 @@ func startRunSpan(ctx context.Context, session *Session) (context.Context, trace
 			attribute.String(identity.AttrAgentName, session.agent),
 			attribute.String(telemetry.AttrAgentTraceLevel, session.deploy.observability.Trace.String()),
 		))
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	return ctx, span
 }
 

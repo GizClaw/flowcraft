@@ -289,7 +289,7 @@ func (a *Agents) Cancel(ctx context.Context, sessionID, reason string) error {
 	}
 	ctx, span := telemetry.Start(ctx, telemetry.TracerWithSuffix("host"), spanCancel, telemetry.TraceNone,
 		trace.WithAttributes(attribute.String(identity.AttrAgentName, session.agent)))
-	span.SetAttributes(telemetry.Attrs(ctx)...)
+	span.SetAttributes(telemetry.AttrsFor(span, ctx)...)
 	defer span.End()
 
 	cancel := session.takeCancel()
