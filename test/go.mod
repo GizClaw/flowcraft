@@ -1,4 +1,4 @@
-module github.com/GizClaw/flowcraft/test/e2e
+module github.com/GizClaw/flowcraft/test
 
 go 1.26.0
 
@@ -38,13 +38,14 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-// The modules this test assembles are siblings in this workspace and are not all
-// tagged yet, so the requirements are local paths rather than versions. They become
-// versions — and the replaces disappear — at the release that tags them, exactly as
-// examples/forge's did.
+// One module, several packages: the assembler in internal/stack is what e2e, fault and
+// perf share, and a package cannot be shared across module boundaries. The modules this
+// test assembles are siblings in this workspace and are not all tagged yet, so the
+// requirements are local paths rather than versions. They become versions — and the
+// replaces disappear — at the release that tags them, exactly as examples/forge's did.
 replace (
-	github.com/GizClaw/flowcraft/agent => ../../agent
-	github.com/GizClaw/flowcraft/core => ../../core
-	github.com/GizClaw/flowcraft/sandbox => ../../sandbox
-	github.com/GizClaw/flowcraft/tool => ../../tool
+	github.com/GizClaw/flowcraft/agent => ../agent
+	github.com/GizClaw/flowcraft/core => ../core
+	github.com/GizClaw/flowcraft/sandbox => ../sandbox
+	github.com/GizClaw/flowcraft/tool => ../tool
 )

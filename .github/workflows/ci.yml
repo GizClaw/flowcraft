@@ -40,7 +40,7 @@ jobs:
               # One entry per module the checkout builds. The three implementation
               # modules are siblings of core, not packages inside it; a provider or a
               # backend is a package there, so the list does not recurse.
-              return sorted({"core", "sandbox", "inference", "agent", "tool", "test/e2e", "examples/forge"})
+              return sorted({"core", "sandbox", "inference", "agent", "tool", "test", "examples/forge"})
 
           dirs = module_dirs()
           # The lint gate skips a module that is built the way a reader builds it:
