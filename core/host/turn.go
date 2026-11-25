@@ -116,6 +116,14 @@ func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message)
 // of it.
 func (a *Agents) Resume(ctx context.Context, sessionID string, content message.Content) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
+		// The answer belongs to the session's question route before the turn starts: the resumed tool
+		// node asks its pre-flight again, and nil from it is what lets the call run.
+		if session, ok := a.Session(sessionID); ok && session.questions != nil && session.questions.open() {
+			if err := session.questions.reply(content); err != nil {
+				yield(nil, err)
+				return
+			}
+		}
 		msg := message.Message{Role: message.RoleUser, Content: content}
 		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, claimResume)
 		if err != nil {

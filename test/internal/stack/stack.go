@@ -397,6 +397,7 @@ func capabilities() *tool.CapSet {
 	platform.ProcessSlot.Provide(set, nil)
 	platform.SkillsSlot.Provide(set, nil)
 	platform.DelegationSlot.Provide(set, nil)
+	platform.AskSlot.Provide(set, nil)
 	return set
 }
 

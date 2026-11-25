@@ -116,7 +116,7 @@ func (d *ScriptedDriver) Run(ctx context.Context, _ agent.Request) iter.Seq2[age
 			yield(nil, agent.ErrAwaitingResume)
 			return
 		}
-		if !d.play(ctx, yield) {
+		if !d.play(ctx, yield, 0, true) {
 			return
 		}
 	}
@@ -133,7 +133,10 @@ func (d *ScriptedDriver) Resume(ctx context.Context, _ agent.Request) iter.Seq2[
 			yield(nil, agent.ErrAwaitingResume)
 			return
 		}
-		d.play(ctx, yield)
+		d.mu.Lock()
+		from := d.program.SuspendAt
+		d.mu.Unlock()
+		d.play(ctx, yield, from, false)
 	}
 }
 
@@ -145,7 +148,7 @@ func (d *ScriptedDriver) Paused() bool {
 }
 
 // play runs the script, stopping to ask where the program says so.
-func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error) bool) bool {
+func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error) bool, from int, maySuspend bool) bool {
 	d.mu.Lock()
 	d.runs++
 	steerAt := d.program.SteerAt
@@ -154,7 +157,8 @@ func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error
 	steps := d.program.steps
 	d.mu.Unlock()
 
-	for i, one := range steps {
+	for i := from; i < len(steps); i++ {
+		one := steps[i]
 		if err := ctx.Err(); err != nil {
 			yield(nil, err)
 			return false
@@ -164,7 +168,7 @@ func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error
 				return false
 			}
 		}
-		if i == suspendAt {
+		if maySuspend && i == suspendAt {
 			// The step stops here: nothing after it runs until Resume.
 			d.mu.Lock()
 			d.paused = true

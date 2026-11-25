@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
@@ -110,6 +111,8 @@ type Session struct {
 	// approvals routes this session's command questions to its parent. It is nil for a session a
 	// caller opened: nothing above it asked, so the deployment's approver answers inline.
 	approvals *approvalRoute
+	// questions is where an ask_user call's question goes, and where its answer waits.
+	questions *questionsRoute
 }
 
 // turnKind names who started a turn.
@@ -454,6 +457,14 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	capabilities := tool.NewCapSet()
 	platform.TreeSlot.Provide(capabilities, built.tree)
 	approvals := a.approvalRouteFor(sessionID, agentName, opening.chain)
+	// A root session's question goes to the application; a delegated child's reaches its parent as
+	// the suspension's text, so it gets no sink of its own.
+	var questionSink func(context.Context, string, message.Content) bool
+	if len(opening.chain.Lineage) == 0 {
+		questionSink = a.questions
+	}
+	questions := newQuestionsRoute(sessionID, questionSink)
+	platform.AskSlot.Provide(capabilities, questions)
 	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
 		policy:    a.approval,
 		agent:     agentName,
@@ -516,6 +527,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		models:     models,
 		chain:      opening.chain,
 		approvals:  approvals,
+		questions:  questions,
 	}
 	// A conversation restored from the store may have stopped to ask. The session opens paused
 	// then, so the first message cannot be taken as the answer to a question nobody saw — the

@@ -499,6 +499,13 @@ func (s *Session) answer(ctx context.Context, answer platform.DelegationAnswer) 
 		return "", errdefs.Validationf(
 			"host: %q is waiting for a decision: approve, deny or escalate", s.id)
 	}
+	// A question that is not an approval takes the caller's text: the resumed tool call reads it
+	// back through the question route.
+	if s.questions != nil && s.questions.open() {
+		if err := s.questions.reply(message.NewTextContent(answer.Text)); err != nil {
+			return "", err
+		}
+	}
 	return answer.Text, nil
 }
 

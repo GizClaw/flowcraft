@@ -209,6 +209,7 @@ func capabilities(sim *simtools.Source) *tool.CapSet {
 	platform.ProcessSlot.Provide(set, nil)
 	platform.SkillsSlot.Provide(set, nil)
 	platform.DelegationSlot.Provide(set, nil)
+	platform.AskSlot.Provide(set, nil)
 	return set
 }
 
