@@ -100,3 +100,70 @@ type errUnsupportedInput struct {
 func (e errUnsupportedInput) Error() string {
 	return "route: no target accepts " + e.part + " input (the first candidate was " + e.model + ")"
 }
+
+// preferOutputs reorders candidates so a target whose declared outputs cover the request's
+// intent comes first, keeping declaration order inside each group.
+//
+// This is the other half of the capabilities comment — "routing prefers targets whose declared
+// outputs cover the request intent" — and it is deliberately the opposite of [acceptContent]:
+// `Outputs` is a preference, so nothing is ever dropped and a fleet that declares no outputs at
+// all keeps its declaration order. A request that names no output means text.
+func preferOutputs(targets []Target, want inference.Output) []Target {
+	if len(targets) < 2 {
+		return targets
+	}
+	kind := outputKind(want)
+	preferred := make([]Target, 0, len(targets))
+	rest := make([]Target, 0, len(targets))
+	for _, target := range targets {
+		if coversOutputs(declaredOutputs(target), kind) {
+			preferred = append(preferred, target)
+			continue
+		}
+		rest = append(rest, target)
+	}
+	return append(preferred, rest...)
+}
+
+// outputKind maps the request's intent onto the content kind it would produce.
+func outputKind(want inference.Output) message.PartKind {
+	switch want {
+	case inference.OutputImage:
+		return message.PartImage
+	case inference.OutputAudio:
+		return message.PartAudio
+	case inference.OutputVideo:
+		return message.PartVideo
+	default:
+		return message.PartText
+	}
+}
+
+// coversOutputs reports whether a declared output list covers the kind. Undeclared covers
+// everything, for the same reason an undeclared input list filters nothing.
+func coversOutputs(declared []message.PartKind, want message.PartKind) bool {
+	if len(declared) == 0 {
+		return true
+	}
+	for _, kind := range declared {
+		if kind == want {
+			return true
+		}
+	}
+	return false
+}
+
+// declaredOutputs is what one target says it can produce.
+func declaredOutputs(target Target) []message.PartKind {
+	if target.Provider.Catalog == nil || target.Model.Name == "" {
+		return nil
+	}
+	descriptor, found := target.Provider.Catalog.Describe(model.ModelID{
+		Provider: target.Model.Provider,
+		Name:     target.Model.Name,
+	})
+	if !found {
+		return nil
+	}
+	return descriptor.Capabilities.Outputs
+}

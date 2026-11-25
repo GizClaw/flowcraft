@@ -15,7 +15,7 @@ import (
 // refusal from one with an answer from another.
 func (r *Router) Decide(ctx context.Context, request inference.DecisionRequest) (inference.DecisionResponse, error) {
 	return dispatch(ctx, operationDecide, r.targets, r.policy.Decision, request,
-		modelNameOfDecide, withDecideTarget, invokeDecide, r.policy.Retry)
+		modelNameOfDecide, withDecideTarget, invokeDecide, r.policy.Retry, nil)
 }
 
 // modelNameOfDecide is the model the caller asked to judge.
