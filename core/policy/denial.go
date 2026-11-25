@@ -28,7 +28,32 @@ const (
 	// a dashboard counting denials by check should not need a second vocabulary for the one rule
 	// that happens to involve a person. What this package still does not do is decide it.
 	CheckApproval Check = "approval"
+	// CheckEscalation is a widening outside what the deployment declared: a grant
+	// that would drop what the session already had, one that reaches beyond the
+	// escalation, or a session that has spent its widening budget.
+	//
+	// It is here beside [CheckApproval] for the same reason: the host decides
+	// whether to ask, and the rule that refuses is this package's, so a refusal
+	// names the rule without a second vocabulary.
+	CheckEscalation Check = "escalation"
 )
+
+// Checks lists every rule that can refuse, in declaration order.
+//
+// It exists because the recording layer and the guard test both need the whole
+// set: a check added without being listed would be counted under no name, and a
+// dashboard would report a rule that never fires.
+func Checks() []Check {
+	return []Check{
+		CheckClamp,
+		CheckVisibility,
+		CheckWrites,
+		CheckModels,
+		CheckBudget,
+		CheckApproval,
+		CheckEscalation,
+	}
+}
 
 // Denial is a policy refusal.
 //
@@ -71,7 +96,8 @@ func AsDenial(err error) (*Denial, bool) {
 }
 
 // deny builds a denial. Keeping construction in one function is what makes the
-// five checks enumerable: every refusal in this package goes through it.
+// checks enumerable — see [Checks] — because every refusal in this package goes
+// through it.
 func deny(check Check, format string, args ...any) error {
 	return &Denial{Check: check, Reason: fmt.Sprintf(format, args...)}
 }

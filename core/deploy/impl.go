@@ -72,6 +72,15 @@ type Factory struct {
 	// to skip. The loader drops the link instead of building one that turns itself off, which
 	// is what keeps the level a construction decision rather than a per-call branch.
 	Trace telemetry.TraceLevel
+	// Enforcement is what a backend implementation can enforce on the platform this binary was
+	// built for. It is meaningless for every other group.
+	//
+	// It is declared here because the loader has to answer "does this deployment's backend
+	// bound writes" while reading the document, and a per-session instance — the only other
+	// place the answer exists — is built later, by the host, for one confine. A backend that
+	// declares nothing is a backend nothing can be escalated on: the conservative answer is
+	// the one a missing declaration gets.
+	Enforcement sandbox.Enforcement
 }
 
 // AtTrace declares the least trace level this implementation is worth installing at.
@@ -79,6 +88,18 @@ type Factory struct {
 //	impls.Middleware(deploy.MiddlewareImpl("telemetry", build).AtTrace(telemetry.TraceCall))
 func (f Factory) AtTrace(level telemetry.TraceLevel) Factory {
 	f.Trace = level
+	return f
+}
+
+// Enforcing declares what a backend implementation can enforce on this platform.
+//
+//	impls.Backend(deploy.BackendImpl("bwrap", bwrap.New).
+//		Enforcing(bwrap.Capabilities().Policy))
+//
+// It travels into the process's capabilities, which is what lets an agent document that
+// declares an escalation be refused at load on a backend with no boundary to exceed.
+func (f Factory) Enforcing(enforcement sandbox.Enforcement) Factory {
+	f.Enforcement = enforcement
 	return f
 }
 

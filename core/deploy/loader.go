@@ -242,8 +242,9 @@ func (l *Loader) planHooks(agentName string, docs []hookDocument) ([]PlannedHook
 }
 
 // checkGrant is the document-versus-process check for authority: a grant that names a
-// backend or a model this process does not carry is a deployment that would fail on its
-// first session, and saying so at install time is the whole point of this layer.
+// backend or a model this process does not carry, or that declares an escalation the backend
+// cannot host, is a deployment that would fail on its first session, and saying so at install
+// time is the whole point of this layer.
 func checkGrant(agentName string, grant policy.Grant, caps Capabilities) error {
 	if sandboxName := strings.TrimSpace(grant.Sandbox); sandboxName != "" {
 		if !slices.Contains(caps.Backends, sandboxName) {
@@ -259,6 +260,34 @@ func checkGrant(agentName string, grant policy.Grant, caps Capabilities) error {
 				"deploy: agent %q names model %q, which this process does not serve (%s)",
 				agentName, ref, listOf(caps.Models))
 		}
+	}
+	return checkEscalation(agentName, grant, caps)
+}
+
+// checkEscalation refuses a declaration the selected backend has no boundary for.
+//
+// An escalation is "exceed the confine, with permission" — so a backend that does not confine
+// writes has nothing to exceed, and accepting the declaration would give the model a success
+// signal that means nothing: the command it was refused for never reached a boundary at all.
+//
+// What the process reports is a per-backend declaration ([Capabilities.Enforcement]); a backend
+// it does not report is refused too, because "nobody said" is not "it bounds writes". The
+// declaration's own two rules — only the widenable dimensions, and never narrower than the
+// grant — are checked by [policy.Grant.Normalized], which runs before this.
+func checkEscalation(agentName string, grant policy.Grant, caps Capabilities) error {
+	if grant.Escalate == nil {
+		return nil
+	}
+	name := strings.TrimSpace(grant.Sandbox)
+	if name == "" {
+		return errdefs.NotAvailablef(
+			"deploy: agent %q declares grant.escalate but selects no sandbox; there is no boundary to widen",
+			agentName)
+	}
+	if !caps.EnforcementOf(name).FilesystemBounds {
+		return errdefs.NotAvailablef(
+			"deploy: agent %q declares grant.escalate on sandbox %q, which does not confine writes; there is no boundary to widen",
+			agentName, name)
 	}
 	return nil
 }
@@ -294,8 +323,9 @@ func (l *Loader) planBackend(entry entryDocument) (PlannedBackend, error) {
 	}
 	build := planned.make
 	return PlannedBackend{
-		Name: entry.Name,
-		Impl: planned.impl,
+		Name:        entry.Name,
+		Impl:        planned.impl,
+		Enforcement: planned.enforcement,
 		New: func() (func(sandbox.Confine) (sandbox.Runner, error), error) {
 			built, err := build()
 			if err != nil {
@@ -387,7 +417,9 @@ func (l *Loader) planProgram(entry programDocument) (PlannedProgram, error) {
 type planned struct {
 	impl  string
 	trace telemetry.TraceLevel
-	make  func() (any, error)
+	// enforcement is the registration's answer for a backend, and zero for every other group.
+	enforcement sandbox.Enforcement
+	make        func() (any, error)
 }
 
 // plan is the one path every family takes: find the implementation, then decode the settings
@@ -412,9 +444,10 @@ func (l *Loader) plan(group Group, label, impl string, raw json.RawMessage) (pla
 		return planned{}, err
 	}
 	return planned{
-		impl:  impl,
-		trace: factory.Trace,
-		make:  func() (any, error) { return factory.Make(settings) },
+		impl:        impl,
+		trace:       factory.Trace,
+		enforcement: factory.Enforcement,
+		make:        func() (any, error) { return factory.Make(settings) },
 	}, nil
 }
 

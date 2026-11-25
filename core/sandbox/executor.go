@@ -100,6 +100,11 @@ func execOutcome(err error) string {
 		return "timeout"
 	case errors.Is(err, context.Canceled):
 		return "canceled"
+	case errors.Is(err, ErrConfineDenied):
+		// The boundary refused before anything ran, which is the classification a host may
+		// act on by widening scope for one command; it is also a policy refusal, so this
+		// case has to come first to stay readable.
+		return "confine_denied"
 	case isPolicyDenial(err):
 		// The command was refused before anything ran: reporting it as a failed execution would
 		// count a rule as a bug.

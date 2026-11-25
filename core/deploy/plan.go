@@ -95,6 +95,9 @@ type PlannedBackend struct {
 	Name string
 	// Impl is the registered implementation the document's kind selected.
 	Impl string
+	// Enforcement is what the implementation declared it can enforce on this platform, which
+	// is what an agent document's escalation declaration is checked against at load.
+	Enforcement sandbox.Enforcement
 	// New returns the constructor for one session's backend instance. The factory is process-wide;
 	// the instance is not, because the confine it enforces comes from the session's grant.
 	New func() (func(sandbox.Confine) (sandbox.Runner, error), error)
@@ -146,6 +149,13 @@ type Capabilities struct {
 	// Backends are the backend instances this process configured; a grant's sandbox field
 	// selects one of them by name.
 	Backends []string
+	// Enforcement is what each of those backends can enforce, by name.
+	//
+	// A backend missing from the map is one whose enforcement is not reported, and a
+	// deployment that declares an escalation on it is refused: "nobody said it bounds writes"
+	// and "it bounds writes" are different answers, and only the second one may be escalated
+	// on.
+	Enforcement map[string]sandbox.Enforcement
 	// Models are the models it serves, as "provider/name": the ids its providers' catalogs
 	// report. They are read after the process is built, because a provider's settings are opaque
 	// here — `deploy` decodes none of them.
@@ -160,6 +170,11 @@ func (p ProcessPlan) BackendNames() []string {
 		names = append(names, backend.Name)
 	}
 	return names
+}
+
+// EnforcementOf reports what one configured backend can enforce.
+func (c Capabilities) EnforcementOf(backend string) sandbox.Enforcement {
+	return c.Enforcement[backend]
 }
 
 // ModelIDs is Models as the typed value an agent document is checked against.

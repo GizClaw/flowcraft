@@ -137,8 +137,17 @@ func TestOpenBuildsWhatThePlanDescribed(t *testing.T) {
 		Providers: []deploy.PlannedProvider{plannedProvider(provider{
 			name: "gpt", journal: log, models: []model.ModelDescriptor{modelRef("openai", "gpt-5")},
 		})},
-		Backends: []deploy.PlannedBackend{plannedBackend(runner{name: "local", journal: log})},
-		Tools:    []deploy.PlannedToolSource{plannedSource("workspace")},
+		Backends: []deploy.PlannedBackend{
+			plannedBackend(runner{name: "local", journal: log}),
+			// A backend that declares what it can enforce, which is what an agent document's
+			// escalation declaration is checked against.
+			{Name: "hardened", Impl: "fake",
+				Enforcement: sandbox.Enforcement{FilesystemBounds: true},
+				New: func() (func(sandbox.Confine) (sandbox.Runner, error), error) {
+					return func(sandbox.Confine) (sandbox.Runner, error) { return nil, nil }, nil
+				}},
+		},
+		Tools: []deploy.PlannedToolSource{plannedSource("workspace")},
 	}
 	res, err := Open(context.Background(), plan, testOptions(t))
 	if err != nil {
@@ -154,8 +163,14 @@ func TestOpenBuildsWhatThePlanDescribed(t *testing.T) {
 		t.Fatal("the tool table is missing")
 	}
 	caps := res.Capabilities()
-	if len(caps.Backends) != 1 || caps.Backends[0] != "local" {
+	if len(caps.Backends) != 2 || caps.Backends[0] != "local" {
 		t.Fatalf("backends = %v", caps.Backends)
+	}
+	if !caps.EnforcementOf("hardened").FilesystemBounds {
+		t.Fatalf("enforcement = %+v, want the backend's declaration", caps.Enforcement)
+	}
+	if caps.EnforcementOf("local").FilesystemBounds {
+		t.Fatal("a backend that declared nothing was reported as bounding writes")
 	}
 	if len(caps.Models) != 1 || caps.Models[0] != "openai/gpt-5" {
 		t.Fatalf("models = %v, want the catalog's answer", caps.Models)

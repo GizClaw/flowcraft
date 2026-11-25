@@ -34,7 +34,10 @@ type Resource struct {
 	providers []*inference.Provider
 	models    *inference.Provider
 	backends  map[string]BackendFactory
-	order     []string
+	// enforcement is what each backend declared it can enforce, which a deployment's escalation
+	// declaration is checked against before a session is opened.
+	enforcement map[string]sandbox.Enforcement
+	order       []string
 	// skills is the catalog discovered from the plan's roots, once for the whole process: the tools
 	// search what the host reports, so there is one discovery and not one per session.
 	skills   *skill.Index
@@ -107,6 +110,7 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 
 	r := &Resource{
 		backends:      make(map[string]BackendFactory, len(plan.Backends)),
+		enforcement:   make(map[string]sandbox.Enforcement, len(plan.Backends)),
 		observability: plan.Observability,
 		newView:       o.View,
 	}
@@ -145,6 +149,7 @@ func Open(ctx context.Context, plan deploy.ProcessPlan, opts ...Options) (*Resou
 			return unwind(fmt.Errorf("resource: sandbox %q built no constructor", planned.Name))
 		}
 		r.backends[planned.Name] = factory
+		r.enforcement[planned.Name] = planned.Enforcement
 		r.order = append(r.order, planned.Name)
 	}
 
@@ -253,6 +258,12 @@ func (r *Resource) backendFactory(name string) (BackendFactory, bool) {
 // catalog's answer.
 func (r *Resource) Capabilities() deploy.Capabilities {
 	caps := deploy.Capabilities{Backends: append([]string(nil), r.order...)}
+	if len(r.enforcement) > 0 {
+		caps.Enforcement = make(map[string]sandbox.Enforcement, len(r.enforcement))
+		for name, enforcement := range r.enforcement {
+			caps.Enforcement[name] = enforcement
+		}
+	}
 	seen := make(map[string]struct{}, len(caps.Backends))
 	for _, provider := range r.providers {
 		if provider.Catalog == nil {
@@ -289,6 +300,7 @@ func (r *Resource) Close() error {
 	r.tools = nil
 	r.dispatch = nil
 	r.backends = nil
+	r.enforcement = nil
 	r.order = nil
 	r.providers = nil
 	r.models = nil

@@ -32,6 +32,9 @@ type Agents struct {
 	fingerprint agent.Fingerprint
 	// approval is the host's rule for starting a command; nil installs the backend undecorated.
 	approval *Approval
+	// escalator answers a widening request; nil means a session that declares an escalation
+	// cannot be widened, which its first refused command reports.
+	escalator Escalator
 	// tenant and authority are the process facts a session's identity is made of.
 	tenant    string
 	authority string

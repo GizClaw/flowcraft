@@ -2,8 +2,11 @@ package host
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -81,17 +84,40 @@ func (w Whitelist) Covers(argv []string) bool {
 	return false
 }
 
-// approvalStarter is the decorator the session's process capability carries when a policy exists.
+// approvalStarter is the decorator the session's process capability carries when a policy or an
+// escalation declaration exists.
+//
+// Two rules, in this order and never the other way round: the command has to be allowed to run at
+// all, and only a command the boundary then refuses is offered for a widening. Asking an operator to
+// widen a boundary for a command the other operator already refused would be two answers to one
+// question, and the second one would override the first.
 type approvalStarter struct {
-	next    sandbox.SessionStarter
-	policy  Approval
+	next sandbox.SessionStarter
+	// policy is the host's approval rule; nil when this process configured none.
+	policy  *Approval
 	agent   string
 	session string
+	// widener is the session's escalation state; nil when its deployment declares none.
+	widener *widener
+	// factory builds a temporary cell from a widened grant, and audit keeps the record a widening
+	// that ran leaves behind.
+	factory   BackendFactory
+	escalator Escalator
+	audit     func(context.Context, escalationRecord)
 }
 
-// Start refuses the command the policy does not cover before anything is spawned.
+// Start runs the command under both of the host's rules.
 func (s approvalStarter) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
-	if s.policy.Whitelist.Covers(spec.Argv) {
+	running, err := s.admit(ctx, spec)
+	if !errors.Is(err, sandbox.ErrConfineDenied) || s.widener == nil {
+		return running, err
+	}
+	return s.escalate(ctx, spec, err)
+}
+
+// admit applies the approval rule and starts the command in the session's own cell.
+func (s approvalStarter) admit(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
+	if s.policy == nil || s.policy.Whitelist.Covers(spec.Argv) {
 		return s.next.Start(ctx, spec)
 	}
 	request := ApprovalRequest{
@@ -126,6 +152,98 @@ func (s approvalStarter) Start(ctx context.Context, spec sandbox.SessionSpec) (s
 	return s.next.Start(ctx, spec)
 }
 
+// escalate asks for a widening of this one command and, when it is granted, runs the command once
+// in a temporary cell built from the widened grant.
+//
+// The retry happens once. A second refusal inside the widened cell is the answer, because a model
+// that could re-ask would turn the confine into a prompt it can summon, and an operator answering
+// the same question in a loop is not a decision.
+//
+// Every outcome is counted, and only an attempt that actually ran is written to the ledger: a
+// refusal, a spent budget or a missing escalator changed nothing, and a record of "nothing
+// happened" per attempt is a log a model can inflate by walking into its boundary.
+func (s approvalStarter) escalate(ctx context.Context, spec sandbox.SessionSpec, refused error) (sandbox.Session, error) {
+	if s.escalator == nil {
+		// Declared and not installed is a failure, not a silent narrow retry: unlike approval,
+		// which stays opt-in, the declaration is a promise to an operator that was made and then
+		// not kept.
+		recordEscalation(ctx, s.agent, escalationUnavailable)
+		return nil, errdefs.NotAvailablef(
+			"host: the command is outside the session's confine and this process installed no escalator")
+	}
+	if !s.widener.take() {
+		recordEscalation(ctx, s.agent, escalationExhausted)
+		recordDenial(ctx, policy.CheckEscalation, s.agent)
+		return nil, &policy.Denial{
+			Check:  policy.CheckEscalation,
+			Reason: "the session has used its widenings; the command stays outside its confine",
+		}
+	}
+	from := s.widener.bind
+	from.Escalate = s.widener.declaration
+	request := s.widener.request(s.agent, s.session, spec)
+
+	asked := time.Now()
+	answer, err := s.escalator.ApproveWidening(ctx, request)
+	if err != nil {
+		recordEscalation(ctx, s.agent, escalationDenied)
+		if _, ok := policy.AsDenial(err); !ok {
+			telemetry.WarnErr(ctx, "host: the escalator failed", err)
+		}
+		// The original refusal is what the model gets: the command did not run, and what it needs
+		// to know is that. The operator's reason belongs to the operator.
+		return nil, refused
+	}
+	widened, err := from.Widen(answer)
+	if err != nil {
+		// An answer outside the declaration is refused, not trusted: an approval widens one
+		// boundary within what the deployment declared, and a host that honoured more would make
+		// the declaration advisory.
+		recordEscalation(ctx, s.agent, escalationUnauthorized)
+		telemetry.WarnErr(ctx, "host: the escalator answered outside the declaration", err)
+		return nil, refused
+	}
+	attemptCtx, attempt, cancel := s.widener.attempt(ctx, spec)
+	running, err := temporaryCell(attemptCtx, cancel, s.factory, widened, attempt)
+	switch {
+	case err == nil:
+		s.recordWidening(ctx, spec, widened, time.Since(asked), escalationApproved)
+		return running, nil
+	case errors.Is(err, sandbox.ErrConfineDenied):
+		// The widened boundary refused the command too. One retry is the whole offer, so this is
+		// the answer and it is returned as it came — never as a second question, or a model could
+		// summon prompts by walking into whatever boundary it is given.
+		s.recordWidening(ctx, spec, widened, time.Since(asked), escalationApproved)
+		return nil, err
+	default:
+		// The temporary cell never started a command: the widening was granted but nothing ran,
+		// so there is nothing to write down.
+		recordEscalation(ctx, s.agent, escalationUnavailable)
+		telemetry.WarnErr(ctx, "host: the widened cell did not start the command", err)
+		return nil, refused
+	}
+}
+
+// recordWidening counts the widening and writes what it left behind.
+//
+// It runs for every widening that reached a temporary cell, whatever the command then did: the
+// decision is the fact, and a ledger that only recorded the successful commands would lose exactly
+// the widenings worth reviewing.
+func (s approvalStarter) recordWidening(ctx context.Context, spec sandbox.SessionSpec, widened policy.Grant, took time.Duration, outcome string) {
+	recordEscalation(ctx, s.agent, outcome)
+	escalated(ctx, s.widener.bind.Digest(), widened.Digest())
+	record := escalationRecord{
+		Check:       escalationKind,
+		CommandHash: commandHash(spec.Argv, spec.Opts.WorkDir),
+		FromBind:    s.widener.bind.Digest(),
+		ToBind:      widened.Digest(),
+		Approver:    describe(s.escalator),
+		Decision:    outcome,
+		DurationMS:  took.Milliseconds(),
+	}
+	s.audit(ctx, record)
+}
+
 // refusal builds the denial for a command nothing approved, and counts it.
 //
 // The reason is rendered back to the model, so it says what was refused without being a log line.
@@ -137,11 +255,15 @@ func refusal(ctx context.Context, agentName, reason string) error {
 // asDenial reports whether err is a policy refusal, which is what the host's own rules return.
 func asDenial(err error) (*policy.Denial, bool) { return policy.AsDenial(err) }
 
-// starterFor wraps the backend's starter in the host's approval rule, when there is one.
-func starterFor(runner sandbox.Runner, approval *Approval, agentName, sessionID string) sandbox.SessionStarter {
-	starter := sandbox.SessionStarter(runner)
-	if approval == nil {
-		return starter
+// starterFor wraps the backend's starter in the host's rules, when there are any.
+//
+// A process with no approval policy and a session whose deployment declares no escalation keeps the
+// backend's own starter, undecorated: both rules are opt-in, and a decorator that forwarded six
+// methods would be the cost of pretending otherwise.
+func starterFor(runner sandbox.Runner, s approvalStarter) sandbox.SessionStarter {
+	s.next = runner
+	if s.policy == nil && s.widener == nil {
+		return runner
 	}
-	return approvalStarter{next: starter, policy: *approval, agent: agentName, session: sessionID}
+	return s
 }

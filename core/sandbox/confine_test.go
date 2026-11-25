@@ -1,6 +1,8 @@
 package sandbox_test
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -250,5 +252,27 @@ func TestValidateConfineAcceptsAnUnrestrictedWriteSet(t *testing.T) {
 	if err := sandbox.ValidateConfine(sandbox.Confine{Files: policy.Files{Read: []string{pathtest.Abs("srv")}, Write: []string{pathtest.Abs("srv")}}},
 		sandbox.Enforcement{FilesystemBounds: true}); err != nil {
 		t.Fatalf("a bounding backend refused a write set: %v", err)
+	}
+}
+
+// TestDeniedfIsTheRefusalAHostActsOn pins the two classifications one refusal has to carry: the
+// boundary refused before anything ran (ErrConfineDenied, which a host may answer by widening one
+// command), and a rule refused rather than an execution failing (the policy classification the
+// rest of the platform counts).
+func TestDeniedfIsTheRefusalAHostActsOn(t *testing.T) {
+	err := sandbox.Deniedf("write %q is outside the write set", "/srv/w/out/x")
+	if !errors.Is(err, sandbox.ErrConfineDenied) {
+		t.Fatalf("err = %v, want it to be a confine refusal", err)
+	}
+	if !errdefs.IsPolicyDenied(err) {
+		t.Fatalf("err = %v, want the policy classification", err)
+	}
+	if !strings.Contains(err.Error(), "/srv/w/out/x") {
+		t.Fatalf("err = %q, want it to name what it refused", err)
+	}
+	// A plain error is not a confine refusal, which is what keeps the host from asking an
+	// operator about every command that failed.
+	if errors.Is(errors.New("exit status 1"), sandbox.ErrConfineDenied) {
+		t.Fatal("an ordinary failure was classified as a confine refusal")
 	}
 }

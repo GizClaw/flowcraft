@@ -24,6 +24,15 @@
 //   - Models are empty by default: none. A model call spends money and names a
 //     resource that has no "everything" spelling, so it has to be written down.
 //
+// # A widening is a second layer, not a second ceiling
+//
+// [Grant.Escalate] is what an operator declared above the ceiling, and [Grant.Widen]
+// is the only function that turns it into authority: for one command, a session may
+// be run in a boundary the declaration covers, never in the ceiling it was narrowed
+// from. Both invariants — the declaration is inside the ceiling's reach, and a
+// widening never drops what the bind already had — are checked here, because they
+// are properties of the values rather than of the host that asks.
+//
 // # This package does no I/O and emits no telemetry
 //
 // Everything here is a value with a validator. Refusals are returned as
