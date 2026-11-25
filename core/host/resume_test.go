@@ -168,7 +168,7 @@ func TestAResumeThatCannotStartKeepsThePause(t *testing.T) {
 	// A closing session is the cheapest way to make the request fail after the claim: the close
 	// takes the driver, and the resume that follows cannot assemble a turn.
 	agents.mu.Lock()
-	session, _ := agents.sessions["s1"]
+	session := agents.sessions["s1"]
 	session.turnMu.Lock()
 	session.closing = true
 	session.turnMu.Unlock()
