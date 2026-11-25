@@ -5,163 +5,177 @@ title: Delegation
 
 # Delegation Guide
 
-`core/delegation` lets one agent hand work to another and get an answer back. A
-`Service` binds a policy to the host's session table: the targets it may reach, the
-modes it may use, how deep a chain may go, how many may run at once, and how large
-one input may be.
+Delegation is a permission, not a service. `policy.Delegation`, written as
+`grant.delegation` on an agent, says which agents a session may reach, in which modes,
+how deep and how large an input may be. A session whose bind carries a non-nil
+`Delegation` is given one capability — `platform.DelegationSlot`, filled by the host —
+and `tool/builtin/delegation` exposes the four tools that read it:
 
-```go
-service, err := delegation.New(
-    sessions,                      // the host's session table (agent-host implements it)
-    delegation.Policy{/* from the deployment */},
-    delegation.WithStore(delegation.NewMemStore()),   // async jobs
-)
-source := delegation.Tools(service)                   // a tool.Source
+```text
+grant.delegation (policy.Delegation)
+    → host fills platform.DelegationSlot with *host.delegator
+    → tool/builtin/delegation reads it from tool.Binding.Caps, per call
 ```
 
-There is no directory, no session provider and no backend resource. The session
-table **is** discovery: `Sessions.Names()` is who can be reached, and
-`Sessions.Session(name, id)` is how one is entered.
+There is no directory and no session provider: `targets` **is** discovery, and
+`host.Agents.Open` is how a child is entered. A tool reaches the capability through its
+`tool.Binding`, so nothing in `core` imports a tool module and nothing in a tool module
+imports the host.
 
 ## Deployment
 
-Delegation is a block on an agent, not an assembly graph:
+Delegation is a block on an agent's grant. A process document cannot grant it, and an
+absent block is not "unrestricted" — it is no delegation at all, which is the safe zero
+value for the one capability that can manufacture a run under a different grant:
 
 ```yaml
 agents:
   - name: forge
-    delegation:
-      targets: [forge-review, forge-test] # empty = every deployed agent except self
-      modes: [sync, async] # empty = sync only
-      max_depth: 4 # zero = 4
-      max_concurrent: 4 # zero = 4
-      timeout: 5m # zero = the caller's context
-      max_input_bytes: 65536 # zero = 64 KiB
+    grant:
+      # …
+      delegation:
+        targets: [forge-review, forge-test] # required: naming is how it is granted
+        modes: [sync, async] # required; async must be named to be used
+        max_depth: 4 # zero caps nothing
+        max_concurrent: 4 # zero is unbounded; the session's own limit still applies
+        timeout: 5m # zero leaves it to the caller's context
+        max_input_bytes: 65536 # zero uses policy.DefaultMaxInputBytes (64 KiB)
 ```
 
-An **absent** block means the agent gets no delegation tools at all — not
-"unrestricted". `deploy` turns the block into a `delegation.Policy`, and
-`agent-host` builds the service per deployment, so every generation delegates
-against its own agents.
+| Field             | Rule                                                                                                                         |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `targets`         | Required and non-empty. There is no "every deployed agent" spelling, so a target the process does not carry fails at `Open`. |
+| `modes`           | Required and non-empty; each entry is `sync` or `async`.                                                                     |
+| `max_depth`       | Caps the edges above a leaf. Zero caps nothing, so a grant that wants a limit states one.                                    |
+| `max_concurrent`  | Caps in-flight synchronous edges from one session, as a slot table. Zero is unbounded.                                       |
+| `timeout`         | Bounds one synchronous edge. Zero leaves the child to the caller's context, which for a sync edge is the parent's turn.      |
+| `max_input_bytes` | Caps the text one delegation hands over. Zero uses `policy.DefaultMaxInputBytes`.                                            |
 
-`delegation.Tools(service)` is the model-facing surface:
+The values are validated at load (`policy.Delegation.Validate`, reached through
+`Grant.Normalized`), so a block with no target or no mode is a document error rather
+than a session that cannot delegate. Every edge is admitted against the **parent's**
+grant: only the caller's side can answer "may this session hand work to that agent, that
+way, this deep".
 
-| Tool                 | Use                                                                   |
-| -------------------- | --------------------------------------------------------------------- |
-| `delegate`           | Hand an input to a target; sync waits, async returns a delegation id. |
-| `delegation_targets` | What this agent may reach, from the policy.                           |
-| `delegation_status`  | The state of one delegation, by id, including a question it asked.    |
-| `delegation_answer`  | Answer a child that is waiting for input.                             |
-| `delegation_cancel`  | Stop a child.                                                         |
+## The four verbs
 
-The tools read the policy on every call, so a projection rebuilt for a new
-generation sees that generation's targets.
+`platform.Delegation` is the seam. It has exactly four verbs, and the host's
+implementation of each is what a tool call reaches:
+
+| Verb       | Tool                | Use                                                                                  |
+| ---------- | ------------------- | ------------------------------------------------------------------------------------ |
+| `Delegate` | `delegate`          | Run one target: `{target, input, mode}`. Sync waits for the answer, async hands off. |
+| `Status`   | `delegation_status` | Where a child stands, by the session id `Delegate` returned.                         |
+| `Answer`   | `delegation_answer` | Continue a child that paused for input.                                              |
+| `Cancel`   | `delegation_cancel` | Stop a child. A child that already finished reports nil.                             |
+
+There is no steer verb. `delegation_answer` continues a child that stopped and asked a
+question; feeding a _running_ turn is `host.Agents.Steer`, which the host owns and a
+delegated child is not addressed by.
+
+`platform.DelegationOutcome` is what the tools report back — the child session, its
+state, its answer or its question, and the lineage:
+
+| Field      | Meaning                                                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------- |
+| `Status`   | The child's state: `submitted` right after an async hand-off; otherwise the state its events folded to. |
+| `Session`  | The child session id `Delegate` created — the address every follow-up verb takes.                       |
+| `Content`  | The child's answer, folded from its event stream.                                                       |
+| `Question` | What the child asked when it paused with `input_required`.                                              |
+| `Chain`    | The root delegation this run belongs to.                                                                |
+| `Depth`    | The delegation edges above the child. A caller's own run is depth 0.                                    |
 
 ## One delegation, step by step
 
-`Service.Delegate` is deliberately strict about its preconditions, because each
-one is a fact that would otherwise become a wrong answer somewhere else:
+`Delegate` is strict about its preconditions, because each one is a fact that would
+otherwise become a wrong answer somewhere else:
 
-1. **A parent session** — `correlation.From(ctx)` must carry one. A delegation outside
-   a run has no place to return to.
-2. **A tool call id** — `tool.CallFrom(ctx)`. It is what makes the child
-   session key deterministic.
-3. **The mode is allowed** by the policy, and the target is in `targets` (or
-   `targets` is empty and the target is not the caller).
-4. **The input is non-empty** and under `max_input_bytes`.
-5. **The depth is under `max_depth`**; a chain that reaches it is refused rather
+1. **A parent session with a policy.** The parent's bind carries `grant.delegation`, and
+   the target is in `targets`. A session that may not delegate has no capability at all,
+   so the tool is refused before the call.
+2. **The mode is allowed** by the same grant.
+3. **The chain is under `max_depth`**; an edge that would exceed it is refused rather
    than truncated.
+4. **The input fits** under the policy's `InputLimit()`.
 
-The child session key is derived, not random:
+The child session id is derived from the parent's, never random:
 
 ```text
-<parent session>/d/<target>/<tool call id>
+<parent session>/<target>-<edge>
 ```
 
-That is the whole idempotency story. A tool call that is retried — a dropped
-connection, a client that resubmits — lands on the **same** child session, and a
-child that already reached a terminal state is reported from its stored state
-instead of being run again. A child that is still `working` is a `Conflict`, not a
-second run behind the user's back.
+`edge` is a per-process counter in base 36. It exists so two edges of one chain are
+distinguishable and a resumed parent's next edge does not collide with the one before
+it; nothing dedupes two `Delegate` calls for the same input, because each call is a new
+child.
 
-Sync mode then runs the child and collects its answer; async mode stores a `Job`
-and returns as soon as the work is accepted.
+The child is opened with `host.WithChain`, and the first edge of a chain **mints** its
+id (`chain-` and eight random bytes); every edge below it keeps that id and adds one to
+the depth. Without an id the lineage cannot be attached at all, which is why the host
+mints one before opening.
 
-## Statuses and outcomes
+**Sync** runs the child on the caller's context, bounded by `max_concurrent` (a slot the
+parent holds for the run) and by `timeout`; the child session exists for the length of
+the call and is closed when it returns. The answer, the question and the terminal state
+are folded from the child's event stream into the outcome. A child that outlives
+`timeout` is cancelled rather than abandoned, and the caller sees `DeadlineExceeded`.
 
-| Status           | Meaning                                                         |
-| ---------------- | --------------------------------------------------------------- |
-| `accepted`       | An async job is stored and not yet claimed.                     |
-| `running`        | The child is working.                                           |
-| `completed`      | The child produced a final answer.                              |
-| `input_required` | The child asked a question; answer it with `delegation_answer`. |
-| `failed`         | The child failed or was rejected.                               |
-| `canceled`       | The child was stopped.                                          |
+**Async** starts the child on a goroutine of its own and returns at once with
+`Status: submitted` and the session id. The run outlives the turn that asked for it, so
+it gets a root span of its own linked to the asking turn — a child of a span that has
+already ended would be a trace nobody can read — and the goroutine closes the session
+when the run ends.
 
-`Outcome` carries the status, the delegation id, the target, the child session id,
-the content or the question, an error string, and the lineage:
-
-| Field     | Meaning                                                                                                              |
-| --------- | -------------------------------------------------------------------------------------------------------------------- |
-| `Depth`   | Edges above this run; the root sees zero.                                                                            |
-| `ChainID` | The root delegation of the chain, `sha256(session, task, call)`; every descendant keeps it, so a chain is one trace. |
-
-## Async jobs
-
-An async delegation is a `Job` in a `Store`:
-
-```go
-type Store interface {
-    Create(ctx context.Context, job Job) (created Job, found bool, err error)
-    Get(ctx context.Context, id string) (Job, error)
-    Update(ctx context.Context, id string, mutate func(*Job)) error
-}
-```
-
-`Create` returns `found` when a job with that id already exists — the same
-derived-key rule one layer down, so a retried submission does not create a second
-job. `Job` carries the parent identity (session, agent, task, call id), the
-traceparent, the child session id, the content or question, and the timestamps.
-`delegation.MemStore` is the reference implementation; a durable store is a table
-with the same three methods.
+The follow-up verbs address the child by session id: `Status` reads the state its
+checkpoint recorded (a host with no `agent.Store` refuses it with `NotAvailable`),
+`Answer` runs the child again on the caller's context and folds what it produced next,
+and `Cancel` stops it. `Answer` and `Cancel` go through the session table, so they reach
+a child this process still holds open; one it has closed is `NotFound`. A session may
+only address the edges it opened: the check is a prefix test on the id, so a caller
+cannot reach another conversation's child, or its own parent.
 
 ## Lineage
 
 ```go
-call, ok := delegation.CallFrom(ctx)     // {Depth, ChainID}
-next := delegation.WithCall(ctx, call.Child())
-depth := delegation.DepthFromContext(ctx)
+agents.Open(ctx, childID, target, host.WithChain(identity.Chain{ID: id, Depth: depth}))
 ```
 
-`Call` is a view over `correlation.Run`: the lineage travels inside the run
-identity (`DelegationDepth`, `ChainID`), so a later lineage field extends that
-value instead of inventing another context key. The service stamps it before
-running the child, and everything downstream — a hook, a child delegation — reads
-the same lineage. A zero field leaves the inherited value in place, so a stamp can
-raise or set the depth and the chain but never clear them.
+- `host.WithChain` is the only way a session learns it is somebody's child: a session a
+  caller opens has no chain, and a delegated edge is the only thing that knows the
+  lineage. Without it the depth `max_depth` counts would always be zero, so the limit
+  would never fire.
+- The lineage lives on `identity.Run` (`ChainID`, `Depth`) and is attached per run by the
+  session, after the session facts, through `inject.Chain`. Every span a layer beneath
+  opens carries it, so a whole chain is one trace.
+- Both fields are zero for a run that was never delegated, and `Run.Pairs` omits what is
+  unset rather than rendering an empty attribute.
 
 ## What the child inherits, and what it does not
 
-The child is **a session of its own**: its own task, its own checkpoint, its own
-hooks (with `Agent` naming the child's deployment), and its own sandbox
-configuration.
+The child is **a session of its own**: its own task, its own checkpoint, its own hooks
+(with `Agent` naming the target's deployment), its own grant — the target deployment's,
+not the parent's bind — and its own sandbox configuration.
 
-Core derives no policy for it. In particular, a deployment that confines or gates
-work per session has to decide the child's boundary explicitly — `delegation.Policy`
+What crosses is the lineage and nothing else. The host runs the child on
+`identity.Detach` plus `agent.WithoutFailureBox`: without the first, the child would
+carry the parent's conversation, bind and span attributes; without the second, the
+parent's first-wins failure box would record the child's model error as the parent
+turn's reason.
+
+Core derives no policy for the child, and in particular no boundary: `grant.delegation`
 bounds delegation (who, how many, how deep, how large) and says nothing about the
-child's write boundary or approval mode. The child's own `sandbox` block, and a
-hook that recognises the child, are where that decision lives.
-
-Budget: the caller's context bounds everything, `timeout` bounds one delegation,
-and `max_concurrent` bounds in-flight sync children with a slot table — a child
-beyond the limit waits, and a cancelled caller does not hold a slot.
+child's write boundary, network posture or approval mode. A deployment that confines or
+gates work per session decides that in the child's own grant, or in a hook that
+recognises the child.
 
 ## What this replaced
 
-`delegation.Directory` (a resource that owned discovery), `delegation.SessionProvider`
-(a resource that minted child identities), an `async` backend resource, escrow
-refs and `RunIDNotifier`. All of it folded into three things: the host's session
-table for discovery, a derived session key for identity, and a `Store` for async
-jobs. The behaviour that mattered — a retry must not re-run a completed child, a
-chain must be traceable, a child's boundary must not be guessed — is unchanged and
-now stated in one place.
+`core/delegation` is gone: its `Service` (a value that bound a policy to the host's
+session table), its own `Policy`, an async `Job` in a `Store` with `MemStore`, and a
+`Tools(service)` source. So is the run-identity carrier the lineage used to be stamped
+into. What replaced each part is one existing thing: the policy is `grant.delegation` on
+a `policy.Grant`, the verbs are `core/tool/platform`'s `Delegation` capability, the
+tools are a `tool.Source` in the `tool` module, the child is a session of
+`host.Agents`, and the lineage is `identity.Chain`. The behaviour that mattered — a
+chain must be traceable, a child's boundary must not be guessed, a caller can only
+address its own edges — is unchanged and now stated in one place.

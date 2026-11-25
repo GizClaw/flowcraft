@@ -1,10 +1,15 @@
 # The graph document: one model call per turn, no tools.
+#
+# `messages` carries across turns, so a new turn continues the conversation
+# instead of starting from one message; every other key is the run's.
 version: 1
 name: assistant
 entry: model
 input: messages
 
 limits:
+  # The backstop that turns a runaway cycle into a failed turn instead of a hung
+  # one. Zero means only the caller's context bounds the run.
   max_steps: 8
   timeout: 2m
 
@@ -16,11 +21,13 @@ nodes:
   - id: model
     kind: model
     config:
+      # Where the call reads the transcript from and writes its answer to.
       messages: messages
       output: answer
       request:
         model: {provider: luna, name: gpt-5}
         system: You are a careful assistant. Answer in one paragraph.
 
+# What a finished run reports as its final answer.
 output:
   key: answer

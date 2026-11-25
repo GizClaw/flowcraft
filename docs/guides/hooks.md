@@ -6,8 +6,8 @@ title: Hooks
 # Hooks Guide
 
 A hook is the host's policy at the boundaries of a turn. `core/agent` defines the
-three points; `core/agent-host` runs them; `core/deploy` lets a deployment declare
-its own.
+three points and runs two of them inside a turn; `core/host` runs `OnSession` when a
+session opens and builds the chain; `core/deploy` lets a deployment declare its own.
 
 The three points are the ones a **host** owns, rather than the ones an engine
 owns: a session arrives, a turn arrives, a turn ends. They exist because a host
@@ -19,10 +19,10 @@ agent, not to the substrate that happens to run it.
 type Hooks struct {
     // Runs after a session is opened or restored, before its turn.
     OnSession func(ctx context.Context, session SessionInfo) error
-    // Runs before the turn reaches the engine and may rewrite its message.
-    BeforeTurn func(ctx context.Context, turn *Turn) error
-    // Runs after the run ends, with the state and result it reached.
-    AfterTurn func(ctx context.Context, turn Turn, result Result) error
+    // Runs before the turn reaches the driver and may rewrite its message.
+    BeforeTurn func(ctx context.Context, turn *TurnInfo) error
+    // Runs after the run ends, with the outcome it reached.
+    AfterTurn func(ctx context.Context, turn TurnInfo, result TurnOutcome) error
 }
 ```
 
@@ -39,8 +39,8 @@ model node whose own code sits between the run and the provider.
 | Slot         | Runs                                                   | Receives                                                    | An error means                                                                                      |
 | ------------ | ------------------------------------------------------ | ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | `OnSession`  | After a session is opened or restored, before its turn | `SessionInfo`: agent, session id, task id, state, `Resumed` | The open fails. A host that cannot prepare its memory refuses the turn instead of running it blind. |
-| `BeforeTurn` | Before the turn reaches the engine                     | `*Turn`: agent, session, message (mutable)                  | The turn stops before it starts. Nothing was sent, so nothing has to be undone.                     |
-| `AfterTurn`  | After the run ends                                     | `Turn` and the `Result` it reached                          | Logged, and the turn stands.                                                                        |
+| `BeforeTurn` | Before the turn reaches the driver                     | `*TurnInfo`: agent, session, message (mutable)              | The turn stops before it starts. Nothing was sent, so nothing has to be undone.                     |
+| `AfterTurn`  | After the run ends                                     | `TurnInfo` and the `TurnOutcome` it reached                 | Logged, and the turn stands.                                                                        |
 
 The `AfterTurn` asymmetry is not an oversight. The work is already durable, and
 reporting an error after the terminal event would break the stream contract every
@@ -54,7 +54,7 @@ recall, a restored one needs the state it left.
 
 ```go
 hooks := agent.Hooks{
-    BeforeTurn: func(ctx context.Context, turn *agent.Turn) error {
+    BeforeTurn: func(ctx context.Context, turn *agent.TurnInfo) error {
         recap, err := memory.Recall(ctx, turn.Agent, turn.SessionID, turn.Message)
         if err != nil {
             return err
@@ -62,7 +62,7 @@ hooks := agent.Hooks{
         turn.Message = memory.Prefix(recap, turn.Message)
         return nil
     },
-    AfterTurn: func(ctx context.Context, turn agent.Turn, res agent.Result) error {
+    AfterTurn: func(ctx context.Context, turn agent.TurnInfo, res agent.TurnOutcome) error {
         return memory.Persist(ctx, turn, res)
     },
 }
@@ -70,61 +70,59 @@ hooks := agent.Hooks{
 
 `Turn.Message` is the input, metadata included, and `BeforeTurn` may replace the
 whole value — that is the seam a policy uses to inject a recap without touching
-the stored transcript. `TaskID` is empty there: the run mints the task, so a hook
-that needs one reads it in `AfterTurn`.
+the stored transcript. `TurnInfo.TaskID` is the task the turn continues: the host
+mints it before the turn starts, so a hook sees it in both slots. `SessionInfo.TaskID`
+is the one that depends on the session: empty for a new conversation, and the restored
+task for a resumed one — which is what `Resumed` reports.
 
 ## Attaching hooks from a document
 
-A deployment names hook kinds, and each kind is registered by the host:
+A deployment names hook implementations, and each one is registered in the process's
+`deploy.Impls` table:
 
 ```yaml
 agents:
   - name: forge
     hooks:
-      - kind: memory
+      - impl: memory
         settings:
           scope: session
-      - kind: audit
+      - impl: audit
         settings:
           sink: stdout
 ```
 
 ```go
-kinds := builtin.Kinds().WithHooks(deploy.HookKind{
-    Name: "audit",
-    Decode: func(settings json.RawMessage) (any, error) {
-        var cfg auditConfig
-        return cfg, decode.Strict(settings, &cfg)   // a typo fails the load
-    },
-    Build: func(ctx context.Context, deps deploy.HookDeps) (agent.Hooks, error) {
-        cfg := deps.Spec.Settings           // decode again for the typed value
-        return auditHooks(deps.Agent, cfg), nil
-    },
-})
+impls.Hook(deploy.Impl("audit", func(cfg auditConfig) (agent.Hooks, error) {
+    return auditHooks(cfg), nil
+}))
 ```
 
-| `HookDeps` field | What it gives the kind                                                                                     |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- |
-| `Agent`          | The deployment name the hook is attached to — what a seat-bound policy keys itself by.                     |
-| `Spec`           | The kind and its raw settings.                                                                             |
-| `Runtime`        | The agent's substrate; nil for a remote engine, because a hook that only observes turns does not need one. |
-| `Store`          | The checkpoint store, so a hook can read the task log to assemble what it needs.                           |
-| `LoadOptions`    | Placeholder resolvers, for a kind that reads its own documents.                                            |
+`deploy.Impl` is the typed factory every implementation group uses: its `Plan` decodes
+the written settings strictly, so a typo inside `settings` is a document error reported
+with the rest of them, and its `Make` calls the constructor with the typed value. The
+loader resolves a document's `hooks` into `[]deploy.PlannedHook` — the impl's name and a
+`New` that produces `agent.Hooks` — and `host.Agents` builds them once, at install, so a
+bad setting fails when the agent is deployed rather than on the first turn that reaches
+a boundary.
 
-`Decode` runs at load (so a typo fails before the agent is built) and again inside
-`Build` for the typed value — the same two-phase contract engine and protocol
-kinds use. See [deploy.md](deploy.md).
+An implementation a document names but the process never registered is a **document
+error**, not `NotAvailable`: the table is the binary's build-time registration, exactly
+like the providers and the program kinds. See [deploy.md](deploy.md).
 
-Several hooks on one agent are chained **in declaration order**. The host's own
-`Bindings.Hooks` runs before them, so a host can always observe or adjust what a
-deployment configured. `builtin.Kinds()` registers no hook kinds: a host's policy
-is the host's.
+Several hooks on one agent are chained **in declaration order**, and the chain is exactly
+the document's list: the host contributes no hook of its own. `agent.Chain` composes
+them — `OnSession` and `BeforeTurn` stop at the first failure, because a later hook would
+be acting on a session or a message its predecessor rejected, and `AfterTurn` runs every
+hook and logs what failed, because one policy's bookkeeping is not another's to cancel.
 
 ## Cost and blocking
 
 Hooks run synchronously on the run's goroutine. A slow hook stalls the run and
 its protocol stream, so a hook that does I/O belongs behind a queue of its own —
-`OnEvent` in `agent-host.Bindings` has the same rule for the same reason.
+`host.WithRunSink` has the same rule for the same reason: the sink is called on the
+turn's goroutine, after the terminal checkpoint is durable and before the after-turn
+hooks, and it must be cheap and must not fail the turn.
 
 ## Delegation
 

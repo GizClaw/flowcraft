@@ -1,29 +1,49 @@
-# The substrate one agent runs on. ${WORKSPACE_ROOT} is a placeholder the host
-# expands from its environment: a files root must be absolute and must exist.
+# The process document: what this process carries.
+#
+# ${WORKSPACE_ROOT} is a placeholder the loader expands from the environment, so the
+# file stays relocatable while every path it produces is absolute. Only ${env:...}
+# is built in; an application may register a scheme of its own (examples/forge
+# registers ${workspace:root}).
 version: 1
-name: assistant
-
-files:
-  roots:
-    - ${WORKSPACE_ROOT}
 
 sandbox:
-  backend: local # seatbelt on macOS, bwrap on Linux, windows there
-  timeout: 60s
-  output_mib: 8
+  # A backend holds no directory and no policy of its own: what a session may do
+  # comes from its grant, and the backend is built for that one session's confine.
+  # `local` has no OS boundary, so it refuses a write-restricting grant rather than
+  # pretending to enforce one.
+  - name: local
+    impl: local
 
 inference:
   providers:
-    - name: luna
-      driver: openai
+    - name: luna # what a grant's models are resolved against
+      impl: openai # a provider this binary compiled in
       settings:
+        base_url: https://api.openai.com/v1
         api_key: ${OPENAI_API_KEY}
-  models:
-    - provider: luna
-      model: gpt-5
-      limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+        # What this provider serves: the host reports these to the agent document,
+        # which may only name a model from this list.
+        models:
+          - id: {provider: luna, name: gpt-5}
+            limits: {max_input_tokens: 200000, max_output_tokens: 32000}
+  route:
+    attempts_per_target: 2
+    max_targets: 1
+    base_delay: 250ms
+    max_delay: 5s
 
 tools:
-  # `enable` names tool *groups* (files, exec, skills); which individual tools a
-  # model sees is the projection, configured per group.
-  enable: [files]
+  # Every source is aggregated into one tool table for the process; which of those
+  # tools one session may see and call is its grant's `tools` set.
+  sources:
+    - {name: files, impl: files}
+
+skills:
+  # Directories walked for SKILL.md, once per process. The root must exist; a
+  # directory with no SKILL.md in it is an empty index, not an error.
+  roots:
+    - "${WORKSPACE_ROOT}"
+
+# Both fields are required: "we record nothing" and "nobody said" are different
+# facts. trace: none | run | call | node. bodies keeps model response bytes.
+observability: {trace: none, bodies: false}

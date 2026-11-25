@@ -1,411 +1,260 @@
 ---
 layout: default
-title: Application Runtime
+title: Process and Turn Runtime
 ---
 
-# Application Runtime Guide
+# Process and Turn Runtime Guide
 
-`core/runtime` assembles one agent runtime from a configuration document and
-owns everything it built.
+A FlowCraft process is built once and then serves conversations from it. Two
+values own that split, and both are `core/host`:
 
-The unit is deliberately not a session. A `Runtime` holds the substrate a turn
-runs on — the model provider and its router, the tool registry with its
-instances, the sandbox runner, the file boundary, the skill index, the journal —
-and nothing that belongs to a conversation: no history, no turn counter, no
-per-user state. Two runtimes can live in one process without sharing anything,
-which is what makes "atomic" true rather than aspirational. History is an
-argument to a turn, and the turn loop belongs to whatever layer adds prompting
-(`core/agent`, `core/agent-host`).
+| Value           | Lives as long as   | Holds                                                                                                                                                       |
+| --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `host.Resource` | the process        | the providers and the routed provider, the backend factories, the skill index, the tool registry, the dispatcher, the observability level, the view builder |
+| `host.Agents`   | the deployment set | the store, the fingerprint, approval and the escalator, the deployment table, the session table                                                             |
 
-## The document
+Neither is a `runtime` package and neither is a `Runtime` type: the process is
+`host.Resource`, and a conversation is `host.Session`. There is no per-agent
+runtime — the record level, the providers, the backends and the tool table are
+built once for the process, because a level two agents could disagree about would
+be a knob with no effect.
+
+## Building the process
+
+```go
+plan, err := loader.Process(ctx, sources.File("runtime.yaml"))
+
+res, err := host.Open(ctx, plan, host.Options{
+    // The capability slots this process declares; the host fills them per session.
+    Capabilities: capSet,
+    // The tool executor this binary compiles in, over the process tool table.
+    Dispatcher: dispatcher,
+    // The projection: what a deployment's grant allows, as a factory per session.
+    View: view,
+})
+defer res.Close()
+```
+
+`host.Open` builds in dependency order — the skill index first, then the
+providers, then the routed provider over them, then the backends, then the tool
+sources, then the middleware chain — and records a closer per resource. A failure
+runs the closers in reverse and joins their errors rather than replacing the
+cause. The routed provider is built even for a single target: one seam that always
+routes keeps callers from branching on "is there more than one".
+
+Two options are the application's decision rather than the document's, which is why
+they are Go values:
+
+- `Dispatcher` — which executor runs a tool call. `tool/dispatch` is the shipped
+  one; the chain it wraps is the document's `tools.middleware`.
+- `View` — the projection. It takes the catalog and the tool set a grant allows, and
+  returns a `tool.ViewFactory`. One view per session is not a detail: a shared view
+  would let two conversations evict each other's tools and make one session's
+  prompts depend on what another session did.
+
+`res.Capabilities()` is what the built process reports — backend names, their
+enforcement, and the models its provider catalogs serve as `"provider/name"` —
+and it is the value an agent document is resolved against.
+
+## The session is where the four nouns meet
+
+```go
+session, err := agents.Open(ctx, sessionID, "assistant",
+    host.WithRequest(request),  // narrow the grant, per caller
+)
+for event, err := range agents.Run(ctx, sessionID, msg) { ... }
+```
+
+| Noun        | Owns                                                                                           |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| the agent   | the deployment: its program, its hooks, its grant as a ceiling.                                |
+| the cell    | the boundary: one backend instance built from _this_ session's confine, plus its `fsx.Tree`.   |
+| the binding | one `tool.Binding`: the narrowed grant, the session identity, the view, the capability pocket. |
+| the driver  | one `agent.Driver` over the deployment's program: the in-flight turn, its queue, its cancel.   |
+
+`Open` is admit → build outside the table's lock → re-validate → insert. Only the
+cheap questions are asked under the lock (closed, unknown agent, session limit,
+duplicate id); the expensive work — factory lookup, `Narrow` when a request was
+supplied, `openCell`, capability slots, the view, `program.Open`, the `OnSession`
+hook — happens without it, and the same questions are asked again before the
+insert. The session limit must be checked under the lock that inserts: two opens
+can both pass the first check.
+
+`WithRequest` is the only thing that triggers `Grant.Narrow`. A caller that does
+not narrow gets the whole ceiling, which is safe in direction and not fail-closed;
+a request outside the ceiling is refused at open rather than truncated, because a
+permission that quietly lost a field is indistinguishable from one that never had
+it. `Request` carries models, a tool set and a budget — deliberately no path and
+no network posture, so untrusted input cannot choose the boundary.
+
+## The boundary comes from the grant
+
+```text
+bind (a policy.Grant)      → confineOf      → sandbox.Confine
+                           → factory(confine) → sandbox.Runner   (one per session)
+                           → ValidateConfine  → refused if unenforceable
+bind.Files                 → fsx.Open         → the session's tree
+runner + approval          → platform.ProcessSlot
+```
+
+- **The confine is a projection, not a second spelling.** Every field comes from
+  the grant unchanged, and the backend re-validates it when the instance is built,
+  so a backend that skipped its own check cannot hand out a boundary it does not
+  enforce.
+- **`sandbox.ValidateConfine` is the construction-time gate.** A network posture
+  the backend does not list, an environment allow-list it cannot apply, a
+  write-restricting confine on a backend with no filesystem bounds, or a resource
+  budget it cannot cap is refused here — at open, where an operator sees it.
+- **`tool.Binding` is assembled by the host and never read from a context.** A tool
+  cannot be handed a grant its caller never granted; `tool.Bind(session, grant)` is
+  the one way to a valid binding.
+- **`local` confines nothing.** It runs through `os/exec` with no filesystem
+  boundary and refuses a write-restricting confine instead of ignoring one; a
+  stronger promise needs a backend that mounts or sandboxes.
+
+## One turn, end to end
+
+```text
+host.Run → Agents.request → agent.RunTurn → Driver (graph, a2a)
+    → inference.Provider
+    → tool.Dispatcher → sandbox.Exec → the driver
+    → finish: metrics, checkpoint, run record, hooks
+```
+
+| Step             | What it does                                                                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Agents.Run`     | Claims the turn slot — a second run is `Conflict`, a closing session `NotAvailable` — then derives the run context from the session identity. |
+| `Agents.request` | Counts the ordinal, loads the session's latest task, mints a task id when the last one is terminal, and assembles the `agent.Request`.        |
+| `agent.RunTurn`  | Installs the failure box, puts the trace level in the context, opens `agent.turn`, runs `BeforeTurn`, then folds the driver's stream.         |
+| the driver       | Calls the routed provider and the dispatcher; every tool call reaches `sandbox.Exec` through the session's runner.                            |
+| `agent.finish`   | Classifies the outcome, records metrics, writes the terminal checkpoint, reports the run record, then runs `AfterTurn`.                       |
+
+Three properties are load-bearing:
+
+- **One turn per session.** `beginTurn` refuses a second claim, which is what lets
+  `Steer` and `Cancel` address the turn in flight without an id.
+- **The terminal save happens on every path** — a normal finish, a panic, a
+  consumer that stopped, and a `BeforeTurn` that refused. A turn that never started
+  still leaves a terminal checkpoint.
+- **A session pins its deployment.** `Reload` swaps the table entry and marks the
+  previous program retired; it is closed when its last session is gone.
+
+## Four channels, four jobs
+
+| Channel         | Written by                                                | Read by                                        | Never carries                                                       |
+| --------------- | --------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------- |
+| stream events   | the driver, forwarded unchanged by `RunTurn`              | the caller of `Run` — a UI, a protocol adapter | persistence: the stream is the product surface                      |
+| spans           | `telemetry.Start` at each boundary                        | a trace backend, someone debugging a run       | streamed text or reasoning; an error's _message_                    |
+| metrics         | host, agent, tool chain, inference pipeline               | dashboards, alerts                             | per-record identifiers (`session.id`, `task.id`, `tool.call_id`, …) |
+| durable records | the turn decorator and the drivers, through `DriverStore` | resume, audit, tools                           | handles, connections, command text                                  |
+
+The order inside `finish` is deliberate: metrics first, then the terminal
+checkpoint, then the run record through `OnRun`, then `AfterTurn` — so a sink and a
+hook see the same durable answer, and a hook failure is logged without breaking the
+stream.
+
+## Observability is a process fact
 
 ```yaml
-version: 1
-name: forge
-
-files:
-  roots:
-    - /workspace/forge # absolute; the first root is the default workdir
-
-sandbox:
-  backend: seatbelt # local | seatbelt | bwrap | windows | remote
-  writes:
-    - /workspace/forge/out
-  net:
-    mode: allow_list
-    allow_hosts: [api.openai.com, "*.github.com"]
-  timeout: 60s
-  cpu_millicores: 2000 # needs timeout
-  memory_mib: 2048
-  output_mib: 8
-  journal: # presence opts in; absent means no journal
-    exclude: [.git, node_modules]
-    retention: 4096
-
-inference:
-  providers:
-    - name: openai
-      driver: openai
-      settings: { api_key: "${OPENAI_API_KEY}" }
-  models:
-    - provider: openai
-      model: gpt-5
-      weight: 100
-      capabilities: { inputs: [text, image] }
-      limits: { max_input_tokens: 200000, max_output_tokens: 32000 }
-  route:
-    selector: weighted
-    attempts_per_target: 2
-    max_targets: 3
-
-tools:
-  enable: [exec, read, write, edit, glob, grep, skill_search, skill_read]
-  tty: false
-  dynamic:
-    default: direct
-    hidden: [write]
-  images: false
-  mcp:
-    servers: []
-  middleware:
-    - { name: redact, settings: { pattern: "sk-[A-Za-z0-9]+" } }
-
-skills:
-  roots: [.agents/skills]
+observability: { trace: call, bodies: false }
 ```
 
-### `sandbox`
+Both fields are required. A process that left one out would inherit something, and
+there is nothing to inherit: "we record nothing" and "nobody said" are different
+facts.
 
-The process boundary. Nothing here is guessed:
+| Level  | Adds                                                                          |
+| ------ | ----------------------------------------------------------------------------- |
+| `none` | the run and its turns                                                         |
+| `run`  | one span per driver step, plus the turn's `checkpoint.save`                   |
+| `call` | the per-call spans: a model call, a tool call, one command                    |
+| `node` | whatever the driver considers a node of its own — the graph adds one per node |
 
-| Field                          | Meaning                                                                                                                                        |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `backend`                      | Required. `local`, `seatbelt`, `bwrap`, `windows`, or `remote`. There is no default: a boundary picked by guessing is a boundary nobody chose. |
-| `workdir`                      | Where commands run. Empty means the first files root.                                                                                          |
-| `writes`                       | Absolute paths a command may write. Empty means read-only.                                                                                     |
-| `net.mode`                     | `default`, `none` (aliases `deny`, `deny_all`), `allow_list` (alias `allowlist`), `proxy` (alias `proxies`).                                   |
-| `net.allow_hosts`              | Only legal with `allow_list`; a host pattern or `*`-glob.                                                                                      |
-| `net.proxy`                    | Only legal with `proxy`.                                                                                                                       |
-| `timeout`                      | Default per-call deadline. A tool may ask for less; this is the ceiling.                                                                       |
-| `cpu_millicores`               | Millicore budget. Rejected without `timeout`, because the budget is derived from it.                                                           |
-| `memory_mib`                   | Address-space cap; zero is unbounded.                                                                                                          |
-| `output_mib`                   | Captured output per call; zero uses the backend default.                                                                                       |
-| `journal`                      | A settings block. Presence opts in; see [sandbox.md](sandbox.md).                                                                              |
-| `bwrap`, `seatbelt`, `windows` | The backend's own construction options. Setting one on a different backend is a validation error, not a comment.                               |
-| `remote`                       | Client configuration for `backend: remote`; must be absent otherwise.                                                                          |
+`bodies` is retention, not a level: it decides whether a model response's bytes are
+kept for replay. The turn writes the answer to the ledger only when it is set, so
+the same retention decision is not made twice.
 
-The value you write in `backend` is resolved from a table the **host** registers
-(`runtime.WithSandboxBackends`), not from a built-in list: the runtime imports none
-of the backends, so a process that ships only the local runner links nothing else.
-`core/runtime/backends` is the opt-in set of every backend core provides —
-`backends.All()` for all five, or one of `backends.Local()`, `Bwrap()`,
-`Seatbelt()`, `Windows()`, `Remote()`. A backend that is not registered is a
-validation error that names what is registered.
+A middleware factory declares `AtTrace` — the least level it is worth installing at
+— and the loader leaves a link out of the plan when the process records less than
+that, instead of building one that turns itself off per call.
 
-### `files`, `skills`, `tools`
+## Two command rules
 
-| Section              | Rule                                                                                                                                                                                                                                                                                                  |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `files.roots`        | At least one, all absolute; this is also the write policy the file tools enforce.                                                                                                                                                                                                                     |
-| `skills.roots`       | Directories scanned for `SKILL.md`. One index is built and shared by the tools and the host's own prompts.                                                                                                                                                                                            |
-| `tools.enable`       | Empty means every registered tool. Names not registered are a build error.                                                                                                                                                                                                                            |
-| `tools.dynamic`      | The projection: `default` (`always` / `direct` / `deferred` / `hidden`), plus `always`, `hidden`, `budget`, `max_bytes`, `idle_rounds`, `search_with_load`.                                                                                                                                           |
-| `tools.middleware`   | Named middleware with kind-owned settings, applied in order.                                                                                                                                                                                                                                          |
-| `tools.descriptions` | Per-tool and per-parameter replacement of the text the model reads, keyed by tool name. A configured name that matches no wired tool is a build error. Text is prompt surface only: the input schema's types and bounds are never overridden. See [tool.md](tool.md#configuring-a-tools-description). |
-| `tools.exec.shell`   | Pins the shell the `exec` tool runs (`name`, `path`, `args`) instead of letting the platform probe the host. See [tool.md](tool.md#pinning-the-shell).                                                                                                                                                |
+A command reaches the backend through `platform.ProcessSlot`, which the host fills
+with the session's runner decorated by the process's command rules.
 
-### `inference`
+**Approval** answers "may this run at all". A `host.Approval` has two rules, in
+this order: a command the `Whitelist` covers runs without asking (argv prefix, word
+by word; an empty entry matches nothing), and everything else goes to the
+`Approver`. It is fail-closed — a policy with neither rule refuses every command,
+and an approver error is not a denial and also refuses. A process with no policy
+installs the starter undecorated, so approval stays opt-in.
 
-Providers are `{name, driver, settings}`; the driver name must be registered on
-the `Runtime` (see `WithDrivers`). Models are `{provider, model, weight,
-capabilities, limits}`. `route` decides how a request picks among them:
-`selector` plus `selector_settings`, `attempts_per_target`, `max_targets`,
-`base_delay`, `max_delay`. See [inference.md](inference.md).
-
-## Layers
-
-A deployment usually stacks three files: a base, a profile, a local override.
-The merge itself lives in `core/config`; `runtime.LoadLayers` is the entry point
-that also validates the result.
+**Escalation** answers "may this one command exceed the boundary". Only a command
+the backend already refused with `sandbox.ErrConfineDenied` is offered, there is
+exactly one retry, and the budget comes from the deployment's `grant.escalate`
+(`max_per_session`, counted before the question):
 
 ```go
-cfg, err := runtime.LoadLayers(ctx, []config.Layer{
-    {Priority: 0,  Name: "base.yaml",    Source: config.File("base.yaml")},
-    {Priority: 10, Name: "profile.yaml", Source: config.File("profile.yaml")},
-    {Priority: 20, Name: "local.yaml",   Source: config.Bytes(embedded)},
-}, config.WithResolver("secret", vault.Resolve))
-```
-
-A layer's bytes come from a `config.Source`, so a stack is not limited to files
-on disk: `config.File`, `config.Bytes`, `config.FS` for any `io/fs` filesystem
-(an `//go:embed` tree included), and `config.Func` for a document that has to be
-fetched, decrypted or generated.
-
-- Layers merge in **ascending priority**; a higher priority wins.
-- Duplicate priorities are rejected. Order in the slice is not order of
-  application — a profile picked on a command line belongs above a file from a
-  directory scan regardless of what the scan produced.
-- Merge rules are per node kind and nothing is inferred by reflection: mappings
-  merge key by key, **sequences are replaced whole**, scalars are replaced. A
-  permission list must not grow silently because someone added one line.
-- The same key written twice inside one layer is rejected: YAML would take the
-  last value and the merge would report nothing.
-- **One YAML document per layer.** A second `---` is refused rather than
-  silently dropping everything after it. A comment-only layer contributes
-  nothing and is skipped. JSON is a YAML subset, so a `.json` layer needs no
-  second parser.
-- Placeholders are resolved **once, after the merge**, so a value an overriding
-  layer replaced is never looked up. Resolvers may read a secret store, log an
-  access or fail; doing that for dead values is waste. Forms: `${NAME}`,
-  `${NAME:-fallback}` (both `env`), and `${scheme:arg:arg}` for anything
-  registered with `config.WithResolver`.
-- `$$` is a literal `$` in any string value, whether or not the same value also
-  names a reference: `command: "sh -c 'kill -9 $$'"` reaches the command as
-  `kill -9 $`. A lone `$` is left alone.
-- A `<<` merge key is expanded when the layer is parsed, so a key it contributes
-  is what `Doc.Raw`, `Doc.Origin` and the merged document all report; an explicit
-  key wins over a merged one, and an earlier source wins over a later one.
-- A caller that also wants provenance — the layer that last set a value, or the
-  merged document's canonical bytes — calls `config.Load` directly; it returns a
-  `*config.Doc` beside the value. `runtime.LoadLayers` asks for neither: a runtime
-  is built from the value, so it loads with `config.WithoutProvenance()` and pays
-  about 8% less for a report nobody reads.
-
-## Building
-
-```go
-// Resolvers are a load option: they belong to reading the document.
-cfg, err := runtime.LoadLayers(ctx, layers,
-    config.WithResolver("secret", vault.Resolve),
+agents := host.NewAgents(res,
+    host.WithApproval(host.Approval{Whitelist: host.Whitelist{{"git", "status"}}, Approver: ui}),
+    host.WithEscalation(ui), // implements host.Escalator
 )
-
-rt, err := runtime.New(ctx, cfg,
-    // Backends are keyed by the name written in sandbox.backend; there is no
-    // built-in table, so a host that ships one backend links only that one.
-    runtime.WithSandboxBackends(backends.All()),
-    // Drivers are keyed by the name written in inference.providers[].driver.
-    runtime.WithDrivers(runtime.Driver{Name: "openai", Build: openai.New}),
-    // Selectors are keyed by the name written in inference.route.selector.
-    runtime.WithSelectors(runtime.Selector{
-        Name:     "weighted",
-        Generate: func(json.RawMessage) (route.Selector[inference.GenerateRequest], error) {
-            return weighted{}, nil
-        },
-    }),
-    runtime.WithToolSource(myExtraTools),
-    // Middleware that needs a Go value cannot come from YAML, so the host
-    // registers it under the name the document lists.
-    runtime.WithMiddleware(runtime.MiddlewareOption{Name: "approve", Build: approve}),
-    // The composed sandbox runner, after the document's policy: wrap it before
-    // the tools are built (instrumentation, an escalation retry).
-    runtime.WithSandboxDecorator(wrapSandbox),
-)
-defer rt.Close()
 ```
 
-There are no built-in drivers or selectors: a name the document writes must have
-been registered, and an unregistered one fails with the offered names —
-`inference.route.selector: "cheapest" is not available; offered: weighted`. An
-empty `selector` keeps declaration order. Middleware is the exception: the built-in
-names `telemetry`, `recover`, `result_limit`, `concurrency` and `redact` are
-always available, in the order the document lists them, first written outermost.
+The escalator is told the command, its working directory, the authority in force
+(`From`) and the widest the declaration allows (`To`). Its answer goes through
+`Grant.Widen`, so a grant outside the declaration is refused rather than trusted;
+only `files.write`, `net` and `exec.env` can move. The widened command runs in a
+temporary cell built from the wider grant — the session's own cell is never widened
+in place, because a boundary is what a session _is_. The audit record carries
+hashes and digests (command hash, both bind digests, the escalator's type, the
+decision, the duration) under event kind `escalation`, on
+`context.WithoutCancel`, so a cancelled turn still leaves the record.
 
-`New` validates before it builds, so a document that cannot be honoured fails
-without side effects:
+Declaring `grant.escalate` and installing no escalator is a failure at the first
+refused command (`NotAvailable`), not a silent narrow retry: unlike approval, the
+declaration is a promise somebody made.
 
-- `files.roots` present, absolute, and accepted by `permission.Writes`;
-- `sandbox.backend` known, `net.mode` known, `net.allow_hosts` only with
-  `allow_list`, `timeout` and `remote.timeout`/`poll_hold` parseable and positive;
-- `cpu_millicores` implies a `timeout`, and the backend can actually enforce a
-  cpu or memory cap — see below;
-- a backend's own block (`bwrap`, `seatbelt`, `windows`) may only appear with
-  that backend, and `remote` only with `backend: remote`;
-- the journal block's cheap invariants (op names, non-negative retention and
-  watch budget). Root resolution stays a build concern, so a platform without a
-  watch source fails here rather than silently reporting nothing.
+## The session table
 
-## The sandbox policy reaches the commands
+| Call                                     | Use                                                                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Agents.Open`                            | Admit a session. `WithRequest` narrows, `WithChain` attaches a delegation lineage.                                                                          |
+| `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                           |
+| `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                |
+| `Agents.EvictIdle(agent, now)`           | Evict by `grant.limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |
+| `Agents.Add` / `Remove` / `Reload`       | Install, retract, swap. `Remove` refuses while sessions are open (`ErrSessionsActive`).                                                                     |
+| `Agents.Close(ctx)`                      | Close the whole table, then let `Resource.Close` release the process.                                                                                       |
 
-This is the part that used to be missing: a document could declare a budget that
-nothing enforced. The runtime now projects every per-call knob of the section
-onto each call it issues through `engine.WithDefaults`:
-
-| Document         | Becomes                                                                  |
-| ---------------- | ------------------------------------------------------------------------ |
-| `timeout`        | `ExecOptions.Timeout` — a ceiling; a tool asking for less keeps its own. |
-| `cpu_millicores` | `Resources.CPU` (derived from the timeout).                              |
-| `memory_mib`     | `Resources.MemoryBytes`.                                                 |
-| `writes`         | `Permission.Writes` — the files a command may touch.                     |
-| `net`            | `Net` — projected where the backend declares the mode it can enforce.    |
-
-Three rules make that honest:
-
-1. **Stricter wins, per field.** When a tool also sets resources, the two are
-   merged field by field: zero defers, and of two non-zero values the smaller
-   one wins. A tool cannot widen the deployment's budget and the deployment
-   cannot silently widen a tool's.
-2. **An unenforceable cap is a build error.** `writes` is only projected onto a
-   backend that has write confinement; asking for a cap a backend cannot apply
-   names the field instead of pretending.
-3. **A backend that cannot enforce `writes` or `net` warns.** `local` enforces
-   no OS boundary, so either value would be decoration; the runtime logs a
-   warning rather than implying enforcement. `net` is projected only when the
-   mode appears in `Capabilities.NetModes`, and a remote runner reports the
-   server's declaration, so the same test answers for it. Not projecting would
-   discard the policy silently, because `engine.WithDefaults` replaces a tool's
-   own `Net` with the chain default. On `bwrap`, `allow_list` and `proxy` also
-   need `bwrap.MaybeBridge` in the host main; without that hook those modes fail
-   per call.
-
-## Decorating the runner
-
-`WithSandboxDecorator` wraps the runner the runtime composed — backend plus the
-policy above — before the tool set is built:
-
-```go
-type audited struct {
-    *sandboxengine.Forwarder
-    sink Sink
-}
-
-func (a *audited) Start(ctx context.Context, spec sandbox.SessionSpec) (sandbox.Session, error) {
-    a.sink.Record(spec.Argv)
-    return a.Forwarder.Start(ctx, spec)
-}
-
-rt, err := runtime.New(ctx, cfg, runtime.WithSandboxDecorator(
-    func(sb runtime.Sandbox, composed sandbox.Runner) (sandbox.Runner, error) {
-        forwarder, err := sandboxengine.NewForwarder(composed)
-        if err != nil {
-            return nil, err
-        }
-        return &audited{Forwarder: forwarder, sink: sink}, nil
-    }))
-```
-
-`runtime.Sandbox` is the resolved view of the document: `WorkDir` is the
-_effective_ directory (`sandbox.workdir`, otherwise the first files root), `Net`
-the posture the document declares, and `Defaults` exactly what
-`engine.WithDefaults` applies. A host that builds a second chain from it does not
-re-derive the document; anything that reproduces the `workDir()` fallback or the
-default merge by hand drifts from it. Treat `Config` and `Defaults` as read-only:
-their slices and policy pointers are shared with the composed chain, so editing
-one rewrites the boundary that chain enforces.
-
-Ordering is the reason the seam is on the runner rather than a tool option: the
-decorator runs after the policy and before the journal, so `exec_command`,
-`exec_session`, `Runtime.Runner()` and the journal all see the decorated value.
-
-Two rules keep it honest:
-
-- **Forward the optional capabilities.** `engine.Forwarder` forwards `Runner`
-  plus `OpenJournal` and `Attach`. Embedding `sandbox.Runner` directly promotes
-  neither, so such a decorator silently loses a configured journal — and `New`
-  fails, because the runtime opens the journal against the decorated value.
-- **`Close` is the runtime's, once.** The decorator must return a non-nil runner;
-  an error or a nil fails `New` (a typed nil — a nil pointer widened into the
-  interface — is not detected). The runtime closes the returned value exactly
-  once and only that value, so whatever the decorator created (a retry chain, a
-  sink) is its own to close, and one that replaces rather than wraps must close
-  what it drops.
-
-A runner that needs the completed result of a command — escalation recognizes an
-OS refusal in it — implements `sandbox.Executor`, which `engine.Exec` dispatches
-to; `Start` keeps the derived view. See
-[sandbox.md](sandbox.md#wiring-escalation-into-a-runtime) for the escalation
-wiring.
-
-## The remote backend
-
-`sandbox.backend: remote` hands execution to a server that speaks the wire
-protocol in `core/sandbox-remote/wire`:
-
-```yaml
-sandbox:
-  backend: remote
-  remote:
-    transport: http # http (default) | unix
-    endpoint: https://sandbox.internal:8443
-    token: "${SANDBOX_TOKEN}"
-    timeout: 30s
-    poll_hold: 15s
-    insecure_skip_verify: false
-```
-
-| Transport | Fields                                                                                                                                |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `http`    | `endpoint` required and `http(s)`; `socket` rejected.                                                                                 |
-| `unix`    | `socket` required; `endpoint` and `insecure_skip_verify` rejected. A token is optional — the boundary is the directory's permissions. |
-
-Every other backend's fields behave the same way: the field the transport does
-not use is a validation error, because a socket path beside an endpoint is
-configuration that silently does nothing.
-
-## Accessors
-
-| Call                                        | Returns                                                      |
-| ------------------------------------------- | ------------------------------------------------------------ |
-| `Config()`                                  | The resolved configuration, layers already merged.           |
-| `Provider()`, `Router()`, `DefaultModel()`  | The inference side.                                          |
-| `Tools()`, `Assembly()`, `NewCatalogView()` | The tool registry and the per-run projection.                |
-| `Runner()`, `Journal()`                     | The sandbox boundary and its file journal (nil when absent). |
-| `Files()`                                   | The `fsx.Tree` the file tools write through.                 |
-| `Skills()`                                  | The one `skill.Index` the tools and the host share.          |
-| `Context(ctx)`                              | A context carrying the runtime's identity for tracing.       |
-| `Close()`                                   | Tears down, in reverse construction order.                   |
-
-## The run identity
-
-`Context(ctx)` attaches one value: a `correlation.Run`. It is the identity a
-span, a log record, a `RunRecord` and a checkpoint are correlated by — not
-conversation content, and not a dependency. Each layer adds the fields it is the
-first to know, and a later layer only overrides the fields it sets:
-
-| Field       | Written by   | Attribute key       |
-| ----------- | ------------ | ------------------- |
-| `RuntimeID` | `runtime`    | `agent.runtime.id`  |
-| `SessionID` | `agent-host` | `session.id`        |
-| `AgentName` | `agent-host` | `agent.name`        |
-| `TenantID`  | `agent-host` | `tenant.id`         |
-| `Manifest`  | `agent-host` | `agent.manifest.id` |
-| `TaskID`    | `agent`      | `task.id`           |
-| `Turn`      | `agent`      | `turn`              |
-
-`DelegationDepth` and `ChainID` are stamped by `delegation` and are deliberately
-not rendered as attributes: they say where the run sits in a delegation chain,
-not who it is, and the delegation layer already carries them on its own records
-(`Outcome`, `Job`).
-
-The package is `core/correlation` and it is a contracts-tier package on purpose:
-`tool`, `sandbox`, `inference`, `agent` and `delegation` all read the identity to
-start a span, and none of them may import the assembly that built the runtime.
-The attribute names above live in the same package (`core/correlation/attrs.go`),
-so "who the work belongs to" has exactly one home; `core/telemetry` keeps the keys
-that describe the work itself (`tool.*`, `llm.*`, `sandbox.*`, `error.*`, …).
-
-Callers read it in two ways, and both are allocation-free:
-
-```go
-run, ok := correlation.From(ctx)                  // the identity itself
-span.SetAttributes(correlation.Attrs(ctx)...)     // precomputed, cap-crippled
-```
+`limits` sits in the grant because it is parsed from the same document, but it is
+not a permission: `Narrow` clears it, the digest ignores it, and a session does not
+limit itself.
 
 ## Ownership
 
-One rule: **a `Runtime` closes what it created.** A value handed in through an
-option is somebody else's to close, and `Close` leaves it alone.
+One rule: **whoever built a value closes it.**
 
-`Close` runs in reverse construction order — tools, then journal, then runner,
-then tree — because a session that outlives its runner writes into a corpse, and
-a journal that outlives its runner drops the last events. Errors are joined: a
-failing journal must not stop the runner from being closed.
+| Value                     | Closed by                                                  |
+| ------------------------- | ---------------------------------------------------------- |
+| `host.Resource`           | `Resource.Close`, in reverse build order, joining failures |
+| `host.Agents`             | `Agents.Close`                                             |
+| a session's cell and tree | the session, after its turn ends                           |
+| a driver                  | the session that opened the program's driver               |
+| a deployment's program    | `Agents`, when its last session is gone                    |
+| the store                 | the application that opened it                             |
+
+A session that outlives its runner writes into a corpse, which is why a close
+cancels the turn and waits for it before releasing the driver and the boundary.
 
 ## What is not here
 
-| Not in `runtime`             | Where it lives                                                            |
-| ---------------------------- | ------------------------------------------------------------------------- |
-| Sessions, history, turn loop | `core/agent` and `core/agent-host`                                        |
-| Lifecycle hooks              | `agent.Hooks`, attached by a `deploy.HookKind` — see [hooks.md](hooks.md) |
-| Events a UI subscribes to    | `agent.Event`, streamed by a session                                      |
-| Reload / hot swap            | A host builds a new `Runtime` and drains the old one                      |
-| Deployment documents         | `core/deploy` — see [deploy.md](deploy.md)                                |
+| Not in the process                  | Where it lives                                                  |
+| ----------------------------------- | --------------------------------------------------------------- |
+| Conversation history                | the checkpoint's event log — see [checkpoint.md](checkpoint.md) |
+| The prompt, and the loop            | the deployment's program: `agent/graph`, `agent/a2a`            |
+| The document formats                | `core/deploy` — see [deploy.md](deploy.md)                      |
+| Authority decisions                 | `core/policy`                                                   |
+| A correlation package               | `core/identity`, written only by `identity/inject`              |
+| A per-agent runtime or record level | nothing: both are the process's                                 |
+| Path resolution inside the platform | nothing: a root must be absolute and already exist              |

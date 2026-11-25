@@ -157,8 +157,8 @@ A node config may therefore name a value it should not carry:
 Arguments after the scheme are split on `:` and handed to the resolver
 untouched; `$$` is a literal `$`. The schemes themselves are the host's: it hands
 its resolvers to the reader with `nodes.WithConfigOptions`, and to the engine
-when the graph is deployed — [deploy.md](deploy.md#placeholders) has the two
-lines. An unregistered scheme is a load error listing what is registered, never
+when the graph is deployed — [deploy.md](deploy.md#layers-and-placeholders) has
+the two lines. An unregistered scheme is a load error listing what is registered, never
 a literal handed to a node.
 
 `nodes.RequiredPlaceholders` reports every reference in a document without

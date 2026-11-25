@@ -1,17 +1,28 @@
-# The deployment document: which agents exist and what each is made of.
-#
-# `settings.path` is resolved against the process working directory, so run the
-# host (and the validator) from this directory.
+# The agent document: which agents exist, what runs them, and the authority each has.
 version: 1
 
 agents:
   - name: assistant
-    engine:
-      kind: graph
+    program:
+      # A program is what runs a conversation. `graph` is the one this template
+      # assumes the binary registered; the settings block is its own.
+      impl: graph
       settings:
+        # The model a node calls when the graph names none. The grant decides which
+        # models a session may reach; this says what a silence means.
+        model: {provider: luna, name: gpt-5}
+        # Resolved against the process working directory, so run the host from the
+        # directory this document lives in.
         path: ./graphs/assistant.yaml
-    runtime:
-      layers:
-        - {priority: 0, path: ./runtime.yaml}
-    observability:
-      trace: run
+    grant:
+      sandbox: local
+      # Empty read and write mean unrestricted, which is what a backend with no OS
+      # boundary can honour. A hardened deployment registers a backend that confines
+      # writes (bwrap, seatbelt) and writes the roots down.
+      files: {}
+      net: {mode: default}
+      models:
+        - id: {provider: luna, name: gpt-5}
+      # `limits` is required: there is no inherited idle timeout, because a session
+      # table that keeps every conversation forever is not a default worth having.
+      limits: {idle: 30m, max_sessions: 8}

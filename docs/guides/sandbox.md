@@ -7,21 +7,59 @@ title: Sandbox
 
 `core/sandbox` is the command execution boundary, and it is three layers:
 
-| Layer    | Package                                                            | Role                                                                                                                                  |
-| -------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Contract | `core/sandbox`                                                     | `Runner`, `Executor`, `ExecOptions`, `Session`, `Capabilities`, `Journal`, `Attach`. No behaviour beyond validation helpers.          |
-| Policy   | `core/sandbox/engine`                                              | The one-shot `Exec`, the decorators (defaults, allowlist, approval, escalation), the safe-read-only classifier, `ValidateExecPolicy`. |
-| Backends | `core/sandbox-local`, `-bwrap`, `-seatbelt`, `-windows`, `-remote` | The process boundary itself.                                                                                                          |
+| Layer     | Package                                   | Role                                                                                                                                                                                |
+| --------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contract  | `core/sandbox`                            | `Runner`, `SessionStarter`, `Session`, `ExecOptions`, `Confine`, `Enforcement`, the one-shot `Exec`. It spawns nothing itself.                                                      |
+| Machinery | `sandbox/sessionkit`, `sandbox/netpolicy` | The spawn path and session registry, the group resource sampler, the outbound-network policy and its proxy. Not part of the contract, so it may be reshaped between minor versions. |
+| Backends  | `sandbox/local`, `sandbox/remote`         | The process boundary itself — or, for `remote`, the same contract across a host boundary.                                                                                           |
 
-The split exists so a contract package never imports `os/exec` and a backend
-never re-derives the policy rules. The backends are siblings of `core/sandbox`
-rather than subpackages: `core/sandbox/internal/...` is unreachable from another
-directory tree, and what they do share — the session registry, the spawn path,
-the group resource sampler (`core/sandbox/sessionkit`) and the journal contract
-suite (`core/sandbox/journal/journaltest`) — is public for that reason. Verify a
-new backend with `core/sandbox/sandboxtest`.
+The split exists so the contract package never imports `os/exec` and a backend
+never re-derives the policy rules. A backend is a sibling of the machinery, not a
+subpackage of it, because it is an implementation of the contract rather than part
+of the contract — and `core` is forbidden from importing it, which is why the
+application registers the backends it compiles in (`deploy.BackendImpl`) and names
+one per entry in the process document. Verify a new backend with
+`core/sandbox/sandboxtest`: it is the contract's executable specification.
 
-## Runner
+## From a grant to a command
+
+One chain, and each link owns exactly one decision:
+
+```text
+policy.Grant              the agent's ceiling, narrowed by the caller's request
+  → sandbox.Confine       the projection: files, net, env, resources — nothing invented
+  → host.BackendFactory   func(sandbox.Confine) (sandbox.Runner, error), one instance per session
+  → sandbox.ValidateConfine   refused here if the backend cannot enforce it
+  → sandbox.Exec(ctx, starter, cmd, args, opts)
+```
+
+```go
+// A backend's registration, in the application: the factory is process-wide, the
+// instance it returns is one session's.
+impls.Backend(deploy.BackendImpl("local", func(_ struct{}, confine sandbox.Confine) (sandbox.Runner, error) {
+    return local.New(confine)
+}))
+```
+
+At open the host projects the session's bind onto a `sandbox.Confine` — `Files`, `Net`,
+`Exec.Env` and `Resources`, the grant's own values and nothing invented — builds the
+runner from it, and re-runs `sandbox.ValidateConfine(confine,
+runner.Capabilities().Policy)` so a backend that skipped its own check cannot hand a
+session a boundary it does not enforce.
+
+A backend instance serves exactly one session, and the confine is fixed when it is
+built, so "the policy of this call" and "the policy of this session" are the same
+thing. That is why `ExecOptions` carries no permission: a second channel for
+something already decided would only re-open what a narrower call inside a wider
+boundary means.
+
+`host.BackendFactory` is the process-wide closure the host holds; the instance it
+returns is the session's. The file boundary is built beside it — `grant.files` opens
+the session's `fsx.Tree` — so a file tool is refused by a kernel handle and a command
+is refused by the backend's own mounts or profile, each at the layer that can enforce
+it.
+
+## Runner and SessionStarter
 
 ```go
 type Runner interface {
@@ -31,42 +69,98 @@ type Runner interface {
     List(ctx context.Context) ([]SessionInfo, error)
     Terminate(ctx context.Context, id string) error
 }
+
+// The part of a runner a tool may use.
+type SessionStarter interface {
+    Start(ctx context.Context, spec SessionSpec) (Session, error)
+}
 ```
 
-Every runner is a session manager. The one-shot form is
-`engine.Exec(ctx, runner, cmd, args, opts)` — a derived view over `Start` plus
-the terminal status, and the only place a call is known to be finished. A
-decorator that needs that completed result implements `sandbox.Executor`, which
-`engine.Exec` dispatches to instead (see
-[Wiring escalation into a runtime](#wiring-escalation-into-a-runtime)).
+The split is an authority split, not a convenience: a tool that may add a command
+channel needs `Start`; only the boundary's owner may enumerate or terminate what is
+running. `platform.ProcessSlot` — the capability a command tool declares in
+`tool.Tool.Needs` — is filled with a `SessionStarter`, never with the `Runner`.
 
-Backends must reject a policy they cannot enforce rather than silently
-downgrade: `engine.ValidateExecPolicy(opts, caps)` is the shared check, and
-`Capabilities.Enforcement` is what it reads (`WriteConfinement`,
-`FilesystemBounds`, `MemoryCap`, `CPUCap`, `DiskCap`, `NetModes`, `EnvAllowList`,
-`Socks5`, `MITM`, `UnixSocketPolicy`).
+A backend implements `Start` and gets the one-shot form for free:
+`sandbox.Exec(ctx, starter, cmd, args, opts)` drains a session, so there is no second
+code path to keep in step. `Close` releases what the runner owns, it must be safe to
+call twice, and a decorator that forwards the contract owes it the same forwarding —
+`Capabilities` keeps advertising `SessionAttacher.Attach`, so a wrapper that swallowed
+it would make the declaration a lie.
 
-`Close` releases what the runner owns — sessions, a file journal, backend state
-— and the decorators (`AllowCommands`, `WithApproval`, `WithDefaults`) forward
-both `Close` and the journal, so wrapping never hides the backend.
+Backends must reject a confine they cannot enforce rather than silently downgrade it.
+`sandbox.ValidateConfine(confine, caps)` is that gate, `caps` is the backend's own
+declaration, and it is called twice on purpose: once by the backend at construction,
+once by the host that owns the session.
+
+## What a backend declares
+
+`Capabilities` has two halves — `Policy` (what it can enforce) and `Features` (what a
+started session can do). `Enforcement` is the first:
+
+| Field              | Means                                                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EnvAllowList`     | `policy.EnvPolicy.Allow` is honoured: host variables not on the list are dropped, not forwarded.                                                  |
+| `NetModes`         | The `policy.NetMode` values enforceable at the OS level. `NetDefault` is never listed — it is the absence of a posture.                           |
+| `Socks5`           | The backend's proxy can dial a `socks5://` upstream, authentication included.                                                                     |
+| `MITM`             | It can terminate TLS for configured CONNECT hosts and inject the temporary CA into the child environment.                                         |
+| `UnixSocketPolicy` | It can confine unix socket egress to an explicit allow-list.                                                                                      |
+| `MemoryCap`        | `resources.memory_bytes` is enforced (cgroup, rlimit, or a sampling watcher) rather than refused.                                                 |
+| `CPUCap`           | `resources.cpu_millicores` is enforced, which also needs a per-call deadline to derive it from.                                                   |
+| `DiskCap`          | `resources.disk_bytes` is enforced. No process-spawning backend in this repository reports it today.                                              |
+| `FilesystemBounds` | Writes are confined to `Files` at the OS level. A backend with no OS boundary reports false, and then a confine that restricts writes is refused. |
+
+The refusals in `ValidateConfine` follow directly from that: a network mode the backend
+does not list, a TLS interception it cannot do, a unix-socket allow-list it cannot
+confine, a write-restricting `Files` without `FilesystemBounds`, and an environment
+allow-list without `EnvAllowList` are all `NotAvailable` at construction — at open,
+where an operator sees it, rather than on the first command that needs it.
+
+Registration declares the same value (`deploy.Factory.Enforcing`) because the loader
+has to answer "does this deployment's backend bound writes" while reading a document,
+before any session exists; a backend that declares nothing is a backend nothing can be
+escalated on.
+
+## One-shot execution
+
+```go
+type ExecOptions struct {
+    WorkDir   string           // required: the platform defines no session directory
+    Stdin     []byte           // nil or empty means no stdin side at all
+    Timeout   time.Duration    // per call; zero means no sandbox-imposed deadline
+    Resources policy.Resources // what to spend, at most the instance's ceiling
+}
+
+type ExecResult struct {
+    ExitCode int
+    Stdout   string
+    Stderr   string
+}
+```
+
+`Exec` takes a `SessionStarter`, applies `Timeout` to the whole call, closes every
+session it started before returning, and reports a non-zero exit as a result rather
+than an error. Each stream is truncated to `Resources.MaxOutputBytes` (10 MiB when the
+call names none), keeping the first bytes rather than the last. A refusal before
+anything ran is distinguishable from a failure: `errors.Is(err, sandbox.ErrConfineDenied)`
+says the boundary refused, and `errdefs.IsPolicyDenied` says a rule refused.
 
 ## Sessions
 
-Sessions declare their input surface up front. `SessionSpec.Stdin` says the
-caller will feed the child through `Write` / `CloseInput`, and
-`SessionCapabilities.Stdin` reports whether a started session has somewhere to
-write. A non-TTY session without that declaration leaves the child's fd 0 at the
-OS default (`/dev/null`), so a tool that branches on stdin — `rg` with no path
-operand, `cat`, `test -p /dev/fd/0` — reads its operands instead of an empty pipe
-that never ends; `Write` on such a session fails with `errdefs.NotAvailable`
-instead of silently buffering.
+Sessions declare their input surface up front. `SessionSpec.Stdin` says the caller will
+feed the child through `Write` / `CloseInput`, and `SessionCapabilities.Stdin` reports
+whether a started session has somewhere to write. A non-TTY session without that
+declaration leaves the child's fd 0 at the OS default (`/dev/null`), so a tool that
+branches on stdin — `rg` with no path operand, `cat`, `test -p /dev/fd/0` — reads its
+operands instead of an empty pipe that never ends; `Write` on such a session fails with
+`errdefs.NotAvailable` instead of silently buffering.
 
-`ExecOptions.Stdin` is one-shot input, not a declaration: `Start` neither
-delivers those bytes nor pipes fd 0 for them. `engine.Exec` sets
-`SessionSpec.Stdin` itself before it writes those bytes and closes the pipe.
+`ExecOptions.Stdin` is one-shot input, not that declaration: `Start` neither delivers
+those bytes nor pipes fd 0 for them. `sandbox.Exec` sets `SessionSpec.Stdin` itself
+before it writes those bytes and closes the pipe.
 
-A session that was started can be re-acquired later, by something that no longer
-holds the handle — usually a different request:
+A session that was started can be re-acquired later, by something that no longer holds
+the handle — usually a different request:
 
 ```go
 type SessionAttacher interface {
@@ -76,504 +170,136 @@ type SessionAttacher interface {
 sess, err := sandbox.Attach(ctx, runner, id)
 ```
 
-`Attach` returns a session that replays output from the beginning and reports
-the exit status, without the caller having kept the original handle. An unknown
-id is `errdefs.NotFound`; a session whose spawn has not settled yet is
-`errdefs.NotAvailable`. `core/sandbox-local` implements it over the session
-registry, and `core/sandbox-remote` proxies it to the server, so the same call
-works against a local or a remote boundary.
+`sandbox.Attach` is the only supported way to reach the optional interface — callers ask
+the runner rather than asserting the interface themselves, so a backend can keep the
+capability behind a decorator chain or behind the wire. The handle is an ordinary
+session: it reads the same output log from any retained cursor, and `Close` on it
+terminates a still running process, so attaching is "take over", not "peek".
+`sessionkit`'s registry implements it, and `sandbox/remote` proxies it to the server, so
+the same call works against a local or a remote boundary. An unknown id is
+`errdefs.NotFound`; a session whose spawn has not settled yet is `errdefs.NotAvailable`.
 
-Capabilities describe what a started session can do: `TTY` (pty sessions, with
-`Resize` and merged output), `Signal` (signal delivery), `Events` (push streams
-through `Watch` — a backend that reports `Events` must be able to deliver the
-terminal status, which the conformance suite checks).
+`SessionFeatures` describes what a started session can do: `TTY` (pty sessions, with
+`Resize` and merged output), `Signal` (signal delivery), `Events` (push streams through
+`Watch` — a backend that reports `Events` must be able to deliver the terminal status,
+which the conformance suite checks).
 
-## The deployment block
+## A call may ask for less
 
-A backend is chosen in the runtime document, not in a resource table:
+`Confine.Narrow(opts)` resolves one call's `Resources` against the instance's ceiling
+and returns the options the backend should act on. A zero field inherits the ceiling; a
+non-zero field must fit under it, and asking for more is an error rather than a silent
+truncation — a budget that quietly lost its value is indistinguishable from one that
+never had it. There is no widening direction anywhere in this package.
+
+Two rules come out of that:
+
+- a cpu budget needs a per-call deadline to derive from, so `cpu_millicores` with no
+  `Timeout` is refused rather than run unmeasured;
+- `ValidateBudgets(resources, caps)` is the per-call half of `ValidateConfine`: a
+  ceiling of zero means "unbounded", so a call may name a budget the instance never
+  claimed, and a backend refuses what it cannot enforce instead of running the command
+  uncapped.
+
+A cap that stops being measurable mid-session is a different answer: every backend that
+samples a budget reaps the session as `sandbox.SessionUnenforceable` with a
+`NotAvailable` error once its sampler has failed three consecutive times, rather than
+letting a child run unguarded under a capability that still claims the cap.
+`sessionkit.StartGroupCapsWatcher` is that sampler, and `GroupCapsAvailable` is what a
+backend must gate its `MemoryCap`/`CPUCap` declaration on instead of hardcoding true.
+
+## What a deployment says
+
+A backend is chosen in the process document, by name; an agent selects one with
+`grant.sandbox`. There is no per-session sandbox block: what one session may touch is
+its grant.
 
 ```yaml
+# the process document: the backends this binary carries
+version: 1
 sandbox:
-  backend: seatbelt # local | seatbelt | bwrap | windows | remote
-  workdir: /workspace/forge # default: the first files root
-  writes: [/workspace/forge/out]
-  net:
-    mode: allow_list
-    allow_hosts: [api.openai.com]
-  timeout: 60s # ceiling; a tool may ask for less
-  cpu_millicores: 2000 # rejected without timeout
-  memory_mib: 2048
-  output_mib: 8
+  - name: local
+    impl: local
 ```
 
-| Field                                                   | Meaning                                                                                 |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `backend`                                               | Required, no default: a boundary picked by guessing is a boundary nobody chose.         |
-| `workdir`                                               | Where commands run; empty means the first files root.                                   |
-| `writes`                                                | Absolute paths a command may write; empty means read-only.                              |
-| `net`                                                   | `mode` plus `allow_hosts` (allow-list only) and `proxy` (proxy only).                   |
-| `timeout`, `cpu_millicores`, `memory_mib`, `output_mib` | The resource budget.                                                                    |
-| `journal`                                               | A settings block; presence opts in. See [File journal](#file-journal).                  |
-| `bwrap`, `seatbelt`, `windows`                          | The backend's own construction options.                                                 |
-| `remote`                                                | Client configuration for `backend: remote`. See [sandbox-remote.md](sandbox-remote.md). |
+```yaml
+# the agent document: one agent's ceiling
+version: 1
+agents:
+  - name: forge
+    grant:
+      sandbox: local # a name the process must configure
+      files:
+        read: [/srv/agent]
+        write: [/srv/agent/out]
+      net:
+        mode: allow_list
+        allow_hosts: [api.openai.com]
+      exec:
+        timeout: 60s
+      resources: { cpu_millicores: 2000, memory_bytes: 2147483648 }
+      limits: { idle: 30m }
+```
 
-The budget reaches every call: the runtime wraps the backend with
-`engine.WithDefaults`, which projects `timeout`, `cpu_millicores`, `memory_mib`
-and `writes` onto the `ExecOptions` of each call it issues. Merging is per
-field and takes the stricter side — zero defers, of two non-zero values the
-smaller wins — so a tool cannot widen the deployment and the deployment cannot
-silently widen a tool. Three consequences worth knowing:
+| Grant field | Becomes, in the confine                                                                                               |
+| ----------- | --------------------------------------------------------------------------------------------------------------------- |
+| `sandbox`   | The name the host resolves to a `BackendFactory`. A name the process does not carry is `NotAvailable` at open.        |
+| `files`     | `Confine.Files` — `read[]`, `write[]`, `readonly`. Absolute roots; `readonly` is a file-tool permission, not a mount. |
+| `net`       | `Confine.Net` — `mode`, `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`.                                |
+| `exec.env`  | `Confine.Env` — `allow[]` (an empty list means "nothing", absent means "inherit") and `inject{}`.                     |
+| `resources` | `Confine.Resources` — the per-command ceiling: `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.    |
 
-- a cap the backend cannot enforce (a cpu budget on a backend without `CPUCap`,
-  `writes` on one without `WriteConfinement`) fails the build, naming the field;
-- `writes` on `local` and `remote` only warns: `local` has no boundary and
-  `remote` enforces it on the server, so the value would be decoration;
-- `cpu_millicores` without `timeout` is a validation error, because the budget
-  is derived from the deadline.
+Everything else in the grant is somebody else's: the tools are the projection's, the
+models are the provider's, the timeout is a per-call argument, and the delegation block
+belongs to [delegation.md](delegation.md). The settings block of a `sandbox` entry is the
+backend implementation's own and is decoded strictly at load.
 
-A cap that cannot be enforced is a build error; a cap that stops being
-enforceable mid-session is an exit reason. Every backend that measures a budget
-at runtime reaps the session as `SessionUnenforceable` with a `NotAvailable`
-error once its sampler has failed three consecutive times, rather than letting
-the child run unguarded under a capability that still claims the cap. The
-`local`, `bwrap` and `seatbelt` backends sample the process group; `windows`
-samples the job's commit and attributes a cpu breach from the job's accounting.
+## Backends
 
 ### `local`
 
-No isolation, for trusted workflows: `Capabilities.Enforcement` is empty, so a
-deployment that asks for a network mode or a write boundary is rejected. Unix
-hosts still get memory / cpu sampling and session support.
+No isolation, for trusted workflows: commands run through `os/exec` on the host,
+`Enforcement` reports only `EnvAllowList` plus whatever the shared sampler can measure,
+and a confine that restricts writes is **refused at construction** rather than ignored —
+there is no OS boundary here to confine a write set with. Interactive sessions, memory
+and cpu sampling and `Attach` all come from `sessionkit`.
 
-Interactive sessions are unix-only **today, by implementation rather than by
-design**: `sessionkit` ships the session machinery for the unix spawn path (pty,
-process groups, signals) and a stub elsewhere, while the Windows session stack
-lives in `sandbox-windows`. The intended shape is one session layer in
-`sessionkit` with the platform differences behind it (pty vs ConPTY, process
-group vs job object), which makes `local` portable and shrinks `sandbox-windows`
-to its policy layer. Until that lands, a Windows deployment uses
-`backend: windows`, whose lifecycle-only mode is the same "no isolation beyond
-the OS keeping the process tree" promise.
+### `remote`
 
-### `bwrap` and `seatbelt`
+`sandbox/remote` is a `sandbox.Runner` whose processes execute on another host: the
+client is a proxy, `remote.NewServer` wraps any other runner, and nothing above the
+client changes — the tool set, the approval path and the confine see the interface they
+see for a local backend. It reports what its server declared, which is what keeps
+`ValidateConfine` honest across the wire. See [sandbox-remote.md](sandbox-remote.md).
 
-```yaml
-sandbox:
-  backend: bwrap # or seatbelt
-  bwrap:
-    binary: /usr/bin/bwrap # optional; resolved against the root
-    extra_flags: [--die-with-parent] # bwrap only
-    readonly_root: true # keep the runner root read-only
-```
+### Which shell
 
-| Field           | Rule                                                                                                                                                                  |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `binary`        | Overrides the backend executable; resolved against the runner root.                                                                                                   |
-| `readonly_root` | Keeps the runner root read-only for every exec. Explicit `writes` stay writable, and a `writes` entry that resolves to the root is rejected instead of being dropped. |
-| `extra_flags`   | bwrap only. A flag that could weaken the policy (`--ro-bind`, `--args`, …) is rejected at build time.                                                                 |
+`sandbox.DefaultShell(goos)` and `sandbox.ShellFor(name, path, args)` are the only place
+the platform decides which shell exists on a host, and `ShellSpec.Argv` is how a command
+line is wrapped in it. The exec tool uses them; a backend never does.
 
-Both enforce namespaces (bwrap) or a Seatbelt profile (seatbelt), and both
-support `NetDefault`, `NetDenyAll`, `NetAllowList` and `NetProxy`.
+## Not the sandbox's job
 
-### `windows`
+Two command rules belong to the host, because asking whether a command may run — and
+asking again whether a refused one may leave the boundary — is policy rather than a
+capability: approval (`host.Approval`) and escalation (`host.Escalator`, driven by
+`grant.escalate` and only ever offered for a `sandbox.ErrConfineDenied`). They decorate
+the narrow `SessionStarter`, so a tool gets the operator's decision for free. See
+[runtime.md](runtime.md).
 
-```yaml
-sandbox:
-  backend: windows
-  windows:
-    write_confine: true # opt-in Low-integrity write confinement
-```
+A delegated subagent is a session of its own: its confine comes from the target
+deployment's grant, not the caller's, and core derives no mode for it. See
+[delegation.md](delegation.md).
 
-Every child runs in its own Job Object: timeout, cancel and close terminate the
-whole process tree. A cpu budget is a job-wide user-time limit the kernel
-enforces by ending the job; a memory budget is sampled from the job's peak
-commit every 25 ms and terminates the tree on a breach, the same shape as the
-unix watcher, so a session may briefly run past its budget. Memory is
-deliberately not a kernel commit limit there: refusing the allocation leaves the
-process running with nothing to report. When a cap stops being measurable — three
-consecutive failed samples — the session is ended as `SessionUnenforceable` with
-a `NotAvailable` error rather than left running unguarded. Without
-`write_confine` the runner is lifecycle-only and a call that asks for write
-confinement is rejected with `NotAvailable`. Network policy runs the child in an
-AppContainer with no network capabilities, plus WFP bind-layer filters for
-`NetDenyAll`; `NetAllowList` / `NetProxy` permit only TCP binds, pin the
-container to a host-side enforcement proxy and inject the proxy environment.
-Those modes need an elevated host and fail closed otherwise. Interactive
-sessions use ConPTY (merged output, `Resize`); TTY combined with write
-confinement or a net policy is not available yet.
+## What this replaced
 
-Permission bits are advisory on Windows: `chmod`-style modes map only to the
-read-only attribute, and real access control comes from the directory ACLs
-inherited at creation. Code passing `0o600` still runs, but treat such modes as
-intent, not as a boundary.
-
-## Per-exec permission
-
-`ExecOptions.Permission` narrows the boundary for a single call:
-
-```go
-opts := sandbox.ExecOptions{
-    Permission: &permission.Policy{
-        Writes: permission.Writes{Paths: []string{"/workspace/forge/out"}},
-    },
-}
-```
-
-A supplied `Permission` **replaces** the runner's construction-time defaults
-rather than adding to them: the caller stated the boundary, so the backend must
-not quietly widen it back to the runner root. An empty writable list therefore
-means read-only, which is how a call asks for it without a second enum. There is
-no widening mode, and `engine.WithDefaults` follows the same rule — the stricter
-side wins, per field.
-
-The file journal watches the **runner-level** boundary: a per-call permission
-does not re-register watches, it only narrows what the call may write.
-
-A path check is configuration hygiene, not confinement. `engine.Resolve` turns a
-relative backend setting path into one under the runner root and rejects relative
-traversal — through a symlink too — but an absolute path is only
-`filepath.Clean`ed and returned unchanged, with no containment against the root,
-because a deployment states `writes` absolutely. The symlinks are evaluated when
-`Resolve` runs, so a link swapped afterwards is a TOCTOU window it cannot close.
-What confines a command is the kernel policy the backend installs (the Seatbelt
-profile, the bwrap namespaces and binds); a string check that disagreed with it
-would only move the refusal earlier and make it less accurate.
-
-## Safe read-only auto-approval
-
-`engine.ClassifySafeReadOnly` implements the codex-rs-style heuristic (base
-read-only commands plus argument-aware checks for `find` / `rg` / `git` / `sed`
-/ `sort`). It shares the allowlist's shell unwrapping: a script counts only when
-the wrapper is the exact supported form (`sh -c`, `cmd.exe /c`,
-`pwsh -NoProfile [-NonInteractive] -Command`) and the script is a single plain
-command; combined and abbreviated forms such as `bash -lc`, `cmd /k` or a
-PowerShell command without `-NoProfile` are never unwrapped. `-NonInteractive` is
-accepted because the platform's own `exec` tool passes it and it only suppresses
-prompts: it runs no profile and does not change how the script is parsed. `date`
-and `hostname` are deliberately not auto-approved: `date -s` changes the system
-clock and `hostname newname` changes the host name — non-file writes no OS
-sandbox can block.
-
-It is a caller-side helper; the host's `ApprovalFunc` decides:
-
-```go
-if req.Opts.Permission != nil && req.Opts.Permission.Writes.IsZero() &&
-    engine.ClassifySafeReadOnly(req.Exec) {
-    return sandbox.Allow, nil
-}
-```
-
-It never denies and never widens policy; an unrecognized command returns `false`
-and routes to the human approver.
-
-## Escalation: one approved retry outside the confine
-
-`WithApproval` answers "may this command run", never "under which boundary": a
-command the approver allowed and the OS sandbox then refused fails like any other
-command. Escalation is the second, explicit question:
-
-```go
-esc := &engine.Escalation{
-    Confined: confined, // approval / defaults / OS-backend chain
-    // The retry target is a chain of its own; keep the floor a retry must not drop.
-    Unconfined: engine.WithDefaults(
-        engine.AllowCommands(local.New(root), allowed),
-        defaults),
-    Escalate: policy, // the ask channel
-    Rules:    policy, // remembered "run outside" rules
-    Gate:     host,   // mode owner: is the retry offerable?
-}
-res, outcome, err := esc.Exec(ctx, cmd, args, opts)
-```
-
-The command runs through `Confined`; when `engine.Denied(res)` recognizes a
-refusal in the captured output, the gate is consulted, the user is asked once,
-and an approved answer re-runs the whole command through `Unconfined`, exactly
-once, with byte-identical `ExecOptions`. The prompt must say that the command
-repeats: a command that failed halfway may already have had side effects.
-
-Semantics worth relying on:
-
-- **Denial detection is a tripwire, not a wall.** `Denied` matches the fragments
-  the three confinement layers leave behind (seatbelt EPERM, bwrap read-only
-  binds, the Windows access-denied spellings) in either captured stream — the
-  shells that phrase them disagree on stderr vs. stdout — and deliberately
-  ignores plain "Permission denied" and the cannot-execute statuses 126/127:
-  those are ordinary file-mode and lookup failures, and prompting for them would
-  train users to approve noise. A false positive only produces a prompt the user
-  can decline; the OS backend stays the wall. The table is pinned to reality by
-  the seatbelt / bwrap / windows integration lanes, each of which provokes a
-  genuine refusal and asserts `Denied` recognizes it.
-- **Fail closed.** A prompt that errors keeps the confined result, a deployment
-  with no escalator (headless, tests) keeps refusals as plain command failures,
-  and a nil gate offers nothing.
-- **The retry chain stands on its own.** `Unconfined` is not "the confined chain
-  minus the OS backend": nothing merged into `Confined` — defaults, command
-  gates, resource caps — applies to it, so build it with whatever floor must
-  survive an escalation. The OS boundary is the one thing a retry gives up.
-- **The gate is the mode owner's half.** A session that already runs unconfined
-  has no confine to leave, and a read-only session must not trade its workspace
-  guarantee for a per-command approval: `EscalationAvailable` returning false
-  suppresses both the offer and the remembered-rule shortcut. `EscalationGateFunc`
-  covers hosts without modes.
-- **Remembered rules skip the doomed attempt.** `EscalatedAllowed` is consulted
-  before the first attempt, so an "always" answer runs directly through
-  `Unconfined`; persisting the rule belongs to the `Escalator` implementation. It
-  observes a snapshot of the request (mutating it cannot rewrite the call, like
-  an approval predicate), and it is the only check left on such a call beyond
-  `Gate`. Matching normalizes like the allowlist (`RuleFor` unwraps `sh -c`
-  wrappers), so the request's `Rule` is the normalized prefix the store matches
-  while `Command` is the display line the prompt shows, `Reason` / `Detail` the
-  refusal, and `Exec` the snapshot of the refused attempt.
-- **`Escalation` is not a `Runner`.** Only a completed result tells a refusal
-  from an ordinary failure, so the retry lives at the Exec level. Interactive
-  sessions keep their own chains and never restart behind the user's back.
-  `engine.EscalationRunner` is the adapter when the caller only has a `Runner`:
-  its `Exec` runs the escalation, every session call forwards to `Confined`.
-- **A delegated subagent is a separate session.** A mode store keyed on session
-  identity answers for the subagent's own session, not the caller's, and core
-  derives no mode for it: `delegation.Policy` bounds delegation (targets, modes,
-  depth, concurrency, timeout, input size) and says nothing about the child's
-  boundary. A deployment that wants one gets it from the child's own
-  `sandbox` configuration or from a hook that recognises the child. See
-  [delegation.md](delegation.md).
-
-`outcome` reports `Refused` / `Approved` / `Remembered`, so a host can attach its
-audit note without re-deriving what happened.
-
-### Wiring escalation into a runtime
-
-A host that assembles its tools through `core/runtime` does not build the
-confined chain itself, so the retry attaches to the runner the runtime composed
-(`runtime.WithSandboxDecorator`). `engine.EscalationRunner` is that adapter:
-
-```go
-rt, err := runtime.New(ctx, cfg,
-    runtime.WithSandboxBackends(backends.All()), // the backends this process ships
-    runtime.WithSandboxDecorator(func(sb runtime.Sandbox, confined sandbox.Runner) (sandbox.Runner, error) {
-        return engine.NewEscalationRunner(&engine.Escalation{
-            Confined: confined, // backend + approval + the document's defaults
-            // The retry chain is its own: keep the floor an escalation must not
-            // drop. sb.WorkDir is the effective directory; cfg.Sandbox.WorkDir
-            // is empty whenever the deployment used files.roots.
-            Unconfined: engine.WithDefaults(local.New(sb.WorkDir), engine.ExecOptions{
-                Timeout:   sb.Defaults.Timeout,
-                Resources: sb.Defaults.Resources,
-            }),
-            Escalate: policy, // the ask channel
-            Rules:    policy, // remembered "run outside" rules
-            Gate:     host,   // mode owner: is the retry offerable?
-        })
-    }),
-)
-```
-
-Three rules make the seam safe:
-
-- **Ordering.** The decorator runs after the backend and after
-  `engine.WithDefaults`, and before the journal is opened. `exec_command`,
-  `exec_session`, `Runtime.Runner()` and the journal therefore see the same
-  value, and the confined chain it receives already carries the document's
-  timeout, budgets, writes and — where the backend declares the mode — its
-  network posture.
-- **One-shot.** `exec_command` reaches the escalation only because the runner
-  implements `sandbox.Executor`, which `engine.Exec` dispatches to. Session calls
-  keep forwarding to `Confined`: a session refused over many reads is not what a
-  one-shot retry covers.
-- **Ownership.** The runtime closes the returned value exactly once, and only
-  that value. The retry chain belongs to the decorator — `EscalationRunner.Close`
-  releases it — so building one cannot leak it. `engine.Forwarder` is the base
-  that also forwards `OpenJournal` and `Attach`; embedding `sandbox.Runner`
-  directly promotes neither and silently drops the journal.
-
-The retry receives the confined call's `ExecOptions` byte for byte, but
-`engine.WithDefaults` takes `Net` from the chain's own defaults (defaults win
-entirely). `sb.Defaults.Net` is the posture the composed chain carries — empty on
-a backend that cannot enforce the mode — while `sb.Net` is the document's
-declaration either way. A `local` retry neither enforces it nor accepts a
-per-call policy, so leave `Net` out there.
-`sb.Defaults.Permission` is the document's
-write boundary: do not hand it to a `local` retry chain, which rejects a per-call
-permission — decide the floor the retry keeps. `engine.WithEscalationObserver`
-sees every one-shot outcome, including a plain confined success, for the audit
-note.
-
-## File journal
-
-A runner can report the writes that happen inside it as a readable, replayable
-event stream: knowing which artifacts a turn produced, without scanning trees
-before and after. It exists on the backends and platforms that have a watch
-source, and each source reports in the unit its kernel charges for:
-
-| Backend    | Source                                                             | Cost of one watch                                             | Rename pairing                        | Identity (`Dev`/`Ino`)           |
-| ---------- | ------------------------------------------------------------------ | ------------------------------------------------------------- | ------------------------------------- | -------------------------------- |
-| `local`    | inotify (Linux) / kqueue (macOS) / ReadDirectoryChangesW (Windows) | per directory / per entry / per directory + its change buffer | yes (within one directory on Windows) | yes on the unices, no on Windows |
-| `bwrap`    | inotify (Linux)                                                    | per directory                                                 | yes                                   | yes                              |
-| `seatbelt` | kqueue (macOS)                                                     | per entry                                                     | yes                                   | yes                              |
-| `windows`  | ReadDirectoryChangesW (Windows)                                    | per directory + its change buffer                             | within one directory                  | no                               |
-| `remote`   | whatever the server's backend has                                  | the server's                                                  | the server's                          | the server's                     |
-
-Writer attribution is `no` everywhere (`WriteEvent.Session` stays empty): inotify
-cannot name the writer without `CAP_SYS_ADMIN`, kqueue cannot name it at all, and
-a guess from timing would be a data-correctness bug.
-
-A platform without a source (the BSDs today) fails the build when `journal:` is
-configured, instead of producing a runner that reports nothing. It is opt-in by
-presence — an absent block costs nothing (no descriptor, no goroutine, no
-watch), and the zero block is a fully enabled journal with every default:
-
-```yaml
-sandbox:
-  journal:
-    exclude: [.git, node_modules, dist, target, .venv]
-    retention: 4096 # events kept for replay; DefaultJournalRetention
-    max_watch_set: 20000 # watch budget; past it, a capacity gap
-    ops: [create, rename, remove] # drop "write" events; a filtered op is not a gap
-```
-
-`exclude` lists directories relative to the runner root whose subtree is never
-watched; it is the cost control (about 1 KB of kernel memory per directory watch
-on Linux, one descriptor per watched entry on macOS), and the journal applies no
-default list of its own — an implicit filter would hide writes a deployment
-believes it is watching. `retention` bounds the replay window; `max_watch_set`
-bounds the watch set (_how many_ watches, in the platform's unit above). Both are
-validated at build time, and the cheap invariants (op names, negative values)
-fail at load, where the field is still visible.
-
-On macOS the budget is derived from the process's descriptor ceiling, and
-attaching a journal raises the soft `RLIMIT_NOFILE` toward it (never down, never
-past the hard limit) — a sandbox root is usually tens or hundreds of entries, but
-a build tree that exceeds the budget is a reported capacity gap, not a truncated
-watch set. Descriptor limits are process-wide, so a host that would rather own
-that decision can set the limit itself before building the runner; the journal
-only ever lifts it. Per watched directory the source also keeps one snapshot in
-user space (names and identities), which is what makes diffing — and with it the
-"no queue overflow to report" property — possible.
-
-What a directory note costs on macOS is worth knowing, because it is the one
-platform where it is not a single syscall: the directory is re-read and diffed,
-so the price is the width of the directory rather than the size of the change.
-The re-read is one pass over the directory's own records — each carries its
-entry's type and inode number — plus a stat for the entries those records cannot
-describe on their own, which is every directory (a directory entry may be a
-mounted volume, and only a stat sees that). Measured on APFS over a directory of
-4096 entries: one re-read is ~3.5 ms, and 40 creations 15 ms apart burn about a
-third of a core, against a full core before the records were read for their
-identities. The read buffer is sized from what the last scan of that directory
-read, because a read call here walks the whole directory again: the same 164 KB
-of records cost 3.6 ms in one call and 19.8 ms in twenty-one 8 KB calls. A wide,
-flat directory is the shape this costs most in, which is what `exclude` is for.
-
-On Windows the cost is a buffer rather than a pass: each watched directory holds
-one read pending on a completion port, and that read's 16 KiB change buffer is
-memory the kernel keeps (and pins) until the read completes. The default budget
-of 4096 watches is therefore 64 MiB of buffers and 64 MiB more pinned — the
-platform's budget is about this process's memory rather than a kernel limit,
-which is why `max_watch_set` is worth setting there. Overflow is reported, not
-hidden: a directory that produces more changes than its buffer can describe comes
-back as an `overflow` gap, and the watch keeps reporting.
-
-### What the stream contains
-
-Net state changes, not a syscall trace: a file created and written in one go is
-**one** `create`, an `mv` is **one** `rename` (with `OldPath`), a removal is one
-`remove`, and attribute changes (`chmod`, `touch` on an existing file) or reads
-are never events — a chip saying "written" for a `cat` would be a false positive.
-A file that appears and disappears before its writer closes it reports nothing at
-all, because nothing was produced.
-
-The sources see different edges, so the same turn can describe the same files
-slightly differently. inotify reports a writer's close, so a create and a write
-are dated at that edge and a write to an existing file is reported as one `write`
-per close. kqueue has no close edge: an appearance and a content change settle in
-the collection window and are reported when they stop changing (a few hundred
-milliseconds, the same window that turns "created and written" into one
-`create`), and a truncate is recognized by the size it left behind.
-ReadDirectoryChangesW has no close edge either, and two of its own: a move is one
-`rename` when the platform writes both halves adjacently in one read — what a
-rename inside one directory produces — while a move between two directories
-carries no pairing information and is reported as the `remove` and the `create`
-it also is; and a content change is reported when the filesystem records the
-write, so a writer that keeps its bytes in the cache has its `write` reported
-late (never wrongly). What all of them report the same way: a disappearance
-inside the window is nothing, and a filtered op is never a gap.
-
-Paths under the root are relative, with `/` separators and no leading slash;
-paths under a `writes` entry outside the root carry that cleaned absolute path.
-`IsDir` marks directory events: a new directory is reported once, and its
-contents follow as their own events.
-
-`Session` is the sandbox session that made the change **when the backend can
-name it precisely**. inotify cannot (fanotify and eBPF need
-`CAP_SYS_ADMIN`/`CAP_BPF`) and kqueue has no such facility at all, so every event
-is unattributed: `Session` is empty rather than guessed from timing. Unattributed
-is a valid answer; a wrong attribution is a data-correctness bug.
-
-### Reading it
-
-```go
-j, err := sandbox.OpenJournal(ctx, runner) // errdefs.NotAvailable when there is none
-if err != nil { /* not enabled, no watch source, or the journal's own reason */ }
-defer j.Close()
-
-cursor := int64(0)
-batch, err := j.Read(ctx, cursor, 512)   // never blocks, never waits
-cursor = batch.NextSeq
-if batch.Gap != nil { /* coverage is incomplete for this window */ }
-```
-
-Reads are cursor operations: several readers hold independent positions, and
-re-reading from an earlier cursor replays from the retained window. `Read` never
-waits for future events, so a consumer drains on its own schedule and persists
-what it needs — the window is bounded, and events outside it are gone.
-
-The invariant that makes the stream usable is that `(afterSeq, NextSeq]` is
-always accounted for: every seq in it was either returned or declared lost. A
-non-nil `Gap` is a statement about coverage, not an error and not an empty range
-— when the extent of a loss is unknown (a kernel queue overflow does not say how
-many events it dropped) `FirstMissing` is larger than `NextSeq`, and the reading
-is "coverage after `FirstMissing-1` is not guaranteed". Reasons: `overflow`
-(kernel queue), `retention` (the reader fell behind the window), `capacity` (the
-watch could not be registered — watch limits, descriptor limits, a missing
-directory), `watch_lost` (a watched subtree was moved or detached), `backend`
-(the source itself failed, and the journal froze). A consumer must render a gap
-as "this may be incomplete", never as "nothing else was written". `overflow` is
-inotify's: kqueue coalesces notes rather than dropping them, and the macOS source
-re-derives state from the filesystem, so a change it missed wakes it up later
-instead of disappearing.
-
-`JournalBatch.Closed` reports that the journal is frozen — the runner was closed,
-or the source died — and no further events will arrive; the retained residue
-stays readable until the reader is closed.
-
-### What it is not
-
-Not an enforcement boundary: the backend's write confinement still decides what
-is allowed, and the journal reports what happened. Not an audit log: events can
-be missing, and the window is bounded. Not a replacement for `core/fsx`: the file
-tools write through an OS handle rooted at a declared directory and attribute
-every write precisely, while the journal sees every write but cannot attribute
-it — prefer the precise half when both describe the same path.
-
-On macOS a move is one `rename` only when the entry's own watch saw the name
-change and an entry with the same inode appeared in the watched tree: a hardlink
-swap (`ln f g; rm f`) is a removal plus an appearance, and a move whose
-destination is outside the watched tree is a removal — the same statement inotify
-produces when `MOVED_TO` never arrives. On network or exotic mounts the kernel
-may report nothing at all (inotify semantics on Linux, kqueue's notes on macOS);
-the journal cannot detect "this mount reports nothing", which is the one gap it
-cannot report.
-
-## Policy groups
-
-`ExecOptions` carries:
-
-- `WorkDir`, `Stdin`, `Timeout`;
-- `Env` — allow-list / inject policy;
-- `Net` — `permission.NetPolicy` (`Mode`, `AllowHosts`, `Proxy`);
-- `Permission` — `*permission.Policy` (`Writes`, `Net`), nil meaning "the
-  runner's own boundary";
-- `Resources` — memory / cpu / output caps.
-
-See [runtime.md](runtime.md) for how a deployment's budget becomes these values,
-and [sandbox-remote.md](sandbox-remote.md) when the boundary is another machine.
+The previous `core/sandbox/engine` package is gone: the `Exec` decorator stack
+(`WithDefaults`, `AllowCommands`, approval, `Escalation`/`EscalationRunner`,
+`ClassifySafeReadOnly`), `ValidateExecPolicy` and the safe-read-only classifier. So is
+`core/permission` — its `Policy`/`Writes` per-call permission is now the grant's `files`
+and the session's confine — and the `sandbox.backend/writes/net/journal` deployment
+block, which became `sandbox[]` in the process document plus `grant.files`/`net`/`exec`/
+`resources` on the agent. The file journal (`OpenJournal`, the watch set, the gap
+vocabulary) went with it. Approval and escalation did not disappear, they moved to
+`core/host`; the one-shot form did not disappear either, it is now
+`sandbox.Exec` over a `SessionStarter`, with no decorator chain to keep in step.
