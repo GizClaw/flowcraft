@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
 	"sync"
 	"time"
@@ -71,6 +72,8 @@ type driver struct {
 
 var (
 	_ agent.Driver    = (*driver)(nil)
+	_ agent.Resumer   = (*driver)(nil)
+	_ agent.Paused    = (*driver)(nil)
 	_ agent.Canceller = (*driver)(nil)
 	_ agent.Rounder   = (*driver)(nil)
 )
@@ -93,6 +96,36 @@ func (d *driver) Round() int {
 // carried in the task id, not in a separate call, so the driver sends the same request either way.
 func (d *driver) Run(ctx context.Context, req agent.Request) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
+		if d.Paused() {
+			// The peer is waiting for an answer; this message would be taken as one.
+			yield(nil, agent.ErrAwaitingResume)
+			return
+		}
+		d.send(ctx, req, yield)
+	}
+}
+
+// Resume continues the peer's task with the answer the caller supplies.
+//
+// The wire is the same message in the same task — that is what input-required means in A2A — so the
+// only difference from Run is which verb the caller used, and that is the point: the peer decides
+// how to read it, this side no longer guesses.
+func (d *driver) Resume(ctx context.Context, req agent.Request) iter.Seq2[agent.Event, error] {
+	return func(yield func(agent.Event, error) bool) {
+		if !d.Paused() {
+			yield(nil, fmt.Errorf("a2a: the task is %s, not waiting for an answer", d.State()))
+			return
+		}
+		d.send(ctx, req, yield)
+	}
+}
+
+// Paused reports whether the peer's task is waiting for an answer.
+func (d *driver) Paused() bool { return d.State() == agent.StateInputRequired }
+
+// send forwards one message and folds the peer's stream back.
+func (d *driver) send(ctx context.Context, req agent.Request, yield func(agent.Event, error) bool) {
+	{
 		d.remember(req)
 		d.restore(ctx)
 
