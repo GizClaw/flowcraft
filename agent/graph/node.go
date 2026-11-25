@@ -98,8 +98,11 @@ type Result struct {
 // Suspend is a node asking the caller a question.
 //
 // It is a primitive, not a node kind: asking is not a computation, and any node
-// may ask — a tool node relaying an ask_user tool, a custom node collecting a
-// missing parameter. One node may suspend per step.
+// may ask. The shipped one is the tool node: a tool that reports a question at
+// its pre-flight (tool.Asker) suspends the step before anything executes, which
+// is what makes an approval resumable without replaying a side effect. A custom
+// node collecting a missing parameter may ask the same way. One node may suspend
+// per step.
 type Suspend struct {
 	Question message.Content
 }

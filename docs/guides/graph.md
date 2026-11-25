@@ -330,13 +330,21 @@ names.
 
 ## Suspension
 
-Asking is a primitive, not a node kind: any node may ask — a tool node relaying an
-`ask_user` tool, a custom node collecting a missing parameter. `One node may
-suspend per step`, and the step finishes first, so a suspension cannot tear a
-concurrent step apart. On resume the node is re-entered from the start with
-`Invoke.Answer` set; anything it did before suspending is its own idempotency
-problem, which is why a node with a side effect should record it with
-`Checkpoint` before suspending.
+Asking is a primitive, not a node kind: any node may ask. The shipped one is the
+tool node — a tool that reports a question at its pre-flight (`tool.Asker`)
+suspends the step **before anything executes**, so nothing a resumed turn re-runs
+has to be idempotent. That is the difference between this primitive and a tool
+that blocks: a blocking tool would hold the turn, and a synchronous delegation's
+parent could never answer it.
+
+`One node may suspend per step`, and the step finishes first, so a suspension
+cannot tear a concurrent step apart. The run ends `input-required`; the question
+travels as the status reason (and `RunSnapshot.Question`), and the graph keeps
+the suspended node. A resume re-enters that node from the start with
+`Invoke.Resume` set to the caller's answer — which a node that asked during _its
+own_ turn has to read, because the answer is not a new message. A node that
+sleeps on something else keeps its own idempotency problem, which is why a node
+with a side effect should record it with `Checkpoint` before suspending.
 
 ## Checkpoints and replay
 
