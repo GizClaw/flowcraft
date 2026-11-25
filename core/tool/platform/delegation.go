@@ -49,6 +49,8 @@ type DelegationOutcome struct {
 	Status string
 	// Session is the child session this delegation created, so a caller can address it later.
 	Session string
+	// Agent is the deployment the child ran: the target the caller named.
+	Agent string
 	// Content is the child's answer, as the events folded it.
 	Content message.Content
 	// Question is what the child asked when it paused for input.

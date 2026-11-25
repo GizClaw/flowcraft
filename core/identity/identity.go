@@ -87,6 +87,12 @@ type Chain struct {
 	ID string
 	// Depth is the number of delegation edges above this run.
 	Depth int
+	// Lineage is the session ids above this run, root first and the immediate parent last.
+	//
+	// A delegation may hand a decision back up the line it came down — a subagent asking the
+	// agent that delegated to it — and walking that needs the ids, not just the depth. The id a
+	// child is given encodes its parent, but a prefix is a naming accident; this is the fact.
+	Lineage []string
 }
 
 // Run is the whole of what a span needs to say who it belongs to.

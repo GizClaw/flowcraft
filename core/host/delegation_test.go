@@ -112,7 +112,7 @@ func TestAnAsyncDelegationActuallyRuns(t *testing.T) {
 	agents, _, childProgram := asyncHost(t)
 	parent, _ := agents.Session("p1")
 
-	delegator := &delegator{agents: agents, parent: parent}
+	delegator := delegatorOf(agents, parent)
 	outcome, err := delegator.Delegate(t.Context(), platform.DelegationRequest{
 		Target: "child", Mode: "async", Input: "please review",
 	})
@@ -144,7 +144,7 @@ func TestAnAsyncDelegationActuallyRuns(t *testing.T) {
 func TestStatusWithoutAStoreIsRefused(t *testing.T) {
 	agents, _, _ := asyncHost(t)
 	parent, _ := agents.Session("p1")
-	delegator := &delegator{agents: agents, parent: parent}
+	delegator := delegatorOf(agents, parent)
 	if _, err := delegator.Status(t.Context(), "p1/child-1"); err == nil {
 		t.Fatal("Status answered without a store")
 	} else if !errdefs.IsNotAvailable(err) {
@@ -157,7 +157,7 @@ func TestStatusWithoutAStoreIsRefused(t *testing.T) {
 func TestAChildInheritsItsParentsAuthority(t *testing.T) {
 	agents, _, _ := asyncHost(t)
 	parent, _ := agents.Session("p1")
-	d := &delegator{agents: agents, parent: parent}
+	d := delegatorOf(agents, parent)
 
 	inherited, err := d.childAuthority(t.Context(), "child")
 	if err != nil {
@@ -202,7 +202,7 @@ func TestTheApplicationDecidesAChildsAuthority(t *testing.T) {
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 	session, _ := agents.Session("p1")
 
-	got, err := (&delegator{agents: agents, parent: session}).childAuthority(t.Context(), "child")
+	got, err := delegatorOf(agents, session).childAuthority(t.Context(), "child")
 	if err != nil {
 		t.Fatalf("childAuthority: %v", err)
 	}
@@ -213,4 +213,19 @@ func TestTheApplicationDecidesAChildsAuthority(t *testing.T) {
 		t.Fatalf("resolver asked about %q with %s, want the target and the parent's authority",
 			askedTarget, askedAuthority.Digest())
 	}
+}
+
+// delegatorOf builds the delegator a session gets at open, from the values it holds.
+func delegatorOf(agents *Agents, parent *Session) *delegator {
+	d := &delegator{
+		agents: agents,
+		parent: parent.id,
+		agent:  parent.agent,
+		grant:  parent.grant,
+		chain:  parent.chain,
+	}
+	if limit := parent.grant.Delegation.MaxConcurrent; limit > 0 {
+		d.gate = make(chan struct{}, limit)
+	}
+	return d
 }

@@ -239,6 +239,12 @@ func (d *driver) Unsteer(id agent.SteerID) error {
 	return nil
 }
 
+// AcceptsInput reports whether a message offered between turns reaches the conversation.
+//
+// The document decides it: a graph with no input slot takes a turn's message as its trigger and
+// nothing else, so a delivery that arrived while this session was idle has nowhere to land.
+func (d *driver) AcceptsInput() bool { return d.program.g.input != "" }
+
 // Close releases the driver. The task lives in the store, so a closed driver can be rebuilt and
 // resumed from the checkpoint.
 func (d *driver) Close() error {

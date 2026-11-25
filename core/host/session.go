@@ -78,8 +78,10 @@ type Session struct {
 	// Cancel address a turn without an id — and the reason a close has to coordinate with it
 	// instead of just closing the driver underneath.
 	turnMu sync.Mutex
-	// running is true while a turn is in flight.
-	running bool
+	// running is true while a turn is in flight, and kind says who started it — the application
+	// or the host — so a refusal can say which one is in the way.
+	running  bool
+	turnKind turnKind
 	// cancel stops the running turn; nil when none is.
 	cancel context.CancelFunc
 	// closing is set by close before it stops the turn, so a turn that has not registered its
@@ -90,31 +92,95 @@ type Session struct {
 	turnDone chan struct{}
 }
 
-// beginTurn claims the session's turn slot, or reports why it cannot.
-func (s *Session) beginTurn() error {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	switch {
-	case s.closing:
-		return errdefs.NotAvailablef("host: session %q is closing", s.id)
-	case s.running:
+// turnKind names who started a turn.
+type turnKind int
+
+const (
+	// turnApplication is a turn the caller asked for: [Agents.Run].
+	turnApplication turnKind = iota
+	// turnDelivery is a turn the host started to hand a session work that arrived while it was
+	// idle — a delegated run's result, or a subagent's question.
+	turnDelivery
+	// turnDelegation is the host running a delegated child on the caller's behalf.
+	turnDelegation
+)
+
+// claim takes the session's turn slot, or reports why it cannot.
+//
+// The check and the take are one critical section, which is what a delivery worker needs: waiting
+// for the slot and taking it are the same decision, so there is no window in which another turn can
+// slip in between them. wait decides the answer when the slot is held — a caller's turn is refused
+// with a conflict, the host's own turns wait for it.
+//
+// The refusal names who holds the slot: a caller that gets "a delegated delivery is in flight" knows
+// to retry in a moment, while "already has a turn in flight" would read as its own bug.
+func (s *Session) claim(ctx context.Context, kind turnKind, wait bool) error {
+	for {
+		s.turnMu.Lock()
+		switch {
+		case s.closing:
+			s.turnMu.Unlock()
+			return errdefs.NotAvailablef("host: session %q is closing", s.id)
+		case !s.running:
+			s.running = true
+			s.turnKind = kind
+			s.turnDone = make(chan struct{})
+			s.turnMu.Unlock()
+			return nil
+		case !wait:
+			holder := s.turnKind
+			s.turnMu.Unlock()
+			return s.busy(holder)
+		}
+		done := s.turnDone
+		s.turnMu.Unlock()
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return errdefs.FromContext(ctx.Err())
+		}
+	}
+}
+
+// busy is the refusal a caller that did not wait for the slot receives.
+func (s *Session) busy(holder turnKind) error {
+	switch holder {
+	case turnDelivery:
+		return errdefs.Conflictf(
+			"host: session %q has a turn in flight (a delegated delivery); retry shortly", s.id)
+	case turnDelegation:
+		return errdefs.Conflictf(
+			"host: session %q has a turn in flight (a delegated run); retry shortly", s.id)
+	default:
 		return errdefs.Conflictf("host: session %q already has a turn in flight", s.id)
 	}
-	s.running = true
-	s.turnDone = make(chan struct{})
-	return nil
 }
 
 // endTurn releases the slot and wakes a close that is waiting for the turn.
 func (s *Session) endTurn() {
 	s.turnMu.Lock()
 	s.running = false
+	s.turnKind = turnApplication
 	done := s.turnDone
 	s.turnDone = nil
 	s.turnMu.Unlock()
 	if done != nil {
 		close(done)
 	}
+}
+
+// driverSnapshot returns the driver and the boundary under the turn lock.
+//
+// A reader that is not inside the session's turn — a delivery worker deciding whether a message can
+// be taken, a Steer or a Cancel — must not read the fields a close nils when it releases them. The
+// turn protocol makes those reads safe *during* a turn; this makes them safe outside one.
+func (s *Session) driverSnapshot() (agent.Driver, *cell) {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	return s.driver, s.cell
 }
 
 // isRunning reports whether a turn is in flight.
@@ -367,7 +433,13 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// capability, and a delegate tool registered in the process is then refused at registration
 	// instead of failing at the first call.
 	if bind.Delegation != nil {
-		head := &delegator{agents: a, parent: session}
+		head := &delegator{
+			agents: a,
+			parent: session.id,
+			agent:  session.agent,
+			grant:  bind,
+			chain:  session.chain,
+		}
 		if limit := bind.Delegation.MaxConcurrent; limit > 0 {
 			head.gate = make(chan struct{}, limit)
 		}
@@ -589,18 +661,23 @@ func (s *Session) close() error {
 	if done := s.beginClose(); done != nil {
 		<-done
 	}
+	// The fields are taken under the lock and released outside it: a reader outside the turn reads
+	// them through driverSnapshot, and a close is the only writer that nils them.
+	s.turnMu.Lock()
+	driver, cell := s.driver, s.cell
+	s.driver, s.cell = nil, nil
+	s.turnMu.Unlock()
+
 	var errs []error
-	if s.driver != nil {
-		if err := s.driver.Close(); err != nil {
+	if driver != nil {
+		if err := driver.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		s.driver = nil
 	}
-	if s.cell != nil {
-		if err := s.cell.Close(); err != nil {
+	if cell != nil {
+		if err := cell.Close(); err != nil {
 			errs = append(errs, err)
 		}
-		s.cell = nil
 	}
 	return errors.Join(errs...)
 }
