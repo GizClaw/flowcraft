@@ -26,15 +26,19 @@ import (
 )
 
 // boundary is a backend instance: it records its own closure and whether it claims to bound writes.
+//
+// closed is atomic because one instance stands in for every session a test opens, and a
+// session that fails to open closes the cell it just built: the concurrent-opens test drives
+// eight of those at once, and a plain counter there is a race the type system does not catch.
 type boundary struct {
 	log              *journal
 	filesystemBounds bool
 	buildErr         error
-	closed           int
+	closed           atomic.Int32
 }
 
 func (b *boundary) Close() error {
-	b.closed++
+	b.closed.Add(1)
 	b.log.add("close:sandbox")
 	return nil
 }
@@ -164,8 +168,8 @@ func TestOpenSessionBuildsAndClosesEverything(t *testing.T) {
 	if got := log.joined(); got != "close:driver:1,close:sandbox" {
 		t.Fatalf("events = %q, want the driver then the boundary", got)
 	}
-	if backend.closed != 1 {
-		t.Fatalf("backend closed %d times", backend.closed)
+	if got := backend.closed.Load(); got != 1 {
+		t.Fatalf("backend closed %d times", got)
 	}
 }
 
@@ -214,8 +218,8 @@ func TestOpenRefusesAConfineTheBackendCannotEnforce(t *testing.T) {
 	if got := program.opens.Load(); got != 0 {
 		t.Fatalf("%d drivers opened for a session that cannot exist", got)
 	}
-	if backend.closed != 1 {
-		t.Fatalf("the refused boundary was not closed: %d", backend.closed)
+	if got := backend.closed.Load(); got != 1 {
+		t.Fatalf("the refused boundary was not closed: %d", got)
 	}
 }
 
