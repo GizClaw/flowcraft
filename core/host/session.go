@@ -31,7 +31,7 @@ type openOptions struct {
 //
 // It is the only way a session learns it is somebody's child: a caller-opened session has no
 // chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
-// grant's max_depth counts was always zero, so the limit never fired.
+// delegation's max_depth counts was always zero, so the limit never fired.
 func WithChain(chain identity.Chain) OpenOption {
 	return func(o *openOptions) { o.chain = chain }
 }
