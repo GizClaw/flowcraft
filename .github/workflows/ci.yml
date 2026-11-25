@@ -151,9 +151,14 @@ jobs:
                   f"lint_scripts_enabled={'true' if lint_scripts else 'false'}\n"
               )
           PY
-          echo "lint=$(jq -c .lint matrix.json)" >> "$GITHUB_OUTPUT"
-          echo "test=$(jq -c .test matrix.json)" >> "$GITHUB_OUTPUT"
-          echo "lint_scripts=$(jq -c .lint_scripts matrix.json)" >> "$GITHUB_OUTPUT"
+          # Grouped rather than appended one at a time: three redirects to the same file
+          # is what shellcheck's SC2129 reports, and CI's actionlint runs it (a
+          # developer's may not, so this is the kind of finding that only shows up there).
+          {
+            echo "lint=$(jq -c .lint matrix.json)"
+            echo "test=$(jq -c .test matrix.json)"
+            echo "lint_scripts=$(jq -c .lint_scripts matrix.json)"
+          } >> "$GITHUB_OUTPUT"
 
   release-intent:
     name: Validate release intent
