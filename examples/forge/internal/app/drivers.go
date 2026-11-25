@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/deploy"
-	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/model"
 	"github.com/GizClaw/flowcraft/inference/anthropic"
 	"github.com/GizClaw/flowcraft/inference/openai"
 )
@@ -26,87 +23,9 @@ import (
 func providers() func(*deploy.Impls) *deploy.Impls {
 	return func(impls *deploy.Impls) *deploy.Impls {
 		return impls.
-			Provider(deploy.Impl(openai.ProviderID, buildOpenAI)).
-			Provider(deploy.Impl(anthropic.ProviderID, buildAnthropic))
+			Provider(deploy.Impl(openai.ProviderID, openai.Build)).
+			Provider(deploy.Impl(anthropic.ProviderID, anthropic.Build))
 	}
-}
-
-// openAISettings is the written form of openai.Settings.
-type openAISettings struct {
-	// Models is what this provider serves, as the process document declares it: the host reports these
-	// as the models the process has, and an agent document selects from them.
-	Models       []model.ModelDescriptor `json:"models"`
-	BaseURL      string                  `json:"base_url"`
-	APIKey       string                  `json:"api_key"`
-	API          string                  `json:"api"`
-	Organization string                  `json:"organization"`
-	Headers      map[string]string       `json:"headers"`
-	Timeout      string                  `json:"timeout"`
-	Retries      int                     `json:"retries"`
-}
-
-func buildOpenAI(written openAISettings) (*inference.Provider, error) {
-	if err := written.valid(); err != nil {
-		return nil, err
-	}
-	timeout, err := parseDuration("timeout", written.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := openai.New(openai.Settings{
-		Models:       written.Models,
-		BaseURL:      written.BaseURL,
-		APIKey:       written.APIKey,
-		API:          openai.API(written.API),
-		Organization: written.Organization,
-		Headers:      written.Headers,
-		Timeout:      timeout,
-		Retries:      written.Retries,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &provider, nil
-}
-
-// anthropicSettings is the written form of anthropic.Settings.
-type anthropicSettings struct {
-	Models  []model.ModelDescriptor `json:"models"`
-	BaseURL string                  `json:"base_url"`
-	APIKey  string                  `json:"api_key"`
-	Headers map[string]string       `json:"headers"`
-	Timeout string                  `json:"timeout"`
-	Retries int                     `json:"retries"`
-	Wire    struct {
-		VideoInput     bool   `json:"video_input"`
-		ReasoningScope string `json:"reasoning_scope"`
-	} `json:"wire"`
-}
-
-func buildAnthropic(written anthropicSettings) (*inference.Provider, error) {
-	if err := written.valid(); err != nil {
-		return nil, err
-	}
-	timeout, err := parseDuration("timeout", written.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	provider, err := anthropic.New(anthropic.Settings{
-		Models:  written.Models,
-		BaseURL: written.BaseURL,
-		APIKey:  written.APIKey,
-		Headers: written.Headers,
-		Timeout: timeout,
-		Retries: written.Retries,
-		Wire: anthropic.Wire{
-			VideoInput:     written.Wire.VideoInput,
-			ReasoningScope: written.Wire.ReasoningScope,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &provider, nil
 }
 
 // decodeSettings decodes one settings block strictly: a misspelled field is a
@@ -123,20 +42,3 @@ func decodeSettings(raw json.RawMessage, into any) error {
 	}
 	return nil
 }
-
-func parseDuration(field, value string) (time.Duration, error) {
-	if value == "" {
-		return 0, nil
-	}
-	parsed, err := time.ParseDuration(value)
-	if err != nil {
-		return 0, fmt.Errorf("%s %q: %w", field, value, err)
-	}
-	return parsed, nil
-}
-
-// valid is what the strict decode used to cover: a block the provider cannot honour fails here, at
-// plan time, rather than on the first call.
-func (s openAISettings) valid() error { return nil }
-
-func (s anthropicSettings) valid() error { return nil }

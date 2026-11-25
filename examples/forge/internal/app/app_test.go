@@ -118,7 +118,7 @@ func stubImpls(generator inference.Generator, sim *simtools.Source) *deploy.Impl
 		// The provider is the real one, built from the real settings — catalogue, validation and all —
 		// with only the network call replaced. A stub provider would let a document this binary cannot
 		// actually serve pass the test.
-		Provider(deploy.Impl(openai.ProviderID, func(written openAISettings) (*inference.Provider, error) {
+		Provider(deploy.Impl(openai.ProviderID, func(written openai.Document) (*inference.Provider, error) {
 			built, err := openai.New(openai.Settings{
 				APIKey: "sk-test",
 				Models: written.Models,
