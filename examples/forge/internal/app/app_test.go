@@ -121,7 +121,7 @@ func stubImpls(generator inference.Generator, sim *simtools.Source) *deploy.Impl
 		Provider(deploy.Impl(openai.ProviderID, func(written openAISettings) (*inference.Provider, error) {
 			built, err := openai.New(openai.Settings{
 				APIKey: "sk-test",
-				Models: descriptors(written.Models),
+				Models: written.Models,
 			})
 			if err != nil {
 				return nil, err

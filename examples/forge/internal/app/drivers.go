@@ -35,14 +35,14 @@ func providers() func(*deploy.Impls) *deploy.Impls {
 type openAISettings struct {
 	// Models is what this provider serves, as the process document declares it: the host reports these
 	// as the models the process has, and an agent document selects from them.
-	Models       []modelDeclaration `json:"models"`
-	BaseURL      string             `json:"base_url"`
-	APIKey       string             `json:"api_key"`
-	API          string             `json:"api"`
-	Organization string             `json:"organization"`
-	Headers      map[string]string  `json:"headers"`
-	Timeout      string             `json:"timeout"`
-	Retries      int                `json:"retries"`
+	Models       []model.ModelDescriptor `json:"models"`
+	BaseURL      string                  `json:"base_url"`
+	APIKey       string                  `json:"api_key"`
+	API          string                  `json:"api"`
+	Organization string                  `json:"organization"`
+	Headers      map[string]string       `json:"headers"`
+	Timeout      string                  `json:"timeout"`
+	Retries      int                     `json:"retries"`
 }
 
 func buildOpenAI(written openAISettings) (*inference.Provider, error) {
@@ -54,7 +54,7 @@ func buildOpenAI(written openAISettings) (*inference.Provider, error) {
 		return nil, err
 	}
 	provider, err := openai.New(openai.Settings{
-		Models:       descriptors(written.Models),
+		Models:       written.Models,
 		BaseURL:      written.BaseURL,
 		APIKey:       written.APIKey,
 		API:          openai.API(written.API),
@@ -71,12 +71,12 @@ func buildOpenAI(written openAISettings) (*inference.Provider, error) {
 
 // anthropicSettings is the written form of anthropic.Settings.
 type anthropicSettings struct {
-	Models  []modelDeclaration `json:"models"`
-	BaseURL string             `json:"base_url"`
-	APIKey  string             `json:"api_key"`
-	Headers map[string]string  `json:"headers"`
-	Timeout string             `json:"timeout"`
-	Retries int                `json:"retries"`
+	Models  []model.ModelDescriptor `json:"models"`
+	BaseURL string                  `json:"base_url"`
+	APIKey  string                  `json:"api_key"`
+	Headers map[string]string       `json:"headers"`
+	Timeout string                  `json:"timeout"`
+	Retries int                     `json:"retries"`
 	Wire    struct {
 		VideoInput     bool   `json:"video_input"`
 		ReasoningScope string `json:"reasoning_scope"`
@@ -92,7 +92,7 @@ func buildAnthropic(written anthropicSettings) (*inference.Provider, error) {
 		return nil, err
 	}
 	provider, err := anthropic.New(anthropic.Settings{
-		Models:  descriptors(written.Models),
+		Models:  written.Models,
 		BaseURL: written.BaseURL,
 		APIKey:  written.APIKey,
 		Headers: written.Headers,
@@ -140,19 +140,3 @@ func parseDuration(field, value string) (time.Duration, error) {
 func (s openAISettings) valid() error { return nil }
 
 func (s anthropicSettings) valid() error { return nil }
-
-// modelDeclaration is one model a provider serves, in the document's written form.
-type modelDeclaration struct {
-	ID     model.ModelID     `json:"id"`
-	Limits model.ModelLimits `json:"limits"`
-}
-
-// descriptors turns the written line-up into the driver's catalogue type. The provider publishes it,
-// which is how a declared model becomes one an agent document can select and the process can report.
-func descriptors(declared []modelDeclaration) []model.ModelDescriptor {
-	out := make([]model.ModelDescriptor, 0, len(declared))
-	for _, one := range declared {
-		out = append(out, model.ModelDescriptor{ID: one.ID, Limits: one.Limits})
-	}
-	return out
-}
