@@ -65,12 +65,12 @@ session, err := agents.Open(ctx, sessionID, "assistant",
 for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
-| Noun        | Owns                                                                                           |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| the agent   | the deployment: its program, its hooks, its session table.                                     |
-| the cell    | the boundary: one backend instance built from _this_ session's confine, plus its `fsx.Tree`.   |
-| the binding | one `tool.Binding`: the session's grant, its identity, the view, the capability pocket.       |
-| the driver  | one `agent.Driver` over the deployment's program: the in-flight turn, its queue, its cancel.   |
+| Noun        | Owns                                                                                         |
+| ----------- | -------------------------------------------------------------------------------------------- |
+| the agent   | the deployment: its program, its hooks, its session table.                                   |
+| the cell    | the boundary: one backend instance built from _this_ session's confine, plus its `fsx.Tree`. |
+| the binding | one `tool.Binding`: the session's grant, its identity, the view, the capability pocket.      |
+| the driver  | one `agent.Driver` over the deployment's program: the in-flight turn, its queue, its cancel. |
 
 `Open` is admit → build outside the table's lock → re-validate → insert. Only the
 cheap questions are asked under the lock (closed, unknown agent, session limit,
@@ -216,14 +216,14 @@ With no escalator installed the refusal stands: the feature is opt-in, like appr
 
 ## The session table
 
-| Call                                     | Use                                                                                                                                                         |
-| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                              |
-| `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                           |
-| `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                |
+| Call                                     | Use                                                                                                                                                               |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                                     |
+| `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                                 |
+| `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                      |
 | `Agents.EvictIdle(agent, now)`           | Evict by the agent's `limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |
-| `Agents.Add` / `Remove` / `Reload`       | Install, retract, swap. `Remove` refuses while sessions are open (`ErrSessionsActive`).                                                                     |
-| `Agents.Close(ctx)`                      | Close the whole table, then let `Resource.Close` release the process.                                                                                       |
+| `Agents.Add` / `Remove` / `Reload`       | Install, retract, swap. `Remove` refuses while sessions are open (`ErrSessionsActive`).                                                                           |
+| `Agents.Close(ctx)`                      | Close the whole table, then let `Resource.Close` release the process.                                                                                             |
 
 `limits` sits beside the grant in the agent document rather than inside it, because
 it is the session table's policy and not a permission: a session does not limit

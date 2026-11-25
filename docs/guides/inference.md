@@ -81,7 +81,7 @@ descriptor is `model.ModelDescriptor` as written — `id`, `label`, `capabilitie
 
 | Block                      | Rule                                                                                                                                             |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `providers[].name`         | This deployment's identity for the account or endpoint; a session's grant names it in `models[].id.provider`.                                      |
+| `providers[].name`         | This deployment's identity for the account or endpoint; a session's grant names it in `models[].id.provider`.                                    |
 | `providers[].impl`         | Must be registered on the `Loader`; an unknown one fails with the offered names.                                                                 |
 | `providers[].settings`     | Opaque to core: the driver's constructor decodes it.                                                                                             |
 | `models[]` (in `settings`) | The line-up this provider serves. Declaring a model is the only way one exists; the route picks among targets, not among models in one provider. |

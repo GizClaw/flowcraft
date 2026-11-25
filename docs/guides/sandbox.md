@@ -233,13 +233,13 @@ authority := policy.Grant{
 }
 ```
 
-| Grant field | Becomes, in the confine                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------- |
-| `sandbox`   | The name the host resolves to a `BackendFactory`. A name the process does not carry is `NotAvailable` at open.        |
+| Grant field | Becomes, in the confine                                                                                                        |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `sandbox`   | The name the host resolves to a `BackendFactory`. A name the process does not carry is `NotAvailable` at open.                 |
 | `files`     | `Confine.Files` — `read[]`, `write[]`, `readonly`. Absolute roots; a write-restricting set needs a backend that bounds writes. |
-| `net`       | `Confine.Net` — `mode`, `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`.                                |
-| `exec.env`  | `Confine.Env` — `allow[]` (an empty list means "nothing", absent means "inherit") and `inject{}`.                     |
-| `resources` | `Confine.Resources` — the per-command ceiling: `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.    |
+| `net`       | `Confine.Net` — `mode`, `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`.                                         |
+| `exec.env`  | `Confine.Env` — `allow[]` (an empty list means "nothing", absent means "inherit") and `inject{}`.                              |
+| `resources` | `Confine.Resources` — the per-command ceiling: `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.             |
 
 Everything else in the grant is somebody else's: the tools are the projection's, the
 models are the provider's, the timeout is a per-call argument, and the delegation block

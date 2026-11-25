@@ -108,7 +108,7 @@ the program kind and the hook kinds of every agent in the set, hashed by
 deployment, so a host can refuse rather than replay a transcript into a stack that
 did not produce it.
 
-`Manifest` is the identity of what the conversation *held*: the authority its caller
+`Manifest` is the identity of what the conversation _held_: the authority its caller
 stated and the build that ran it. It is a separate value because a deployment no
 longer carries authority — two sessions of one agent may hold different grants — and
 a task continued under a different authority is not the same task. A checkpoint

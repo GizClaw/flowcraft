@@ -70,17 +70,17 @@ skills:
 observability: { trace: call, bodies: false }
 ```
 
-| Section                 | Rule                                                                                                                        |
-| ----------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| `version`               | Must be `1` (`deploy.SupportedVersion`). Another version is refused instead of read optimistically.                         |
+| Section                 | Rule                                                                                                                         |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `version`               | Must be `1` (`deploy.SupportedVersion`). Another version is refused instead of read optimistically.                          |
 | `sandbox[]`             | `{name, impl, settings}`. `name` is what a session's `grant.sandbox` selects; `impl` is a backend registered on the process. |
 | `inference.providers[]` | `{name, impl, settings}`. `name` is what a grant's models are checked against, `impl` a registered provider.                 |
-| `inference.route`       | `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. Selectors are Go values and stay out of the document.      |
-| `tools.sources[]`       | `{name, impl, settings}`. Every source is aggregated into one tool table for the process.                                   |
-| `tools.middleware[]`    | `{name, impl, settings}`. The chain every tool call passes through, outermost first.                                        |
-| `skills.roots[]`        | Absolute directories scanned for `SKILL.md`. Discovered once for the process, so a session is not paying for it per turn.   |
-| `observability.trace`   | Required. `none`, `run`, `call` or `node`.                                                                                  |
-| `observability.bodies`  | Required, `true` or `false`. Retention of model response bytes, not a level.                                                |
+| `inference.route`       | `attempts_per_target`, `max_targets`, `base_delay`, `max_delay`. Selectors are Go values and stay out of the document.       |
+| `tools.sources[]`       | `{name, impl, settings}`. Every source is aggregated into one tool table for the process.                                    |
+| `tools.middleware[]`    | `{name, impl, settings}`. The chain every tool call passes through, outermost first.                                         |
+| `skills.roots[]`        | Absolute directories scanned for `SKILL.md`. Discovered once for the process, so a session is not paying for it per turn.    |
+| `observability.trace`   | Required. `none`, `run`, `call` or `node`.                                                                                   |
+| `observability.bodies`  | Required, `true` or `false`. Retention of model response bytes, not a level.                                                 |
 
 Duplicate names within a section are refused: a name is how an agent selects the
 resource, so two entries answering to one name would make the selection ambiguous.
@@ -128,16 +128,16 @@ anybody — and it is built by the application, which is the trusted side. The
 value is validated by `core/policy`, not by the host, so the code that builds one
 and the code that enforces it agree by construction.
 
-| Field        | Meaning                                                                                                               | Zero value                                                                  |
-| ------------ | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Field        | Meaning                                                                                                               | Zero value                                                                          |
+| ------------ | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
 | `sandbox`    | The backend this session runs in, by the name the process gave it.                                                    | The one backend the process configured; a name it does not carry is `NotAvailable`. |
-| `files`      | `read[]`, `write[]`, `readonly`. Absolute roots, no globs, no symlink resolution.                                     | Neither side restricted.                                                    |
-| `net`        | `mode` (`default`, `deny_all`, `allow_list`, `proxy`), `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`. | `default`: the host decides.                                                |
-| `exec`       | `timeout`, `env`, `shell`.                                                                                            | No timeout, the host's environment, the backend's shell.                    |
-| `resources`  | `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.                                                   | Unbounded — and a backend that cannot enforce a non-zero value must refuse. |
-| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **every model the process serves**.                             |
-| `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                       |
-| `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                          |
+| `files`      | `read[]`, `write[]`, `readonly`. Absolute roots, no globs, no symlink resolution.                                     | Neither side restricted.                                                            |
+| `net`        | `mode` (`default`, `deny_all`, `allow_list`, `proxy`), `allow_hosts[]`, `rules[]`, `proxy`, `unix_sockets[]`, `mitm`. | `default`: the host decides.                                                        |
+| `exec`       | `timeout`, `env`, `shell`.                                                                                            | No timeout, the host's environment, the backend's shell.                            |
+| `resources`  | `cpu_millicores`, `memory_bytes`, `disk_bytes`, `max_output_bytes`.                                                   | Unbounded — and a backend that cannot enforce a non-zero value must refuse.         |
+| `models`     | `[{id: {provider, name}, profile?}]`, in failover order.                                                              | Empty means **every model the process serves**.                                     |
+| `tools`      | `allow[]`, `hide[]`, `exposure{}`, `budget{}`.                                                                        | `allow` unset means every tool the process assembled.                               |
+| `delegation` | `targets[]`, `modes[]` (`sync`, `async`), `max_depth`, `max_concurrent`, `timeout`, `max_input_bytes`.                | Absent means no delegation at all.                                                  |
 
 Three defaults are deliberately equal, and the equality is the design: files are
 open because a read is recoverable and auditable; tools are open because which
@@ -241,9 +241,9 @@ or a CI job without dialling anything.
 
 Two registration-wide declarations travel with the factory:
 
-| Declaration | Answers                                                                                                                                                                                                                                                                                                                                                          |
-| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AtTrace`   | The least trace level the link is worth installing at. A middleware below the process's level is left out of the plan, not built and disabled.                                                                                                                                                                                                                   |
+| Declaration | Answers                                                                                                                                                                                                                                                                                                                  |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AtTrace`   | The least trace level the link is worth installing at. A middleware below the process's level is left out of the plan, not built and disabled.                                                                                                                                                                           |
 | `Enforcing` | What a backend can enforce on this platform, as a `sandbox.Enforcement`. The host reads it when a session is opened, because the per-session instance does not exist until then — and a backend that declares nothing bounds nothing, so a session that narrows writes onto it is refused. `sandbox/local` is that case. |
 
 ## Loading
@@ -318,9 +318,9 @@ missing := req.Missing(os.LookupEnv) // every unset variable, in one pass
 
 ## Two kinds of failure
 
-| Class          | Means                                                                                                                                                                           | Fixed by                          |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `Validation`   | The document does not hold together: unknown field, wrong type, missing required value, a duplicate name, a name nobody registered.                                              | Editing the document.             |
+| Class          | Means                                                                                                                                                                                           | Fixed by                          |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `Validation`   | The document does not hold together: unknown field, wrong type, missing required value, a duplicate name, a name nobody registered.                                                             | Editing the document.             |
 | `NotAvailable` | The document holds together but asks for something this process lacks: a program or hook kind it did not register, a session whose grant names a backend or a model the process does not carry. | Changing how the process started. |
 
 ```text
@@ -358,16 +358,16 @@ session, err := agents.Open(ctx, sessionID, "assistant", authority)
 for event, err := range agents.Run(ctx, sessionID, msg) { ... }
 ```
 
-| Call                                           | Use                                                                                                   |
-| ---------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                        |
+| Call                                           | Use                                                                                                    |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Agents.Add` / `Remove` / `Reload`             | Install, retract, swap a deployment. `Remove` refuses while sessions are open.                         |
 | `Agents.Open`                                  | Admit a session under the `policy.Grant` its caller states; `WithChain` attaches a delegation lineage. |
-| `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                            |
-| `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                   |
-| `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                    |
-| `Agents.EvictIdle`                             | Evict by the agent's `limits.idle`. Explicit, and it skips a running session however long it has run. |
-| `Agents.Names` / `Deployed`                    | What is installed.                                                                                    |
-| `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                          |
+| `Agents.Run`                                   | One turn, as an iterator of `agent.Event`. One turn per session at a time.                             |
+| `Agents.Steer` / `Cancel`                      | Address the turn that is in flight.                                                                    |
+| `Agents.Sessions` / `Session` / `CloseSession` | The session table.                                                                                     |
+| `Agents.EvictIdle`                             | Evict by the agent's `limits.idle`. Explicit, and it skips a running session however long it has run.  |
+| `Agents.Names` / `Deployed`                    | What is installed.                                                                                     |
+| `Agents.Close` / `Resource.Close`              | The two exits: the deployment table first, then the process.                                           |
 
 A reload retires the old program and closes it when its last session is gone: a
 session runs against what it was opened under.

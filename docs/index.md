@@ -5,61 +5,63 @@ title: FlowCraft Documentation
 
 # FlowCraft
 
-Go SDK for building AI agents with long-term memory, knowledge
-retrieval, runtime orchestration, and voice. Source on
+Go platform for building AI agents from deployment documents: model calls,
+tools, sandboxed execution and declarative graphs, assembled from YAML and owned
+by your process. Source on
 [github.com/GizClaw/flowcraft](https://github.com/GizClaw/flowcraft).
+
+Long-term memory is a separate product line built on this platform, not a module
+of it.
 
 ## Guides
 
 ### Runtime
 
-- [Graph Engine](guides/graph.md) — `core/agent-graph`: an agent as a
-  frontier loop over nodes — declared state with merge rules, conditions
-  compiled at build, node kinds, checkpoints and replay.
-- [Tool System](guides/tool.md) — `core/tool`: LLM function-calling
-  contract, Registry / Catalog / Executor split, middleware chain,
-  built-in tool adapters and the MCP bridge.
-- [Agent Skills](guides/skill.md) — `core/skill`: SKILL.md discovery
-  and parsing, BM25 ranking over names and descriptions, and the
-  per-turn `## Skills` section; lifecycle and authoring stay with the
-  caller.
-- [Application Runtime](guides/runtime.md) — `core/runtime`: one runtime per
-  configuration document (provider, tools, sandbox, files, skills, journal)
-  and everything it built.
-- [Checkpoints](guides/checkpoint.md) — `core/agent`: the store contract —
-  a task projection plus an append-only event log, two version counters,
-  blobs, and the SQLite backend.
-- [Hooks](guides/hooks.md) — `agent.Hooks`: the three host boundaries of a
-  turn (`OnSession`, `BeforeTurn`, `AfterTurn`), their failure policy, and
-  how a deployment declares its own hook kinds.
+- [Graph Engine](guides/graph.md) — `agent/graph`: an agent as a frontier loop
+  over nodes — declared state with merge rules, conditions compiled at build,
+  node kinds, checkpoints and replay.
+- [Tool System](guides/tool.md) — `core/tool`: the function-calling contract,
+  the Registry / Catalog / Dispatcher split, the projection, the middleware chain,
+  the built-in tool sources and the MCP bridge.
+- [Agent Skills](guides/skill.md) — `core/skill`: SKILL.md discovery and parsing,
+  BM25 ranking over names and descriptions, and the per-turn `## Skills` section;
+  lifecycle and authoring stay with the caller.
+- [Process and Turn Runtime](guides/runtime.md) — `core/host`: one `Resource` per
+  process, one `Agents` table per deployment set, one `Session` per conversation,
+  and the turn that joins them.
+- [Checkpoints](guides/checkpoint.md) — `core/agent`: the store contract — a task
+  projection plus an append-only event log, two version counters, blobs, and the
+  SQLite backend.
+- [Hooks](guides/hooks.md) — `agent.Hooks`: the three host boundaries of a turn
+  (`OnSession`, `BeforeTurn`, `AfterTurn`), their failure policy, and how a
+  deployment declares its own hook kinds.
 - [Media & Attachments](guides/media.md) — `core/message`: the sealed part
-  vocabulary, the `core/message/media` value types, and the budgets a
-  payload meets on its way into a request.
+  vocabulary, the `core/message/media` value types, and the budgets a payload
+  meets on its way into a request.
 
 ### State and execution boundary
 
-- [Sandbox](guides/sandbox.md) — `core/sandbox`: agent execution
-  boundary, env / net / resources policy, backends (local / seatbelt /
-  bwrap / windows), per-call permission, decorators, escalation, and the
-  file journal.
-- [Remote Sandbox](guides/sandbox-remote.md) — `core/sandbox-remote`: the
-  same `Runner` across a host boundary — HTTP or unix socket, cursor reads,
-  SSE events, retry rules.
+- [Sandbox](guides/sandbox.md) — `core/sandbox`: the command boundary — the
+  confine, env / net / resources policy, the `local` and `remote` backends, the
+  egress matcher, and the file journal.
+- [Remote Sandbox](guides/sandbox-remote.md) — `sandbox/remote`: the same
+  `Runner` across a host boundary — HTTP or unix socket, cursor reads, SSE events,
+  retry rules.
 
 ### Assembly
 
 - [Inference Runtime](guides/inference.md) — generate / embed / decide over one
-  addressing scheme: the deployment block, host-supplied drivers and selectors,
-  model declarations, routing and retry, typed extensions.
-- [Deployment Assembly](guides/deploy.md) — `core/deploy`: the deployment
-  document, the engine / protocol / hook kind tables, and one `Loader` that
-  validates a deployment without building it.
+  addressing scheme: the provider document, the model declarations, routing and
+  retry, typed extensions.
+- [Deployment Assembly](guides/deploy.md) — `core/deploy`: the two documents, the
+  implementation table the application registers, and a loader that validates a
+  deployment without building it.
 
 ### Delegation
 
-- [Delegation](guides/delegation.md) — `core/delegation`: one agent handing work
-  to another — a policy over the session table, derived child sessions,
-  sync / async execution, and the lineage a chain keeps.
+- [Delegation](guides/delegation.md) — `policy.Delegation`: one agent handing work
+  to another — a block on the grant a session is opened with, derived child
+  sessions, sync / async execution, and the lineage a chain keeps.
 
 ### Cross-cutting
 
@@ -99,16 +101,17 @@ historical reference and are not part of the current core migration path.
 The repository is organised as independently released Go modules, and `core` is
 layered: a package imports only from the layers below it.
 
-| Layer         | Packages                                                                                                         | Responsibility                                                                                                         |
-| ------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| Contracts     | `core/message` (+`media`), `core/errdefs`, `core/permission`, `core/fsx`, `core/skill`, `core/correlation`       | The vocabulary every other layer speaks: messages, error classes, permissions, file handles, skills, the run identity. |
-| Inference     | `core/inference` (+`model`, `outcome`, `protocol`, `route`), `core/inference-openai`, `core/inference-anthropic` | Model contracts, routing, and the two protocol families that ship with the platform.                                   |
-| Tools         | `core/tool` (+`engine`, `middleware`), `core/tool-builtin/*`, `core/tool-mcp`                                    | The function-calling contract, the projection, and the built-in adapters.                                              |
-| Sandbox       | `core/sandbox` (+`engine`, `journal`, `netpolicy`), `core/sandbox-*`                                             | The command boundary: contract, policy decorators, backends.                                                           |
-| Execution     | `core/agent` (+`checkpoint`), `core/agent-graph`, `core/agent-a2a`, `core/delegation`                            | Runs: the engine contract, the graph engine, the A2A client, delegation.                                               |
-| Assembly      | `core/runtime`                                                                                                   | One runtime per configuration document, owning what it built.                                                          |
-| Deployment    | `core/deploy` (+`engines/*`, `protocols/*`, `builtin`), `core/agent-host`                                        | Documents and kind tables; host bindings, sessions, lifecycle.                                                         |
-| Observability | `core/telemetry`                                                                                                 | Tracing, run records, attributes.                                                                                      |
+| Layer         | Packages                                                                                                                                      | Responsibility                                                                                                                         |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Contracts     | `core/message` (+`media`), `core/errdefs`, `core/model`, `core/outcome`, `core/fsx`, `core/skill`, `core/config`, `core/identity` (+`inject`) | The vocabulary every other layer speaks: messages, error classes, models, outcomes, file handles, skills, documents, the run identity. |
+| Inference     | `core/inference` (+`route`, `inferencetest`), `inference/{openai,anthropic,bytedance,dashscope,minimax,pipeline}`                             | The contract, routing, the protocol families and the provider adapters.                                                                |
+| Tools         | `core/tool` (+`projection`, `platform`, `tooltest`), `tool/{builtin/*,mcp,dispatch,middleware}`                                               | The function-calling contract, the projection, the capability slots, and the sources.                                                  |
+| Sandbox       | `core/sandbox` (+`sandboxtest`), `sandbox/{local,remote,netpolicy,sessionkit}`                                                                | The `Runner` contract and the confine a backend is built with.                                                                         |
+| Execution     | `core/agent`, `agent/{graph,a2a,checkpoint}`                                                                                                  | The turn decorator, the driver contract, the engines and the store backend.                                                            |
+| Assembly      | `core/host`                                                                                                                                   | One `Resource` per process, one `Agents` table, one `Session`, one turn.                                                               |
+| Deployment    | `core/deploy` (+`sources`)                                                                                                                    | The two documents, the implementation table, the plans they resolve into.                                                              |
+| Authority     | `core/policy`                                                                                                                                 | The grant, the widening, the denial, and the digest that names a permission set.                                                       |
+| Observability | `core/telemetry` (+`setup`, `telemetrytest`)                                                                                                  | Tracing, run records, attributes.                                                                                                      |
 
 `core/internal/...` holds module-private helpers and is never importable outside
 `core`.
@@ -116,8 +119,12 @@ layered: a package imports only from the layers below it.
 ## Repository layout
 
 ```text
-core/            Platform module (contracts, inference, tools, sandbox, runtime, deploy)
-driver/          Provider adapters that are not protocol families (bytedance, dashscope, minimax)
+core/            Platform module (contracts, inference/tool/sandbox contracts, host, deploy, policy)
+inference/       Protocol families and provider adapters (openai, anthropic, bytedance, dashscope, minimax)
+sandbox/         Backends: local, remote (+ netpolicy, sessionkit)
+agent/           Engines: graph, a2a, checkpoint
+tool/            Tool sources: builtin/*, mcp, dispatch, middleware
+test/            One module of end-to-end and stack tests
 examples/        forge (graph demo, a workspace member) · parallel (outside consumer)
 skills/          flowcraft-deploy: reference cards, templates, validator
 scripts/         Release gate, fuzz and stress scripts
