@@ -120,23 +120,18 @@ host.Run → Agents.request → agent.RunTurn → Driver (graph, a2a)
     → finish: metrics, checkpoint, run record, hooks
 ```
 
-| Step             | What it does                                                                                                                                                                               |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `Agents.Run`     | Claims the turn slot — a second run is `Conflict`, a closing session `NotAvailable`, a paused session `Conflict` naming `Resume` — then derives the run context from the session identity. |
-| `Agents.Resume`  | The same, for the answer to a question the run stopped on: it takes the slot a paused session holds, and the turn runs `agent.ResumeTurn` instead.                                         |
-| `Agents.request` | Counts the ordinal, loads the session's latest task, mints a task id when the last one is terminal, and assembles the `agent.Request`.                                                     |
-| `agent.RunTurn`  | Installs the failure box, puts the trace level in the context, opens `agent.turn`, runs `BeforeTurn`, then folds the driver's stream.                                                      |
-| the driver       | Calls the routed provider and the dispatcher; every tool call reaches `sandbox.Exec` through the session's runner.                                                                         |
-| `agent.finish`   | Classifies the outcome, records metrics, writes the terminal checkpoint, reports the run record, then runs `AfterTurn`.                                                                    |
+| Step             | What it does                                                                                                                                  |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Agents.Run`     | Claims the turn slot — a second run is `Conflict`, a closing session `NotAvailable` — then derives the run context from the session identity. |
+| `Agents.request` | Counts the ordinal, loads the session's latest task, mints a task id when the last one is terminal, and assembles the `agent.Request`.        |
+| `agent.RunTurn`  | Installs the failure box, puts the trace level in the context, opens `agent.turn`, runs `BeforeTurn`, then folds the driver's stream.         |
+| the driver       | Calls the routed provider and the dispatcher; every tool call reaches `sandbox.Exec` through the session's runner.                            |
+| `agent.finish`   | Classifies the outcome, records metrics, writes the terminal checkpoint, reports the run record, then runs `AfterTurn`.                       |
 
 Three properties are load-bearing:
 
-- **One turn per session.** `Session.claim` refuses a second caller, which is what lets
+- **One turn per session.** `beginTurn` refuses a second claim, which is what lets
   `Steer` and `Cancel` address the turn in flight without an id.
-- **A paused session is not an idle one.** A turn that ends `input-required` records the
-  pause on the session; `Run` refuses it (a message would be taken as the answer), `Resume`
-  takes it, and a turn the host starts on its own waits for it. A session restored from a
-  checkpoint that says `input-required` opens paused.
 - **The terminal save happens on every path** — a normal finish, a panic, a
   consumer that stopped, and a `BeforeTurn` that refused. A turn that never started
   still leaves a terminal checkpoint.
@@ -184,11 +179,6 @@ that, instead of building one that turns itself off per call.
 
 ## Two command rules
 
-**Questions.** `ask_user` asks the conversation's user, and `WithQuestions` is where the
-question goes — a prompt, a chat message, a ticket. The tool's pre-flight suspends the
-turn; the answer arrives with `Agents.Resume`. A deployment with no outlet refuses the
-call instead of suspending a turn nobody can answer.
-
 A command reaches the backend through `platform.ProcessSlot`, which the host fills
 with the session's runner decorated by the process's command rules.
 
@@ -198,12 +188,6 @@ by word; an empty entry matches nothing), and everything else goes to the
 `Approver`. It is fail-closed — a policy with neither rule refuses every command,
 and an approver error is not a denial and also refuses. A process with no policy
 installs the starter undecorated, so approval stays opt-in.
-
-A session a delegation opened does not ask the `Approver` first: its commands are
-put to the parent's model, which either answers, refuses, or escalates back to the
-same `Approver`. The turn suspends on the question instead of blocking, and the
-parent answers with `delegation_answer` — see
-[delegation.md](delegation.md#approvals).
 
 **Escalation** answers "may this one command exceed the boundary". Only a command
 the backend already refused with `sandbox.ErrConfineDenied` is offered, and there is
@@ -234,7 +218,7 @@ With no escalator installed the refusal stands: the feature is opt-in, like appr
 
 | Call                                     | Use                                                                                                                                                               |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Agents.Open`                            | Admit a session under the grant the caller states. The delegation lineage is the host's to attach, not an option: a session a caller opens is nobody's child.     |
+| `Agents.Open`                            | Admit a session under the grant the caller states; `WithChain` attaches a delegation lineage.                                                                     |
 | `Agents.Session(id)` / `Sessions(agent)` | Look one up, or list one agent's.                                                                                                                                 |
 | `Agents.CloseSession`                    | Close one: a turn still streaming tools is given the chance to finish first.                                                                                      |
 | `Agents.EvictIdle(agent, now)`           | Evict by the agent's `limits.idle`. Explicit, not a goroutine, because eviction is an observable effect — and it skips a running session however long it has run. |

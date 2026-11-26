@@ -34,13 +34,6 @@ const (
 	// whether to ask, and the rule that refuses is this package's, so a refusal
 	// names the rule without a second vocabulary.
 	CheckEscalation Check = "escalation"
-	// CheckDelegation is a delegation the caller's grant does not permit: an agent
-	// it may not reach, a mode it may not use, a chain that is already too deep.
-	//
-	// It is a refusal like any other — the caller asked for something the policy
-	// does not grant — so it names its rule here rather than as an error string the
-	// host invented.
-	CheckDelegation Check = "delegation"
 )
 
 // Checks lists every rule that can refuse, in declaration order.
@@ -56,7 +49,6 @@ func Checks() []Check {
 		CheckBudget,
 		CheckApproval,
 		CheckEscalation,
-		CheckDelegation,
 	}
 }
 

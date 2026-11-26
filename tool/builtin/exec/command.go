@@ -182,42 +182,6 @@ func (t *CommandTool) Execute(ctx context.Context, binding tool.Binding, argumen
 	return encode(t.shell.Name, answer)
 }
 
-// Ask reports the question that must be answered before this command runs.
-//
-// It is the pre-flight the tool node calls: nothing executes here, and a session whose process
-// surface does not ask (a root session, a deployment with no approval rule) answers with no
-// question and the call runs as usual. The spec is built the way [sandbox.Exec] builds it, so the
-// command the parent judges is the command that would run.
-func (t *CommandTool) Ask(ctx context.Context, binding tool.Binding, arguments string) (*message.Content, error) {
-	starter, err := starter(binding)
-	if err != nil {
-		// The call will be refused by Execute with the same reason; asking has nothing to add.
-		return nil, nil
-	}
-	asker, ok := starter.(interface {
-		Ask(context.Context, sandbox.SessionSpec) (*message.Content, error)
-	})
-	if !ok {
-		return nil, nil
-	}
-	var params struct {
-		Command string `json:"command"`
-		WorkDir string `json:"workdir"`
-	}
-	if err := tool.DecodeArgs(t.shell.Name, arguments, map[string]string{"cmd": "command"}, &params); err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(params.Command) == "" || strings.TrimSpace(params.WorkDir) == "" {
-		// A malformed call is Execute's to refuse; it is not a question for anybody.
-		return nil, nil
-	}
-	argv := append([]string{t.shell.Path}, t.shell.Argv(params.Command)...)
-	return asker.Ask(ctx, sandbox.SessionSpec{
-		Argv: argv,
-		Opts: sandbox.ExecOptions{WorkDir: params.WorkDir},
-	})
-}
-
 // spool writes the captured streams to a temp file and returns its path. The
 // streams are written as they are: no joined copy is built in memory.
 func spool(stdout, stderr string) (string, error) {

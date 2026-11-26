@@ -87,30 +87,6 @@ type turnFacts struct {
 // Events are forwarded, never buffered: a caller may be streaming text, and turning that
 // into a two-phase collect-then-emit would make a turn feel as slow as it is.
 func RunTurn(ctx context.Context, req Request, d Driver) iter.Seq2[Event, error] {
-	return turnWith(ctx, req, d, func(ctx context.Context, req Request) iter.Seq2[Event, error] {
-		return d.Run(ctx, req)
-	})
-}
-
-// ResumeTurn is RunTurn for the answer to a question the run stopped on.
-//
-// The turn is the same in every other respect — one span, one failure box, one checkpoint — because
-// a resume is still a turn; what differs is which driver verb produces the events, and a driver
-// that cannot resume is refused here rather than being handed a message it would misread.
-func ResumeTurn(ctx context.Context, req Request, d Driver) iter.Seq2[Event, error] {
-	return turnWith(ctx, req, d, func(ctx context.Context, req Request) iter.Seq2[Event, error] {
-		resumer, ok := d.(Resumer)
-		if !ok {
-			return func(yield func(Event, error) bool) {
-				yield(nil, ErrAwaitingResume)
-			}
-		}
-		return resumer.Resume(ctx, req)
-	})
-}
-
-// turnWith decorates one driver call as a turn.
-func turnWith(ctx context.Context, req Request, d Driver, start func(context.Context, Request) iter.Seq2[Event, error]) iter.Seq2[Event, error] {
 	return func(yield func(Event, error) bool) {
 		if d == nil {
 			yield(nil, errNilDriver)
@@ -148,7 +124,7 @@ func turnWith(ctx context.Context, req Request, d Driver, start func(context.Con
 			req.Input = turn.Message
 		}
 
-		facts, failure := driveTurn(ctx, cancel, req, d, start, yield)
+		facts, failure := driveTurn(ctx, cancel, req, d, yield)
 		finish(ctx, span, req, d, turn, facts, started)
 		if failure != nil {
 			yield(nil, failure)
@@ -162,10 +138,7 @@ func turnWith(ctx context.Context, req Request, d Driver, start func(context.Con
 // The fold is why this loop reads every event: the terminal state, the usage totals, the
 // artifacts and the interruptions are what the checkpoint and the record need, and only a
 // reader that saw the whole stream can report them.
-func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Driver,
-	start func(context.Context, Request) iter.Seq2[Event, error],
-	yield func(Event, error) bool,
-) (facts turnFacts, failure error) {
+func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Driver, yield func(Event, error) bool) (facts turnFacts, failure error) {
 	completed := false
 	// A panicking driver must not escape as a panic: the caller is often a fan-out
 	// goroutine with nowhere to recover, and the turn would leave no terminal state.
@@ -184,7 +157,7 @@ func driveTurn(ctx context.Context, cancel context.CancelFunc, req Request, d Dr
 			attribute.String(telemetry.AttrCodeStacktrace, string(debug.Stack())))
 	}()
 
-	for event, err := range start(ctx, req) {
+	for event, err := range d.Run(ctx, req) {
 		if err != nil {
 			facts.outcome.Err = err
 			if _, classified := recordedKind(ctx); !classified || kindEmpty(ctx) {

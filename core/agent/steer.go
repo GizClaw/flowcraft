@@ -30,15 +30,11 @@ const (
 	SteerRedirect SteerIntent = "steer"
 	// SteerCorrect fixes a premise the run was built on.
 	SteerCorrect SteerIntent = "inject"
-	// SteerDeliver reports work that arrived from elsewhere — a delegated run that finished, or
-	// a subagent asking the agent that delegated to it. It is not an operator's voice, and the
-	// record keeps the difference.
-	SteerDeliver SteerIntent = "deliver"
 )
 
-// Valid reports whether the intent is one of the three.
+// Valid reports whether the intent is one of the two.
 func (s SteerIntent) Valid() bool {
-	return s == SteerRedirect || s == SteerCorrect || s == SteerDeliver
+	return s == SteerRedirect || s == SteerCorrect
 }
 
 // SteerID identifies one queued input, so it can be withdrawn before it is applied.
@@ -78,19 +74,6 @@ var (
 // transcript and in the audit record, and duplicating it in every reader's memory is
 // how a stream grows without bound.
 type Interruption struct {
-	// ID is the handle Steer returned, so a caller that queued several inputs can tell which
-	// one reached a boundary.
-	ID       SteerID     `json:"id,omitempty"`
 	Intent   SteerIntent `json:"intent"`
 	Boundary int         `json:"boundary,omitempty"`
-}
-
-// InputSink is the optional half of a [Driver] that can take a message from outside its turn.
-//
-// A driver that cannot — one whose document declares no input slot — would accept the message
-// and never show it to the model, which is worse than refusing it: the sender believes the work
-// was delivered. The host asks before it starts a turn for work that arrived while the session
-// was idle, and holds the message for the application when the answer is no.
-type InputSink interface {
-	AcceptsInput() bool
 }

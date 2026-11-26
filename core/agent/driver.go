@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"iter"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -97,38 +96,6 @@ type Canceller interface {
 	// Cancel asks the peer to stop. A run that already finished reports nil.
 	Cancel(ctx context.Context, reason string) error
 }
-
-// Resumer is the optional capability of a driver whose run can stop and wait.
-//
-// It is the pair of [StateInputRequired]. A driver that reports that state and does not implement
-// this leaves its callers holding a task they can never continue, so the conformance suite refuses
-// the combination: the status is a promise, and Resume is the only way to keep it.
-//
-// Resume is not Run. Run carries a new message into the conversation; Resume carries the answer to
-// the question the run stopped on, and the run is re-entered where it stopped — nothing it had
-// already done is replayed. A driver that treated the two the same could not tell a caller's new
-// message from an answer to its own question, which is how a delivery used to be swallowed by a
-// paused parent.
-type Resumer interface {
-	// Resume continues the suspended run with the answer in req.Input.
-	Resume(ctx context.Context, req Request) iter.Seq2[Event, error]
-}
-
-// Paused is the optional capability of a driver that can say it is waiting for an answer.
-//
-// It answers one question — "would input now be taken as an answer rather than as a new
-// message?" — and deliberately says nothing about any other state: a caller that reconstructed the
-// run's state machine from the driver would be a second source of truth for it.
-//
-// A driver with no run loaded reports false: the paused state of a conversation that was resumed
-// from the store belongs to whoever read the checkpoint, not to a driver that has not started yet.
-type Paused interface {
-	Paused() bool
-}
-
-// ErrAwaitingResume is Run's refusal on a suspended run: the message would have been taken as the
-// answer to a question nobody was asked. The caller has the state, not the content.
-var ErrAwaitingResume = errors.New("agent: the run is waiting for an answer; use Resume")
 
 // Request is everything one turn needs that the driver cannot build itself.
 //

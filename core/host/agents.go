@@ -11,7 +11,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/goccy/go-json"
@@ -51,26 +50,6 @@ type Agents struct {
 	runSink func(agent.RunRecord)
 	// harness names the build this process is, so a manifest can say which binary ran it.
 	harness string
-	// hostTurnEvents receives the events of the turns this process starts itself; nil discards
-	// them and leaves the run record and the checkpoint.
-	hostTurnEvents HostTurnEvents
-	// delegationDelivery is told about a message the host could not put into a session.
-	delegationDelivery DelegationDelivery
-	// questions is where a session's ask_user questions go; nil when the application installed no
-	// outlet, which makes the tool refuse the call instead of suspending a turn nobody can answer.
-	questions func(ctx context.Context, sessionID string, question message.Content) bool
-
-	// deliveryMu guards the delivery queues and the steered messages waiting for a boundary.
-	deliveryMu sync.Mutex
-	delivery   map[string]*deliveryQueue
-	steers     map[string]map[agent.SteerID]trackedSteer
-	// sealed holds the sessions whose pending work was already released to the application. An
-	// enqueue that arrives after the release — a child finishing while its parent is closing —
-	// goes straight to the application instead of starting a worker that outlives the close.
-	sealed map[string]struct{}
-	// workers is the delivery workers in flight. A close waits for them: an application callback
-	// that runs after Close returned would run on a torn-down application.
-	workers sync.WaitGroup
 
 	mu       sync.Mutex
 	entries  map[string]*deployment
@@ -138,9 +117,6 @@ func NewAgents(res *Resource, opts ...AgentsOption) *Agents {
 		entries:       map[string]*deployment{},
 		sessions:      map[string]*Session{},
 		slots:         map[string]int{},
-		delivery:      map[string]*deliveryQueue{},
-		steers:        map[string]map[agent.SteerID]trackedSteer{},
-		sealed:        map[string]struct{}{},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -305,14 +281,10 @@ func (a *Agents) Close(ctx context.Context) error {
 		if err := session.close(); err != nil {
 			errs = append(errs, err)
 		}
-		a.forgetDelivery(ctx, session.id)
 	}
 	for agentName, count := range perAgent {
 		recordSessionsClosed(ctx, agentName, count)
 	}
-	// The workers finish before the close returns: a queued delivery that is still being turned into
-	// a turn would otherwise call the application's sink after it was told the host is gone.
-	a.workers.Wait()
 	for _, entry := range deployments {
 		if err := entry.close(); err != nil {
 			errs = append(errs, err)

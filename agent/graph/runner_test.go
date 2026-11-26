@@ -25,25 +25,6 @@ func openDriver(t *testing.T, g *Graph, session string, opts ...ProgramOption) (
 }
 
 // turn runs one message through a driver and returns the events it yielded and the first error.
-// resume drives one Resume through a driver that supports it, the way the host does.
-func resume(t *testing.T, driver agent.Resumer, req agent.Request) ([]agent.Event, error) {
-	t.Helper()
-	var events []agent.Event
-	var first error
-	for event, err := range driver.Resume(context.Background(), req) {
-		if err != nil {
-			if first == nil {
-				first = err
-			}
-			continue
-		}
-		if event != nil {
-			events = append(events, event)
-		}
-	}
-	return events, first
-}
-
 func turn(t *testing.T, driver agent.Driver, req agent.Request) ([]agent.Event, error) {
 	t.Helper()
 	var events []agent.Event
@@ -131,7 +112,7 @@ output: {key: text}
 	secondProgram, second := openDriver(t, g, "conv-1")
 	defer func() { _ = secondProgram.Close() }()
 	defer func() { _ = second.Close() }()
-	events, err := resume(t, second.(agent.Resumer), requestFor(store, "task-1", "draft"))
+	events, err := turn(t, second, requestFor(store, "task-1", "draft"))
 	var canceled bool
 	for _, event := range events {
 		if status, ok := event.(agent.Status); ok && status.State == agent.StateCanceled {

@@ -132,13 +132,6 @@ func normalizeRoots(label string, raw []string) ([]string, error) {
 			return nil, errdefs.Validationf("policy.%s: path %q must not be a glob", label, root)
 		}
 		clean := filepath.Clean(root)
-		// Clean can hand back a root with whitespace the raw value did not have: "/x/../ " is
-		// cleaned to "/ ". Checking only the input made the output fail the same rule on the next
-		// pass, so normalization was not idempotent.
-		if strings.TrimSpace(clean) != clean {
-			return nil, errdefs.Validationf(
-				"policy.%s: path %q normalizes to one with leading or trailing whitespace", label, root)
-		}
 		if filepath.Dir(clean) == clean {
 			// A filesystem root covers everything; keeping it beside narrower
 			// roots would make the answer depend on order.
