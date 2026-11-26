@@ -16,13 +16,4 @@ tools:
     - name: files
       impl: files
       settings: { images: false }
-    # The command tool and the delegation verbs: a child that must ask its parent before it
-    # runs a command, and the parent that answers it. A session's grant decides whether it may
-    # call them.
-    - name: exec
-      impl: exec
-    - name: delegation
-      impl: delegation
-    - name: ask
-      impl: ask
 observability: { trace: run, bodies: false }

@@ -24,12 +24,6 @@ type Scripted struct {
 	// applies it.
 	SteerAt int
 
-	// SuspendAt makes the driver stop after this many steps and report input-required, until
-	// Resume is called. -1 (the default) never suspends.
-	SuspendAt int
-	// Question is what a suspension asks.
-	Question string
-
 	mu      sync.Mutex
 	drivers int
 	closed  bool
@@ -42,7 +36,7 @@ type step struct {
 
 // NewScripted builds a program that plays events in order.
 func NewScripted(events ...agent.Event) *Scripted {
-	s := &Scripted{SteerAt: -1, SuspendAt: -1}
+	s := &Scripted{SteerAt: -1}
 	for _, event := range events {
 		s.steps = append(s.steps, step{event: event})
 	}
@@ -88,102 +82,47 @@ func (s *Scripted) OpenDriver() *ScriptedDriver {
 	return driver.(*ScriptedDriver)
 }
 
-// pendingSteer is one queued input and the handle Steer returned for it.
-type pendingSteer struct {
-	id    agent.SteerID
-	input agent.SteerInput
-}
-
 // ScriptedDriver is one session's driver: the queue and the run counter belong here, not to
 // the program, because they are per conversation.
 type ScriptedDriver struct {
 	program *Scripted
 
 	mu      sync.Mutex
-	paused  bool
-	pending []pendingSteer
+	pending []agent.SteerInput
 	applied []agent.Interruption
 	nextID  int
 	runs    int
 	closed  bool
 }
 
-// Run implements agent.Driver. A driver that is waiting for an answer refuses it: the message
-// would be taken as the answer, which is the pair of verbs this fixture exists to exercise.
+// Run implements agent.Driver.
 func (d *ScriptedDriver) Run(ctx context.Context, _ agent.Request) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		if d.Paused() {
-			yield(nil, agent.ErrAwaitingResume)
-			return
-		}
-		if !d.play(ctx, yield, 0, true) {
-			return
-		}
-	}
-}
-
-// Resume implements agent.Resumer.
-func (d *ScriptedDriver) Resume(ctx context.Context, _ agent.Request) iter.Seq2[agent.Event, error] {
-	return func(yield func(agent.Event, error) bool) {
 		d.mu.Lock()
-		paused := d.paused
-		d.paused = false
+		d.runs++
+		steerAt := d.program.SteerAt
+		steps := d.program.steps
 		d.mu.Unlock()
-		if !paused {
-			yield(nil, agent.ErrAwaitingResume)
-			return
-		}
-		d.mu.Lock()
-		from := d.program.SuspendAt
-		d.mu.Unlock()
-		d.play(ctx, yield, from, false)
-	}
-}
 
-// Paused implements agent.Paused.
-func (d *ScriptedDriver) Paused() bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.paused
-}
-
-// play runs the script, stopping to ask where the program says so.
-func (d *ScriptedDriver) play(ctx context.Context, yield func(agent.Event, error) bool, from int, maySuspend bool) bool {
-	d.mu.Lock()
-	d.runs++
-	steerAt := d.program.SteerAt
-	suspendAt := d.program.SuspendAt
-	question := d.program.Question
-	steps := d.program.steps
-	d.mu.Unlock()
-
-	for i := from; i < len(steps); i++ {
-		one := steps[i]
-		if err := ctx.Err(); err != nil {
-			yield(nil, err)
-			return false
-		}
-		if i == steerAt {
-			if !d.drain(ctx, i, yield) {
-				return false
+		for i, one := range steps {
+			if err := ctx.Err(); err != nil {
+				yield(nil, err)
+				return
+			}
+			if i == steerAt {
+				if !d.drain(ctx, i, yield) {
+					return
+				}
+			}
+			if one.err != nil {
+				yield(nil, one.err)
+				return
+			}
+			if !yield(one.event, nil) {
+				return
 			}
 		}
-		if maySuspend && i == suspendAt {
-			// The step stops here: nothing after it runs until Resume.
-			d.mu.Lock()
-			d.paused = true
-			d.mu.Unlock()
-			return yield(agent.Status{State: agent.StateInputRequired, Reason: question}, nil)
-		}
-		if one.err != nil {
-			yield(nil, one.err)
-			return false
-		}
-		if !yield(one.event, nil) {
-			return false
-		}
 	}
-	return true
 }
 
 // drain yields one Interrupted per queued input and records what it applied.
@@ -192,8 +131,8 @@ func (d *ScriptedDriver) drain(_ context.Context, boundary int, yield func(agent
 	pending := d.pending
 	d.pending = nil
 	d.mu.Unlock()
-	for _, queued := range pending {
-		applied := agent.Interruption{ID: queued.id, Intent: queued.input.Intent, Boundary: boundary}
+	for _, input := range pending {
+		applied := agent.Interruption{Intent: input.Intent, Boundary: boundary}
 		d.mu.Lock()
 		d.applied = append(d.applied, applied)
 		d.mu.Unlock()
@@ -212,9 +151,8 @@ func (d *ScriptedDriver) Steer(input agent.SteerInput) (agent.SteerID, error) {
 		return "", agent.ErrRunEnded
 	}
 	d.nextID++
-	id := agent.SteerID("steer-" + itoa(d.nextID))
-	d.pending = append(d.pending, pendingSteer{id: id, input: input})
-	return id, nil
+	d.pending = append(d.pending, input)
+	return agent.SteerID("steer-" + itoa(d.nextID)), nil
 }
 
 // Unsteer implements agent.Steerer: it withdraws a queued input, and reports ErrSteerUnknown
@@ -223,7 +161,7 @@ func (d *ScriptedDriver) Unsteer(id agent.SteerID) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for i := range d.pending {
-		if d.pending[i].id != id {
+		if agent.SteerID("steer-"+itoa(d.nextID-len(d.pending)+i+1)) != id {
 			continue
 		}
 		d.pending = append(d.pending[:i], d.pending[i+1:]...)

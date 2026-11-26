@@ -32,43 +32,6 @@ type Tool interface {
 `Definition` carries `Name`, `Description`, and `InputSchema`. `arguments`
 is a JSON-encoded object.
 
-## Asking before running
-
-A tool that sometimes needs an answer before it may act implements one more method:
-
-```go
-type Asker interface {
-    Ask(ctx context.Context, b Binding, arguments string) (*message.Content, error)
-}
-```
-
-The tool node asks every pending call **before it launches the batch**. A non-nil
-answer is a question, and the step suspends on it with nothing executed — so the
-resume replays no side effect, and the turn ends `input-required` instead of
-holding its slot (a blocking tool would hold the turn, and a synchronous
-delegation's parent could never answer it).
-
-Asking is side-effect free by contract: it reads the tool's own policy and returns
-what the caller has to decide. A nil question means "run it". The dispatcher form
-is the same idea one layer up:
-
-```go
-type AskDispatcher interface {
-    Ask(ctx context.Context, b Binding, call message.ToolCall) (*message.Content, error)
-}
-```
-
-It is optional on both sides — a tool or dispatcher that does not implement it runs
-as it always did — and it deliberately bypasses the middleware chain, because a
-middleware that counts, paces or audits executions must not see one that never
-happened.
-
-Two tools ship with this shape: `bash` (`tool/builtin/exec`), whose commands may
-need an approval, and `ask_user` (`tool/builtin/ask`), which exists to ask. Both
-are answered through `host.Agents.Resume`: a delegated child's question goes to
-the parent that opened it, and a root session's goes to the outlet installed with
-`host.WithQuestions`.
-
 ## Tool sources and the dynamic catalog
 
 Tool sources feed the runtime's registry: the built-ins, the MCP servers above, and

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -104,22 +103,6 @@ type approvalStarter struct {
 	factory   BackendFactory
 	escalator Escalator
 	audit     func(context.Context, escalationRecord)
-	// route carries this child's questions to the parent that opened it; nil for a session a
-	// caller opened, which asks the deployment's approver inline as it always did.
-	route *approvalRoute
-}
-
-// Ask reports the question that must be answered before this command runs, without running it.
-//
-// It is the pre-flight the tool node calls: a command the whitelist covers has no question, one the
-// parent already answered has none either, and everything else becomes a question the child's turn
-// suspends on. Only a delegated child has a route; a root session answers inline in [admit], which
-// is why this returns no question for it.
-func (s approvalStarter) Ask(_ context.Context, spec sandbox.SessionSpec) (*message.Content, error) {
-	if s.policy == nil || s.route == nil || s.policy.Whitelist.Covers(spec.Argv) {
-		return nil, nil
-	}
-	return s.route.ask(spec), nil
 }
 
 // Start runs the command under both of the host's rules.
@@ -142,32 +125,6 @@ func (s approvalStarter) admit(ctx context.Context, spec sandbox.SessionSpec) (s
 		Argv:      append([]string(nil), spec.Argv...),
 		WorkDir:   spec.Opts.WorkDir,
 		TTY:       spec.TTY,
-	}
-	// A delegated child's answer arrives from its parent, one command at a time. A denial is an
-	// answer like any other: the command does not run, and the model is told which rule refused it.
-	//
-	// A route with no answer is a refusal, not a fall-through to the deployment's approver: the
-	// child's authority came from its parent, and asking somebody else about the command would
-	// swap the decider the feature exists to pick. It also keeps the claim honest — a command that
-	// needs an answer is only ever started by the pre-flight's suspension, so a tool that cannot
-	// ask is refused visibly instead of parking the parent's turn on a person.
-	if s.route != nil {
-		answer, ok := s.route.lookup(specDigest(spec))
-		if !ok {
-			recordDenial(ctx, policy.CheckApproval, s.agent)
-			return nil, &policy.Denial{Check: policy.CheckApproval, Reason: strings.TrimSpace(
-				"this command was not put to the parent; a tool that runs commands must ask before " +
-					"it starts them")}
-		}
-		if answer.approve {
-			return s.next.Start(ctx, spec)
-		}
-		recordDenial(ctx, policy.CheckApproval, s.agent)
-		reason := "the parent refused this command"
-		if answer.note != "" {
-			reason += ": " + answer.note
-		}
-		return nil, &policy.Denial{Check: policy.CheckApproval, Reason: reason}
 	}
 	if s.policy.Approver == nil {
 		return nil, refusal(ctx, s.agent, "no approver is configured and the command is not whitelisted")

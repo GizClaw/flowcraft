@@ -281,8 +281,7 @@ the narrow `SessionStarter`, so a tool gets the operator's decision for free. Se
 
 A delegated subagent is a session of its own: its confine comes from the authority the
 delegation resolves for it — by default the parent's, which is the only rule that cannot
-escalate — and core derives no mode for it. Its command questions go to the parent's
-model before a person is asked: see [delegation.md](delegation.md#approvals).
+escalate — and core derives no mode for it. See [delegation.md](delegation.md).
 
 ## What this replaced
 

@@ -78,7 +78,7 @@ func TestADelegatedChildRunsUnderItsOwnIdentity(t *testing.T) {
 	agents, childDriver := delegatedHost(t, policy.DelegationSync)
 	parent, _ := agents.Session("p1")
 
-	outcome, err := delegatorOf(agents, parent).Delegate(t.Context(), platform.DelegationRequest{
+	outcome, err := (&delegator{agents: agents, parent: parent}).Delegate(t.Context(), platform.DelegationRequest{
 		Target: "child", Mode: "sync", Input: "please review",
 	})
 	if err != nil {

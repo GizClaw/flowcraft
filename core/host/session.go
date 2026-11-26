@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/identity"
 	"github.com/GizClaw/flowcraft/core/inference"
-	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/policy"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/tool/platform"
@@ -29,21 +28,12 @@ type openOptions struct {
 	chain identity.Chain
 }
 
-// withChain records the delegation lineage the session runs under.
+// WithChain records the delegation lineage the session runs under.
 //
-// It is deliberately not an [OpenOption] an application can pass. A lineage is not something a
-// caller states, it is something the host *did*: [delegator.Delegate] is the only code that opens a
-// child, and it is the only code that knows the parent, the chain id and the depth it just minted.
-//
-// Three invariants read this value and all of them assume it. `max_depth` counts the depth, so a
-// caller-set chain could reset it. The approval route asks the lineage's last element for a
-// decision, so a chain whose parent never asked for the session is a question nobody can answer —
-// the child's turn would stop at input-required with no one to resume it. And the spans and run
-// records name the chain, so a fabricated one is an audit trail for a delegation that never
-// happened. Nothing outside this package needs it: an application that wants a session's lineage
-// reads it from the host, and a resume after a restart will read the chain the checkpoint recorded
-// rather than a value the caller supplies.
-func withChain(chain identity.Chain) OpenOption {
+// It is the only way a session learns it is somebody's child: a caller-opened session has no
+// chain, and a delegated edge is the only thing that knows the lineage. Without it the depth a
+// delegation's max_depth counts was always zero, so the limit never fired.
+func WithChain(chain identity.Chain) OpenOption {
 	return func(o *openOptions) { o.chain = chain }
 }
 
@@ -88,10 +78,8 @@ type Session struct {
 	// Cancel address a turn without an id — and the reason a close has to coordinate with it
 	// instead of just closing the driver underneath.
 	turnMu sync.Mutex
-	// running is true while a turn is in flight, and kind says who started it — the application
-	// or the host — so a refusal can say which one is in the way.
-	running  bool
-	turnKind turnKind
+	// running is true while a turn is in flight.
+	running bool
 	// cancel stops the running turn; nil when none is.
 	cancel context.CancelFunc
 	// closing is set by close before it stops the turn, so a turn that has not registered its
@@ -100,197 +88,33 @@ type Session struct {
 	// turnDone is closed when the turn in flight ends. A close waits on it before releasing the
 	// driver and the boundary the turn is using.
 	turnDone chan struct{}
-	// paused is set when a turn ended with the run waiting for an answer, and cleared when a turn
-	// starts again. It is what tells "nothing is running" apart from "nothing is running because it
-	// is waiting for me" — a distinction a delivery has to make, because a message offered to a
-	// paused run is taken as its answer.
-	paused bool
-	// pauseDone is closed when the pause is lifted: by a resume, or by a close. A caller waiting
-	// for the conversation to be free selects on it, so it never polls.
-	pauseDone chan struct{}
-	// approvals routes this session's command questions to its parent. It is nil for a session a
-	// caller opened: nothing above it asked, so the deployment's approver answers inline.
-	approvals *approvalRoute
-	// questions is where an ask_user call's question goes, and where its answer waits.
-	questions *questionsRoute
 }
 
-// turnKind names who started a turn.
-type turnKind int
-
-const (
-	// turnApplication is a turn the caller asked for: [Agents.Run].
-	turnApplication turnKind = iota
-	// turnDelivery is a turn the host started to hand a session work that arrived while it was
-	// idle — a delegated run's result, or a subagent's question.
-	turnDelivery
-	// turnDelegation is the host running a delegated child on the caller's behalf.
-	turnDelegation
-)
-
-// claim takes the session's turn slot, or reports why it cannot.
-//
-// The check and the take are one critical section, which is what a delivery worker needs: waiting
-// for the slot and taking it are the same decision, so there is no window in which another turn can
-// slip in between them. wait decides the answer when the slot is held — a caller's turn is refused
-// with a conflict, the host's own turns wait for it.
-//
-// The refusal names who holds the slot: a caller that gets "a delegated delivery is in flight" knows
-// to retry in a moment, while "already has a turn in flight" would read as its own bug.
-func (s *Session) claim(ctx context.Context, kind turnKind, mode claimMode) error {
-	for {
-		s.turnMu.Lock()
-		if mode == claimResume && !s.running && !s.paused {
-			// The host's mirror is a cache, the driver is the authority — but asking it takes the
-			// driver's lock, so it happens outside the turn lock. A turn that ended without a
-			// status leaves the mirror behind; the driver saying it is paused is what counts.
-			driver := s.driver
-			s.turnMu.Unlock()
-			if paused, ok := driver.(agent.Paused); ok && paused.Paused() {
-				s.turnMu.Lock()
-				if !s.closing && !s.running && !s.paused {
-					s.paused = true
-				}
-				s.turnMu.Unlock()
-				continue
-			}
-			return errdefs.Conflictf("host: session %q is not waiting for an answer", s.id)
-		}
-		switch {
-		case s.closing:
-			s.turnMu.Unlock()
-			return errdefs.NotAvailablef("host: session %q is closing", s.id)
-		case !s.running && (mode == claimResume || !s.paused):
-			s.running = true
-			s.turnKind = kind
-			s.turnDone = make(chan struct{})
-			// A resume takes the slot the pause was holding: the waiters that were told "wait for
-			// the answer" become waiters for the turn, which is the same queue.
-			if s.paused {
-				s.paused = false
-				if s.pauseDone != nil {
-					close(s.pauseDone)
-					s.pauseDone = nil
-				}
-			}
-			s.turnMu.Unlock()
-			return nil
-		case !s.running && mode == claimHost:
-			// Paused, and a turn the host started on its own: it waits for the answer, because
-			// the message it carries is not one. Falling through to a conflict here delivered the
-			// queue to the application instead of holding it, which is a dropped delivery.
-		case !s.running:
-			// Paused, and a caller's turn: the message would be taken as the answer.
-			s.turnMu.Unlock()
-			return errdefs.Conflictf(
-				"host: session %q is waiting for an answer; use Resume", s.id)
-		case mode != claimHost:
-			holder := s.turnKind
-			s.turnMu.Unlock()
-			return s.busy(holder)
-		}
-		done := s.turnDone
-		if !s.running {
-			done = s.pauseDone
-		}
-		s.turnMu.Unlock()
-		if done == nil {
-			continue
-		}
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return errdefs.FromContext(ctx.Err())
-		}
-	}
-}
-
-// claimMode says how a caller takes the turn slot.
-type claimMode int
-
-const (
-	// claimCaller is a turn the application asked for: a paused session refuses it, because the
-	// message would be taken as the answer to a question the caller never saw.
-	claimCaller claimMode = iota
-	// claimHost is a turn the host starts on its own: it waits for the conversation to be free,
-	// pause included, so a delivery is never offered to a run that is waiting for an answer.
-	claimHost
-	// claimResume is the answer to the question: it takes the slot a paused session is holding.
-	claimResume
-)
-
-// restorePause puts back the pause a resume took, when the turn it was for never started.
-func (s *Session) restorePause() {
+// beginTurn claims the session's turn slot, or reports why it cannot.
+func (s *Session) beginTurn() error {
 	s.turnMu.Lock()
 	defer s.turnMu.Unlock()
-	if s.closing || s.running || s.paused {
-		return
-	}
-	s.paused = true
-	s.pauseDone = make(chan struct{})
-}
-
-// choose prefers the terminal state a turn reached, and falls back to the last status it saw.
-func choose(terminal, last agent.TaskState) agent.TaskState {
-	if terminal != "" {
-		return terminal
-	}
-	return last
-}
-
-// conclude records where a turn left the run, before the slot is released.
-//
-// It has to happen inside the turn — a waiter released by endTurn that then saw no pause would take
-// the slot and answer a question it was not asked.
-func (s *Session) conclude(state agent.TaskState) {
-	if state != agent.StateInputRequired {
-		return
-	}
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	if s.closing || s.paused {
-		return
-	}
-	s.paused = true
-	s.pauseDone = make(chan struct{})
-}
-
-// busy is the refusal a caller that did not wait for the slot receives.
-func (s *Session) busy(holder turnKind) error {
-	switch holder {
-	case turnDelivery:
-		return errdefs.Conflictf(
-			"host: session %q has a turn in flight (a delegated delivery); retry shortly", s.id)
-	case turnDelegation:
-		return errdefs.Conflictf(
-			"host: session %q has a turn in flight (a delegated run); retry shortly", s.id)
-	default:
+	switch {
+	case s.closing:
+		return errdefs.NotAvailablef("host: session %q is closing", s.id)
+	case s.running:
 		return errdefs.Conflictf("host: session %q already has a turn in flight", s.id)
 	}
+	s.running = true
+	s.turnDone = make(chan struct{})
+	return nil
 }
 
 // endTurn releases the slot and wakes a close that is waiting for the turn.
 func (s *Session) endTurn() {
 	s.turnMu.Lock()
 	s.running = false
-	s.turnKind = turnApplication
 	done := s.turnDone
 	s.turnDone = nil
 	s.turnMu.Unlock()
 	if done != nil {
 		close(done)
 	}
-}
-
-// driverSnapshot returns the driver and the boundary under the turn lock.
-//
-// A reader that is not inside the session's turn — a delivery worker deciding whether a message can
-// be taken, a Steer or a Cancel — must not read the fields a close nils when it releases them. The
-// turn protocol makes those reads safe *during* a turn; this makes them safe outside one.
-func (s *Session) driverSnapshot() (agent.Driver, *cell) {
-	s.turnMu.Lock()
-	defer s.turnMu.Unlock()
-	return s.driver, s.cell
 }
 
 // isRunning reports whether a turn is in flight.
@@ -303,7 +127,7 @@ func (s *Session) isRunning() bool {
 // setCancel records the running turn's cancellation, or clears it when the turn ends.
 //
 // A cancellation installed after a close has already decided to stop the session is applied
-// immediately: otherwise a close that arrived between claim and this call would wait for a
+// immediately: otherwise a close that arrived between beginTurn and this call would wait for a
 // turn nobody had told to stop.
 func (s *Session) setCancel(cancel context.CancelFunc) {
 	s.turnMu.Lock()
@@ -333,12 +157,6 @@ func (s *Session) beginClose() <-chan struct{} {
 	s.closing = true
 	cancel := s.cancel
 	done := s.turnDone
-	// A waiter on the pause is told the conversation is going away, not that it may proceed.
-	if s.pauseDone != nil {
-		close(s.pauseDone)
-		s.pauseDone = nil
-	}
-	s.paused = false
 	s.turnMu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -413,10 +231,6 @@ func (a *Agents) Open(ctx context.Context, sessionID, agentName string, grant po
 		return nil, errors.Join(
 			errdefs.Conflictf("host: session %q is already open", sessionID), session.close())
 	}
-	// A reopened id starts unsealed: the release belonged to the previous conversation.
-	a.deliveryMu.Lock()
-	delete(a.sealed, sessionID)
-	a.deliveryMu.Unlock()
 	a.sessions[sessionID] = session
 	a.slots[sessionID] = len(a.byAge)
 	a.byAge = append(a.byAge, session)
@@ -482,21 +296,6 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 
 	capabilities := tool.NewCapSet()
 	platform.TreeSlot.Provide(capabilities, built.tree)
-	approvals := a.approvalRouteFor(sessionID, agentName, opening.chain)
-	// A root session's question goes to the application; a delegated child's reaches its parent as
-	// the suspension's text, so it gets no sink of its own.
-	var questionSink func(context.Context, string, message.Content) bool
-	if len(opening.chain.Lineage) == 0 {
-		questionSink = a.questions
-	}
-	// The slot is only provided where a question can be answered: a root session with no outlet
-	// would otherwise pose a question nobody was told about and suspend a turn that cannot be
-	// resumed. A delegated child always has one — its parent is the outlet.
-	var questions *questionsRoute
-	if questionSink != nil || len(opening.chain.Lineage) > 0 {
-		questions = newQuestionsRoute(sessionID, questionSink)
-		platform.AskSlot.Provide(capabilities, questions)
-	}
 	platform.ProcessSlot.Provide(capabilities, starterFor(built.runner, approvalStarter{
 		policy:    a.approval,
 		agent:     agentName,
@@ -505,7 +304,6 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		factory:   factory,
 		escalator: a.escalator,
 		audit:     a.auditor(sessionID),
-		route:     approvals,
 	}))
 	// The catalog is the process's: every session of this deployment searches the same discovery.
 	if a.res.skills != nil {
@@ -558,18 +356,6 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 		manifestID: manifest.ID(),
 		models:     models,
 		chain:      opening.chain,
-		approvals:  approvals,
-		questions:  questions,
-	}
-	// A conversation restored from the store may have stopped to ask. The session opens paused
-	// then, so the first message cannot be taken as the answer to a question nobody saw — the
-	// driver has not loaded the run yet, so it has no opinion to offer.
-	if a.store != nil {
-		if loaded, err := a.store.LatestForSession(ctx, sessionID); err == nil &&
-			loaded.Task.State == agent.StateInputRequired {
-			session.paused = true
-			session.pauseDone = make(chan struct{})
-		}
 	}
 	if err := a.announceSession(ctx, session); err != nil {
 		openErr := errors.Join(err, session.close())
@@ -581,13 +367,7 @@ func (a *Agents) buildSession(ctx context.Context, sessionID, agentName string, 
 	// capability, and a delegate tool registered in the process is then refused at registration
 	// instead of failing at the first call.
 	if bind.Delegation != nil {
-		head := &delegator{
-			agents: a,
-			parent: session.id,
-			agent:  session.agent,
-			grant:  bind,
-			chain:  session.chain,
-		}
+		head := &delegator{agents: a, parent: session}
 		if limit := bind.Delegation.MaxConcurrent; limit > 0 {
 			head.gate = make(chan struct{}, limit)
 		}
@@ -669,9 +449,6 @@ func (a *Agents) CloseSession(ctx context.Context, sessionID string) error {
 	if drained != nil {
 		err = errors.Join(err, drained.close())
 	}
-	// After the close, so a worker that was waiting for the slot has already been released and the
-	// messages it did not deliver are the queue's to report.
-	a.forgetDelivery(ctx, sessionID)
 	return err
 }
 
@@ -730,9 +507,6 @@ func (a *Agents) EvictIdle(ctx context.Context, agentName string, now time.Time)
 		if err := session.close(); err != nil {
 			errs = append(errs, err)
 		}
-		// Eviction is a close: the session's queued deliveries belong to the application now, and
-		// leaving them in the table would outlive the session they were addressed to.
-		a.forgetDelivery(ctx, session.id)
 	}
 	for _, entry := range drained {
 		if err := entry.close(); err != nil {
@@ -815,23 +589,18 @@ func (s *Session) close() error {
 	if done := s.beginClose(); done != nil {
 		<-done
 	}
-	// The fields are taken under the lock and released outside it: a reader outside the turn reads
-	// them through driverSnapshot, and a close is the only writer that nils them.
-	s.turnMu.Lock()
-	driver, cell := s.driver, s.cell
-	s.driver, s.cell = nil, nil
-	s.turnMu.Unlock()
-
 	var errs []error
-	if driver != nil {
-		if err := driver.Close(); err != nil {
+	if s.driver != nil {
+		if err := s.driver.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		s.driver = nil
 	}
-	if cell != nil {
-		if err := cell.Close(); err != nil {
+	if s.cell != nil {
+		if err := s.cell.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		s.cell = nil
 	}
 	return errors.Join(errs...)
 }

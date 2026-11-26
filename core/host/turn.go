@@ -93,163 +93,58 @@ func WithFingerprint(fingerprint agent.Fingerprint) AgentsOption {
 // that varies. That split is why a driver never sees a Resource, a table or a session id.
 //
 // One session has at most one turn in flight — the rule the session table states and [Agents.Steer]
-// depends on — so a second concurrent Run is refused instead of queued. A turn the host started
-// itself holds the slot in exactly the same way, and the refusal names which one it is.
+// depends on — so a second concurrent Run is refused instead of queued.
 func (a *Agents) Run(ctx context.Context, sessionID string, msg message.Message) iter.Seq2[agent.Event, error] {
 	return func(yield func(agent.Event, error) bool) {
-		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, claimCaller)
-		if err != nil {
+		session, ok := a.Session(sessionID)
+		if !ok {
+			yield(nil, errdefs.NotFoundf("host: session %q is not open", sessionID))
+			return
+		}
+		if err := session.beginTurn(); err != nil {
 			yield(nil, err)
 			return
 		}
-		run(yield, nil)
-	}
-}
-
-// Resume continues a session that stopped to ask, with the caller's answer.
-//
-// It is the only way to leave the paused state: Run refuses it, because a message offered to a
-// paused run is taken as the answer to a question the caller never saw — which is exactly how a
-// delegated result used to be swallowed by a parent that was waiting for one.
-//
-// An empty content is a legitimate answer ("continue"); the node that asked decides what to make
-// of it.
-func (a *Agents) Resume(ctx context.Context, sessionID string, content message.Content) iter.Seq2[agent.Event, error] {
-	return func(yield func(agent.Event, error) bool) {
-		// The answer belongs to the session's question route before the turn starts: the resumed tool
-		// node asks its pre-flight again, and nil from it is what lets the call run.
-		if session, ok := a.Session(sessionID); ok && session.questions != nil && session.questions.open() {
-			if err := session.questions.reply(content); err != nil {
-				yield(nil, err)
-				return
-			}
-		}
-		msg := message.Message{Role: message.RoleUser, Content: content}
-		run, err := a.claimTurn(ctx, sessionID, msg, turnApplication, claimResume)
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		run(yield, nil)
-	}
-}
-
-// turn runs a turn the host started, forwarding its events to sink.
-//
-// The claim is answered before this returns, which is what lets a caller that competes for the slot
-// — the delivery worker — tell "busy" from "failed" without starting anything. The returned
-// function runs the turn; calling it is the caller's decision.
-func (a *Agents) turn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, sink HostTurnEvents) (func(), error) {
-	run, err := a.claimTurn(ctx, sessionID, msg, kind, claimHost)
-	if err != nil {
-		return nil, err
-	}
-	return func() { run(nil, sink) }, nil
-}
-
-// claimTurn takes the session's turn slot and assembles the request, or reports why it cannot.
-//
-// Everything that can fail before the driver runs happens here, so a host turn can refuse without
-// half-running: the session exists, the slot is free, the request assembled.
-func (a *Agents) claimTurn(ctx context.Context, sessionID string, msg message.Message, kind turnKind, mode claimMode) (func(yield func(agent.Event, error) bool, sink HostTurnEvents), error) {
-	session, ok := a.Session(sessionID)
-	if !ok {
-		return nil, errdefs.NotFoundf("host: session %q is not open", sessionID)
-	}
-	if err := session.claim(ctx, kind, mode); err != nil {
-		return nil, err
-	}
-	runCtx, cancel := context.WithCancel(session.identity(ctx))
-	req, err := a.request(runCtx, session, msg)
-	if err != nil {
-		session.endTurn()
-		if mode == claimResume {
-			// The answer took the pause and then the turn could not be assembled: put the pause
-			// back, or the session can neither resume nor run.
-			session.restorePause()
-		}
-		cancel()
-		return nil, err
-	}
-	return func(yield func(agent.Event, error) bool, sink HostTurnEvents) {
 		defer session.endTurn()
+
+		runCtx, cancel := context.WithCancel(session.identity(ctx))
 		session.setCancel(cancel)
 		defer func() {
 			session.setCancel(nil)
 			cancel()
 			session.touchNow(time.Now())
-			a.requeueDropped(ctx, session.id)
 		}()
-		a.executeTurn(runCtx, session, req, yield, sink, kind, mode == claimResume)
-	}, nil
-}
 
-// executeTurn drives one claimed turn and writes its events to yield, or to sink when the host is
-// the one that started it.
-func (a *Agents) executeTurn(runCtx context.Context, session *Session, req agent.Request, yield func(agent.Event, error) bool, sink HostTurnEvents, kind turnKind, resume bool) {
-	// The failure box is installed before the run span opens, not inside RunTurn, so both
-	// spans of this turn read the same classification: the decorator reuses a box it finds
-	// rather than making a second one.
-	runCtx = agent.WithFailureBox(runCtx)
-	spanCtx, span := startRunSpan(runCtx, session)
-	defer span.End()
-
-	emit := yield
-	switch {
-	case sink != nil:
-		emit = func(event agent.Event, err error) bool {
-			return sink(spanCtx, session.id, hostTurnKind(kind), event, err)
+		req, err := a.request(runCtx, session, msg)
+		if err != nil {
+			yield(nil, err)
+			return
 		}
-	case emit == nil:
-		emit = func(agent.Event, error) bool { return true }
-	}
 
-	state, last, failures := agent.TaskState(""), agent.TaskState(""), 0
-	// Deferred, so a turn that ends early — a sink that stopped, a driver error — still records
-	// where it left the run before the slot is released.
-	defer func() { session.conclude(choose(state, last)) }()
-	turn := agent.RunTurn
-	if resume {
-		turn = agent.ResumeTurn
-	}
-	for event, err := range turn(spanCtx, req, session.driver) {
-		if status, ok := event.(agent.Status); ok {
-			last = status.State
-			if status.State.Terminal() {
+		// The failure box is installed before the run span opens, not inside RunTurn, so both
+		// spans of this turn read the same classification: the decorator reuses a box it finds
+		// rather than making a second one.
+		runCtx = agent.WithFailureBox(runCtx)
+		spanCtx, span := startRunSpan(runCtx, session)
+		defer span.End()
+		state, failures := agent.TaskState(""), 0
+		for event, err := range agent.RunTurn(spanCtx, req, session.driver) {
+			if status, ok := event.(agent.Status); ok && status.State.Terminal() {
 				state = status.State
 			}
+			if err != nil {
+				failures++
+			}
+			if !yield(event, err) {
+				finishRunSpan(spanCtx, span, state, failures)
+				return
+			}
+			if err != nil {
+				finishRunSpan(spanCtx, span, state, failures)
+				return
+			}
 		}
-		if applied, ok := event.(agent.Interrupted); ok {
-			// The steered message reached a boundary: it is in the transcript, so the delivery
-			// worker must not offer it again when this turn ends.
-			a.steerApplied(session.id, applied.ID)
-		}
-		if err != nil {
-			failures++
-		}
-		if !emit(event, err) {
-			finishRunSpan(spanCtx, span, state, failures)
-			return
-		}
-		if err != nil {
-			finishRunSpan(spanCtx, span, state, failures)
-			return
-		}
-	}
-	// Recorded before the slot is released: a waiter that saw the slot free but not the pause
-	// would take it and answer a question it was not asked.
-	finishRunSpan(spanCtx, span, state, failures)
-}
-
-// hostTurnKind names a claimed turn in the vocabulary the event sink speaks.
-func hostTurnKind(kind turnKind) HostTurnKind {
-	switch kind {
-	case turnDelivery:
-		return HostTurnDelivery
-	case turnDelegation:
-		return HostTurnDelegation
-	default:
-		return ""
+		finishRunSpan(spanCtx, span, state, failures)
 	}
 }
 
@@ -369,8 +264,7 @@ func (a *Agents) Steer(ctx context.Context, sessionID string, in agent.SteerInpu
 		recordSteer(ctx, in, steerIdle)
 		return "", agent.ErrSessionIdle
 	}
-	driver, _ := session.driverSnapshot()
-	steerer, ok := driver.(agent.Steerer)
+	steerer, ok := session.driver.(agent.Steerer)
 	if !ok {
 		recordSteer(ctx, in, steerUnsupported)
 		return "", agent.ErrNotSteerable
@@ -415,8 +309,7 @@ func (a *Agents) Cancel(ctx context.Context, sessionID, reason string) error {
 	}
 	cancel()
 	outcome := cancelContext
-	driver, _ := session.driverSnapshot()
-	if canceller, ok := driver.(agent.Canceller); ok {
+	if canceller, ok := session.driver.(agent.Canceller); ok {
 		if err := canceller.Cancel(ctx, reason); err != nil {
 			span.SetAttributes(attribute.String(telemetry.AttrErrorKind, string(agent.FailureUnclassified)))
 			span.SetStatus(codes.Error, "peer_refused")

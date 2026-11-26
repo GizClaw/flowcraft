@@ -41,8 +41,7 @@ func TestAdmitDelegationChecksTargetModeAndDepth(t *testing.T) {
 			if tc.want && err != nil {
 				t.Fatalf("admitDelegation = %v, want admitted", err)
 			}
-			_, denied := policy.AsDenial(err)
-			if !tc.want && !denied && !errdefs.IsValidation(err) {
+			if !tc.want && !errdefs.IsForbidden(err) && !errdefs.IsValidation(err) {
 				t.Fatalf("admitDelegation = %v, want a refusal", err)
 			}
 		})
@@ -113,7 +112,7 @@ func TestAnAsyncDelegationActuallyRuns(t *testing.T) {
 	agents, _, childProgram := asyncHost(t)
 	parent, _ := agents.Session("p1")
 
-	delegator := delegatorOf(agents, parent)
+	delegator := &delegator{agents: agents, parent: parent}
 	outcome, err := delegator.Delegate(t.Context(), platform.DelegationRequest{
 		Target: "child", Mode: "async", Input: "please review",
 	})
@@ -145,7 +144,7 @@ func TestAnAsyncDelegationActuallyRuns(t *testing.T) {
 func TestStatusWithoutAStoreIsRefused(t *testing.T) {
 	agents, _, _ := asyncHost(t)
 	parent, _ := agents.Session("p1")
-	delegator := delegatorOf(agents, parent)
+	delegator := &delegator{agents: agents, parent: parent}
 	if _, err := delegator.Status(t.Context(), "p1/child-1"); err == nil {
 		t.Fatal("Status answered without a store")
 	} else if !errdefs.IsNotAvailable(err) {
@@ -158,7 +157,7 @@ func TestStatusWithoutAStoreIsRefused(t *testing.T) {
 func TestAChildInheritsItsParentsAuthority(t *testing.T) {
 	agents, _, _ := asyncHost(t)
 	parent, _ := agents.Session("p1")
-	d := delegatorOf(agents, parent)
+	d := &delegator{agents: agents, parent: parent}
 
 	inherited, err := d.childAuthority(t.Context(), "child")
 	if err != nil {
@@ -203,7 +202,7 @@ func TestTheApplicationDecidesAChildsAuthority(t *testing.T) {
 	t.Cleanup(func() { _ = agents.Close(t.Context()) })
 	session, _ := agents.Session("p1")
 
-	got, err := delegatorOf(agents, session).childAuthority(t.Context(), "child")
+	got, err := (&delegator{agents: agents, parent: session}).childAuthority(t.Context(), "child")
 	if err != nil {
 		t.Fatalf("childAuthority: %v", err)
 	}
@@ -213,48 +212,5 @@ func TestTheApplicationDecidesAChildsAuthority(t *testing.T) {
 	if askedTarget != "child" || askedAuthority.Digest() != parentGrant.Digest() {
 		t.Fatalf("resolver asked about %q with %s, want the target and the parent's authority",
 			askedTarget, askedAuthority.Digest())
-	}
-}
-
-// delegatorOf builds the delegator a session gets at open, from the values it holds.
-func delegatorOf(agents *Agents, parent *Session) *delegator {
-	d := &delegator{
-		agents: agents,
-		parent: parent.id,
-		agent:  parent.agent,
-		grant:  parent.grant,
-		chain:  parent.chain,
-	}
-	if limit := parent.grant.Delegation.MaxConcurrent; limit > 0 {
-		d.gate = make(chan struct{}, limit)
-	}
-	return d
-}
-
-// TestADelegationEdgeIsNeverReused is the restart hazard: the edge counter starts again in a new
-// process, so the id has to carry something the counter cannot repeat — otherwise the next child
-// continues the task of the previous one, which is still in the store.
-func TestADelegationEdgeIsNeverReused(t *testing.T) {
-	agents, _, _ := asyncHost(t)
-	parent, _ := agents.Session("p1")
-	d := delegatorOf(agents, parent)
-
-	first, err := d.Delegate(t.Context(), platform.DelegationRequest{
-		Target: "child", Mode: "async", Input: "one",
-	})
-	if err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	second, err := d.Delegate(t.Context(), platform.DelegationRequest{
-		Target: "child", Mode: "async", Input: "two",
-	})
-	if err != nil {
-		t.Fatalf("second: %v", err)
-	}
-	if first.Session == second.Session {
-		t.Fatalf("two edges minted the same id %q", first.Session)
-	}
-	if first.Session == "p1/child-1" {
-		t.Fatalf("the id %q has no random suffix", first.Session)
 	}
 }
