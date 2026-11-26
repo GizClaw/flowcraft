@@ -197,7 +197,6 @@ func (m *MemStore) List(ctx context.Context) ([]agent.TaskSummary, error) {
 			ID:        entry.cp.Task.ID,
 			SessionID: entry.cp.Task.SessionID,
 			State:     entry.cp.Task.State,
-			Round:     entry.cp.Task.Round,
 		})
 	}
 	return out, nil

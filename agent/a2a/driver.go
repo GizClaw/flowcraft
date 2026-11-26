@@ -64,24 +64,12 @@ type driver struct {
 	// without repeating the request.
 	task  agent.Task
 	store agent.DriverStore
-	// round counts the lifecycle transitions the peer reported for its current task: it is the
-	// projection's answer to "how far did this get" for a task nobody on this side steps through.
-	round int
 }
 
 var (
 	_ agent.Driver    = (*driver)(nil)
 	_ agent.Canceller = (*driver)(nil)
-	_ agent.Rounder   = (*driver)(nil)
 )
-
-// Round reports how far the peer's task has got, as the number of lifecycle transitions it
-// reported. The turn decorator writes it into the projection because a proxy has no other answer.
-func (d *driver) Round() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.round
-}
 
 // Run forwards one message and streams the peer's events back as core events.
 //
@@ -266,9 +254,6 @@ func (d *driver) State() agent.TaskState {
 
 func (d *driver) setState(state agent.TaskState) {
 	d.mu.Lock()
-	if state != d.remote.State {
-		d.round++
-	}
 	d.remote.State = state
 	d.mu.Unlock()
 }

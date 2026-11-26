@@ -73,20 +73,6 @@ type Steerer interface {
 	Unsteer(id SteerID) error
 }
 
-// Rounder is the optional capability of a driver that can say how far a task has got.
-//
-// The turn decorator writes the final checkpoint, and the projection's Round is the one
-// column a reader uses to compare two deployments. A driver that steps (the graph) already
-// writes its own projection and reports the same number; a driver that only observes a peer
-// (a proxy) has nothing else to report, and leaving the field at zero made "how far did this
-// task get" unanswerable for it.
-type Rounder interface {
-	// Round returns how far the task has got: the driver's own step count, or the number
-	// of progress reports it has folded. A driver with nothing to say returns zero, which
-	// leaves the projection's value alone.
-	Round() int
-}
-
 // Canceller is the optional capability of a driver that must tell someone else about a
 // cancellation.
 //

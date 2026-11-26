@@ -37,7 +37,7 @@ func (f *fixture) save(events ...agent.EventRecord) {
 	if _, _, err := f.store.Save(context.Background(), agent.Checkpoint{
 		Schema:      agent.Schema,
 		Fingerprint: "sha256:deployment",
-		Task:        agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateCompleted, Round: f.round},
+		Task:        agent.Task{ID: "task-1", SessionID: "conv-1", State: agent.StateCompleted},
 		Sections: map[string]json.RawMessage{
 			sectionGraph: mustMarshal(f.t, projection{
 				Step: f.round, Frontier: []string{"planner"}, ContextHash: "sha256:context",

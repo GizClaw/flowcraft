@@ -96,7 +96,7 @@ func TestDriverStoreOfIsTheDriversHalf(t *testing.T) {
 	// at all, and a driver that lost it would pay two commits for one decision.
 	if _, _, err := store.Save(ctx, agent.Checkpoint{
 		Schema: agent.Schema,
-		Task:   agent.Task{ID: "t1", SessionID: "s1", State: agent.StateWorking, Round: 1},
+		Task:   agent.Task{ID: "t1", SessionID: "s1", State: agent.StateWorking},
 	}, []agent.EventRecord{{Kind: "graph.state", Payload: []byte(`{}`)}},
 		agent.TruncateThrough(1, "message")); err != nil {
 		t.Fatalf("Save with truncation: %v", err)

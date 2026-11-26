@@ -59,7 +59,7 @@ func checkpoint(taskID string, round int) agent.Checkpoint {
 	return agent.Checkpoint{
 		Schema:      agent.Schema,
 		Fingerprint: "sha256:x",
-		Task:        agent.Task{ID: taskID, SessionID: "conv", State: agent.StateWorking, Round: round},
+		Task:        agent.Task{ID: taskID, SessionID: "conv", State: agent.StateWorking},
 	}
 }
 
@@ -79,13 +79,6 @@ func TestSaveAdvancesAndAppends(t *testing.T) {
 		t.Fatalf("Save 2: %v", err)
 	}
 
-	loaded, err := store.Load(ctx, "task-1")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if loaded.Task.Round != 1 {
-		t.Errorf("round = %d, want the newest projection", loaded.Task.Round)
-	}
 	events, err := store.Events(ctx, "task-1")
 	if err != nil {
 		t.Fatalf("Events: %v", err)
@@ -192,8 +185,8 @@ func TestProjectionDoesNotCarryTheTranscript(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	// Load is the projection only: the 50 messages are in the event log.
-	if loaded.Task.ID != "task-1" || loaded.Task.Round != 50 {
-		t.Fatalf("projection = %+v, want the task's identity and its last round", loaded.Task)
+	if loaded.Task.ID != "task-1" {
+		t.Fatalf("projection = %+v, want the task's identity", loaded.Task)
 	}
 	events, err := store.Events(ctx, "task-1")
 	if err != nil {
@@ -393,7 +386,7 @@ func TestOpenMigratesATasksTableWithoutSavedAt(t *testing.T) {
 	// A row written before `seed` existed carries the whole checkpoint in body.
 	legacyBody, err := json.Marshal(agent.Checkpoint{
 		Schema: agent.Schema,
-		Task:   agent.Task{ID: "legacy", SessionID: "session", State: agent.StateCompleted, Round: 1},
+		Task:   agent.Task{ID: "legacy", SessionID: "session", State: agent.StateCompleted},
 	})
 	if err != nil {
 		t.Fatalf("encode the legacy row: %v", err)

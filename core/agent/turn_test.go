@@ -701,34 +701,6 @@ func TestTheSinkSeesAFailedRun(t *testing.T) {
 	}
 }
 
-// TestTheRoundComesFromTheDriver is why Rounder exists: a driver that does not step has no other
-// way to say how far its task got, and a projection stuck at zero makes two deployments
-// incomparable on the one column a list view shows.
-func TestTheRoundComesFromTheDriver(t *testing.T) {
-	store := agenttest.NewMemStore()
-	req := request(store)
-	driver := &roundingDriver{ScriptedDriver: agenttest.NewScripted(agenttest.Completed()).OpenDriver(), round: 7}
-	if _, err := collect(agent.RunTurn(sessionCtx(t), req, driver)); err != nil {
-		t.Fatalf("RunTurn: %v", err)
-	}
-	saved, err := store.Load(context.Background(), "t1")
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if saved.Task.Round != 7 {
-		t.Fatalf("round = %d, want the driver's 7", saved.Task.Round)
-	}
-}
-
-// roundingDriver is a driver that reports progress it did not take itself, which is the shape a
-// proxy has.
-type roundingDriver struct {
-	*agenttest.ScriptedDriver
-	round int
-}
-
-func (d *roundingDriver) Round() int { return d.round }
-
 // TestAStoppedTurnSaysSoOnItsSpan is the turn's half of a cancellation: the operator's action has
 // a span of its own (the host's), and the span that was stopped records why it ended.
 func TestAStoppedTurnSaysSoOnItsSpan(t *testing.T) {

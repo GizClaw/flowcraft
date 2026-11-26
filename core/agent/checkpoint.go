@@ -110,7 +110,6 @@ type Task struct {
 	ID        string     `json:"id"`
 	SessionID string     `json:"context_id,omitempty"`
 	State     TaskState  `json:"state"`
-	Round     int        `json:"round"`
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 	// Pending is the tool call the task stopped on when it needed the user. It is
 	// checkpointed so a resume knows which call the answer belongs to.
@@ -165,7 +164,6 @@ type TaskSummary struct {
 	ID        string
 	SessionID string
 	State     TaskState
-	Round     int
 	UpdatedAt string
 }
 

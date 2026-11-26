@@ -75,8 +75,8 @@ over.
 
 Both are written, in one transaction, because they answer different questions:
 
-- the **projection** answers "what is true now" — state, round, pending tool
-  call, artifacts;
+- the **projection** answers "what is true now" — state, pending tool call,
+  artifacts;
 - the **event log** answers "how it got there" — appended facts ordered by `Seq`,
   dated by `At`.
 

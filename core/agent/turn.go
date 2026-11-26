@@ -358,7 +358,6 @@ func saveTerminal(ctx context.Context, req Request, d Driver, facts turnFacts) {
 	if facts.outcome.State != "" {
 		task.State = facts.outcome.State
 	}
-	task.Round = roundOf(task.Round, d)
 	task.Artifacts = carriedArtifacts(task.Artifacts, facts.artifacts)
 	kept := make([]EventRecord, 0, len(facts.records)+2)
 	for _, record := range facts.records {
@@ -446,24 +445,6 @@ func carriesInlinePayload(msg message.Message) bool {
 		}
 	}
 	return false
-}
-
-// roundOf answers how far the task has got: the driver's own count when it tracks one, and
-// the projection's value otherwise.
-//
-// A driver that steps (the graph) writes its own projection every step and the decorator's
-// answer is the same one; a driver that does not (a proxy) has no other way to say it, and
-// leaving the field at zero made the list projection incomparable between two deployments
-// that both have a "round" column.
-func roundOf(known int, d Driver) int {
-	rounder, ok := d.(Rounder)
-	if !ok {
-		return known
-	}
-	if round := rounder.Round(); round > known {
-		return round
-	}
-	return known
 }
 
 // carriedArtifacts keeps what the projection already named and adds what this turn produced.

@@ -386,7 +386,6 @@ func (r *Run) persist(ctx context.Context, updates []StateUpdate, records []agen
 			ID:        r.taskID,
 			SessionID: r.sessionID,
 			State:     r.State(),
-			Round:     r.step,
 			// The projection answers "what is true now", and the artifacts a task has
 			// produced are part of that answer: a save that omitted them would erase
 			// what an earlier turn established.

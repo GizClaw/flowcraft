@@ -80,22 +80,6 @@ func TestRecordCallClassifiesAFailure(t *testing.T) {
 	}
 }
 
-// TestRoundCountsThePeersTransitions is the projection's "how far did this get" for a task nobody
-// on this side steps through.
-func TestRoundCountsThePeersTransitions(t *testing.T) {
-	driver := &driver{}
-	driver.setState(agent.StateWorking)
-	driver.setState(agent.StateWorking)
-	driver.setState(agent.StateCompleted)
-	if got := driver.Round(); got != 2 {
-		t.Fatalf("round = %d, want one per state change", got)
-	}
-	driver.adopt("other-task", "")
-	if got := driver.Round(); got != 0 {
-		t.Fatalf("round = %d after the peer minted a new task, want 0", got)
-	}
-}
-
 // TestSendSpanCarriesThePeerAndTheLevel pins the one span this side opens: the round trip, with the
 // peer's identity, and only from the level at which per-call spans exist.
 func TestSendSpanCarriesThePeerAndTheLevel(t *testing.T) {

@@ -48,7 +48,6 @@ CREATE TABLE IF NOT EXISTS tasks (
 	task_id    TEXT PRIMARY KEY,
 	context_id TEXT NOT NULL DEFAULT '',
 	state      TEXT NOT NULL,
-	round      INTEGER NOT NULL DEFAULT 0,
 	schema     INTEGER NOT NULL,
 	fingerprint TEXT NOT NULL,
 	seed           BLOB NOT NULL DEFAULT '',
@@ -346,12 +345,11 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 	savedAt := at.UnixNano()
 	now := at.Format(savedAtLayout)
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO tasks (task_id, context_id, state, round, schema, fingerprint, seed, body, sections, version, server_version, saved_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+		INSERT INTO tasks (task_id, context_id, state, schema, fingerprint, seed, body, sections, version, server_version, saved_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
 		ON CONFLICT(task_id) DO UPDATE SET
 			context_id     = excluded.context_id,
 			state          = excluded.state,
-			round          = excluded.round,
 			schema         = excluded.schema,
 			fingerprint    = excluded.fingerprint,
 			body           = excluded.body,
@@ -364,7 +362,6 @@ func (l *SQLite) Save(ctx context.Context, checkpoint agent.Checkpoint, events [
 		checkpoint.Task.ID,
 		checkpoint.Task.SessionID,
 		string(checkpoint.Task.State),
-		checkpoint.Task.Round,
 		checkpoint.Schema,
 		string(checkpoint.Fingerprint),
 		seed,
@@ -461,16 +458,15 @@ func appendEvents(ctx context.Context, tx *sql.Tx, taskID string, next int64, ev
 func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, error) {
 	var (
 		contextID, state string
-		round            int64
 		seed, body       []byte
 		version          int64
 		serverVersion    int64
 	)
 	var sections []byte
 	err := l.db.QueryRowContext(ctx,
-		`SELECT context_id, state, round, seed, body, sections, version, server_version
+		`SELECT context_id, state, seed, body, sections, version, server_version
 		 FROM tasks WHERE task_id = ?`, taskID,
-	).Scan(&contextID, &state, &round, &seed, &body, &sections, &version, &serverVersion)
+	).Scan(&contextID, &state, &seed, &body, &sections, &version, &serverVersion)
 	if errors.Is(err, sql.ErrNoRows) {
 		return agent.Checkpoint{}, agent.ErrNoCheckpoint
 	}
@@ -490,7 +486,6 @@ func (l *SQLite) Load(ctx context.Context, taskID string) (agent.Checkpoint, err
 		}
 		checkpoint.Task.SessionID = contextID
 		checkpoint.Task.State = agent.TaskState(state)
-		checkpoint.Task.Round = int(round)
 		var mutable struct {
 			Artifacts []agent.Artifact           `json:"artifacts,omitempty"`
 			Pending   *message.ToolCall          `json:"pending,omitempty"`
@@ -656,7 +651,7 @@ func truncateEvents(ctx context.Context, db execer, taskID string, seq int64, ki
 // List returns every task, newest first.
 func (l *SQLite) List(ctx context.Context) ([]agent.TaskSummary, error) {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT task_id, context_id, state, round, updated_at FROM tasks
+		`SELECT task_id, context_id, state, updated_at FROM tasks
 		 ORDER BY saved_at DESC, updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint: list: %w", err)
@@ -665,8 +660,7 @@ func (l *SQLite) List(ctx context.Context) ([]agent.TaskSummary, error) {
 	out := make([]agent.TaskSummary, 0, 16)
 	for rows.Next() {
 		var summary agent.TaskSummary
-		if err := rows.Scan(&summary.ID, &summary.SessionID, &summary.State,
-			&summary.Round, &summary.UpdatedAt); err != nil {
+		if err := rows.Scan(&summary.ID, &summary.SessionID, &summary.State, &summary.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("checkpoint: scan summary: %w", err)
 		}
 		out = append(out, summary)

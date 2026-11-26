@@ -103,23 +103,8 @@ type queuedSteer struct {
 var (
 	_ agent.Driver  = (*driver)(nil)
 	_ agent.Steerer = (*driver)(nil)
-	_ agent.Rounder = (*driver)(nil)
 	_ agent.Program = (*Program)(nil)
 )
-
-// Round reports how many steps the current task has taken.
-//
-// The run writes the same number into its own projection on every step, so this exists for the
-// terminal save the decorator makes: one answer for "how far did this task get", written by
-// whoever writes the checkpoint last.
-func (d *driver) Round() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.run == nil {
-		return 0
-	}
-	return d.run.step
-}
 
 // Run handles one turn: it starts the session's task, or answers the question it paused on. The graph
 // decides which from its own state, so the caller never has to.
